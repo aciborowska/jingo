@@ -1,5 +1,5 @@
 # Repository information
-Jusat-in-time Adaptable Bug Localization - JINGO
+Just-in-time Adaptable Bug Localization - JINGO
 
 # Requirements
 * Python3.6
@@ -39,6 +39,5 @@ Run JINGO with the following configuration:
 ### Results
 Results for each project are stored in _results/project_name_ folder.
 
-
 ### References
-[1] C. S. Corley, K. Damevski and N. A. Kraft, "Changeset-Based Topic Modeling of Software Repositories," in IEEE Transactions on Software Engineering, 2018.
+[1] C. S. Corley, K. Damevski and N. A. Kraft, "Changeset-Based Topic Modeling of Software Repositories," in IEEE Transactions on Software Engineering, 2020. _submitted_
