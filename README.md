@@ -1,10 +1,10 @@
 # Just-in-time Adaptable Bug Localization - JINGO
 
 This repository contains the code and data associated with the following research paper:
-`
+```
 A. Ciborowska, M.J. Decker, K. Damevski, "Just-in-Time Adaptable Bug Localization Based on 
-Changesets" _IEEE Transactions on Software Engineering_, 2020. _submitted_
-`
+Changesets" IEEE Transactions on Software Engineering, 2020. submitted
+```
 
 # Requirements
 * Python3.6
