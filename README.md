@@ -19,7 +19,6 @@ To run the project with default options simply use the following command:
 * `--decays` - decays for for the bug report model and the changeset model. Format [bug_decay, changeset_decay]. Default: [0.75, 1.0].
 * `--gamma` - boosting parameter for JINGO prediction. Default: 1.0.
 * `--omega` - boosting for the number of fixed issues to observe to train T matrix. Default: 1.0.
-* `--level` - granularity level to run experiment on. Select _method_ or _file_. Default: _method_.
 * `--save-model` - save model after training (flag). Default: off.
 * `-v` - enable verbose output (flag). Default: off.
 
