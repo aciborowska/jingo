@@ -1,5 +1,9 @@
-# Repository information
-Just-in-time Adaptable Bug Localization - JINGO
+# Just-in-time Adaptable Bug Localization - JINGO
+
+This repository contains the code and data associated with the following research paper:
+```
+A. Ciborowska, M.J. Decker, K. Damevski, "Just-in-Time Adaptable Bug Localization Based on Changesets" _IEEE Transactions on Software Engineering_, 2020. _submitted_
+```
 
 # Requirements
 * Python3.6
@@ -40,4 +44,4 @@ Run JINGO with the following configuration:
 Results for each project are stored in _results/project_name_ folder.
 
 ### References
-[1] C. S. Corley, K. Damevski and N. A. Kraft, "Changeset-Based Topic Modeling of Software Repositories," in IEEE Transactions on Software Engineering, 2020. _submitted_
+
