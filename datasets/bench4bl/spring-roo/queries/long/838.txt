@@ -1,0 +1,102 @@
+I was debugging one issue I had with custom implementation of the CommandMarker and noticed something rather strange.
+First everything looked fine, then i had to register custom type Converter and so I did:
+
+
+
+
+
+
+protected void activate(ComponentContext context) {
+
+
+
+
+	staticFieldConverter.add(ChannelType.class);	
+
+
+
+
+}
+
+
+
+
+
+
+After adding this it stop working. While debugging i noticed that this method has been called repeatedly and infinitely due to the exception being thrown in the add(..) method of StaticFieldConverter. The exception has to do with the component already being registered. When I started to look at some of the existing CommandMarkers in the existing add-ons I noticed that there is also a deactivate(..) method where these type Converters are removed from the converter map (basic undo operation), so I did the same and everything started to work:
+
+
+
+
+
+
+protected void deactivate(ComponentContext context) {
+
+
+
+
+	staticFieldConverter.remove(ChannelType.class);
+
+
+
+
+}
+
+
+
+
+
+
+By that time I was already in the debug mode so I looked further and noticed some strange things.
+As CommandMarker was registered as an OSGi service (@Service) and ServiceEvent is being processed by the ServiceListener there is a call to  getClassName(..) method which triggers activate(..) method on the actual service object which is the method that adds the Converter to the map. 
+Right after that you execute the following:
+
+
+
+
+
+
+if (sr != null) {
+
+
+
+
+	myContext.ungetService(sr);
+
+
+
+
+}
+
+
+
+
+
+
+And this is where I see the issue. 
+First, this "if" check will never return 'false', since the OSGi ServiceEvent always has ServiceReference which is not null. Even during the UNREGISTERING event ServiceReference is there to let users know that they are now dealing with the stale reference and have to clean up.
+This means that  myContext.ungetService(sr) method is executed always, thus releasing the service object references held by this ServiceReference. This also means that the next time this service is required a new instance of service object and ServiceReference will be created. However, the StaticFieldConverter service is still alive and well at the time and still holds the reference to the CommandMarker that was registered there before and when the new instance of the CommandMarker service is created it also triggers the execution of the activate(..) method which attempts to add a new instance of the CommandMarker to the map. Based on the code in StaticFieldConverter this invocation results in exception and I guess Felix attempts a retry, which results in the the activate(..) method calls to continue infinitely. This also explains why adding deactivate(..) method solves(hides?) the problem. So, unless I am missing something fundamental in Roo design I believe adding deactivate(..) method to simply 'undo' the activate(..) method actually hides the problem, because now depending on the scenario underlying services are created, activated and deactivated multiple times (some times before they are even used) resulting in extra code, unnecessary instances and GC.
+Simple FIX did a job for me and although I didn't profile it does feel a bit faster after i removed the following code from org.springframework.roo.startlevel.Activator (line ~ 91-93)
+
+
+
+
+
+
+if (sr != null) {
+
+
+
+
+	myContext.ungetService(sr);
+
+
+
+
+}
+
+
+
+
+
+

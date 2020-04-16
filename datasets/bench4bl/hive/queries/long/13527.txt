@@ -1,0 +1,27 @@
+When running queries against hbase-backed hive tables, the following log messages are seen in the HS2 log.
+
+
+
+2016-04-11 07:25:23,657 WARN org.apache.hadoop.hbase.mapreduce.TableInputFormatBase: You are using an HTable instance that relies on an HBase-managed Connection. This is usually due to directly creating an HTable, which is deprecated. Instead, you should create a Connection object and then request a Table instance from it. If you don't need the Table instance for your own use, you should instead use the TableInputFormatBase.initalizeTable method directly.
+
+2016-04-11 07:25:23,658 INFO org.apache.hadoop.hbase.mapreduce.TableInputFormatBase: Creating an additional unmanaged connection because user provided one can't be used for administrative actions. We'll close it when we close out the table.
+
+
+
+In a HS2 log file, there are 1366 zookeeper connections established but only a small fraction of them were closed. So lsof would show 1300+ open TCP connections to Zookeeper.
+grep "org.apache.zookeeper.ClientCnxn: Session establishment complete on server" * |wc -l
+1366
+grep "INFO org.apache.zookeeper.ZooKeeper: Session:" * |grep closed |wc -l
+54
+According to the comments in TableInputFormatBase, the recommended means for subclasses like HiveHBaseTableInputFormat is to call initializeTable() instead of setHTable() that it currently uses.
+"
+Subclasses MUST ensure initializeTable(Connection, TableName) is called for an instance to function properly. Each of the entry points to this class used by the MapReduce framework, 
+{@link #createRecordReader(InputSplit, TaskAttemptContext)}
+ and 
+{@link #getSplits(JobContext)}
+, will call 
+{@link #initialize(JobContext)}
+ as a convenient centralized location to handle retrieving the necessary configuration information. If your subclass overrides either of these methods, either call the parent version or call initialize yourself.
+"
+Currently setHTable() also creates an additional Admin connection, even though it is not needed.
+So the use of deprecated APIs are to be replaced.

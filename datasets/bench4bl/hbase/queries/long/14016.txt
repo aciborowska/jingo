@@ -1,0 +1,66 @@
+In our internal test for HBASE 1.1, we found a race condition that delete table followed by create table closely would leak zk lock due to NPE in ProcedureFairRunQueues
+
+Exception in thread "ProcedureExecutorThread-0" java.lang.NullPointerException
+
+	at org.apache.hadoop.hbase.master.procedure.MasterProcedureQueue.releaseTableWrite(MasterProcedureQueue.java:279)
+
+	at org.apache.hadoop.hbase.master.procedure.CreateTableProcedure.releaseLock(CreateTableProcedure.java:280)
+
+	at org.apache.hadoop.hbase.master.procedure.CreateTableProcedure.releaseLock(CreateTableProcedure.java:58)
+
+	at org.apache.hadoop.hbase.procedure2.ProcedureExecutor.execLoop(ProcedureExecutor.java:674)
+
+
+
+Here is the code that cause the race condition:
+
+
+
+protected boolean markTableAsDeleted(final TableName table) {
+
+    TableRunQueue queue = getRunQueue(table);
+
+    if (queue != null) {
+
+        ...
+
+        if (queue.isEmpty() && !queue.isLocked()) {
+
+          fairq.remove(table);
+
+    ...
+
+}
+
+
+
+public boolean tryWrite(final TableLockManager lockManager,
+
+        final TableName tableName, final String purpose) {
+
+        ...
+
+        tableLock = lockManager.writeLock(tableName, purpose);
+
+        try {
+
+          tableLock.acquire();
+
+      ...
+
+        wlock = true;
+
+    ...
+
+}
+
+
+
+The root cause is: wlock is set too late and not protect the queue be deleted.
+
+Thread 1: create table is running; queue is empty - tryWrite() acquire the lock (now wlock is still false)
+Thread 2: markTableAsDeleted see the queue empty and wlock= false
+Thread 1: set wlock=true - too late
+Thread 2: delete the queue
+Thread 1: never able to release the lock - NPE trying to get queue
+

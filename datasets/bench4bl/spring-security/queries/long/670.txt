@@ -1,0 +1,153 @@
+While performing load testing, we found concurrent deletes from the ACL_OBJECT_IDENTITY table by the JdbcMutableAclService would cause deadlocks in the database.  This is potentially only a problem when using MS SQL server 2000, I haven't tested any other RDBs.
+The deadlocks were found when simulating only 3 concurrent users, so was relatively easy to reproduce.
+The deadlocks are caused for several reasons, I'll start with the most serious.
+deleteAcl(ObjectIdentity objectIdentity, boolean deleteChildren) does the following:
+1 find all children of the ACL
+2 optionally delete these recursively  // not tested, but would cause deadlocks i think
+call deleteEntries(..)
+    performs a select to find Objectidentity pkey
+    deletes from ACL_Entry
+call deleteObjectIdentityAndOptionallyClass(..)
+    performs a select to find Objectidentity pkey
+    deletes from ACL_OBJECT_IDENTITY
+    selects from ACL_OBJECT_IDENTITY to see if the entry deleted was the last from a particular class
+    deletes from ACL_CLASS (dependent on outcome of previous select)
+–
+In MS SQL server the best practise is to perform all selects first, then do deletes, interleaving selects and deletes is a recipe for deadlocks.
+After some reorganisation of the above operations, we also found another deadlock caused by the database this time internally, where 2 concurrent deletes on the ACL_OBJECT_IDENTITY table when the DB was checking the foreign key to 'parent object', which we had to solve with a synchronized.
+I've pasted our fixed code below, not that it no longer deletes from the ACL_CLASS table if the ACL_OBJECT_IDENTITY row is that last one that referenced it, as I find this a waste of time (you may not agree?), it this may cause issues with a coinciding insert into ACL_OBJECT_IDENTITY (untested and not fully thought through).  Also if deleteChildren was passed as true, I'm sure the deadlocks would still occur.
+–
+/**
+
+Deletes the the ACL for the specified 
+{@link ObjectIdentity}. <br>  
+   * NOTE: Passing deleteChildren as <code>true</code> can cause deadlocks at
+   * the database, as this uses recursion on this method resulting in 
+   * select, delete, select... sequences of JDBC calls which is a recipe for
+   * deadlocks (at least on MS SQL server) under heavy load.
+   * 
+   * @param objectIdentity
+   * @param deleteChildren
+   * @throws ChildrenExistException
+   */
+  public void deleteAcl(ObjectIdentity objectIdentity, boolean deleteChildren)
+      throws ChildrenExistException
+  {
+    Assert.notNull(objectIdentity, "Object Identity required");
+    Assert.notNull(objectIdentity.getIdentifier(),
+                   "Object Identity doesn't provide an identifier");
+
+    if (deleteChildren) 
+    {
+      // deadlock territory
+      ObjectIdentity[] children = findChildren(objectIdentity);
+      for (int i = 0; i < children.length; i++) 
+      {
+            deleteAcl(children[i], true);
+      }
+    }
+
+    // we could have placed the find children outside the if and used it to 
+    // check for children, but this has been found to cause the occasional
+    // deadlock in MS SQL server, so we'll just let the FK do the checking for
+    // us.  After all that's what it's for
+
+    Long oidPkey = retrieveObjectIdentityPrimaryKey(objectIdentity);
+
+    // Delete this ACL's ACEs in the acl_entry table
+    deleteEntries(oidPkey);
+
+    // Delete this ACL's acl_object_identity row
+    deleteObjectIdentity(oidPkey);
+
+    // Clear the cache
+    aclCache.evictFromCache(objectIdentity);
+  }
+
+  /**
+   * Deletes all ACEs defined in the acl_entry table belonging to the presented
+   * ObjectIdentity
+   * 
+   * @param oid
+   *            the rows in acl_entry to delete
+   */
+  protected void deleteEntries(ObjectIdentity oid)
+  {
+    this.deleteEntries(retrieveObjectIdentityPrimaryKey(oid));
+  }
+
+  private void deleteEntries(Long oidPKey)
+  {
+    jdbcTemplate.update(deleteEntryByObjectIdentityForeignKey,
+                        new Object[] { oidPKey });
+  }
+
+  /**
+   * Deletes a single row from acl_object_identity that is associated with the
+   * presented ObjectIdentity. <br>
+   * Does not delete the from the ACL_CLASS table if 
+   * the {@link ObjectIdentity}
+ deleted is the last of that class, as this would
+require a select after a delete, which can cause deadlocks on some RDB's,
+and potentially another thread creating an ACL may have checked that
+ACL_CLASS row exist and is waiting to insert would experience problems.<br>
+<br>
+Also note that this method is synchronised, this is yet another deadlock
+avoidance manoeuvre, here's why:<br>
+The ACL_OBJECT_IDENTITY table has a foreign key back to itself (to support
+hierarchical ACLs), and this can cause the following situation:
+<ol>
+<li>
+Thread 1 (T1) is attempting to delete row X, so obtains an exclusive
+page lock on row X (and some of it close buddies)
+</li>
+<li>
+Thread 1 (T2) is attempting to delete row Y, so obtains an exclusive
+page lock on row Y (and some of it close buddies)
+</li>
+<li>
+T2 now performs a table scan to ensure the FK from PARENT_OBJECT back to
+ID (same table remember) is not violated by removal of row Y, but has to
+wait for the exclusive lock held by T1 to be released
+</li>
+<li>
+T1 now performs a table scan to ensure the FK from PARENT_OBJECT back to
+ID (same table remember) is not violated by removal of row X, but has to
+wait for the exclusive lock held by T2 to be released
+</li>
+<li>Deadlock!!!  </li>
+</ol>
+This has been observed using MS SQL Server, under load testing.
+
+
+@param oidPKey The primary key of the object identity to delete
+that class name if appropriate)
+   */
+  protected synchronized void deleteObjectIdentity(Long oidPKey)
+  Unknown macro: {    // Delete the acl_object_identity row    jdbcTemplate.update(deleteObjectIdentityByPrimaryKey,                        new Object[] { oidPKey });  } 
+
+  /**
+
+Retrieves the primary key from the acl_object_identity table for the passed
+ObjectIdentity. Unlike some other methods in this implementation, this
+method will NOT create a row (use 
+{@link
+   * #createObjectIdentity(ObjectIdentity, Sid)}
+ instead).
+
+@param oid
+to find
+
+@return the object identity or null if not found
+   */
+  protected Long retrieveObjectIdentityPrimaryKey(ObjectIdentity oid)
+  {
+    try
+    Unknown macro: {      return new Long(jdbcTemplate          .queryForLong(selectObjectIdentityPrimaryKey, new Object[] {
+              oid.getJavaType().getName(), oid.getIdentifier() }));    } 
+    catch (DataAccessException notFound)
+    {
+      return null;
+    }
+  }
+

@@ -1,0 +1,120 @@
+For certain metastore operation combination, metastore operation hangs and metastore server eventually fail due to OOM. This happens when metastore is backed by SQL Server. Here is a testcase to reproduce:
+
+
+
+CREATE TABLE tbl_repro_oom1 (a STRING, b INT) PARTITIONED BY (c STRING, d STRING);
+
+CREATE TABLE tbl_repro_oom_2 (a STRING ) PARTITIONED BY (e STRING);
+
+ALTER TABLE tbl_repro_oom1 ADD PARTITION (c='France', d=4);
+
+ALTER TABLE tbl_repro_oom1 ADD PARTITION (c='Russia', d=3);
+
+ALTER TABLE tbl_repro_oom_2 ADD PARTITION (e='Russia');
+
+ALTER TABLE tbl_repro_oom1 DROP PARTITION (c >= 'India'); --failure
+
+
+
+The code cause the issue is in ExpressionTree.java:
+
+
+
+valString = "partitionName.substring(partitionName.indexOf(\"" + keyEqual + "\")+" + keyEqualLength + ").substring(0, partitionName.substring(partitionName.indexOf(\"" + keyEqual + "\")+" + keyEqualLength + ").indexOf(\"/\"))";
+
+
+
+The snapshot of table partition before the "drop partition" statement is:
+
+
+
+PART_ID  CREATE_TIME    LAST_ACCESS_TIME      PART_NAME                SD_ID   TBL_ID 
+
+93	1376526718	0	             c=France/d=4	127	33
+
+94	1376526718	0	             c=Russia/d=3	128	33
+
+95	1376526718	0	             e=Russia	        129	34
+
+
+
+Datanucleus query try to find the value of a particular key by locating "$key=" as the start, "/" as the end. For example, value of c in "c=France/d=4" by locating "c=" as the start, "/" following as the end. However, this query fail if we try to find value "e" in "e=Russia" since there is no tailing "/". 
+Other database works since the query plan first filter out the partition not belonging to tbl_repro_oom1. Whether this error surface or not depends on the query optimizer.
+When this exception happens, metastore keep trying and throw exception. The memory image of metastore contains a large number of exception objects:
+
+
+
+com.microsoft.sqlserver.jdbc.SQLServerException: Invalid length parameter passed to the LEFT or SUBSTRING function.
+
+	at com.microsoft.sqlserver.jdbc.SQLServerException.makeFromDatabaseError(SQLServerException.java:197)
+
+	at com.microsoft.sqlserver.jdbc.SQLServerResultSet$FetchBuffer.nextRow(SQLServerResultSet.java:4762)
+
+	at com.microsoft.sqlserver.jdbc.SQLServerResultSet.fetchBufferNext(SQLServerResultSet.java:1682)
+
+	at com.microsoft.sqlserver.jdbc.SQLServerResultSet.next(SQLServerResultSet.java:955)
+
+	at org.apache.commons.dbcp.DelegatingResultSet.next(DelegatingResultSet.java:207)
+
+	at org.apache.commons.dbcp.DelegatingResultSet.next(DelegatingResultSet.java:207)
+
+	at org.datanucleus.store.rdbms.query.ForwardQueryResult.<init>(ForwardQueryResult.java:90)
+
+	at org.datanucleus.store.rdbms.query.JDOQLQuery.performExecute(JDOQLQuery.java:686)
+
+	at org.datanucleus.store.query.Query.executeQuery(Query.java:1791)
+
+	at org.datanucleus.store.query.Query.executeWithMap(Query.java:1694)
+
+	at org.datanucleus.api.jdo.JDOQuery.executeWithMap(JDOQuery.java:334)
+
+	at org.apache.hadoop.hive.metastore.ObjectStore.listMPartitionsByFilter(ObjectStore.java:1715)
+
+	at org.apache.hadoop.hive.metastore.ObjectStore.getPartitionsByFilter(ObjectStore.java:1590)
+
+	at sun.reflect.GeneratedMethodAccessor5.invoke(Unknown Source)
+
+	at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)
+
+	at java.lang.reflect.Method.invoke(Method.java:601)
+
+	at org.apache.hadoop.hive.metastore.RetryingRawStore.invoke(RetryingRawStore.java:111)
+
+	at $Proxy4.getPartitionsByFilter(Unknown Source)
+
+	at org.apache.hadoop.hive.metastore.HiveMetaStore$HMSHandler.get_partitions_by_filter(HiveMetaStore.java:2163)
+
+	at sun.reflect.GeneratedMethodAccessor4.invoke(Unknown Source)
+
+	at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)
+
+	at java.lang.reflect.Method.invoke(Method.java:601)
+
+	at org.apache.hadoop.hive.metastore.RetryingHMSHandler.invoke(RetryingHMSHandler.java:105)
+
+	at $Proxy5.get_partitions_by_filter(Unknown Source)
+
+	at org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore$Processor$get_partitions_by_filter.getResult(ThriftHiveMetastore.java:5449)
+
+	at org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore$Processor$get_partitions_by_filter.getResult(ThriftHiveMetastore.java:5437)
+
+	at org.apache.thrift.ProcessFunction.process(ProcessFunction.java:32)
+
+	at org.apache.thrift.TBaseProcessor.process(TBaseProcessor.java:34)
+
+	at org.apache.hadoop.hive.metastore.TSetIpAddressProcessor.process(TSetIpAddressProcessor.java:48)
+
+	at org.apache.thrift.server.TThreadPoolServer$WorkerProcess.run(TThreadPoolServer.java:176)
+
+	at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1110)
+
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:603)
+
+	at java.lang.Thread.run(Thread.java:722)
+
+)
+
+
+
+This eventually cause the OOM of metastore server. 
+This Jira only try to fix the SQL exception, which prevent OOM from happening in the above scenario. We might also need to look at how to prevent metastore OOM when an error happen, but that is out of the scope of this Jira.

@@ -1,0 +1,52 @@
+In MutliByteBuff there are couple of inconsistencies, one is in the toBytes function where the offset for copying in the initial element is not being reset with respect to the element
+
+
+
+ public byte[] toBytes(int offset, int length) {
+
+     byte[] output = new byte[length];
+
+     int itemIndex = getItemIndex(offset);
+
+     ByteBuffer item = this.items[itemIndex];
+
+     // the offset has to be reset here to the items offset 
+
+     // should be offset = offset - itemBeingPos[itemIndex]
+
+     int toRead = item.limit() - offset;
+
+     int destinationOffset = 0;
+
+    .  .   .   .
+
+
+
+Since there is already an existing function get to copy to an byte array it is better we reuse the function here, I attached a patch with a corresponding unit test. (HBASE-XXXX.patch)
+Another inconsistency I noticed is that there is lack of some consistency in using the position marker of the bytebuffers passed, In the constructor we noting the beginning offsets of each bytebuffer in the itemBeginPos array we are using these position markers in most of the absolute index functions such as get(index), put(index, byte), toBytes, get(int,byte[],int,int) to find the current item to access. There are two problems with this
+
+The array itemBeginPos is not being updated whenever there are some writes to internal bytebuffers (remember itemBeginPos depends on the bytebuffer.position() of the internal bytebuffers and the position marker is changed whenever some writes happen to bytebuffers)
+Also the position marker is not being used in any of the index functions for example here in the get function
+   
+
+
+ @Override
+
+  public byte get(int index) {
+
+    int itemIndex = getItemIndex(index);
+
+    return ByteBufferUtils.toByte(this.items[itemIndex], index - this.itemBeginPos[itemIndex]);
+
+  } 
+
+   
+
+where the the index I think should be index - this.itemBeginPos[itemIndex] + items[itemIndex].position() because we are using the position marker to calculate the offsets.
+
+There are two solutions I think for this 
+
+The simple solution I feel for this should be probably ignoring the position marker while calculating the itemBeginPos array which will unify the semantics
+Not use this array at all and iterate over bytebuffers every time for the getItemIndex function and also use the position marker before calling the ByteBufferUtils functions
+
+I can put up a patch for the second part if we decide which way to go.

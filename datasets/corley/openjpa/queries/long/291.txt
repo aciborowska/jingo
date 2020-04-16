@@ -1,0 +1,113 @@
+Use Case:
+A Node of a tree has a reference to parent node and a collection of child nodes.
+The complexity is how the node is identified. Instead of a simple primary identity,
+the node is using an identity that is composed of a primitive and its parent.
+
+OpenJPA allows parent (a uni-cardinarity relation) to be used as part of compound primary key. 
+But the entire process of enhancement and metadata resolution do not fully cover when the
+relation is self-recursive. 
+
+The use case of defining such a key however does not seem to be common.
+
+Anyway, consider Node of a tree defined for persistence as follows:
+
+@Entity
+@IdClass(Node.SelfId.class)
+
+public class Node {
+    @Id 
+    private long id;
+
+    @Id 
+    @ManyToOne private Node parent;
+
+    @OneToMany(mappedBy="parent", cascade=CascadeType.ALL)
+    private List<Node> children;
+
+    public class SelfId {
+	public long id;
+	public SelfId parent;
+}
+
+
+1. Enhancer breaks on Node.class
+
+   Because metadata resolution goes to infinite recursive loop and a StackOverflow
+
+   The codelines that breaks are in MetaDataRepository and the 
+   tentative patch shows why infinite recursion is happening by just stopping it. 
+  The impact of cutting it short is not clear/investigated.
+
+Index: openjpa-kernel/src/main/java/org/apache/openjpa/meta/MetaDataRepository.java
+===================================================================
+— openjpa-kernel/src/main/java/org/apache/openjpa/meta/MetaDataRepository.java        (revision 558795)
++++ openjpa-kernel/src/main/java/org/apache/openjpa/meta/MetaDataRepository.java        (working copy)
+@@ -552,11 +552,15 @@
+
+         // resolve relation primary key fields for mapping dependencies
+         FieldMetaData[] fmds = meta.getDeclaredFields();
+
+	for (int i = 0; i < fmds.length; i++)
+	if (fmds[i].isPrimaryKey())
++        for (int i = 0; i < fmds.length; i++) 
+Unknown macro: {+            if (fmds[i].isPrimaryKey()) {
++               if (fmds[i].getObjectIdFieldType().
++                       isAssignableFrom(meta.getDescribedType()))
++                       continue;
+                 getMetaData(fmds[i].getDeclaredType(),
+                     meta.getEnvClassLoader(), false);
+-
++            }+        } 
+    
+
+
+
+
+2. This patch stops the recursion but does not solve the problem.
+
+   The enhanced Node class fails to create a ApplicationId. For a simple test case such as (the test case is attached)
+	public void testPersistTree() {
+		OpenJPAEntityManager em = getEM();
+		em.begin();
+		Node root = new Node(1000L,null);
+		createTree(root, new int[]
+{1,2,3}
+, 2);// 3-levels, fanout/node=2 
+		em.persist(root);
+		em.commit();
+	}
+
+
+<1.0.0-SNAPSHOT-SNAPSHOT nonfatal general error> org.apache.openjpa.persistence.PersistenceException: org.apache.openjpa.util.ObjectId
+	at org.apache.openjpa.kernel.BrokerImpl.persist(BrokerImpl.java:2437)
+	at org.apache.openjpa.kernel.BrokerImpl.persist(BrokerImpl.java:2333)
+	at org.apache.openjpa.kernel.BrokerImpl.persistAll(BrokerImpl.java:2279)
+	at org.apache.openjpa.kernel.SingleFieldManager.persist(SingleFieldManager.java:264)
+	at org.apache.openjpa.kernel.StateManagerImpl.cascadePersist(StateManagerImpl.java:2741)
+	at org.apache.openjpa.kernel.BrokerImpl.persist(BrokerImpl.java:2432)
+	at org.apache.openjpa.kernel.BrokerImpl.persist(BrokerImpl.java:2251)
+	at org.apache.openjpa.kernel.DelegatingBroker.persist(DelegatingBroker.java:1010)
+	at org.apache.openjpa.persistence.EntityManagerImpl.persist(EntityManagerImpl.java:541)
+	at tree.TestTree.testPersistTree(TestTree.java:22)
+
+
+Caused by: java.lang.ClassCastException: org.apache.openjpa.util.ObjectId
+	at tree.Node.pcCopyKeyFieldsToObjectId(Node.java)
+	at org.apache.openjpa.util.ApplicationIds.create(ApplicationIds.java:386)
+	at org.apache.openjpa.kernel.BrokerImpl.persist(BrokerImpl.java:2405)
+	... 27 more
+
+3. How does the enhanced Node class looks like?
+
+   Firstly, Java decomiler (jad) itself is confused about the same method.
+   $ jad classes\tree\Node.class
+     Parsing classes\tree\Node.class...Parsing inner class classes\tree\Node$SelfId.class...Overwrite Node.jad [y/n/a/s] ? y
+     Generating Node.jad
+     Couldn't fully decompile method pcCopyKeyFieldsToObjectId
+
+   The decompiled file is attached.
+
+4. The enhanced code is generated in
+   PCEnhancer.addExtractObjectIdFieldValueCode()
+
+   But I found the debugging the piece hard.

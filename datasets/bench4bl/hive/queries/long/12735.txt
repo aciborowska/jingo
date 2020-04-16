@@ -1,0 +1,54 @@
+For the following query
+
+
+
+SELECT IF ( ( (CASE WHEN bool0 THEN 1 WHEN NOT bool0 THEN 0 END) = (CASE WHEN TRUE THEN 1 WHEN NOT TRUE THEN 0 END) ), key0, IF ( ( (CASE WHEN bool0 THEN 1 WHEN NOT bool0 THEN 0 END) = (CASE WHEN FALSE THEN 1 WHEN NOT FALSE THEN 0 END) ), key1, key2 ) ) FROM src_orc;
+
+
+
+the expression gets constant folded to 
+
+
+
+if(CASE WHEN (bool0) THEN (true) WHEN ((not bool0)) THEN (false) END, key0, if(CASE WHEN (bool0) THEN (false) WHEN ((not bool0)) THEN (true) END, key1, key2)) (type: string)
+
+
+
+however, the GenericUDFWhen and GenericUDFCase expression retain the original return type (int) instead of the folded return type (boolean). This can cause ClassCastException for the above query when vectorization is enabled.
+Following is the exception
+
+
+
+Caused by: org.apache.hadoop.hive.ql.metadata.HiveException: Error evaluating if(CASE WHEN (bool0) THEN (true) WHEN ((not bool0)) THEN (false) END, key0, if(CASE WHEN (bool0) THEN (false) WHEN ((not bool0)) THEN (true) END, key1, key2))
+
+	at org.apache.hadoop.hive.ql.exec.vector.VectorSelectOperator.process(VectorSelectOperator.java:126)
+
+	at org.apache.hadoop.hive.ql.exec.Operator.forward(Operator.java:852)
+
+	at org.apache.hadoop.hive.ql.exec.TableScanOperator.process(TableScanOperator.java:114)
+
+	at org.apache.hadoop.hive.ql.exec.MapOperator$MapOpCtx.forward(MapOperator.java:168)
+
+	at org.apache.hadoop.hive.ql.exec.vector.VectorMapOperator.process(VectorMapOperator.java:45)
+
+	... 18 more
+
+Caused by: java.lang.ClassCastException: org.apache.hadoop.io.BooleanWritable cannot be cast to org.apache.hadoop.io.IntWritable
+
+	at org.apache.hadoop.hive.serde2.objectinspector.primitive.WritableIntObjectInspector.get(WritableIntObjectInspector.java:36)
+
+	at org.apache.hadoop.hive.ql.exec.vector.udf.VectorUDFAdaptor.setOutputCol(VectorUDFAdaptor.java:262)
+
+	at org.apache.hadoop.hive.ql.exec.vector.udf.VectorUDFAdaptor.setResult(VectorUDFAdaptor.java:210)
+
+	at org.apache.hadoop.hive.ql.exec.vector.udf.VectorUDFAdaptor.evaluate(VectorUDFAdaptor.java:140)
+
+	at org.apache.hadoop.hive.ql.exec.vector.expressions.VectorExpression.evaluateChildren(VectorExpression.java:121)
+
+	at org.apache.hadoop.hive.ql.exec.vector.expressions.IfExprStringGroupColumnStringGroupColumn.evaluate(IfExprStringGroupColumnStringGroupColumn.java:54)
+
+	at org.apache.hadoop.hive.ql.exec.vector.VectorSelectOperator.process(VectorSelectOperator.java:123)
+
+	... 22 more
+
+

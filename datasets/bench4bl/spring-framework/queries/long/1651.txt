@@ -1,0 +1,60 @@
+AbstractBeanFactory#getMergedBeanDefinition creates an instance of RootBeanDefinition for each invocation.
+This results in new instance of RootBeanDefinition for each creation of prototype bean if it not itself a RootBeanDefinition, ie. it has a parent to be merged with.
+This further affects the way that CglibSubclassingInstantiationStrategy$CglibIdentitySupport works, which assumes that RootBeanDefinitions are compared only by identity of instance (default behaviour of each java.lang.Object).
+So if there are many instances of RootBeanDefinition for each instantiated prototype ChildBeanDefinition, CGLib will create a new class for instantiated prototype bean when there are any lookups or overrides defined in bean definition.
+1. Bean definition must be a prototype
+2. Bean must have the parent definition
+3. Bean must have override/lookup methods
+Effect:
+CGLIB create new class definition for each instance of prototype bean.
+Proposals:
+option A. Create a cache for merged bean definitions.
+or
+option B. Make RootBeanDefinition implement different strategy for hashCode and equal methods implementation, and change CglibSubclassingInstantiationStrategy$CglibIdentitySupport 
+Fix:
+option A.
+— AbstractBeanFactory.java.orig       2005-10-13 15:28:00.000000000 +0200
++++ AbstractBeanFactory.java    2006-01-31 02:51:29.546875000 +0100
+@@ -122,6 +122,9 @@
+        /** Map between dependent bean names: bean name --> dependent bean name */^M
+        private final Map dependentBeanMap = new HashMap();^M
+ ^M
++       /** Map of all merged bean definitions */^M
++       private Map/ChildBeanDefinition, RootBeanDefinition/ mergedChildBeanDefinitions = new HashMap();^M
++       ^M
+ ^M
+        /**^M
+
+Create a new AbstractBeanFactory.^M
+@@ -697,6 +700,9 @@
+                else if (bd instanceof ChildBeanDefinition) {^M
+                        // Child bean definition: needs to be merged with parent.^M
+                        ChildBeanDefinition cbd = (ChildBeanDefinition) bd;^M
++                       // check if there is already merged definition^M
++                       RootBeanDefinition rbd = (RootBeanDefinition) mergedChildBeanDefinitions.get(cbd);^M
++                       if (rbd == null) {^M
+                        RootBeanDefinition pbd = null;^M
+                        try {^M
+                                if (!beanName.equals(cbd.getParentName())) {^M
+@@ -720,7 +726,7 @@
+                        }^M
+ ^M
+                        // Deep copy with overridden values.^M
+
+
+RootBeanDefinition rbd = new RootBeanDefinition(pbd);^M
++                       rbd = new RootBeanDefinition(pbd);^M
+                        rbd.overrideFrom(cbd);^M
+ ^M
+                        // Validate merged definition: mainly to prepare method overrides.^M
+@@ -731,6 +737,9 @@
+                                throw new BeanDefinitionStoreException(rbd.getResourceDescription(), beanName,^M
+                                                "Validation of bean definition failed", ex);^M
+                        }^M
++                       // save merged definition^M
++                       mergedChildBeanDefinitions.put(cbd, rbd);^M
++                       }^M
+ ^M
+                        return rbd;^M
+                }^M
+

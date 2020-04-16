@@ -1,0 +1,577 @@
+I experienced the problem on openjpa 2.0.0, and still found it on 2.0.1.  I have a personal fix by adding lines of code in org.apache.openjpa.jdbc.meta.MappingInfo.java. I would like to have your attention and fix it in the next release. I can provide my patch.
+
+Issue description:
+I was trying to generate a schema file from a set of entity classes. This is the method to run MappingTool to generate an xml schema file out of a set of entity classes.
+
+    public static void createSchemaXml()
+      throws IOException, SQLException
+    {
+        Options opts = new Options();
+        //run in export mode
+        opts.setProperty("schemaAction", "export");
+        //dump database schema into schema.xml file
+        opts.setProperty("schemaFile", "EntitySchema.xml");
+
+        final String[] arguments = new String[0];
+        JDBCConfiguration conf = new JDBCConfigurationImpl();
+
+        try
+        {
+        	System.out.println("Generating schema from entity classes...");
+                MappingTool.run(conf, arguments, opts);
+        }
+        finally
+        {
+            conf.close();
+        }
+
+        opts.clear();
+    }
+
+
+
+One entity class, BIP_GroupComponentMapping.java, defines a foreign key constraint. BIP_GroupComponentMapping's BIP_GROUP_COMPONENT_MAPPING_GROUP_ID refers to the ID field in IBSSGroupDB. The ID field in  IBSSGroupDB has an Integer type as defined.  However, when openjpa's Mapping tool was running on class com.ibi.bip.persistence.BIP_GroupComponentMapping with action "buildSchema", it desires IBSSGroupDB's ID field ( or BIP_GROUP_COMPONENT_MAPPING's BIP_GROUP_MAPPING_GID field) to be a varchar, and it can not adapt varchar to Integer. So the program dies and produces a MetaDataException as following:
+
+In BIP_GroupComponentMapping.java:
+@ManyToOne(fetch=FetchType.LAZY)
+@JoinColumn(name=BIP_DbEntities.BIP_GROUP_COMPONENT_MAPPING_GROUP_ID, nullable=false, insertable=false, updatable=false)
+    private IBSSGroupDB uoaGroup;
+
+In IBSSGroupDB.java:
+    @Id
+    @Column(name = "ID", nullable = false)
+    private Integer id;
+
+
+
+<openjpa-2.0.0-r422266:935683 fatal user error> org.apache.openjpa.util.MetaDataException: "com.ibi.bip.persistence.BIP_GroupComponentMapping.uoaGroup" declares a column that is not compatible with the expected type "integer".  Column details:
+
+Full Name: BIP_GROUP_COMPONENT_MAPPING.BIP_GROUP_MAPPING_GID
+Type: varchar
+Size: 255
+Default: null
+Not Null: true
+
+
+*******************************************************
+The full trace of the exception:
+
+Generating schema from entity classes...
+31  WebFOCUSRepositoryPU  INFO   [main] openjpa.Tool - No targets were given.  Running on all classes listed in your configuration, or all persistent classes in the classpath if no classes are configured.  Use -help to display tool usage information.
+203  WebFOCUSRepositoryPU  INFO   [main] openjpa.Tool - Mapping tool running on type "class com.ibi.bip.persistence.BIP_GroupComponentMapping" with action "buildSchema".
+Exception in thread "main" <openjpa-2.0.0-r422266:935683 fatal user error> org.apache.openjpa.util.MetaDataException: Errors encountered while resolving metadata.  See nested exceptions for details.
+	at org.apache.openjpa.meta.MetaDataRepository.resolve(MetaDataRepository.java:642)
+	at org.apache.openjpa.meta.MetaDataRepository.getMetaDataInternal(MetaDataRepository.java:385)
+	at org.apache.openjpa.meta.MetaDataRepository.getMetaData(MetaDataRepository.java:358)
+	at org.apache.openjpa.jdbc.meta.MappingRepository.getMapping(MappingRepository.java:355)
+	at org.apache.openjpa.jdbc.meta.MappingTool.getMapping(MappingTool.java:679)
+	at org.apache.openjpa.jdbc.meta.MappingTool.buildSchema(MappingTool.java:751)
+	at org.apache.openjpa.jdbc.meta.MappingTool.run(MappingTool.java:649)
+	at org.apache.openjpa.jdbc.meta.MappingTool.run(MappingTool.java:1075)
+	at org.apache.openjpa.jdbc.meta.MappingTool.run(MappingTool.java:989)
+	at com.ibi.schemacomparewithjpa.core.EntitySchemaToXml.autoCreateSchemaXml(EntitySchemaToXml.java:50)
+	at com.ibi.schemacomparewithjpa.control.SchemaCompareTool.run(SchemaCompareTool.java:84)
+	at com.ibi.schemacomparewithjpa.control.SchemaCompareTool.main(SchemaCompareTool.java:72)
+Caused by: <openjpa-2.0.0-r422266:935683 fatal user error> org.apache.openjpa.util.MetaDataException: "com.ibi.bip.persistence.BIP_GroupComponentMapping.uoaGroup" declares a column that is not compatible with the expected type "integer".  Column details:
+Full Name: BIP_GROUP_COMPONENT_MAPPING.BIP_GROUP_MAPPING_GID
+Type: varchar
+Size: 255
+Default: null
+Not Null: true
+
+	at org.apache.openjpa.jdbc.meta.MappingInfo.mergeColumn(MappingInfo.java:775)
+	at org.apache.openjpa.jdbc.meta.MappingInfo.mergeJoinColumn(MappingInfo.java:1560)
+	at org.apache.openjpa.jdbc.meta.MappingInfo.createJoins(MappingInfo.java:1322)
+	at org.apache.openjpa.jdbc.meta.MappingInfo.createForeignKey(MappingInfo.java:1084)
+	at org.apache.openjpa.jdbc.meta.ValueMappingInfo.getTypeJoin(ValueMappingInfo.java:115)
+	at org.apache.openjpa.jdbc.meta.ValueMappingInfo.getTypeJoin(ValueMappingInfo.java:92)
+	at org.apache.openjpa.jdbc.meta.strats.RelationFieldStrategy.map(RelationFieldStrategy.java:167)
+	at org.apache.openjpa.jdbc.meta.FieldMapping.setStrategy(FieldMapping.java:146)
+	at org.apache.openjpa.jdbc.meta.RuntimeStrategyInstaller.installStrategy(RuntimeStrategyInstaller.java:82)
+	at org.apache.openjpa.jdbc.meta.FieldMapping.resolveMapping(FieldMapping.java:496)
+	at org.apache.openjpa.jdbc.meta.FieldMapping.resolve(FieldMapping.java:461)
+	at org.apache.openjpa.jdbc.meta.ClassMapping.resolveMapping(ClassMapping.java:853)
+	at org.apache.openjpa.meta.ClassMetaData.resolve(ClassMetaData.java:1791)
+	at org.apache.openjpa.meta.MetaDataRepository.processBuffer(MetaDataRepository.java:790)
+	at org.apache.openjpa.meta.MetaDataRepository.resolveMapping(MetaDataRepository.java:751)
+	at org.apache.openjpa.meta.MetaDataRepository.resolve(MetaDataRepository.java:631)
+	... 11 more
+NestedThrowables:
+<openjpa-2.0.0-r422266:935683 fatal user error> org.apache.openjpa.util.MetaDataException: Field "com.ibi.ibss.dbdriver.IBSSGroupDB.bipGroupComponentMappings" declares "com.ibi.bip.persistence.BIP_GroupComponentMapping.uoaGroup" as its mapped-by field, but this field is not a direct relation.
+	at org.apache.openjpa.jdbc.meta.strats.RelationToManyInverseKeyFieldStrategy.map(RelationToManyInverseKeyFieldStrategy.java:137)
+	at org.apache.openjpa.jdbc.meta.strats.RelationCollectionInverseKeyFieldStrategy.map(RelationCollectionInverseKeyFieldStrategy.java:95)
+	at org.apache.openjpa.jdbc.meta.FieldMapping.setStrategy(FieldMapping.java:146)
+	at org.apache.openjpa.jdbc.meta.RuntimeStrategyInstaller.installStrategy(RuntimeStrategyInstaller.java:82)
+	at org.apache.openjpa.jdbc.meta.FieldMapping.resolveMapping(FieldMapping.java:496)
+	at org.apache.openjpa.jdbc.meta.FieldMapping.resolve(FieldMapping.java:461)
+	at org.apache.openjpa.jdbc.meta.ClassMapping.resolveMapping(ClassMapping.java:853)
+	at org.apache.openjpa.meta.ClassMetaData.resolve(ClassMetaData.java:1791)
+	at org.apache.openjpa.meta.MetaDataRepository.processBuffer(MetaDataRepository.java:790)
+	at org.apache.openjpa.meta.MetaDataRepository.resolveMapping(MetaDataRepository.java:751)
+	at org.apache.openjpa.meta.MetaDataRepository.resolve(MetaDataRepository.java:631)
+	at org.apache.openjpa.meta.MetaDataRepository.getMetaDataInternal(MetaDataRepository.java:385)
+	at org.apache.openjpa.meta.MetaDataRepository.getMetaData(MetaDataRepository.java:358)
+	at org.apache.openjpa.jdbc.meta.MappingRepository.getMapping(MappingRepository.java:355)
+	at org.apache.openjpa.jdbc.meta.MappingTool.getMapping(MappingTool.java:679)
+	at org.apache.openjpa.jdbc.meta.MappingTool.buildSchema(MappingTool.java:751)
+	at org.apache.openjpa.jdbc.meta.MappingTool.run(MappingTool.java:649)
+	at org.apache.openjpa.jdbc.meta.MappingTool.run(MappingTool.java:1075)
+	at org.apache.openjpa.jdbc.meta.MappingTool.run(MappingTool.java:989)
+	at com.ibi.schemacomparewithjpa.core.EntitySchemaToXml.autoCreateSchemaXml(EntitySchemaToXml.java:50)
+	at com.ibi.schemacomparewithjpa.control.SchemaCompareTool.run(SchemaCompareTool.java:84)
+	at com.ibi.schemacomparewithjpa.control.SchemaCompareTool.main(SchemaCompareTool.java:72)
+
+
+
+**************************************************************************
+Content of BIP_GroupComponentMapping.java:
+
+import javax.persistence.AttributeOverride;
+import javax.persistence.AttributeOverrides;
+import javax.persistence.Column;
+import javax.persistence.EmbeddedId;
+import javax.persistence.Entity;
+import javax.persistence.FetchType;
+import javax.persistence.JoinColumn;
+import javax.persistence.ManyToOne;
+import javax.persistence.Table;
+import com.ibi.bip.persistence.util.BIP_DbEntities;
+import com.ibi.ibss.dbdriver.IBSSGroupDB;
+
+@Entity
+@Table(name=BIP_DbEntities.BIP_GROUP_COMPONENT_MAPPING)
+
+public class BIP_GroupComponentMapping  implements java.io.Serializable {
+
+	private static final long serialVersionUID = -8936957569401601780L;
+
+	public static final String BIP_GROUP_COMPONENT_MAPPING_VIEW_ID = "bipGroupComponentMappingViewId";
+	public static final String BIP_GROUP_COMPONENT_MAPPING_GROUP_ID = "bipGroupComponentMappingGroupId";
+
+
+    @EmbeddedId
+
+    @AttributeOverrides( 
+{
+        @AttributeOverride(name=BIP_GROUP_COMPONENT_MAPPING_VIEW_ID, column=@Column(name=BIP_DbEntities.BIP_GROUP_COMPONENT_MAPPING_VIEW_ID, nullable=false) ), 
+        @AttributeOverride(name=BIP_GROUP_COMPONENT_MAPPING_GROUP_ID, column=@Column(name=BIP_DbEntities.BIP_GROUP_COMPONENT_MAPPING_GROUP_ID, nullable=false) ) }
+ )
+    private BIP_GroupComponentMappingId id;
+
+    @ManyToOne(fetch=FetchType.LAZY)
+    @JoinColumn(name=BIP_DbEntities.BIP_GROUP_COMPONENT_MAPPING_VIEW_ID, nullable=false, insertable=false, updatable=false)
+    private BIP_Component bipComponent;
+
+	@ManyToOne(fetch=FetchType.LAZY)
+    @JoinColumn(name=BIP_DbEntities.BIP_GROUP_COMPONENT_MAPPING_GROUP_ID, nullable=false, insertable=false, updatable=false)
+    private IBSSGroupDB uoaGroup;
+
+
+    public BIP_GroupComponentMapping() {}
+
+
+    public BIP_GroupComponentMapping(BIP_GroupComponentMappingId id, BIP_Component bipComponent, IBSSGroupDB uoaGroup) 
+{
+        this.id = id;
+        this.bipComponent = bipComponent;
+        this.uoaGroup = uoaGroup;
+    }
+
+    // Property accessors
+    public BIP_GroupComponentMappingId getId() 
+{
+        return this.id;
+    }
+
+    public void setId(BIP_GroupComponentMappingId id) 
+{
+        this.id = id;
+    }
+    
+    public BIP_Component getBipComponent() {
+        return this.bipComponent;
+    }
+    
+    public void setBipComponent(BIP_Component bipComponent) {
+        this.bipComponent = bipComponent;
+    }
+    
+    public IBSSGroupDB getUoaGroup() {
+        return this.uoaGroup;
+    }
+    
+    public void setUoaGroup(IBSSGroupDB uoaGroup) {
+        this.uoaGroup = uoaGroup;
+    }
+
+}
+
+*************************************************************************
+content of IBSSGroupDB.java:
+
+
+import java.io.Serializable;
+import java.util.Collection;
+import javax.persistence.CascadeType;
+import javax.persistence.Column;
+import javax.persistence.Entity;
+import javax.persistence.FetchType;
+import javax.persistence.Id;
+import javax.persistence.NamedQueries;
+import javax.persistence.NamedQuery;
+import javax.persistence.OneToMany;
+import javax.persistence.Table;
+import com.ibi.bip.persistence.BIP_GroupComponentMapping;
+
+
+@Entity
+@Table(name = "UOA_GROUPS")
+@NamedQueries({
+    @NamedQuery(name = "IBSSGroupDB.findById", query = "SELECT i FROM IBSSGroupDB i WHERE i.id = :id"),
+    @NamedQuery(name = "IBSSGroupDB.findByName", query = "SELECT i FROM IBSSGroupDB i WHERE i.name = :name"),
+    @NamedQuery(name = "IBSSGroupDB.findByDescription", query = "SELECT i FROM IBSSGroupDB i WHERE i.description = :description"),
+    @NamedQuery(name = "IBSSGroupDB.findByParentid", query = "SELECT i FROM IBSSGroupDB i WHERE i.parentid = :parentid"),
+    @NamedQuery(name = "IBSSGroupDB.findChild", query = "SELECT i FROM IBSSGroupDB i WHERE i.parentid = :parentid and i.name = :childname"),
+    @NamedQuery(name = "IBSSGroupDB.findTopChild", query = "SELECT i FROM IBSSGroupDB i WHERE i.parentid IS NULL and i.name = :childname"),
+    @NamedQuery(name = "IBSSGroupDB.setParent", query = "UPDATE IBSSGroupDB i SET i.parentid = :parentId WHERE i.name = :name"),
+    @NamedQuery(name = "IBSSGroupDB.renameGroup", query = "UPDATE IBSSGroupDB i SET i.name=:newName WHERE i.name = :oldName"),
+    @NamedQuery(name = "IBSSGroupDB.deleteGroup", query = "DELETE FROM IBSSGroupDB i WHERE i.name = :name"),
+    @NamedQuery(name = "IBSSGroupDB.deleteById", query = "DELETE FROM IBSSGroupDB i WHERE i.id = :id"),
+    @NamedQuery(name = "IBSSGroupDB.listSubgroups", query = "SELECT i FROM IBSSGroupDB i WHERE i.parentid = :parentId"),
+    @NamedQuery(name = "IBSSGroupDB.listTopSubgroups", query = "SELECT i FROM IBSSGroupDB i WHERE i.parentid IS NULL"),
+    @NamedQuery(name = "IBSSGroupDB.listGroups", query = "SELECT i FROM IBSSGroupDB i")
+})
+public class IBSSGroupDB extends IBSSSubjectDB implements Serializable {
+    private static final long serialVersionUID = 1L;
+    @Id
+    @Column(name = "ID", nullable = false)
+    private Integer id;
+    @Column(name = "NAME", nullable = false)
+    private String name;
+    @Column(name = "DESCRIPTION")
+    private String description;
+    @Column(name = "PARENTID")
+    private Integer parentid;
+    @Column(name = "EXTERNALID")
+    private String externalid;
+
+    @OneToMany(cascade = CascadeType.ALL, fetch=FetchType.LAZY, mappedBy = "uoaGroup")
+	private Collection<BIP_GroupComponentMapping> bipGroupComponentMappings;
+
+    public IBSSGroupDB() {
+    }
+
+    public IBSSGroupDB(Integer id) {        this.id = id;    }
+
+    public IBSSGroupDB(Integer id, String name, String description) 
+{
+        this.id = id;
+        this.name = name;
+        this.description = description;
+    }
+
+    public IBSSGroupDB(Integer id, String name, String description, Integer parentid) 
+{
+        this.id = id;
+        this.name = name;
+        this.description = description;
+        this.parentid = parentid;
+    }
+
+    public Integer getId() 
+{
+        return id;
+    }
+
+    public void setId(Integer id) 
+{
+        this.id = id;
+    }
+
+    public String getName() 
+{
+        return name;
+    }
+
+    public void setName(String name) 
+{
+        this.name = name;
+    }
+
+    public String getDescription() 
+{
+        return description;
+    }
+
+    public void setDescription(String description) 
+{
+        this.description = description;
+    }
+
+    public Integer getParentid() 
+{
+        return parentid;
+    }
+
+    public void setParentid(Integer parentid) 
+{
+        this.parentid = parentid;
+    }
+
+    public String getExternalid() 
+{
+		return externalid;
+	}
+
+	public void setExternalid(String externalid) 
+{
+		this.externalid = externalid;
+	}
+
+    public Collection<BIP_GroupComponentMapping> getBipGroupComponentMappings() 
+{
+        return this.bipGroupComponentMappings;
+    }
+
+    public void setBipGroupComponentMappings(Collection<BIP_GroupComponentMapping> bipGroupComponentMappings) 
+{
+        this.bipGroupComponentMappings = bipGroupComponentMappings;
+    }
+
+	@Override
+    public int hashCode() 
+{
+        int hash = 0;
+        hash += (id != null ? id.hashCode() : 0);
+        return hash;
+    }
+
+    @Override
+    public boolean equals(Object object) {
+        // TODO: Warning - this method won't work in the case the id fields are not set
+        if (!(object instanceof IBSSGroupDB)) 
+{
+            return false;
+        }
+        IBSSGroupDB other = (IBSSGroupDB) object;
+        if ((this.id == null && other.id != null) || (this.id != null && !this.id.equals(other.id))) {            return false;        }
+        return true;
+    }
+
+    @Override
+    public String toString() 
+{
+        return "com.ibi.ibss.dbdriver.IBSSGroupDB[id=" + id + "]";
+    }
+}
+
+**************************************************************************
+My patch to this issue. In openjpa 2.0.0's org.apache.openjpa.jdbc.meta.MappingInfo.java. It is a simple fix to make my case pass through. When desired type is VARCHAR, and actual type is INTEGER, set the type to be tmplate's type.  
+
+Line 768: I added 
+    	// a patch to fix an incompatibility issue
+        else if (col.getType() == Types.VARCHAR && type == Types.INTEGER)    
+    	
+{
+    		col.setType(tmplate.getType());    
+    		col.setSize(tmplate.getSize());
+        } 
+
+
+so MappingInfo.mergeColumn() looks like this:
+
+
+    protected static Column mergeColumn(MetaDataContext context, String prefix,
+        Column tmplate, boolean compat, Column given, Table table,
+        boolean adapt, boolean fill) {
+        assertTable(context, table);
+
+        // if not adapting must provide column name at a minimum
+        DBIdentifier colName = (given == null) ? DBIdentifier.NULL : given.getIdentifier();
+        if (DBIdentifier.isNull(colName) && !adapt && !fill)
+            throw new MetaDataException(_loc.get(prefix + "-no-col-name",
+                context));
+
+        MappingRepository repos = (MappingRepository) context.getRepository();
+        DBDictionary dict = repos.getDBDictionary();
+
+        // determine the column name based on given info, or template if none;
+        // also make sure that if the user gave a column name, he didn't try
+        // to put the column in an unexpected table
+        if (DBIdentifier.isNull(colName))
+            colName = tmplate.getIdentifier();
+        QualifiedDBIdentifier path = QualifiedDBIdentifier.getPath(colName);
+        if (path.isUnqualifiedColumn()) {
+            colName = path.getIdentifier();
+        } else if (!DBIdentifier.isNull(path.getObjectTableName())) {
+            findTable(context, path.getObjectTableName(), table,
+                null, null);
+            colName = path.getUnqualifiedName();
+        }
+
+        // find existing column
+        Column col = table.getColumn(colName);
+        if (col == null && !adapt) {
+            // 
+            // See if column name has already been validated in a dynamic table.
+            // If so then want to use that validated column name instead. This
+            // should seldom if ever occur as long as the database dictionaries
+            // are kept up-to-date. 
+            // 
+            if ((colName.getName().length() > dict.maxColumnNameLength) || 
+               dict.getInvalidColumnWordSet().contains(DBIdentifier.toUpper(colName).getName()) &&
+              !(table.getClass().getName().contains("DynamicTable"))) {
+                colName=dict.getValidColumnName(colName, new Table());
+                col = table.getColumn(colName);
+                if (col == null && !adapt) {
+                    throw new MetaDataException(_loc.
+                        get(prefix + "-bad-col-name", context, colName, table));
+                }
+            }
+            else {
+                throw new MetaDataException(_loc.
+                    get(prefix + "-bad-col-name", context, colName, table));
+            }
+        }
+
+        // use information from template column by default, allowing any
+        // user-given specifics to override it
+        int type = tmplate.getType();
+        int size = tmplate.getSize();
+        if (type == Types.OTHER) {
+            int precis = 0;
+            int scale = 0;
+            if(given != null) {
+                precis = given.getSize();
+                scale = given.getDecimalDigits();
+            }
+            type =
+                dict.getJDBCType(tmplate.getJavaType(), size == -1, precis,
+                    scale, tmplate.isXML());
+        }
+            
+        boolean ttype = true;
+        int otype = type;
+        String typeName = tmplate.getTypeName();
+        Boolean notNull = null;
+        if (tmplate.isNotNullExplicit())
+            notNull = (tmplate.isNotNull()) ? Boolean.TRUE : Boolean.FALSE;
+        int decimals = tmplate.getDecimalDigits();
+        String defStr = tmplate.getDefaultString();
+        boolean autoAssign = tmplate.isAutoAssigned();
+        boolean relationId = tmplate.isRelationId();
+        boolean implicitRelation = tmplate.isImplicitRelation();
+        String targetField = tmplate.getTargetField();
+        if (given != null) {
+            // use given type if provided, but warn if it isn't compatible with
+            // the expected column type
+            if (given.getType() != Types.OTHER) {
+                ttype = false;
+                if (compat && !given.isCompatible(type, typeName, size, 
+                    decimals)) {
+                    Log log = repos.getLog();
+                    if (log.isWarnEnabled())
+                        log.warn(_loc.get(prefix + "-incompat-col",
+                            context, colName, Schemas.getJDBCName(type)));
+                }
+                otype = given.getType();
+                type = dict.getPreferredType(otype);
+            }
+            typeName = given.getTypeName();
+            size = given.getSize();
+            decimals = given.getDecimalDigits();
+
+            // leave this info as the template defaults unless the user
+            // explicitly turns it on in the given column
+            if (given.isNotNullExplicit())
+                notNull = (given.isNotNull()) ? Boolean.TRUE : Boolean.FALSE;
+            if (given.getDefaultString() != null)
+                defStr = given.getDefaultString();
+            if (given.isAutoAssigned())
+                autoAssign = true;
+            if (given.isRelationId())
+                relationId = true;
+            if (given.isImplicitRelation())
+            	implicitRelation = true;
+        }
+
+        // default char column size if original type is char (test original
+        // type rather than final type because orig might be clob, translated
+        // to an unsized varchar, which is supported by some dbs)
+        if (size == 0 && (otype == Types.VARCHAR || otype == Types.CHAR))
+            size = dict.characterColumnSize;
+
+        // create column, or make sure existing column matches expected type
+        if (col == null) {
+            col = table.addColumn(colName);
+            col.setType(type);
+        }
+    	// a patch to fix an incompatibility issue
+        else if (col.getType() == Types.VARCHAR && type == Types.INTEGER)    
+    	{    		col.setType(tmplate.getType());        		col.setSize(tmplate.getSize());        }
+ else if ((compat || !ttype) && !col.isCompatible(type, typeName, 
+            size, decimals)) 
+{
+            // if existing column isn't compatible with desired type, die if
+            // can't adapt, else warn and change the existing column type
+            Message msg = _loc.get(prefix + "-bad-col", context,
+                Schemas.getJDBCName(type), col.getDescription());
+            if (!adapt)
+                throw new MetaDataException(msg);
+            Log log = repos.getLog();
+            if (log.isWarnEnabled())
+                log.warn(msg);
+
+            col.setType(type);
+        }
+ else if (given != null && given.getType() != Types.OTHER) 
+{
+            // as long as types are compatible, set column to expected type
+            col.setType(type);
+        }
+
+        // always set the java type and autoassign to expected values, even on
+        // an existing column, since we don't get this from the DB
+        if (compat)
+            col.setJavaType(tmplate.getJavaType());
+        else if (col.getJavaType() == JavaTypes.OBJECT) 
+{
+            if (given != null && given.getJavaType() != JavaTypes.OBJECT)
+                col.setJavaType(given.getJavaType());
+            else
+                col.setJavaType(JavaTypes.getTypeCode
+                    (Schemas.getJavaType(col.getType(), col.getSize(),
+                        col.getDecimalDigits())));
+        }
+        col.setAutoAssigned(autoAssign);
+        col.setRelationId(relationId);
+        col.setImplicitRelation(implicitRelation);
+        col.setTargetField(targetField);
+
+        // we need this for runtime, and the dynamic schema factory might
+        // not know it, so set it even if not adapting
+        if (defStr != null)
+            col.setDefaultString(defStr);
+        if (notNull != null)
+            col.setNotNull(notNull.booleanValue());
+
+        // add other details if adapting
+        if (adapt) 
+{
+            if (typeName != null)
+                col.setTypeName(typeName);
+            if (size != 0)
+                col.setSize(size);
+            if (decimals != 0)
+                col.setDecimalDigits(decimals);
+        }
+
+        if (tmplate.hasComment())
+            col.setComment(tmplate.getComment());
+        if (tmplate.isXML())
+            col.setXML(tmplate.isXML());
+        return col;
+    }
+
+
+

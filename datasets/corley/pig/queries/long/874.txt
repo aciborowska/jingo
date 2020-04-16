@@ -1,0 +1,34 @@
+If the graph contains more than one foreach connected to an operator, pushing down foreach with flatten is not possible with the current optimizer pattern matching algorithm and current implementation of rewire. The following mechanism of pushing foreach with flatten does not work.
+
+1. Search for foreach (with flatten) connected to an operator
+2. If checks pass then unflatten the flattened column in the foreach
+3. Create a new foreach that flattens the mapped column (the original column number could have changed) and insert the new foreach after the old foreach's successor.
+
+An example to illustrate the problem:
+
+
+A = load 'myfile' as (name, age, gpa:(letter_grade, point_score));
+B = foreach A generate $0, $1, flatten($2);
+C = load 'anotherfile' as (name, age, preference:(course_name, instructor));
+D = foreach C generate $0, $1, flatten($2);
+E = join B by $0, D by $0 using "replicated";
+F = limit E 10;
+
+
+
+In the code snipped (see above), the optimizer will find two matches, B->E and D->E. For the first pattern match (B->E), $2 will be unflattened and a new foreach will be introduced after the join.
+
+
+A = load 'myfile' as (name, age, gpa:(letter_grade, point_score));
+B = foreach A generate $0, $1, $2;
+C = load 'anotherfile' as (name, age, preference:(course_name, instructor));
+D = foreach C generate $0, $1, flatten($2);
+E = join B by $0, D by $0 using "replicated";
+E1 = foreach E generate $0, $1, flatten($2), $3, $4, $5, $6;
+F = limit E1 10;
+
+
+
+For the second match (D->E), the same transformation is applied. However, this transformation will not work for the following reason. The new foreach is now inserted between the E and E1. When E1 is rewired, rewire is unable to map $6 in E1 as it never exists in E. In order to fix such situations, the pattern matching should return a global match instead of a local match.
+
+Reference: PIG-873

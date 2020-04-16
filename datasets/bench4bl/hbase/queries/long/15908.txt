@@ -1,0 +1,40 @@
+It looks like HBASE-11625 (cc stack, Appy) has broken checksum verification? I'm seeing the following on my cluster (1.3.0, Hadoop 2.7).
+Caused by: org.apache.hadoop.hbase.io.hfile.CorruptHFileException: Problem reading HFile Trailer from file <file path>
+	at org.apache.hadoop.hbase.io.hfile.HFile.pickReaderVersion(HFile.java:497)
+	at org.apache.hadoop.hbase.io.hfile.HFile.createReader(HFile.java:525)
+	at org.apache.hadoop.hbase.regionserver.StoreFile$Reader.<init>(StoreFile.java:1135)
+	at org.apache.hadoop.hbase.regionserver.StoreFileInfo.open(StoreFileInfo.java:259)
+	at org.apache.hadoop.hbase.regionserver.StoreFile.open(StoreFile.java:427)
+	at org.apache.hadoop.hbase.regionserver.StoreFile.createReader(StoreFile.java:528)
+	at org.apache.hadoop.hbase.regionserver.StoreFile.createReader(StoreFile.java:518)
+	at org.apache.hadoop.hbase.regionserver.HStore.createStoreFileAndReader(HStore.java:652)
+	at org.apache.hadoop.hbase.regionserver.HStore.access$000(HStore.java:117)
+	at org.apache.hadoop.hbase.regionserver.HStore$1.call(HStore.java:519)
+	at org.apache.hadoop.hbase.regionserver.HStore$1.call(HStore.java:516)
+	... 6 more
+Caused by: java.lang.IllegalArgumentException: input ByteBuffers must be direct buffers
+	at org.apache.hadoop.util.NativeCrc32.nativeComputeChunkedSums(Native Method)
+	at org.apache.hadoop.util.NativeCrc32.verifyChunkedSums(NativeCrc32.java:59)
+	at org.apache.hadoop.util.DataChecksum.verifyChunkedSums(DataChecksum.java:301)
+	at org.apache.hadoop.hbase.io.hfile.ChecksumUtil.validateChecksum(ChecksumUtil.java:120)
+	at org.apache.hadoop.hbase.io.hfile.HFileBlock$FSReaderImpl.validateChecksum(HFileBlock.java:1785)
+	at org.apache.hadoop.hbase.io.hfile.HFileBlock$FSReaderImpl.readBlockDataInternal(HFileBlock.java:1728)
+	at org.apache.hadoop.hbase.io.hfile.HFileBlock$FSReaderImpl.readBlockData(HFileBlock.java:1558)
+	at org.apache.hadoop.hbase.io.hfile.HFileBlock$AbstractFSReader$1.nextBlock(HFileBlock.java:1397)
+	at org.apache.hadoop.hbase.io.hfile.HFileBlock$AbstractFSReader$1.nextBlockWithBlockType(HFileBlock.java:1405)
+	at org.apache.hadoop.hbase.io.hfile.HFileReaderV2.<init>(HFileReaderV2.java:151)
+	at org.apache.hadoop.hbase.io.hfile.HFileReaderV3.<init>(HFileReaderV3.java:78)
+	at org.apache.hadoop.hbase.io.hfile.HFile.pickReaderVersion(HFile.java:487)
+	... 16 more
+Prior this change we won't use use native crc32 checksum verification as in Hadoop's DataChecksum#verifyChunkedSums we would go this codepath
+if (data.hasArray() && checksums.hasArray()) 
+{
+
+  <check native checksum, but using byte[] instead of byte buffers>
+
+}
+
+So we were fine. However, now we're dropping below and try to use the slightly different variant of native crc32 (if one is available)  taking ByteBuffer instead of byte[], which expects DirectByteBuffer, not Heap BB. 
+I think easiest fix working on all Hadoops would be to remove asReadonly() conversion here:
+!validateChecksum(offset, onDiskBlockByteBuffer.asReadOnlyBuffer(), hdrSize)) {
+I don't see why do we need it. Let me test.

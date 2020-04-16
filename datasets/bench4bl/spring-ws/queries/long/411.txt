@@ -1,0 +1,48 @@
+We are using permanent queues defined as JNDI resources in a WAS 6.1. Their JNDI names start with jms/, for instance jms/RESPONSE_QUEUE.
+We have a client which is configured like this, along side with a jndiDestinationResolver and a jndiTemplate:
+[code]
+<bean id="serviceGateway" class="net.croz.client.ServiceGatewayImpl">
+        <property name="defaultUri" value="jms:jms/REQUEST_QUEUE?replyToName=jms/REPLY_QUEUE" />
+        <property name="messageSenders">
+            <bean class="org.springframework.ws.transport.jms.JmsMessageSender">
+                <property name="connectionFactory" ref="mqConnectionFactory" />
+                <property name="pubSubDomain" value="false" />
+                <property name="destinationResolver" ref="jndiDestinationResolver"></property>
+                <property name="receiveTimeout" value="10000"></property>
+            </bean>
+        </property>
+</bean>
+<bean id="jndiTemplate"
+        class="org.springframework.jndi.JndiTemplate">
+        <property name="environment">
+          <props>
+            <prop key="java.naming.factory.initial">com.ibm.websphere.naming.WsnInitialContextFactory</prop>
+            <prop key="java.naming.provider.url">iiop://localhost:2810</prop>
+          </props>
+        </property>
+</bean>
+<bean id="jndiDestinationResolver" class="org.springframework.jms.support.destination.JndiDestinationResolver">
+        <property name="jndiTemplate" ref="jndiTemplate"></property>
+</bean>
+[code/]
+When invoking a fully functional web service (under our control), the request ends up in the REQUEST_QUEUE, but when the client tries to find the RESPONSE_QUEUE via its JNDI name (jms/REPLY_QUEUE) it fails with:
+[code]
+Destination [jms] not found in JNDI; nested exception is org.springframework.jndi.TypeMismatchNamingException: Object of type [class com.ibm.ws.naming.jndicos.CNContextImpl] available at JNDI location [jms] is not assignable to [javax.jms.Destination]
+[/code]
+Observe the "..available at JNDI location [jms]..." part in particular... This led me to investigate the code responsible for parsing the defaultUri property of the WebServiceGateway. What I've found is that the regular expression responsible for the parsing of the replyToName part of the defaultUri:
+[code]
+public abstract class JmsTransportUtils {
+.......    
+     private static final Pattern REPLY_TO_NAME_PATTERN = Pattern.compile("replyToName=(w+)");
+.......
+}
+[/code]
+strips everything behind the "jms" part of the JNDI name.
+To do a quick fix, I've externalized the JmsTransportUtils class and changed the REPLY_TO_NAME_PATTERN to be similar to the DESTINATION_NAME_PATTERN:
+[code]
+public abstract class JmsTransportUtils {
+.......    
+     private static final Pattern REPLY_TO_NAME_PATTERN = Pattern.compile("replyToName=([^\\?]+)");
+.......
+}
+[/code] 

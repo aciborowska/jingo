@@ -1,0 +1,10 @@
+ZOOKEEPER-1505 allows 1 write or N reads to pass through the CommitProcessor at any given time. I did performance experiment similar to http://wiki.apache.org/hadoop/ZooKeeper/Performance and found that read throughput drop dramatically when there are write requests. After a bit more investigation, I found that
+the biggest bottleneck is at the request queue entering the CommitProcessor.
+
+When the CommitProcessor see any write request, it will need to block the entire pipeline and wait until matching commit from the leader. This means that all read requests (including ping request) won't be able to go through. The time spent waiting for commit from the leader far exceed the time spent waiting for 1 write to goes through the CommitProcessor. 
+
+The current plan is to create multiple request queues at the front of the CommitProcessor. Requests are hashed using sessionId and send to one of the queue. Whenever, the CommitProcessor saw a write request on one of the queue it moves on to process read requests. It will have to unblock the write requests in the same order that it sent to the leader, so it may need to maintain a separate list to keep track of that. 
+
+The correctness is the same as having more learners in the ensemble. Sessions which are hashed onto a different queue is similar to sessions connecting to a different learners in the ensemble. 
+
+I am hoping that this will improve read throughput and reduce disconnect rate on an ensemble with large number of clients  

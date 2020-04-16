@@ -1,0 +1,38 @@
+We're now using incrementing binary row keys and to this point had only been doing small tests with them, never having actually had a table split.
+I'm still working through the logs but it seems that there's a problem somewhere with startKey and endKeys.
+Binary in general is not well supported (inconsistent in display in the logs, very odd rendering in the web ui, hard to interpret in the shell, etc..)  Once we figure out these serious bugs we will spend some time trying to clean that up.  But right now this makes things even harder to debug.
+The actual symptoms are that my import eventually started to throw (in the client and on the region server):
+org.apache.hadoop.hbase.regionserver.WrongRegionException: org.apache.hadoop.hbase.regionserver.WrongRegionException: Requested row out of range for HRegion sources,,1220546297947, startKey='', getEndKey()='
+ï¿½', row='cï¿½'
+        at org.apache.hadoop.hbase.regionserver.HRegion.checkRow(HRegion.java:1775)
+        at org.apache.hadoop.hbase.regionserver.HRegion.obtainRowLock(HRegion.java:1831)
+        at org.apache.hadoop.hbase.regionserver.HRegion.batchUpdate(HRegion.java:1387)
+        at org.apache.hadoop.hbase.regionserver.HRegionServer.batchUpdate(HRegionServer.java:1145)
+        at sun.reflect.GeneratedMethodAccessor5.invoke(Unknown Source)
+        at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)
+        at java.lang.reflect.Method.invoke(Method.java:616)
+        at org.apache.hadoop.hbase.ipc.HbaseRPC$Server.call(HbaseRPC.java:473)
+        at org.apache.hadoop.ipc.Server$Handler.run(Server.java:888)
+There are 3 regionservers, but this error only happens on one of them (while the other two always continue normally, allowing updates to this same table).
+The regionserver that this happens on is special for two reasons, one it is hosting the META table.  And secondly it also hosts the first region in the table, startkey = ''.  I'm unsure which is the cause, I have a clue leading to both.
+After about 15 minutes, the regionserver sees:
+2008-09-04 09:52:57,948 DEBUG org.apache.hadoop.hbase.regionserver.HRegion: Started memcache flush for region .META.,,1. Current region memcache size 24.5k
+2008-09-04 09:52:58,003 DEBUG org.apache.hadoop.hbase.regionserver.HStore: Added /hbase/.META./1028785192/historian/mapfiles/8699673838203663799 with 106 entries, sequence id 25341510, data size 8.9k, file size 10.6k
+2008-09-04 09:52:58,050 DEBUG org.apache.hadoop.hbase.regionserver.HStore: Added /hbase/.META./1028785192/info/mapfiles/1791564557665476834 with 96 entries, sequence id 25341510, data size 14.2k, file size 15.8k
+2008-09-04 09:52:58,050 DEBUG org.apache.hadoop.hbase.regionserver.HRegion: Finished memcache flush for region .META.,,1 in 102ms, sequence id=25341510, compaction requested=true
+2008-09-04 09:52:58,050 DEBUG org.apache.hadoop.hbase.regionserver.CompactSplitThread: Compaction requested for region: .META.,,1
+2008-09-04 09:52:58,051 INFO org.apache.hadoop.hbase.regionserver.HRegion: starting compaction on region .META.,,1
+2008-09-04 09:52:58,055 DEBUG org.apache.hadoop.hbase.regionserver.HStore: Compaction size of 1028785192/historian: 41.9k; Skipped 1 files , size: 21957
+2008-09-04 09:52:58,088 DEBUG org.apache.hadoop.hbase.regionserver.HStore: started compaction of 2 files into /hbase/.META./compaction.dir/1028785192/historian/mapfiles/6948796056606699674
+2008-09-04 09:52:58,128 DEBUG org.apache.hadoop.hbase.regionserver.HStore: moving /hbase/.META./compaction.dir/1028785192/historian/mapfiles/6948796056606699674 to /hbase/.META./1028785192/historian/mapfiles/75733875840914142
+2008-09-04 09:52:58,175 DEBUG org.apache.hadoop.hbase.regionserver.HStore: Completed compaction of 1028785192/historian store size is 41.1k; time since last major compaction: 5426 seconds
+2008-09-04 09:52:58,179 DEBUG org.apache.hadoop.hbase.regionserver.HStore: Compaction size of 1028785192/info: 61.9k; Skipped 0 files , size: 0
+2008-09-04 09:52:58,192 DEBUG org.apache.hadoop.hbase.regionserver.HStore: started compaction of 3 files into /hbase/.META./compaction.dir/1028785192/info/mapfiles/7781013568996125923
+2008-09-04 09:52:58,260 DEBUG org.apache.hadoop.hbase.regionserver.HStore: moving /hbase/.META./compaction.dir/1028785192/info/mapfiles/7781013568996125923 to /hbase/.META./1028785192/info/mapfiles/2187291308709057119
+2008-09-04 09:52:58,290 DEBUG org.apache.hadoop.hbase.regionserver.HStore: Completed compaction of 1028785192/info store size is 61.0k; time since last major compaction: 32534 seconds
+2008-09-04 09:52:58,296 INFO org.apache.hadoop.hbase.regionserver.HRegion: compaction completed on region .META.,,1 in 0sec
+2008-09-04 09:53:09,620 INFO org.apache.hadoop.hbase.regionserver.HRegionServer: Scanner -2085474968086468199 lease expired
+2008-09-04 09:54:35,449 INFO org.apache.hadoop.hbase.regionserver.LogRoller: Rolling hlog. Number of entries: 30009
+Following this, insertion continues normally.  This leads me to believe there's an issue with the META table memcache, but oddly the other regions of this table on other regionservers continue on fine.
+As for the hosting the first region of the table on this region server, it seems to be consistent that I get the row out of range errors when looking for a region with startkey = '', although there are 5 other regions on this RS.
+Will attach full logs from master and three RS.  Also a couple screenshots showing weird behavior in listing the regions in the table.

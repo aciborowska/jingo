@@ -1,0 +1,342 @@
+OpenJPA performs unnecessary updates during flush operation. For example:
+
+When we are trying to persist versioned entity with collection of other entities:
+
+
+
+
+Article
+1-------------*
+Quantity
+    ( Relation owner. )
+
+
+
+
+
+
+
+	
+	
+		
+		
+			
+			
+				
+				
+					
+					
+						
+						
+							
+							
+								
+								
+									
+									
+										
+										
+											
+											
+												CODE *************
+											
+											
+										
+										
+									
+									
+								
+								
+							
+							
+						
+						
+					
+					
+				
+				
+			
+			
+		
+		
+	
+	
+
+
+
+EntityManagerFactory factory = Persistence.createEntityManagerFactory( "testjpa", System.getProperties() );
+EntityManager em = factory.createEntityManager();
+em.getTransaction().begin();
+
+Article a = new Article();
+a.setName( "atricle" );
+
+Quantity q = new Quantity();
+q.setName( "quantity" );
+q.setArticle( a );
+
+a.getQuantities().add( q );
+
+em.persist( a );
+
+em.flush();
+em.flush();
+
+
+	
+	
+		
+		
+			
+			
+				
+				
+					
+					
+						
+						
+							
+							
+								
+								
+									
+									
+										
+										
+											
+											
+												
+												
+													END OF CODE ************
+												
+												
+											
+											
+										
+										
+									
+									
+								
+								
+							
+							
+						
+						
+					
+					
+				
+				
+			
+			
+		
+		
+	
+	
+
+
+
+Following queries are generated after first flush operation:
+
+SELECT SEQUENCE_VALUE FROM OPENJPA_SEQUENCE_TABLE WHERE ID = ? FOR UPDATE [params=(int) 0]
+UPDATE OPENJPA_SEQUENCE_TABLE SET SEQUENCE_VALUE = ? WHERE ID = ? AND SEQUENCE_VALUE = ? [params=(long) 2651, (int) 0, (long) 2601]
+SELECT SEQUENCE_VALUE FROM OPENJPA_SEQUENCE_TABLE WHERE ID = ? FOR UPDATE [params=(int) 0]
+UPDATE OPENJPA_SEQUENCE_TABLE SET SEQUENCE_VALUE = ? WHERE ID = ? AND SEQUENCE_VALUE = ? [params=(long) 2701, (int) 0, (long) 2651]
+INSERT INTO Article (id, name, version) VALUES (?, ?, ?) [params=(long) 2601, (String) atricle, (int) 1]
+INSERT INTO Quantity (id, name, version, article_id) VALUES (?, ?, ?, ?) [params=(long) 2651, (String) quantity, (int) 1, (long) 2601]
+
+Everything looks ok but after next flush we will get version update:
+
+UPDATE Article SET version = ? WHERE id = ? AND version = ? [params=(int) 2, (long) 2601, (int) 1]
+
+I am not completely sure that this analysis is correct, but I hope it helps anyway:
+
+During persist operation SaveFieldManager sets collection of quantities as unloaded and unsaved field (Because this field is mutable). During next flush, StateManager checks which fields are dirty by comparing its values to those stored by SaveFieldManager. Method dirtyCheck() of the StateManager is responsible for that. (It's necessary taking into consideration fact that I do not use OpenJPA enhancer with JDK 5.0).  SaveFieldManager always returns false from its isFieldEqual() method because this collection (Collection of quantities) is treated as unsaved ( Comment from OpenJPA code:  if the field is not available, assume that it has changed) so StateManager sets it as dirty and clears its flush bit. Then AbstractUpdateManager try to add UPDATE_ACTION for this dirty collection, but with no effect because this field is not set as updatable and insertable ( I think so. ). In next step AbstractUpdateManager adds UPDATE_ACTION for version field because StateManager is marked as dirty. It causes unnecessary update of entity version field because nothing changed in the database. 
+
+I didn't check how it works with field tracking.
+
+
+	
+	
+		
+		
+			
+			
+				
+				
+					
+					
+						
+						
+							
+							
+								
+								
+									
+									
+										
+										
+											
+											
+												
+												
+													
+													
+														
+														
+															
+															
+																
+																
+																	
+																	
+																		
+																		
+																			
+																			
+																				EXAMPLE ENTITIES ******************
+																			
+																			
+																		
+																		
+																	
+																	
+																
+																
+															
+															
+														
+														
+													
+													
+												
+												
+											
+											
+										
+										
+									
+									
+								
+								
+							
+							
+						
+						
+					
+					
+				
+				
+			
+			
+		
+		
+	
+	
+
+
+
+@Entity
+public class Article {
+	private long id;
+
+	private long version;
+
+	private String name;
+
+	private Set<Quantity> quantities = new HashSet<Quantity>();
+
+	@Id
+	@GeneratedValue( strategy = GenerationType.SEQUENCE )
+	public long getId() 
+{
+		return id;
+	}
+
+	public void setId( long id ) {
+		this.id = id;
+	}
+
+	@Version
+	public long getVersion() {
+		return version;
+	}
+
+	public void setVersion( long version ) {
+		this.version = version;
+	}
+
+	@Basic
+	public String getName() {
+		return name;
+	}
+
+	public void setName( String name ) {
+		this.name = name;
+	}
+
+	@OneToMany( mappedBy = "article", cascade = { CascadeType.MERGE, CascadeType.PERSIST }, fetch = FetchType.LAZY )
+	public Set<Quantity> getQuantities() {
+		return quantities;
+	}
+
+	public void setQuantities( Set<Quantity> quantities ) {
+		this.quantities = quantities;
+	}
+
+}
+
+
+@Entity
+public class Quantity {
+	private long id;
+
+	private long version;
+
+	private String name;
+
+	private Article article;
+
+	@Id
+	@GeneratedValue( strategy = GenerationType.SEQUENCE )
+	public long getId() {		return id;	}
+
+	public void setId( long id ) 
+{
+		this.id = id;
+	}
+
+	@Version
+	public long getVersion() 
+{
+		return version;
+	}
+
+	public void setVersion( long version ) 
+{
+		this.version = version;
+	}
+
+	@Basic
+	public String getName() 
+{
+		return name;
+	}
+
+	public void setName( String name ) 
+{
+		this.name = name;
+	}
+
+	@ManyToOne( optional = false, cascade = 
+{ CascadeType.PERSIST, CascadeType.MERGE }
+, fetch = FetchType.LAZY )
+	public Article getArticle() 
+{
+		return article;
+	}
+
+	public void setArticle( Article article ) 
+{
+		this.article = article;
+	}
+}

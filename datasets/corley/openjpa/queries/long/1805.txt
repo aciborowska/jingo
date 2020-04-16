@@ -1,0 +1,84 @@
+I have following model:
+
+Report,
+ReportSection and
+ReportSectionProperty.
+
+Report has zero to many ReportSections, ReportSection has zero to many ReportSectionPropert-ies. This would qualifie as three levels deep object graph.
+
+I create new Report, then add some sections to it, then add some properties to it. When I try to persist Report, I get following error:
+
+<pre><code>Caused by: org.apache.openjpa.lib.jdbc.ReportingSQLException: ERROR: insert or update on table "report_section" violates foreign key constraint "fk_report_section_report"
+  Detail: Key (id_node)=(186) is not present in table "report". 
+{prepstmnt 20859482 INSERT INTO core.report_section (index_section, name, report_section_type, id_node) VALUES (?, ?, ?, ?) [params=?, ?, ?, ?]}
+ [code=0, state=23503]</code></pre>
+
+So, OpenJPA is persisting object graph, but somehow it started from the middle. id_node 186 is indeed the next id of the Report table but, obviously that object is not saved when ReportSection is being saved.
+
+If I put em.persist(report) then em.flush() between each operation of adding sections or properties, everything works. Is this the way to go?
+
+If I don't add any properties to sections, persisting Report works, even without em.flush().
+
+I use OpenJPA 2.0.1 as JPA provider.
+
+----------
+
+
+Maybe some relevant parts of the code:
+
+Report.java
+
+public class Report{
+
+	@OneToMany(targetEntity = ReportSection.class, cascade = CascadeType.ALL, mappedBy="report")
+	private List<ReportSection> reportSections;
+
+	public void addReportSection(ReportSection section){
+		synchronized (this) 
+{
+			if (getReportSections() == null)
+				reportSections = new ArrayList<ReportSection>();
+			reportSections.add(section);
+			section.setReport(this);
+		}
+	}
+}
+
+ReportSection.java
+public class ReportSection{
+
+    @ManyToOne
+	@JoinColumn(name="id_node")
+	private Report report;
+
+    @OneToMany(targetEntity=ReportSectionProperty.class, cascade=CascadeType.ALL,   mappedBy="reportSection")
+    private List<ReportSectionProperty> reportSectionProperties;
+
+	public void setReport(Report report) 
+{
+		this.report = report;
+	}
+
+	public void addReportSectionProperty(ReportSectionProperty reportSectionProperty){
+		synchronized (this) 
+{
+			if (getReportSectionProperties() == null)
+				reportSectionProperties = new ArrayList<ReportSectionProperty>();
+			reportSectionProperties.add(reportSectionProperty);
+			reportSectionProperty.setReportSection(this);
+		}
+	}
+}
+
+ReportSectionProperty
+public class ReportSectionProperty{
+
+    @ManyToOne(cascade=CascadeType.ALL)
+	@JoinColumn(name="id_report_section")
+	private ReportSection reportSection;
+
+	public void setReportSection(ReportSection reportSection) 
+{
+		this.reportSection = reportSection;
+	}
+}

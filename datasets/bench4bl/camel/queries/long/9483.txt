@@ -1,0 +1,82 @@
+I am struggling with random deployment failures of bundles containing Camel routes, packaged in a KAR file. Deployment fails mostly because data formats cannot be found on the classpath or Camel component beans are not found in the registry.
+The attached sample KAR file contains one bundle with the following blueprint deployment descriptor:
+
+
+
+<blueprint xmlns="http://www.osgi.org/xmlns/blueprint/v1.0.0" 			xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" 			xmlns:camel="http://camel.apache.org/schema/blueprint" 			xsi:schemaLocation="				http://www.osgi.org/xmlns/blueprint/v1.0.0 http://www.osgi.org/xmlns/blueprint/v1.0.0/blueprint.xsd
+
+				http://camel.apache.org/schema/blueprint http://camel.apache.org/schema/blueprint/camel-blueprint-2.16.1.xsd">
+
+ 
+
+	<bean id="processor" class="ch.rsteppac.karissue.RestProcessor" />
+
+
+
+	<camelContext id="rest-api" allowUseOriginalMessage="false" xmlns="http://camel.apache.org/schema/blueprint">
+
+		<restConfiguration component="netty4-http" scheme="http" host="0.0.0.0" port="2016" bindingMode="json">
+
+			<dataFormatProperty key="prettyPrint" value="true" />
+
+		</restConfiguration>
+
+
+
+		<rest path="/say/hello" id="poc-route" produces="application/json">
+
+			<get uri="/{yourName}">
+
+				<route>
+
+					<camel:process ref="processor" />
+
+				</route>
+
+			</get>
+
+		</rest>
+
+	</camelContext>
+
+</blueprint>
+
+
+
+The feature file of the KAR:
+
+
+
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+
+<features xmlns="http://karaf.apache.org/xmlns/features/v1.3.0" name="KAR deployment issue PoC">
+
+    <repository>mvn:org.apache.camel.karaf/apache-camel/2.16.1/xml/features</repository>
+
+    <feature name="poc-rest-service" description="Sample REST bundle to demonstrate the deployment issue in Karaf 4" version="0.0.1.SNAPSHOT">
+
+        <details>Sample REST bundle to demonstrate the deployment issue in Karaf 4</details>
+
+        <feature version="2.16.1" prerequisite="false" dependency="false">camel-jackson</feature>
+
+        <feature version="2.16.1" prerequisite="false" dependency="false">camel-blueprint</feature>
+
+        <feature version="2.16.1" prerequisite="false" dependency="false">camel-netty4-http</feature>
+
+        <bundle>mvn:ch.rsteppac.kar-issue/poc-rest-service/0.0.1-SNAPSHOT</bundle>
+
+    </feature>
+
+</features>
+
+
+
+On my development machine (OSX) deploying the sample KAR file succeeds about 8 out of 10 times. It appears that the more features the KAR file contains the lower the probability of success. Our actual project KAR fails deployment about 9 out of 10 times.
+Not all Camel components are equally likely to cause the deployment failure. The most likely to trigger a failure are data formats, e.g., jackson-json or jaxb.
+Once the KAR file has deployed successfully, restarting Karaf will consistently deploy the bundles successfully. Until one deletes Karaf's data folder, then all bets are off again.
+Adding the feature.xml generated for the KAR with feature:repo-add and then deploying the features with feature:install virtually never fails.
+Stack traces for most frequent deployment failure of the sample KAR are attached to the ticket.
+EDIT
+The issue is actually unrelated to fact that the features are deployed via a KAR file. While I can successfully install each feature individually on the command line, if I restart Karaf and the features are deployed from the $KARAF_HOME/data directory, the behavior is the same as described above.
+I encountered another class of errors: A bean declared in the blueprint context was not resolvable in the Camel context in the same file. 
+Defining a start-level for my bundles (90) seems to be a workaround for the different issues described above.

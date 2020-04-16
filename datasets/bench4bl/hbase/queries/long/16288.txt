@@ -1,0 +1,22 @@
+Mighty Josh Elser was debugging an opentsdb cluster where some region directory ended up having 5TB+ files under <regiondir>/.tmp/ 
+Further debugging and analysis, we were able to reproduce the problem locally where we never we recursing in this code path for writing intermediate level indices: 
+HFileBlockIndex.java
+
+
+if (curInlineChunk != null) {
+
+        while (rootChunk.getRootSize() > maxChunkSize) {
+
+          rootChunk = writeIntermediateLevel(out, rootChunk);
+
+          numLevels += 1;
+
+        }
+
+      }
+
+
+
+The problem happens if we end up with a very large rowKey (larger than "hfile.index.block.max.size" being the first key in the block, then moving all the way to the root-level index building. We will keep writing and building the next level of intermediate level indices with a single very-large key. This can happen in flush / compaction / region recovery causing cluster inoperability due to ever-growing files. 
+Seems the issue was also reported earlier, with a temporary workaround: 
+https://github.com/OpenTSDB/opentsdb/issues/490

@@ -1,0 +1,35 @@
+This problem was introduced in 1.1.5 release.
+iBatis SQLMapExecutorDelegate methods (insert, update etc..) have the following structure.
+Transaction trans = getTransaction(session);
+boolean autoStart = trans == null;
+try {
+  trans = autoStartTransaction(session, autoStart, trans);
+....
+...
+  autoCommitTransaction(session, autoStart);
+} finally {
+  autoEndTransaction(session, autoStart);
+}
+If a transaction was started by iBatis (ie. autoStart = true), then autoCommitTransaction will end-up calling the following on the SQLMapExecutorDelegate
+  public void commitTransaction(SessionScope session) throws SQLException {
+    try {
+      // Auto batch execution
+      if (session.isInBatch()) 
+{
+        executeBatch(session);
+      }
+      sqlExecutor.cleanup(session);
+      txManager.commit(session);
+    } catch (TransactionException e) 
+{
+      throw new NestedSQLException("Could not commit transaction.  Cause: " + e, e);
+    }
+  }
+The executeBatch method gets called after every call (insert, update, delete etc..), essentially there is no batching of statements. This is only a issue if a TransactionAwareDataSourceProxy is used ( ..which is the default).
+If I set the 'useTransactionAwareDataSource' property to false in the SqlMapClientFactoryBean then the following code in SqlMapClientTemplate sets the user connection, which in-turn creates a user provided transaction (...autoStart is now false..and iBatis will not start a transaction..and hence the executeBatch will not be called after every insert/update/delete).
+Connection con = DataSourceUtils.getConnection(getDataSource());
+try {
+    session.setUserConnection(con);
+    return action.doInSqlMapClient(session);
+}
+Thoughts ?

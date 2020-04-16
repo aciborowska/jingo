@@ -1,0 +1,162 @@
+Scenario:
+In my Model I have an Entity "Equipment" which contains a bi-directional @OneToMany relationship with "Axle".  All entities have a primary key (uniqueId) which is contained in a MappedSuperClass "BaseEntity".
+
+Further, all Entities have a secondary unique key based on the business requirements.  In the case of Axles, this is the equipmentId and the axleNumber.  This is annotated in Axle through @UniqueConstraint.
+
+Axle is also defined as @ElementDependant in Equipment so a deletion of an Equipment or the delinking of an Axle from the Equipment will result in the deletion of the Axle.  This works as intended.
+
+However, it is also necessary that any Axles defined after the deleted Axle (i.e. with a higher axelNumber) should "move up" the chain.
+
+Here is an illustration:
+
+Start with 
+
+Equipment #413908
+
+Axle 1 #413966
+Axle 2 #498801
+Axle 3 #413965
+Axle 4 #504805
+
+User removes Axle 1 from the Collection (on screen)
+
+What "should" happen:
+
+Since the reference bewteen Axle 1 and equipment is set to null - Axel 1(413966) should be Removed from the Database.
+
+Axle 2 (498801) should become Axle 1
+Axle 3 (431965) should become Axle 2
+Axle 4 (504805) should become Axle 3
+
+However, the removal Axle 1 is occuring AFTER the statements which reorganize the other Axles.  This causes a duplicate key error as Axle 2 tries to become Axle 1 before Axle 1 is removed from the database.
+
+according to the Manual, this should not occur:
+13.2. Unique Constraints
+...
+"The unique constraints you define are used during table creation to generate the proper database constraints, and may also be used at runtime to order INSERT, UPDATE , and DELETE statements. For example, suppose there is a unique constraint on the columns of field F. In the same transaction, you remove an object A and persist a new object B, both with the same F value. The JPA runtime must ensure that the SQL deleting A is sent to the database before the SQL inserting B to avoid a unique constraint violation."
+
+The following are the relevant portions of the code:
+
+ENTITIES
+
+@Entity
+@Table(schema = "galaxy11", name = "Equipment") public class Equipment extends BaseEntity {
+
+@JsonManagedReference
+@OneToMany(cascade = CascadeType.ALL, mappedBy = "equipmentId", fetch = FetchType.EAGER) @ElementDependent 
+private Set<Axle> axles = new HashSet<Axle>();
+
+@Entity
+@Table(schema = "galaxy11", name = "Axle", uniqueConstraints= @UniqueConstraint(name="uq_Axle_equipmentId_axleNumber", columnNames = 
+{ "equipmentId", "axleNumber" }
+)
+)
+public class Axle extends BaseEntity {
+
+@Basic
+@Column(columnDefinition = "int2")
+private short axleNumber;
+
+@JsonBackReference
+@ManyToOne(fetch = FetchType.EAGER)
+@JoinColumn(name = "equipmentId", columnDefinition = "int8", nullable = false) 
+private Equipment equipmentId;
+
+
+THE DELETION CODE
+
+TreeSet<AxleDTO> axleDtos = new TreeSet<AxleDTO>(new Comparator<AxleDTO>() {
+
+@Override
+public int compare(AxleDTO pO1, AxleDTO pO2) { 
+if (pO1.getAxleNumber() < pO2.getAxleNumber()) { 
+return -1; 
+} else if (pO1.getAxleNumber() == pO2.getAxleNumber()) { 
+return 0; 
+} else 
+{ 
+return 1; 
+} }
+ });
+
+axleDtos.addAll(pData.getAxles());
+if (axleDtos != null && !axleDtos.isEmpty()) { 
+short i = 1; 
+Set<Axle> axles = new HashSet<Axle>(); 
+AxleMgr axleMgr = new AxleMgr(mPm); 
+for (AxleDTO axleDto : axleDtos) { 
+Axle axle = new Axle(); 
+axleMgr.toEntity(axleDto, axle); 
+if (!axle.isActive()) { 
+axle.setEquipmentId(null); 
+} else { 
+axle.setAxleNumber(i++); 
+axle.setEquipmentId(pEntity); 
+axles.add(axle); 
+} 
+} 
+pEntity.setAxles(axles); 
+}
+
+
+	
+	
+		pData is the Data passed from the GUI
+	
+	
+
+
+
+TRACE OF STATMENTS
+
+UPDATE galaxy11.Equipment
+SET modified = ?, versionid = ?, length = ?, height = ?, wheelbase = ?, tareweight = ?, grossweight = ? 
+WHERE uniqueid = ? AND versionid = ? 
+[params=(Timestamp) 2012-06-11 13:47:18.21, (int) 33, (BigDecimal) 6.2, (BigDecimal) 3.1, (BigDecimal) 3.8, (BigDecimal) 6.7, (BigDecimal) 18, (long) 413908, (int) 32]
+
+	<t 656806424, conn 972792495> [27 ms] spent
+
+
+
+
+	<t 656806424, conn 972792495> executing prepstmnt 684003742 UPDATE galaxy11.Axle SET modified = ?, versionid = ?, equipmentid = ?, axlenumber = ?
+WHERE uniqueid = ? AND versionid = ? 
+[params=(Timestamp) 2012-06-11 13:47:18.23, (int) 15, (long) 413908, (short) 2, (long) 413965, (int) 14]
+	<t 656806424, conn 972792495> [23 ms] spent
+
+
+
+
+	<t 656806424, conn 972792495> executing prepstmnt 10578812 UPDATE galaxy11.Axle SET modified = ?, versionid = ?, equipmentid = ?, axlenumber = ?
+WHERE uniqueid = ? AND versionid = ? 
+[params=(Timestamp) 2012-06-11 13:47:18.24, (int) 2, (long) 413908, (short) 3, (long) 504805, (int) 1]
+	<t 656806424, conn 972792495> [21 ms] spent
+
+
+
+
+	<t 656806424, conn 972792495> executing prepstmnt 1704434230 UPDATE galaxy11.Axle SET modified = ?, versionid = ?, equipmentid = ?, axlenumber = ?
+WHERE uniqueid = ? AND versionid = ? 
+[params=(Timestamp) 2012-06-11 13:47:18.24, (int) 13, (long) 413908, (short) 1, (long) 498801, (int) 12]
+	<t 656806424, conn 972792495> [22 ms] spent
+
+
+
+
+	<t 656806424, conn 972792495> executing prepstmnt 1141736277 UPDATE galaxy11.Motor SET modified = ?, versionid = ?
+WHERE uniqueid = ? AND versionid = ? 
+[params=(Timestamp) 2012-06-11 13:47:18.24, (int) 28, (long) 414058, (int) 27]
+	<t 656806424, conn 972792495> [21 ms] spent
+
+
+
+
+	<t 656806424, conn 972792495> executing prepstmnt 1395221594 DELETE FROM galaxy11.Axle WHERE uniqueid = ? AND versionid = ?
+[params=(long) 413966, (int) 14]
+
+
+
+
+
+
+

@@ -1,0 +1,79 @@
+The way the Spring AMQP Rabbit implementation works, it is not possible to receive messages from one channel and send messages through a separate channel within the same transaction.  This behavior is requested so that a service may consume messages from a queue on one rabbit node and publish messages to a different rabbit node.  
+The ConnectionFactoryUtils will not use a ConnectionFactory to create a new channel if it finds an existing cached RabbitMQ channel in the ConsumerChannelRegistry.  This happens in the ConnectionFactoryUtils.doGetTransactionalResource() method:
+
+
+
+
+
+
+ConnectionFactoryUtils.java
+
+
+
+
+
+
+    ...
+
+
+
+
+    boolean isExistingCon = (connection != null);
+
+
+
+
+    if (!isExistingCon) {
+
+
+
+
+        connection = resourceFactory.createConnection();
+
+
+
+
+        resourceHolderToUse.addConnection(connection);
+
+
+
+
+    }
+
+
+
+
+    channel = ConsumerChannelRegistry.getConsumerChannel();
+
+
+
+
+    if (channel == null) {
+
+
+
+
+        channel = resourceFactory.createChannel(connection);
+
+
+
+
+    }
+
+
+
+
+    resourceHolderToUse.addChannel(channel, connection);
+
+
+
+
+    ...
+
+
+
+
+
+
+The main culprit is the ConsumerChannelRegistry which uses a ThreadLocal variable to store a channel associated with the current transaction.  The registry does not use the ConnectionFactory as a key.  And since the receive channel is already registered in the registry, my messages end up getting sent through the receiving channel.
+Essentially what ends up happening is that even though I provide a different ConnectionFactory, the ConnectionFactoryUtils avoid creating a new channel because one already exists in the ConsumerChannelRegistry.

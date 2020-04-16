@@ -1,0 +1,70 @@
+The test deletes and instance and creates another with the same primary keys and encounters an exception while making the new one persistent.
+
+Here is the snippet from the test code:
+
+        pm.currentTransaction().begin();
+        MappingTest2 test2c = new MappingTest2();
+        test2c.setPk1(test2b.getPk1());
+        test2c.setPk2(test2b.getPk2());
+        pm.deletePersistent(test2b);
+
+        test4.getNManyMap().put("key2", test2);
+        test4.getManyManyMap().remove(test2b);
+        test4.getManyManyMap().put(test2, test2);
+        pm.makePersistent(test2c);
+        test4.setInverseOneOne(test2c);
+
+        MappingTest4 test4c = new MappingTest4();
+        test4c.setInverseOwnerOneOne(test2c);
+        test2c.setOneOneOwner(test4c);
+        pm.makePersistent(test4c);
+        pm.currentTransaction().commit();
+
+
+The problem with this issue was that the JDO PersistenceManager. makePersistent() is failing with the following exception:
+
+[testlogic] <openjpa-1.1.0-SNAPSHOT-r420667:634150 nonfatal user error>
+kodo.jdo.UserException: Operation attempted on a deleted instance.
+[testlogic] FailedObject: kodo.jdbc.meta.MappingTest2-3::4
+[testlogic] 	at org.apache.openjpa.kernel.PCState.error(PCState.java:443)
+[testlogic] 	at 
+org.apache.openjpa.kernel.PDeletedState.beforeOptimisticWrite(PDeletedState.java:76)
+[testlogic] 	at 
+org.apache.openjpa.kernel.StateManagerImpl.dirty(StateManagerImpl.java:1571)
+[testlogic] 	at 
+org.apache.openjpa.kernel.StateManagerImpl.settingObjectField(StateManagerImpl.java:1898)
+[testlogic] 	at 
+org.apache.openjpa.kernel.AttachStrategy.attachField(AttachStrategy.java:204)
+[testlogic] 	at 
+org.apache.openjpa.kernel.VersionAttachStrategy.attach(VersionAttachStrategy.java:164)
+[testlogic] 	at 
+org.apache.openjpa.kernel.AttachManager.attach(AttachManager.java:241)
+[testlogic] 	at 
+org.apache.openjpa.kernel.VersionAttachStrategy.attachInPlace(VersionAttachStrategy.java:267)
+[testlogic] 	at 
+org.apache.openjpa.kernel.VersionAttachStrategy.attachFieldsInPlace(VersionAttachStrategy.java:218)
+[testlogic] 	at 
+org.apache.openjpa.kernel.VersionAttachStrategy.attach(VersionAttachStrategy.java:133)
+[testlogic] 	at 
+org.apache.openjpa.kernel.AttachManager.attach(AttachManager.java:241)
+[testlogic] 	at 
+org.apache.openjpa.kernel.AttachManager.attach(AttachManager.java:101)
+[testlogic] 	at 
+org.apache.openjpa.kernel.BrokerImpl.attach(BrokerImpl.java:3191)
+[testlogic] 	at kodo.kernel.KodoBroker.attach(KodoBroker.java:251)
+[testlogic] 	at 
+org.apache.openjpa.kernel.DelegatingBroker.attach(DelegatingBroker.java:1142)
+[testlogic] 	at 
+kodo.jdo.PersistenceManagerImpl.makePersistent(PersistenceManagerImpl.java:496)
+[testlogic] 	at 
+kodo.jdbc.kernel.TestFlush.testDeleteAndReInsert(TestFlush.java:124)
+
+Synopsis:
+
+When the second call to pm.makePersistent(test2c) is made it is not attached correctly. The effect of the prior pm.deletePersistent(test2b) which deletes the object with the same key is kept in the persistence context and hence when a relation is established with the deleted entity the third pm.makePersistent(test4c) call throws the above exception.
+
+The fix that I have is to correct the logic in the org.apache.openjpa.kernel.VersionAttachStrategy.attach() method where it tries to make a determination of whether this is a new object by also checking whether the existing entity is deleted or not. And that fixes the problem. I will attach it as a patch shortly.
+
+Thanks
+
+Sandeep

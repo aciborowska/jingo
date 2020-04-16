@@ -1,0 +1,331 @@
+When saving a Map<String, Object> and one of the values is a Collection, a NPE is thrown because the propertyType is null.
+
+
+
+
+
+
+MappingMongoConverter.java
+
+
+
+
+
+
+	/**
+
+
+
+
+	 * Internal write conversion method which should be used for nested invocations.
+
+
+
+
+	 * 
+
+
+
+
+	 * @param obj
+
+
+
+
+	 * @param dbo
+
+
+
+
+	 */
+
+
+
+
+	@SuppressWarnings("unchecked")
+
+
+
+
+	protected void writeInternal(final Object obj, final DBObject dbo) {
+
+
+
+
+                ...
+
+
+
+
+		if (Map.class.isAssignableFrom(obj.getClass())) {
+
+
+
+
+			writeMapInternal((Map<Object, Object>) obj, dbo, *null*);
+
+
+
+
+			return;
+
+
+
+
+		}
+
+
+
+
+                ...
+
+
+
+
+        }
+
+
+
+
+ 
+
+
+
+
+	protected void writeMapInternal(Map<Object, Object> obj, DBObject dbo, TypeInformation<?> propertyType) {
+
+
+
+
+		for (Map.Entry<Object, Object> entry : obj.entrySet()) {
+
+
+
+
+			Object key = entry.getKey();
+
+
+
+
+			Object val = entry.getValue();
+
+
+
+
+			if (conversions.isSimpleType(key.getClass())) {
+
+
+
+
+				// Don't use conversion service here as removal of ObjectToString converter results in some primitive types not
+
+
+
+
+				// being convertable
+
+
+
+
+				String simpleKey = key.toString();
+
+
+
+
+				if (val == null || conversions.isSimpleType(val.getClass())) {
+
+
+
+
+					writeSimpleInternal(val, dbo, simpleKey);
+
+
+
+
+				} else if (val instanceof Collection) {
+
+
+
+
+					dbo.put(simpleKey, createCollectionDBObject((Collection<?>) val, *propertyType.getMapValueType()*));
+
+
+
+
+				} else {
+
+
+
+
+					DBObject newDbo = new BasicDBObject();
+
+
+
+
+					writeInternal(val, newDbo);
+
+
+
+
+					addCustomTypeKeyIfNecessary(propertyType, val, newDbo);
+
+
+
+
+					dbo.put(simpleKey, newDbo);
+
+
+
+
+				}
+
+
+
+
+			} else {
+
+
+
+
+				throw new MappingException("Cannot use a complex object as a key value.");
+
+
+
+
+			}
+
+
+
+
+		}
+
+
+
+
+	}
+
+
+
+
+
+
+This is a unit test to reproduce the NPE with:
+
+
+
+
+
+
+UnitTest.java
+
+
+
+
+
+
+    @SuppressWarnings({"unchecked"})
+
+
+
+
+    @Test
+
+
+
+
+    public void testSaveMapWithACollectionAsValue() {
+
+
+
+
+        Map<String, Object> keyValues = new HashMap<String, Object>();
+
+
+
+
+        keyValues.put("string", "hello");
+
+
+
+
+        List<String> list = new ArrayList<String>();
+
+
+
+
+        list.add("ping");
+
+
+
+
+        list.add("pong");
+
+
+
+
+        keyValues.put("list", list);
+
+
+
+
+ 
+
+
+
+
+        mongoTemplate.save(keyValues);
+
+
+
+
+ 
+
+
+
+
+        Map<String, Object> keyValuesFromMongo = (Map<String, Object>) mongoTemplate.findAll(Map.class);
+
+
+
+
+        assertEquals(keyValues.size(), keyValuesFromMongo.size());
+
+
+
+
+        assertEquals(keyValues.get("string"), keyValuesFromMongo.get("string"));
+
+
+
+
+        assertTrue(List.class.isAssignableFrom(keyValuesFromMongo.get("list").getClass()));
+
+
+
+
+        List<String> listFromMongo = (List) keyValuesFromMongo.get("list");
+
+
+
+
+        assertEquals(list.size(), listFromMongo.size());
+
+
+
+
+        assertEquals(list.get(0), listFromMongo.get(0));
+
+
+
+
+        assertEquals(list.get(1), listFromMongo.get(1));
+
+
+
+
+    }
+
+
+
+
+

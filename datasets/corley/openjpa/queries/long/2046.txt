@@ -1,0 +1,76 @@
+Class  "org.apache.openjpa.kernel.exps.AbstractExpressionBuilder"
+method  "protected Value traversePath(Path path, String field, boolean pcOnly, boolean allowNull)"
+line 314 :
+
+            // xmlsupport xpath
+            XMLMetaData xmlmeta = fmd.getRepository().getXMLMetaData(fmd.getDeclaredType());
+            if (xmlmeta != null) 
+{
+                path.get(fmd, xmlmeta);
+                return path;
+            }
+
+This lines are "indirectly" responsible for determine type of FieldMetaData - is it an XML-mapped colomn or not. The logic inside method "PCPath#get(fmd, xmlmeta)" is not so clear - it contains  some strange assumption that  such method used only for XPATH-pathes and "PCPath" object will change his type just after invocation of the "#get(fmd, xmlmeta)" method.
+
+As a result in pointed above class "AbstractExpressionBuilder
+" in line 316 we making a wrong  conclusion because in accordance with documentation http://openjpa.apache.org/docs/latest/manual.html#ref_guide_xmlmapping an XML-mapped column should has specific @Strategy annotation -  @Strategy("org.apache.openjpa.jdbc.meta.strats.XMLValueHandler") but not only be type of class that marked by @XmlRootElement annotation. So, the equation "xmlmeta != null" in line  316 is  not enough and we should take into consideration some additional meta-info.
+
+I would like to propose to change all that  "IF" to something like:
+
+            // xmlsupport xpath
+            if (((FieldMapping) fmd).getHandler() instanceof XMLValueHandler) {
+                XMLMetaData xmlmeta = fmd.getRepository().getXMLMetaData(fmd.getDeclaredType());
+                if (xmlmeta != null) 
+{
+                    path.get(fmd, xmlmeta);
+                    return path;
+                }
+            }
+
+What the problem will be solved? Now it is impossible to use any persistent enum-properties  marked by annotation @Enumerated if their type has the @XmlRootElement annotation too. You will get an Exception on  execution of any JPQL-query with such field in WHERE like this:
+
+Caused by: <openjpa-2.1.0-r422266:1071316 fatal general error> org.apache.openjpa.persistence.PersistenceException: The database dictionary in use ("class ..... Dictionary") reports that it does not have feature "SupportsXMLColumn".  This feature is needed to complete the current operation.  To force OpenJPA to try to use the feature anyway, set the following property:
+openjpa.jdbc.DBDictionary: SupportsXMLColumn=<value>
+	at org.apache.openjpa.jdbc.sql.DBDictionary.assertSupport(DBDictionary.java:2736)
+	at org.apache.openjpa.jdbc.sql.DBDictionary.appendXmlComparison(DBDictionary.java:2926)
+	at org.apache.openjpa.jdbc.sql.DBDictionary.comparison(DBDictionary.java:2877)
+	at org.apache.openjpa.jdbc.kernel.exps.EqualExpression.appendTo(EqualExpression.java:61)
+	at org.apache.openjpa.jdbc.kernel.exps.CompareEqualExpression.appendTo(CompareEqualExpression.java:108)
+	at org.apache.openjpa.jdbc.kernel.exps.AndExpression.appendTo(AndExpression.java:65)
+	at org.apache.openjpa.jdbc.kernel.exps.BindVariableAndExpression.appendTo(BindVariableAndExpression.java:57)
+	at org.apache.openjpa.jdbc.kernel.exps.SelectConstructor.buildWhere(SelectConstructor.java:312)
+	at org.apache.openjpa.jdbc.kernel.exps.SelectConstructor.evaluate(SelectConstructor.java:94)
+	at org.apache.openjpa.jdbc.kernel.JDBCStoreQuery.createWhereSelects(JDBCStoreQuery.java:360)
+	at org.apache.openjpa.jdbc.kernel.JDBCStoreQuery.executeQuery(JDBCStoreQuery.java:193)
+	at org.apache.openjpa.kernel.ExpressionStoreQuery$DataStoreExecutor.executeQuery(ExpressionStoreQuery.java:782)
+	at org.apache.openjpa.kernel.QueryImpl.execute(QueryImpl.java:1005)
+
+
+
+For example, with the entity class like this
+
+@Entity
+@Table(name = "Mailbox")
+public class Mailbox implements Serializable
+{
+
+    @Column(name = "user_id")
+    private Long userId;
+
+    @Column(name = "type")
+    @Enumerated(value = EnumType.ORDINAL)
+    private MailboxType type;
+
+}
+
+and enum class like	
+
+@XmlRootElement(name = "mailboxType")
+@XmlEnum
+public enum MailboxType {
+    LOCAL, EXTERNAL
+}
+
+it is impossible to execute a query like
+
+"select mailbox FROM Mailbox mailbox WHERE mailbox.type = ?1"

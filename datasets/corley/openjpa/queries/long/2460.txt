@@ -1,0 +1,95 @@
+OpenJPA loses a class after ~1000 persist followed by a dynamic query. Consider the following lines:
+
+<pre>
+Integer maxId = (Integer)entityManager.createQuery("SELECT MAX(p.id) FROM Person p").getSingleResult();
+if (maxId==null) 
+{ maxId = 0; }
+
+Integer pid = maxId+1;
+Person np = new Person(pid, null, name, firstname);
+entityManager.persist(np);
+
+entityManager.createQuery("SELECT p FROM Person p WHERE p.id="+pid).getSingleResult();
+</pre>
+
+After running this code ~1000 times, I have the following exception:
+<pre>
+Caused by: java.lang.NoClassDefFoundError: org/apache/openjpa/lib/util/concurrent/ConcurrentReferenceHashMap$SoftEntry
+	at org.apache.openjpa.lib.util.concurrent.ConcurrentReferenceHashMap.newEntry(ConcurrentReferenceHashMap.java:402)
+	at org.apache.openjpa.lib.util.concurrent.ConcurrentReferenceHashMap.put(ConcurrentReferenceHashMap.java:386)
+	at org.apache.openjpa.util.CacheMap.put(CacheMap.java:174)
+	at org.apache.openjpa.util.CacheMap.cacheMapOverflowRemoved(CacheMap.java:150)
+	at org.apache.openjpa.util.CacheMap$2.overflowRemoved(CacheMap.java:128)
+	at org.apache.openjpa.lib.util.concurrent.ConcurrentHashMap.removeOverflow(ConcurrentHashMap.java:358)
+	at org.apache.openjpa.lib.util.concurrent.ConcurrentHashMap.put(ConcurrentHashMap.java:343)
+	at org.apache.openjpa.util.CacheMap.put(CacheMap.java:174)
+	at org.apache.openjpa.util.CacheMap.put(CacheMap.java:395)
+	at java.util.Collections$SynchronizedMap.put(Collections.java:2041)
+	at org.apache.openjpa.kernel.QueryImpl.compilationFromCache(QueryImpl.java:662)
+	at org.apache.openjpa.kernel.QueryImpl.compileForCompilation(QueryImpl.java:620)
+	at org.apache.openjpa.kernel.QueryImpl.compileForExecutor(QueryImpl.java:682)
+	at org.apache.openjpa.kernel.QueryImpl.compile(QueryImpl.java:589)
+	at org.apache.openjpa.persistence.EntityManagerImpl.createQuery(EntityManagerImpl.java:997)
+	at org.apache.openjpa.persistence.EntityManagerImpl.createQuery(EntityManagerImpl.java:979)
+	at org.apache.openjpa.persistence.EntityManagerImpl.createQuery(EntityManagerImpl.java:102)
+	at com.sun.enterprise.container.common.impl.EntityManagerWrapper.createQuery(EntityManagerWrapper.java:436)
+	at ch.astorm.ejb.facade.EntryPointBean.privateInsert(EntryPointBean.java:51)
+	at ch.astorm.ejb.facade.EntryPointBean.insertWithTransaction(EntryPointBean.java:32)
+</pre>
+
+After looking at the log, we can see a big WARNING just before the first error is thrown:
+<pre>
+WARNING: LDR5207: ASURLClassLoader EarLibClassLoader : 
+doneCalled = true
+doneSnapshot = ASURLClassLoader.done() called ON EarLibClassLoader : 
+urlSet = [...]
+doneCalled = false 
+ Parent -> org.glassfish.internal.api.DelegatingClassLoader@6dd938f0
+ AT Wed Nov 27 21:09:54 CET 2013 
+ BY :java.lang.Throwable: printStackTraceToString
+	at com.sun.enterprise.util.Print.printStackTraceToString(Print.java:639)
+	at com.sun.enterprise.loader.ASURLClassLoader.done(ASURLClassLoader.java:211)
+	at com.sun.enterprise.loader.ASURLClassLoader.preDestroy(ASURLClassLoader.java:179)
+	at org.glassfish.javaee.full.deployment.EarClassLoader.preDestroy(EarClassLoader.java:114)
+	at org.glassfish.deployment.common.DeploymentContextImpl.getClassLoader(DeploymentContextImpl.java:236)
+	at org.glassfish.deployment.common.DeploymentContextImpl.getClassLoader(DeploymentContextImpl.java:186)
+	at com.sun.enterprise.v3.server.ApplicationLifecycle.deploy(ApplicationLifecycle.java:450)
+	at com.sun.enterprise.v3.server.ApplicationLifecycle.deploy(ApplicationLifecycle.java:240)
+	at org.glassfish.deployment.admin.DeployCommand.execute(DeployCommand.java:389)
+	at com.sun.enterprise.v3.admin.CommandRunnerImpl$1.execute(CommandRunnerImpl.java:348)
+	at com.sun.enterprise.v3.admin.CommandRunnerImpl.doCommand(CommandRunnerImpl.java:363)
+	at com.sun.enterprise.v3.admin.CommandRunnerImpl.doCommand(CommandRunnerImpl.java:1085)
+	at com.sun.enterprise.v3.admin.CommandRunnerImpl.access$1200(CommandRunnerImpl.java:95)
+	at com.sun.enterprise.v3.admin.CommandRunnerImpl$ExecutionContext.execute(CommandRunnerImpl.java:1291)
+	at com.sun.enterprise.v3.admin.CommandRunnerImpl$ExecutionContext.execute(CommandRunnerImpl.java:1259)
+	at com.sun.enterprise.v3.admin.AdminAdapter.doCommand(AdminAdapter.java:461)
+	at com.sun.enterprise.v3.admin.AdminAdapter.service(AdminAdapter.java:212)
+	at com.sun.grizzly.tcp.http11.GrizzlyAdapter.service(GrizzlyAdapter.java:179)
+	at com.sun.enterprise.v3.server.HK2Dispatcher.dispath(HK2Dispatcher.java:117)
+	at com.sun.enterprise.v3.services.impl.ContainerMapper$Hk2DispatcherCallable.call(ContainerMapper.java:354)
+	at com.sun.enterprise.v3.services.impl.ContainerMapper.service(ContainerMapper.java:195)
+	at com.sun.grizzly.http.ProcessorTask.invokeAdapter(ProcessorTask.java:860)
+	at com.sun.grizzly.http.ProcessorTask.doProcess(ProcessorTask.java:757)
+	at com.sun.grizzly.http.ProcessorTask.process(ProcessorTask.java:1056)
+	at com.sun.grizzly.http.DefaultProtocolFilter.execute(DefaultProtocolFilter.java:229)
+	at com.sun.grizzly.DefaultProtocolChain.executeProtocolFilter(DefaultProtocolChain.java:137)
+	at com.sun.grizzly.DefaultProtocolChain.execute(DefaultProtocolChain.java:104)
+	at com.sun.grizzly.DefaultProtocolChain.execute(DefaultProtocolChain.java:90)
+	at com.sun.grizzly.http.HttpProtocolChain.execute(HttpProtocolChain.java:79)
+	at com.sun.grizzly.ProtocolChainContextTask.doCall(ProtocolChainContextTask.java:54)
+	at com.sun.grizzly.SelectionKeyContextTask.call(SelectionKeyContextTask.java:59)
+	at com.sun.grizzly.ContextTask.run(ContextTask.java:71)
+	at com.sun.grizzly.util.AbstractThreadPool$Worker.doWork(AbstractThreadPool.java:532)
+	at com.sun.grizzly.util.AbstractThreadPool$Worker.run(AbstractThreadPool.java:513)
+	at java.lang.Thread.run(Thread.java:744)
+ Parent -> org.glassfish.internal.api.DelegatingClassLoader@6dd938f0
+ was requested to find class org.apache.openjpa.lib.util.concurrent.ConcurrentReferenceHashMap$SoftEntry after done was invoked from the following stack trace
+</pre>
+
+After the first error is thrown, it seems that one request over two is working, probably depending on which EntityManager is injected.
+
+After reading the source code and making many tests, it seems that it is caused by the compilation cache: after a given number of [dynamic] query, it crashes because of the ClassLoader has changed.
+
+I found two solutions to avoid this problem:
+1) use a parametrizer query: entityManager.createQuery("SELECT p FROM Person p WHERE p.id=?1").setParameter(1, pid).getSingleResult();
+2) change the compilation cache policy to either 'false' or 'all' as described here: http://ci.apache.org/projects/openjpa/1.0.x/manual/ref_guide_cache_querycomp.html

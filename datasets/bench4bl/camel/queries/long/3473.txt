@@ -1,0 +1,215 @@
+When you declare in camel context
+<camel:endpoint id="cache1" uri="cache:cache1" />
+<camel:endpoint id="cache2" uri="cache:cache2" />
+<camel:endpoint id="cache3" uri="cache:cache3" />
+CamelCacheProducer produce systematically  in same cache because in CacheComponent, CacheConfiguration is modified by method createEndpoint
+CamelCacheProducer.java
+
+
+
+
+public void process(Exchange exchange) throws Exception {
+
+        if (LOG.isTraceEnabled()) {
+
+            LOG.trace("Cache Name: " + config.getCacheName());
+
+        }
+
+
+
+        if (cacheManager.cacheExists(config.getCacheName())) {
+
+            if (LOG.isTraceEnabled()) {
+
+                LOG.trace("Found an existing cache: " + config.getCacheName());
+
+                LOG.trace("Cache " + config.getCacheName() + " currently contains "
+
+                        + cacheManager.getCache(config.getCacheName()).getSize() + " elements");
+
+            }
+
+            cache = cacheManager.getCache(config.getCacheName());
+
+        } else {
+
+            cache = new Cache(config.getCacheName(),
+
+                    config.getMaxElementsInMemory(),
+
+                    config.getMemoryStoreEvictionPolicy(),
+
+                    config.isOverflowToDisk(),
+
+                    config.getDiskStorePath(),
+
+                    config.isEternal(),
+
+                    config.getTimeToLiveSeconds(),
+
+                    config.getTimeToIdleSeconds(),
+
+                    config.isDiskPersistent(),
+
+                    config.getDiskExpiryThreadIntervalSeconds(),
+
+                    null);
+
+            cacheManager.addCache(cache);
+
+            if (LOG.isDebugEnabled()) {
+
+                LOG.debug("Added a new cache: " + cache.getName());
+
+            }
+
+        }
+
+
+
+        String key = exchange.getIn().getHeader(CacheConstants.CACHE_KEY, String.class);
+
+        String operation = exchange.getIn().getHeader(CacheConstants.CACHE_OPERATION, String.class);
+
+
+
+        if (operation == null) {
+
+            throw new CacheException("Operation not specified in the message header [" + CacheConstants.CACHE_KEY + "]");
+
+        }
+
+        if ((key == null) && (!operation.equalsIgnoreCase(CacheConstants.CACHE_OPERATION_DELETEALL))) {
+
+            throw new CacheException("Cache Key is not specified in message header header or endpoint URL.");
+
+        }
+
+
+
+        performCacheOperation(exchange, operation, key);
+
+    }
+
+
+
+CacheComponent.java
+
+
+
+
+   public class CacheComponent extends DefaultComponent {
+
+    private CacheConfiguration config;
+
+    private CacheManagerFactory cacheManagerFactory = new CacheManagerFactory();
+
+    
+
+    public CacheComponent() {
+
+        config = new CacheConfiguration();
+
+    }
+
+
+
+    public CacheComponent(CamelContext context) {
+
+        super(context);
+
+        config = new CacheConfiguration();
+
+    }
+
+
+
+    @Override
+
+    @SuppressWarnings("unchecked")
+
+    protected Endpoint createEndpoint(String uri, String remaining, Map parameters) throws Exception {
+
+        config.parseURI(new URI(uri));
+
+        
+
+        CacheEndpoint cacheEndpoint = new CacheEndpoint(uri, this, config, cacheManagerFactory);
+
+        setProperties(cacheEndpoint.getConfig(), parameters);
+
+        return cacheEndpoint;
+
+    }
+
+
+
+    public CacheManagerFactory getCacheManagerFactory() {
+
+        return cacheManagerFactory;
+
+    }
+
+
+
+    public void setCacheManagerFactory(CacheManagerFactory cacheManagerFactory) {
+
+        this.cacheManagerFactory = cacheManagerFactory;
+
+    }
+
+
+
+    @Override
+
+    protected void doStart() throws Exception {
+
+        super.doStart();
+
+        ServiceHelper.startService(cacheManagerFactory);
+
+    }
+
+
+
+    @Override
+
+    protected void doStop() throws Exception {
+
+        ServiceHelper.stopService(cacheManagerFactory);
+
+        super.doStop();
+
+    }
+
+}
+
+
+
+The resolution could be in CacheComponent
+CacheComponent.java
+
+
+    @Override
+
+    @SuppressWarnings("unchecked")
+
+    protected Endpoint createEndpoint(String uri, String remaining, Map parameters) throws Exception {
+
+        CacheConfiguration   config = new CacheConfiguration();
+
+        config.parseURI(new URI(uri));
+
+        
+
+        CacheEndpoint cacheEndpoint = new CacheEndpoint(uri, this, config, cacheManagerFactory);
+
+        setProperties(cacheEndpoint.getConfig(), parameters);
+
+        return cacheEndpoint;
+
+    }
+
+
+ 

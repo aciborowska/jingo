@@ -1,0 +1,25 @@
+EphemeralTypeTest.testServerIds() unit test fails on some systems that System.nanoTime() is smaller than a certain value.
+
+The test generates ephemeralOwner in the old way (pre ZOOKEEPER-2901) without enabling the emulation flag and asserts for exception to be thrown when serverId == 255. This is right. ZooKeeper should fail on this case, because serverId cannot be larger than 254 if extended types are enabled. In this case ephemeralOwner with 0xff in the most significant byte indicates an extended type.
+
+The logic which does the validation is in EphemeralType.get().
+
+It checks 2 things:
+
+	the extended type byte is set: 0xff,
+	reserved bits (next 2 bytes) corresponds to a valid extended type.
+
+
+
+Here is the problem: currently we only have 1 extended type: TTL with value of 0x0000 in the reserved bits.
+
+Logic expects that if we have anything different from it in the reserved bits, the ephemeralOwner is invalid and exception should be thrown. That's what the test asserts for and it works on most systems, because the timestamp part of the sessionId usually have some bits in the reserved bits as well which eventually will be larger than 0, so the value is unsupported.
+
+I think the problem is twofold:
+
+	Either if we have more extended types, we'll increase the possibility that this logic will accept invalid sessionIds (as long as reserved bits indicate a valid extended type),
+	Or (which happens on some systems) if the currentElapsedTime (timestamp part of sessionId) is small enough and doesn't occupy reserved bits, this logic will accept the invalid sessionId.
+
+
+
+Unfortunately I cannot repro the problem yet: it constantly happens on a specific Jenkins slave, but even with the same distro and same JDK version I cannot reproduce the same nanoTime() values.

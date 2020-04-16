@@ -1,0 +1,37 @@
+There are actually a number of related issues I'm dealing with, but the biggie that I know is a bug is that LocalSessionFactoryBean.getObject() returns null if the afterPropertiesSet method is never called.  This is a violation of the FactoryBean interface, which explicitly states that getObject() should never return null.
+Let me go through how I figured this out, because there are actually a couple of issues here.  In my app, I am programmatically registering a singleton Hibernate LocalSessionFactoryBeans in a BeanFactoryPostProcessor using ConfigurableBeanFactory.registerSingleton.  The first problem is, when I do so, the afterPropertiesSet method is not automatically called.  This may be the desired behavior, but if so I feel this should be explicitly documented in the registerSingleton method's JavaDoc.  The second problem is, I get the stack trace below, which isn't exactly an intuitive error message.  The third problem is what I already mentioned, that the getObject() method is returning null when in fact it should not be.
+Fixing the third problem should take care of fixing the second problem.  The solution to problem #3 will of course be either to A) have LocalSessionFactoryBean.getObject() throw an exception if afterPropertiesSet is not called or the solution I prefer, B) automatically call afterPropertiesSet if getObject is called and this.sessionFactory == null.
+So, to summarize, I recommend
+1) the documentation of ConfigurableBeanFactory.registerSingleton be updated to explicitly state that beans registered programmatically in this way do not receive bean lifecycle callbacks, and
+2) Change LocalSessionFactoryBean.getObject() to read as follows:
+    public Object getObject() {
+	// if afterPropertiesSet has not been called as expected
+        if (this.sessionFactory == null) {
+	    // call it automatically for the user, rather than throw an
+	    // exception.  if the configuration of the returned sessionFactory
+	    // is deficient for some reason (e.g. the properties haven't been
+	    // all set yet), the user will certainly get an error when they
+	    // attempt to use the sessionFactory, and it will probably be more
+	    // informative than any error we could throw here anyway
+	    if (logger.isWarnEnabled()) 
+{
+                logger.warn("The " + LocalSessionFactoryBean.getClass().getName() +
+		    ".afterPropertiesSet method was not manually called to properly " +
+		    "initialize this bean.  The method has been called automatically, " +
+		    "but the fact that the afterPropertiesSet method was not called " +
+		    "may indicate a problem with the way this bean was accessed");
+	    }
+	    try 
+{
+	        afterPropertiesSet();
+	    }
+	    catch (Exception e) 
+{
+	        throw new BeanCreationException("Unable to create Hibernate SessionFactory.  " +
+		    "Were all the properties of the " +
+		    LocalSessionFactoryBean.getClass().getName() +
+		    " set correctly?";
+	    }
+	}
+        return this.sessionFactory;
+    }

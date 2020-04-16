@@ -1,0 +1,147 @@
+Wss4jSecurityInterceptor.toDocument(..) contains a bug that prevents Wss4jSecurityInterceptor.validateMessage() from replacing encrypted SOAP message parts with decrypted parts when using SaajSoapMessageFactory.  Specifically, when the org.w3c.dom.Document returned by toDocument() is modified with decrypted parts, the changes aren't reflected in the original SaajSoapMessage inside MessageContext.
+Test case to reproduce the bug uses ws-tutorial sample application. 
+1. Modify HolidayRequestClient constructor to get wsTemplate bean from Application Context configured inside SpringConfig.xml:
+	/**
+
+Default class constructor
+	 */
+	public HolidayRequestClient() {
+		hrNs = Namespace.getNamespace("hr", "http://mycompany.com/hr/schemas");
+		fmt = new SimpleDateFormat("yyyy-MM-dd");
+	      ApplicationContext ac = null;
+
+	      try
+	      {
+	         ac = new ClassPathXmlApplicationContext(
+	               new String[] 
+{ "SpringConfig.xml" }
+);
+	      }
+	      catch (BeansException e)
+	      {
+	         e.printStackTrace();
+	         ac = new FileSystemXmlApplicationContext("SpringConfig.xml");
+
+	      }
+	      wsTemplate = (WebServiceTemplate) ac
+	            .getBean("wsTemplate");
+	}
+2. Use the following client SpringConfig.xml to encrypt outgoing HolidayRequest element content using wss4j:
+<?xml version="1.0" encoding="UTF-8"?>
+<beans xmlns="http://www.springframework.org/schema/beans"
+	xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xsi:schemaLocation="http://www.springframework.org/schema/beans 
+http://www.springframework.org/schema/beans/spring-beans-2.5.xsd">
+    <bean id="wsTemplate" 
+        class="org.springframework.ws.client.core.WebServiceTemplate">
+        <constructor-arg>
+            <bean class="org.springframework.ws.soap.saaj.SaajSoapMessageFactory"/>
+        </constructor-arg>
+        <property name="interceptors">
+            <list>
+                <ref local="wsEncryptSecurityInterceptor" />
+            </list>
+        </property>        
+    </bean>
+    <bean id="wsEncryptSecurityInterceptor" 
+        class="org.springframework.ws.soap.security.wss4j.Wss4jSecurityInterceptor">
+        <property name="securementActions" value="Encrypt" />
+        <property name="securementEncryptionParts"
+            value="
+{Content}{http://mycompany.com/hr/schemas}HolidayRequest"/>
+
+        <property name="securementEncryptionUser" value="alias" />
+        <property name="securementEncryptionCrypto">
+            <bean
+                class="org.springframework.ws.soap.security.wss4j.support.CryptoFactoryBean">
+                <property name="keyStorePassword" value="storepass" />
+                <property name="keyStoreLocation" value="classpath:/clientKeystore.jks" />
+            </bean>
+        </property>
+    </bean>
+
+</beans>
+
+3. Configure server security interceptor bean wsEncryptSecurityInterceptor inside spring-ws-servlet.xml for decrypting HollidayRequest element content:
+...
+    <bean class="org.springframework.ws.server.endpoint.mapping.PayloadRootQNameEndpointMapping">
+        <property name="mappings">
+            <props>
+                <prop key="{http://mycompany.com/hr/schemas}HolidayRequest">holidayEndpoint</prop>
+            </props>
+        </property>
+        <property name="interceptors">
+            <list>
+                <ref local="wsEncryptSecurityInterceptor"/>
+                <bean class="org.springframework.ws.server.endpoint.interceptor.PayloadLoggingInterceptor"/>
+            </list>
+        </property>
+    </bean>
+
+    <bean id="wsEncryptSecurityInterceptor"
+        class="org.springframework.ws.soap.security.wss4j.Wss4jSecurityInterceptor">
+        <property name="validationActions" value="Encrypt" />
+        <property name="securementEncryptionParts"
+            value="{Content}
+{http://mycompany.com/hr/schemas}
+HolidayRequest" />
+        <property name="validationDecryptionCrypto">
+            <bean
+                class="org.springframework.ws.soap.security.wss4j.support.CryptoFactoryBean">
+                <property name="keyStorePassword" value="storepass" />
+                <property name="keyStoreLocation"
+                    value="classpath:/serverKeystore.jks" />
+            </bean>
+        </property>
+        <property name="validationCallbackHandler">
+            <bean
+                class="org.springframework.ws.soap.security.wss4j.callback.KeyStoreCallbackHandler">
+                <property name="privateKeyPassword" value="keypass" />
+            </bean>
+        </property>
+    </bean>
+...
+4.  Generate server and client keystore files using these commands and place the generated files on the classpath: 
+   create server keystore: 
+        keytool -v -genkey -alias alias -keypass keypass -keystore serverKeystore.jks -storepass storepass -keyalg RSA -sigalg SHA1withRSA
+   export PEM file for client keystore:
+        keytool -export -alias alias -file alias.pem -sigalg SHA1withRSA -keystore serverKeystore.jks -storepass storepass -rfc
+   import PEM into client store: 
+        keytool -v -import -trustcacerts -alias alias -file alias.pem -keystore clientKeystore.jks -keypass storepass -noprompt        
+5.  Run com.mycompany.hr.client.Main as Java Application, and see SoapFault response as logged by the client since the server was unable to decrypt the encrypted parts:
+2008-06-17 11:36:55,625 DEBUG [org.springframework.ws.client.core.WebServiceTemplate] - Received Fault message for request [SaajSoapMessage 
+{http://mycompany.com/hr/schemas}
+HolidayRequest]
+Exception in thread "main" org.springframework.ws.soap.client.SoapFaultClientException: Unparseable date: ""
+	at org.springframework.ws.soap.client.core.SoapFaultMessageResolver.resolveFault(SoapFaultMessageResolver.java:37)
+	at org.springframework.ws.client.core.WebServiceTemplate.handleFault(WebServiceTemplate.java:699)
+	at org.springframework.ws.client.core.WebServiceTemplate.doSendAndReceive(WebServiceTemplate.java:527)
+	at org.springframework.ws.client.core.WebServiceTemplate.sendAndReceive(WebServiceTemplate.java:465)
+	at org.springframework.ws.client.core.WebServiceTemplate.doSendAndReceive(WebServiceTemplate.java:420)
+	at org.springframework.ws.client.core.WebServiceTemplate.sendSourceAndReceiveToResult(WebServiceTemplate.java:366)
+	at org.springframework.ws.client.core.WebServiceTemplate.sendSourceAndReceiveToResult(WebServiceTemplate.java:351)
+	at com.mycompany.hr.client.HolidayRequestClient.bookHoliday(HolidayRequestClient.java:63)
+	at com.mycompany.hr.client.Main.main(Main.java:18)
+------------------------------
+Proposed fix is to modify Wss4jSecurityInterceptor.toDocument(..) as follows, essentially rolling back an earlier fix for SWS-345:
+    /** Converts the given 
+{@link SoapMessage}
+ into a 
+{@link Document}
+. */
+    private Document toDocument(SoapMessage soapMessage, MessageContext messageContext) {
+        if (soapMessage instanceof SaajSoapMessage) 
+{
+            SaajSoapMessage saajSoapMessage = (SaajSoapMessage) soapMessage;
+            return saajSoapMessage.getSaajMessage().getSOAPPart();// works now since SWS-345 is fixed 
+        }
+        else if (soapMessage instanceof AxiomSoapMessage) 
+{
+            AxiomSoapMessage axiomMessage = (AxiomSoapMessage) soapMessage;
+            return AxiomUtils.toDocument(axiomMessage.getAxiomMessage().getSOAPEnvelope());
+        }
+        else 
+{
+            throw new IllegalArgumentException("Message type not supported [" + soapMessage + "]");
+        }
+    }

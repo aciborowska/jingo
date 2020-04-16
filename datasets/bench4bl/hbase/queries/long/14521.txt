@@ -1,0 +1,59 @@
+From name of the hbase.client.retries.number property, it should be the number of maximum retries, or say if we set the property to 1, there should be 2 attempts in total. However, there're two different semantics when using it in current code base.
+For example, in ConnectionImplementation#locateRegionInMeta:
+
+
+
+    int localNumRetries = (retry ? numTries : 1);
+
+
+
+    for (int tries = 0; true; tries++) {
+
+      if (tries >= localNumRetries) {
+
+        throw new NoServerForRegionException("Unable to find region for "
+
+            + Bytes.toStringBinary(row) + " in " + tableName +
+
+            " after " + numTries + " tries.");
+
+      }
+
+
+
+the retries number is regarded as max times for tries
+While in RpcRetryingCallerImpl#callWithRetries:
+
+
+
+    for (int tries = 0;; tries++) {
+
+      long expectedSleep;
+
+      try {
+
+        callable.prepare(tries != 0); // if called with false, check table status on ZK
+
+        interceptor.intercept(context.prepare(callable, tries));
+
+        return callable.call(getRemainingTime(callTimeout));
+
+      } catch (PreemptiveFastFailException e) {
+
+        throw e;
+
+      } catch (Throwable t) {
+
+        ...
+
+        if (tries >= retries - 1) {
+
+          throw new RetriesExhaustedException(tries, exceptions);
+
+        }
+
+
+
+it's regarded as exactly for REtry (try a call first with no condition and then check whether to retry or exceeds maximum retry number)
+This inconsistency will cause misunderstanding in usage, such as one of our customer set the property to zero expecting one single call but finally received NoServerForRegionException.
+We should unify the semantic of the property, and I suggest to keep the original one for retry rather than total tries.

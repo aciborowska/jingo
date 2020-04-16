@@ -1,0 +1,44 @@
+Forum ref  http://forum.springframework.org/showthread.php?p=171215
+Scenario:
+
+I have a Step that reads in items, and outputs via FFIW with shouldDeleteIfExists=false;
+Step runs through a few items and output file buffer is flushed to disk
+Job fails before first chunk commit (I am ending the job in a debugger).
+
+On restart:
+
+Output file accessed via FFIW will exist on the file system.
+No record of it exists in the STEP_EXECUTION_CONTEXT table.
+
+Restart the job (has to be in a new vm becasue of #batch-507) and it will fail with:
+org.springframework.batch.item.exception.StreamException: Resource already exists: file [D:\temp\output1.csv]
+at org.springframework.batch.io.file.FlatFileItemWriter$OutputState.initializeBufferedWriter(FlatFileItemWriter.java:378)
+I think this is because outputState.restoreFrom is not getting called because STEP_EXECUTION_CONTEXT table has no data for this step (see code extract below).
+        /**
+
+Initialize the Output Template.
+*
+@see ResourceLifecycle#open()
+*/
+public void open(ExecutionContext executionContext) {
+    OutputState outputState = getOutputState();
+    if (executionContext.containsKey(getKey(RESTART_DATA_NAME))) 
+{
+        outputState.restoreFrom(executionContext);
+    }
+}
+
+This means FFIW.restarted is false, and then initializeBufferedWriter fails in
+....
+    if (!restarted) {
+	if (file.exists()) {
+	    if (shouldDeleteIfExists) 
+{
+		file.delete();
+	    }
+ else 
+{
+		throw new ItemStreamException("Resource already exists: " + resource);
+	    }
+	}
+.... 

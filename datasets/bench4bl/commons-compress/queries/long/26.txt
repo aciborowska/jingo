@@ -1,0 +1,48 @@
+The TarArchiveEntry(File) constructor now crashes if the File argument is a file system root.
+For example, on my windows box, I want to backup the entire contents of my F drive, so I am supplying a File argument that is constructed as
+	new File("F:")
+That particular file causes the TarArchiveEntry(File) constructor to fail as follows:
+	Caused by: java.lang.StringIndexOutOfBoundsException: String index out of range: -1
+		at java.lang.StringBuffer.charAt(StringBuffer.java:162)
+		at org.apache.commons.compress.archivers.tar.TarArchiveEntry.<init>(TarArchiveEntry.java:245)
+Looking at the code (I downloaded revision 743098 yesterday), it is easy to see why this occured:
+1) the
+	if (osname != null) {
+logic will strip the "F:" from my path name of "F:\", leaving just the "\"
+2) that "\" will then be turned into a single "/" by the 
+	fileName = fileName.replace(File.separatorChar, '/');
+line
+3) that single "/" will then be removed by the
+	while (fileName.startsWith("/")) {
+logic, leaving the empty string "".
+4) then line #245
+	if (this.name.charAt(this.name.length() - 1) != '/') {
+must crash, because it falsely assumes that fileName has content.
+THIS IS A SHOW STOPPER BUG FOR ME.
+I am not sure when this current behavior of TarArchiveEntry was introduced; a very old codebase (from 2+ years ago) of compress that I used to use handled file system roots just fine.
+There are many ways to fix this.  For instance, if it is, in fact, OK for the name field to be empty, then you can simply put a check on line #245 as follows:
+            if ( (name.length() > 0) && (name.charAt(name.length() - 1) != '/') ) {
+(NOTE on coding style: do you really need to use "this." in the constructor when there is no possible ambiguity?  Makes your code wordier and therefore harder to read.)
+My guess, not knowing your full codebase well, is that it is NOT OK for name to be blank.  For example, you seem to want directories to end with a '/' char, and file ssystem roots are always directories.
+Therefore, you have some decisions to make:
+a) is it OK for the name field to simply be "/" in the case of file system roots?
+b) if a) is not good for some reason, then you must introduce an artificial root name, so that name takes on a value like
+	"filesystemRoot/"
+or
+	"filesystemRoot_F/"
+or whatever.
+This bug, by the way, brings up another issue: there currently are no javadocs regarding field contracts.  Every field's javadocs needs its constraints to be specified as a contract, for example,
+    /**
+
+The entry's name.
+<p>
+Contract: is never null (and never empty?).
+Contains (only ASCII chars?  any Unicode chars?).
+Must be (<= 100 chars?  unlimited number of chars?).
+If 
+{@link #file}
+ is a directory, then must end in a '/' char.
+etc...
+    */
+    private StringBuffer name;
+

@@ -1,0 +1,74 @@
+I would like to have a trivial way to bind and invoke Java library functions from within Pig without creating wrapper functions in Java. In particular, there is need to do this for dynamic (non-static) class methods which first require creation of a class instance object to invoke the method.
+
+Note that the new Pig 0.8 built-in function Invoker only works for static class methods and does not support instantiation of class objects and subsequent dynamic method invocation.
+
+For instance, I need functions out of the Apache Commons Math library (http://commons.apache.org/math/) such as BetaDistributionImpl.cumulativeProbability.
+
+    http://commons.apache.org/math/apidocs/org/apache/commons/math/distribution/BetaDistributionImpl.html
+
+To use this class, I must first create a new object with a parameterized constructor – BetaDistributionImpl(alpha,beta) and then I can invoke a method. This two stage process of object instantiation and then method invocation is a bit clumsy, necessitating a wrapper function.
+
+I would like to be able to do a simple Pig definition to declare a binding to and instantiate instances of a Java class and invoke methods on these instances.  In the case of Apache Commons Math distribution BetaDistributionImpl, I must parameterize the objection creation with values from my data I am processing with Pig followed by an invocation of a method with a third parameter.
+
+
+register commons-math-2.1.jar;
+
+define (new org.apache.commons.math.distribution.BetaDistributionImpl((double) alpha, (double) beta))
+            . cumulativeProbability((double) x) BetaIncomplete(x, alpha, beta)
+
+
+
+Writing a Pig Eval<Double> wrapper function that does the same thing requires about 100 lines of Java code to implement the binding to do all the necessary comments, imports, parameter coercions, exception handling and output scheme declarations.  And that's just one wrapper for one method.  The class has on the order of 10-20 methods and there are on the order of 100-200 classes.
+
+And alternate form to consider is if I could just say something like:
+
+
+register commons-math-2.1.jar;
+
+import org.apache.commons.math.distribution.BetaDistributionImpl as BetaDist;
+
+B = foreach A as
+       alpha,
+       beta,
+       x,
+       BetaDist(alpha,beta).cumulativeProbability(x) as prob;
+
+
+
+
+Ideally I'd be able to register or include a list of all the bindings to the library.
+
+Of course in the case, Pig should automatically coerce all parameters to their corresponding implementation types e.g. a double parameter in the Java function would dictate that Pig coerce int, long, float, double, chararray, and bytearray to double automagically (albeit some compiler warning might be warranted).
+
+
+One question about this proposal is how to handle methods that throw exceptions such as:
+
+
+public double cumulativeProbability(double x) throws MathException
+
+
+
+I think I would propose that Pig provide a means for handling the exception case such as a simple annotation in the declaration:
+
+
+register commons-math-2.1.jar;
+
+import org.apache.commons.math.distribution.BetaDistributionImpl as BetaDist, return null on (MathException, Exception);
+
+
+
+
+
+Or we could get even more fancy and permit wholesale default handling for every method that might throw an exception:
+
+
+register commons-math-2.1.jar as ApacheMathCommons;
+
+ApacheMathCommons warn and return null on (MathException, AnyException);
+
+import org.apache.commons.math.distribution.BetaDistributionImpl as BetaDist;
+
+
+
+
+I'm sure if people think about it, there are probably potentially cleaner ways to import the bindings and handle exceptions cases.

@@ -1,0 +1,149 @@
+In Wildfly with Java EE, whenever you run an asynchronous task using @Asynchronous, the security context is getting cloned and then pushed to the new async thread.
+see bug:
+https://issues.jboss.org/browse/WFLY-2016
+and commit:
+https://github.com/wildfly/wildfly/pull/5013/files
+In Spring Security though, the strategy to propagate the security context is a bit different. Instead of cloning the context, the reference to the context is propagated to the new async thread.
+DelegatingSecurityContextCallable/Runnable
+
+
+
+
+
+
+	public V call() throws Exception {
+
+
+
+
+		this.originalSecurityContext = SecurityContextHolder.getContext();
+
+
+
+
+ 
+
+
+
+
+		try {
+
+
+
+
+			SecurityContextHolder.setContext(delegateSecurityContext);
+
+
+
+
+			return delegate.call();
+
+
+
+
+		}
+
+
+
+
+		finally {
+
+
+
+
+			SecurityContext emptyContext = SecurityContextHolder.createEmptyContext();
+
+
+
+
+			if(emptyContext.equals(originalSecurityContext)) {
+
+
+
+
+				SecurityContextHolder.clearContext();
+
+
+
+
+			} else {
+
+
+
+
+				SecurityContextHolder.setContext(originalSecurityContext);
+
+
+
+
+			}
+
+
+
+
+			this.originalSecurityContext = null;
+
+
+
+
+		}
+
+
+
+
+	}
+
+
+
+
+
+
+
+This can lead to concurrency issue if the new async thread alter the security context.
+Ex:
+1. an authenticated user trigger something asynchronous and the processing of its request is not over
+2. within the asynchronous thread we eventually push another principal to let say execute a job on behalf of a system user
+3. meanwhile the processing of the original request continue but now with the new system user principal which can lead to weird behavior
+Could it be possible to re-implement the Security Context to be duplicated instead to avoid the issue?
+Alternatively, instead of duplicating everything, we could at least duplicate the authentication information which is immutable:
+
+
+
+
+
+
+	public DelegatingSecurityContextCallable(Callable<V> delegate) {
+
+
+
+
+                // proposed fix for SEC-3169 start
+
+
+
+
+                this(delegate, new SecurityContextImpl());
+
+
+
+
+                this.delegateSecurityContext.setAuthentication(SecurityContextHolder.getContext().getAuthentication());
+
+
+
+
+                 // proposed fix for SEC-3169 end
+
+
+
+
+	}
+
+
+
+
+
+
+
+If there's anything I've miss let me know,
+Thanks,

@@ -1,0 +1,58 @@
+We observed the following issue in cluster testing on a restored table (table_gwbh9rxyz3).
+
+
+
+2015-06-08 14:29:47,313|beaver.component.hbase|INFO|6196|140144585275136|MainThread| 'get 'table_gwbh9rxyz3','row1', {COLUMN => 'family1'}'
+
+...
+
+2015-06-08 14:31:38,203|beaver.machine|INFO|6196|140144585275136|MainThread|ERROR: No server address listed in hbase:meta for region table_gwbh9rxyz3,,1433773371699.             48652273628a291653d8c43aaa02179a. containing row row1
+
+
+
+Here was related log snippet from master - part for RestoreSnapshotHandler#handleTableOperation():
+
+
+
+2015-06-08 14:28:41,968 DEBUG [MASTER_TABLE_OPERATIONS-ip-172-31-46-243:54936-0] snapshot.RestoreSnapshotHelper: starting restore
+
+2015-06-08 14:28:41,969 DEBUG [MASTER_TABLE_OPERATIONS-ip-172-31-46-243:54936-0] snapshot.RestoreSnapshotHelper: get table regions: hdfs://ip-172-31-46-239.ec2.internal:8020/user/hbase/.slider/cluster/hbasesliderapp/database/data/default/table_gwbh9rxyz3
+
+2015-06-08 14:28:41,984 DEBUG [MASTER_TABLE_OPERATIONS-ip-172-31-46-243:54936-0] snapshot.RestoreSnapshotHelper: found 1 regions for table=table_gwbh9rxyz3
+
+2015-06-08 14:28:41,984 INFO  [MASTER_TABLE_OPERATIONS-ip-172-31-46-243:54936-0] snapshot.RestoreSnapshotHelper: region to restore: 48652273628a291653d8c43aaa02179a
+
+2015-06-08 14:28:42,001 DEBUG [RestoreSnapshot-pool584-t1] backup.HFileArchiver: Finished archiving from class org.apache.hadoop.hbase.backup.HFileArchiver$FileablePath, file:hdfs://ip-172-31-46-239.ec2.internal:8020/user/hbase/.slider/cluster/hbasesliderapp/database/data/default/table_gwbh9rxyz3/48652273628a291653d8c43aaa02179a/family1/45aa3fb9e0404814b77a9cac91ebeb66, to hdfs://ip-172-31-46-239.ec2.internal:8020/user/hbase/.slider/cluster/hbasesliderapp/database/archive/data/default/table_gwbh9rxyz3/48652273628a291653d8c43aaa02179a/family1/45aa3fb9e0404814b77a9cac91ebeb66
+
+2015-06-08 14:28:42,002 INFO  [MASTER_TABLE_OPERATIONS-ip-172-31-46-243:54936-0] hbase.MetaTableAccessor: Deleted []
+
+2015-06-08 14:28:42,002 INFO  [MASTER_TABLE_OPERATIONS-ip-172-31-46-243:54936-0] hbase.MetaTableAccessor: Added 0
+
+2015-06-08 14:28:42,014 INFO  [MASTER_TABLE_OPERATIONS-ip-172-31-46-243:54936-0] hbase.MetaTableAccessor: Deleted [{ENCODED => 48652273628a291653d8c43aaa02179a, NAME => 'table_gwbh9rxyz3,,1433773371699.48652273628a291653d8c43aaa02179a.', STARTKEY => '', ENDKEY => ''}]
+
+2015-06-08 14:28:42,022 DEBUG [B.defaultRpcServer.handler=13,queue=1,port=54936] snapshot.SnapshotManager: Verify snapshot=table_gwbh9rxyz3-ru-20150608 against=table_gwbh9rxyz3-ru-20150608 table=table_gwbh9rxyz3
+
+2015-06-08 14:28:42,022 DEBUG [B.defaultRpcServer.handler=13,queue=1,port=54936] snapshot.SnapshotManager: Sentinel is not yet finished with restoring snapshot={ ss=table_gwbh9rxyz3-ru-20150608 table=table_gwbh9rxyz3 type=FLUSH }
+
+2015-06-08 14:28:42,038 INFO  [MASTER_TABLE_OPERATIONS-ip-172-31-46-243:54936-0] hbase.MetaTableAccessor: Added 2
+
+2015-06-08 14:28:42,038 INFO  [MASTER_TABLE_OPERATIONS-ip-172-31-46-243:54936-0] hbase.MetaTableAccessor: Overwritten [{ENCODED => 48652273628a291653d8c43aaa02179a, NAME => 'table_gwbh9rxyz3,,1433773371699.48652273628a291653d8c43aaa02179a.', STARTKEY => '', ENDKEY => ''}]
+
+
+
+Here was log snippet from region server - corresponding to table being enabled after snapshot restore:
+
+
+
+2015-06-08 14:28:41,914 DEBUG [RS_OPEN_REGION-ip-172-31-46-239:51852-2] zookeeper.ZKAssign: regionserver:51852-0x24dd2833c34000b, quorum=ip-172-31-46-239.ec2.internal:2181,ip-172-31-46-241.ec2.internal:2181,ip-172-31-46-242.ec2.internal:2181, baseZNode=/services/slider/users/hbase/hbasesliderapp Attempting to retransition opening state of node 48652273628a291653d8c43aaa02179a
+
+2015-06-08 14:28:41,916 INFO  [PostOpenDeployTasks:48652273628a291653d8c43aaa02179a] regionserver.HRegionServer: Post open deploy tasks for table_gwbh9rxyz3,,1433773371699.48652273628a291653d8c43aaa02179a.
+
+2015-06-08 14:28:41,920 INFO  [PostOpenDeployTasks:48652273628a291653d8c43aaa02179a] hbase.MetaTableAccessor: Updated row table_gwbh9rxyz3,,1433773371699.48652273628a291653d8c43aaa02179a. with server=ip-172-31-46-239.ec2.internal,51852,1433758173941
+
+2015-06-08 14:28:41,920 DEBUG [PostOpenDeployTasks:48652273628a291653d8c43aaa02179a] regionserver.HRegionServer: Finished post open deploy task for table_gwbh9rxyz3,,1433773371699.48652273628a291653d8c43aaa02179a
+
+
+
+What happened was that due to clock skew, server location (ip-172-31-46-239.ec2.internal) for the region was eclipsed by the delete marker put in by MetaTableAccessor#overwriteRegions()
+Thanks for Devaraj Das for pair debugging.

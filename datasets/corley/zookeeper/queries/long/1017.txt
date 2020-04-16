@@ -1,0 +1,39 @@
+i use three node to deploy zkcluster. but follower node throws SocketException twice every day.
+2011-03-15 14:15:48,260 - WARN  [QuorumPeer:/0:0:0:0:0:0:0:0:2181:Follower@90] - Exception when following the leader
+java.net.SocketException: Broken pipe
+        at java.net.SocketOutputStream.socketWrite0(Native Method)
+        at java.net.SocketOutputStream.socketWrite(SocketOutputStream.java:92)
+        at java.net.SocketOutputStream.write(SocketOutputStream.java:136)
+        at java.io.BufferedOutputStream.flushBuffer(BufferedOutputStream.java:65)
+        at java.io.BufferedOutputStream.flush(BufferedOutputStream.java:123)
+        at org.apache.zookeeper.server.quorum.Learner.writePacket(Learner.java:126)
+        at org.apache.zookeeper.server.quorum.Learner.ping(Learner.java:361)
+        at org.apache.zookeeper.server.quorum.Follower.processPacket(Follower.java:116)
+        at org.apache.zookeeper.server.quorum.Follower.followLeader(Follower.java:80)
+        at org.apache.zookeeper.server.quorum.QuorumPeer.run(QuorumPeer.java:644)
+
+i found the reason is that Follower do not reponse Leader's Ping just on time.
+so, i add some logs. finnally, i found that, in org.apache.zookeeper.server.SyncRequestProcessor: 
+
+    public void processRequest(Request request) {
+        // request.addRQRec(">sync");
+        //TODO tom liu added
+    	if(LOG.isDebugEnabled()) {
+    		LOG.debug("Processing request::" + request);
+    	}
+        queuedRequests.add(request);
+        //TODO tom liu added
+    	if(LOG.isDebugEnabled()) {
+    		LOG.debug("Processing request::" + request);
+    	}
+    }
+
+
+
+that log is:
+2011-03-15 14:15:34,515 - DEBUG [QuorumPeer:/0:0:0:0:0:0:0:0:2181:SyncRequestProcessor@189] - Processing request::sessionid:0x22e9907b5d50000 type:setData cxid:0x70b55 zxid:0xd50000a73f txntype:5 reqpath:n/a
+2011-03-15 14:15:48,259 - DEBUG [QuorumPeer:/0:0:0:0:0:0:0:0:2181:SyncRequestProcessor@194] - Processing request::sessionid:0x22e9907b5d50000 type:setData cxid:0x70b55 zxid:0xd50000a73f txntype:5 reqpath:n/a
+
+so: elapsed time=13744, LearnerHandler's ia.readRecord TimeOut on run method, then Leader shutdown, and re-elect Leader process.
+
+my question is: why the queuedRequests.add statement take so long time?

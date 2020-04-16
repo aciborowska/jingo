@@ -1,0 +1,57 @@
+In AbstractSoapFaultDefinitionExceptionResolver (v. 1.0.1), have the following code fragment:
+    protected final boolean resolveExceptionInternal(MessageContext messageContext, Object endpoint, Exception ex) {
+        Assert.isTrue(messageContext.getResponse() instanceof SoapMessage,
+                "AbstractSoapFaultDefinitionExceptionResolver requires a SoapMessage");
+        SoapFaultDefinition definition = getFaultDefinition(endpoint, ex);
+        if (definition == null) 
+{
+ 1.           definition = defaultFault;
+        }
+        if (definition == null) 
+{
+            return false;
+        }
+        if (!StringUtils.hasLength(definition.getFaultStringOrReason())) 
+{
+2.            definition.setFaultStringOrReason(ex.getMessage());
+        }
+....
+Problem is if (1.) and (2.) are hit on first exception handled by defaultFault, it is effectively calling 'defaultFault.setFaultOrReason(...)'.  This in essence sets the defaultFault faultOrReason field (as defnition points to the defaultFault instance), making it non-null.  Problem is that subsequent exceptions that are assigned the defaultFault will now have an already populated faultOrReason code (from the first exception), and thus statement (2.) will never be invoked.  This results in all subsequent defaultFault exceptions having the exception message from the first defaultFault.
+Categorizing this as Major as all reported exceptions that map to 'defaultFault' will be incorrect, with exception of first mapped defaultFault exception.  Solution is trivial: use 'default fault factory' to create new instance of defaultFault for every use, or reset the faultOrReason code to null after the message has been constructed.
+====================================================================================
+Below test fragments found the behavior (the second test fails, as the returned exception has the message from the first test.  Yet running the second test standalone works fine:
+  /**
+
+This will happen on badly formed payload (validation error)
+   */
+  public void testInvalidXmlCharacter() throws NoSuchAlgorithmException, IOException, ServletException, DocumentException 
+{
+    // &#1 is illegal xml character
+    String payload = buildEchoPayload("foo"+ (char) 0x01);
+    MockHttpServletResponse mockResp = invokeWebService(payload, "guitest", "bugBgone",
+         HttpServletResponse.SC_INTERNAL_SERVER_ERROR);
+    Element resp = getSoapBodyPayload(mockResp);
+
+    assertEquals("Invalid char preventing xml parsing",
+        "\n" +
+            "<SOAP-ENV:Fault xmlns:SOAP-ENV=\"http://schemas.xmlsoap.org/soap/envelope/\">\n" +
+            "  <faultcode>SOAP-ENV:Server</faultcode>\n" +
+            "  <faultstring xml:lang=\"en\">Could not access envelope: Unable to create envelope from given source: ; nested exception is com.sun.xml.messaging.saaj.SOAPExceptionImpl: Unable to create envelope from given source:</faultstring>\n" +
+            "</SOAP-ENV:Fault>",
+        XmlUtils.toString(resp));
+  }
+
+  public void testThrownAppException() throws NoSuchAlgorithmException, IOException, ServletException, DocumentException 
+{
+    String payload = buildEchoPayload(EchoController.THROW_NULL_POINTER_CMD);
+    MockHttpServletResponse mockResp = invokeWebService(payload, "guitest", "bugBgone",
+        HttpServletResponse.SC_INTERNAL_SERVER_ERROR);
+
+    Element resp = getSoapBodyPayload(mockResp);
+    assertEquals("\n" +
+        "<SOAP-ENV:Fault xmlns:SOAP-ENV=\"http://schemas.xmlsoap.org/soap/envelope/\">\n" +
+        "  <faultcode>SOAP-ENV:Server</faultcode>\n" +
+        "  <faultstring xml:lang=\"en\">Thrown on purpose for testing...</faultstring>\n" +
+        "</SOAP-ENV:Fault>",
+        XmlUtils.toString(resp));
+  }

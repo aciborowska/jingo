@@ -1,0 +1,35 @@
+The SqlPagingQueryProviderFactoryBean class takes a parameter sortKey used to enable paged queries.  This is used in the where clause (to select skip rows already selected in subsequent queries), in an order by clause and to retrieve the result set value for the last item read.  The exact use is determined by the database type, but the general pattern remains the same.
+The examples in the tutorial appear fairly simple, involving a single table only.  We have a use case where two aliased tables are involved.  As the table alias prefix is required in the where clause, appears to be optional in the order by clause and cannot be present when retrieving the result set column by name we have a problem as sortKey is used in all three cases.
+For a page size of 2 we set the reader's queryProvider properties set as follows:
+		<property name="queryProvider">
+			<bean class="org.springframework.batch.item.database.support.SqlPagingQueryProviderFactoryBean">
+				<property name="selectClause" value="select  t1.id, t1.field, t2.other_field" />
+				<property name="dataSource" ref="dataSource" />
+				<property name="fromClause" value="from TABLE_1 t1, TABLE_2 t2 " />
+				<property name="whereClause" value="t1.id = t2.id" />
+				<property name="sortKey" value="t1.id" />
+			</bean>
+		</property>
+The Derby query resulting for the first page is:
+SELECT * FROM ( SELECT t1.id, t1.field, t2.other_field, ROW_NUMBER() OVER () AS ROW_NUMBER FROM TABLE_1 t1, TABLE_2 t2 WHERE t1.id = t2.id ORDER BY t1.id ASC) AS TMP_SUB WHERE TMP_SUB.ROW_NUMBER <= 2
+And queries for subsequent pages are:
+SELECT * FROM ( SELECT t1.id, t1.field, t2.other_field, ROW_NUMBER() OVER () AS ROW_NUMBER FROM TABLE_1 t1, TABLE_2 t2 WHERE t1.id = t2.id  AND t1.id > ? ORDER BY t1.id ASC) AS TMP_SUB WHERE TMP_SUB.ROW_NUMBER <= 2
+In H2 the query for the initial page is:
+SELECT TOP 2 t1.id, t1.field, t2.other_field FROM TABLE_1 t1, TABLE_2 t2 WHERE t1.id = t2.id ORDER BY t1.id ASC
+And queries for sebsequent pages are:
+SELECT TOP 2 t1.id, t1.field, t2.other_field FROM TABLE_1 t1, TABLE_2 t2 WHERE t1.id = t2.id AND t1.id > :_sortKey ORDER BY id ASC
+In both Derby and H2 the result set column retrieval fails.
+We've worked around the problem by subclassing JdbcPagingItemReader and with tricks with reflection effectively changing the line in the inner class JdbcPagingItemReader.PagingRowMapper "startAfterValue = rs.getObject(queryProvider.getSortKey());" to "startAfterValue = rs.getObject(stripAlias(queryProvider.getSortKey()));" where the method stripAlias is defined as:
+        private String stripAlias(String column) {
+            int separator = column.indexOf('.');
+            if(separator > 0) {
+                int columnIndex = separator + 1;
+                if(columnIndex < column.length()) 
+{
+                    column = column.substring(columnIndex);
+                }
+            }
+            return column;
+        }
+We'd like this change made to this class directly or something else with similar effect.
+Another issue you might wish to consider is that a column alias would further confuse things (as it would be required to be used for the order by clause and to retrieve the value from the result set, but not for the where clause).  Perhaps an additional optional property "sortKeyAlias"?

@@ -1,0 +1,43 @@
+With patch ZOOKEEPER-981,  I saw another problem. Hang in zookeeper_close() again. here is the stack:
+(gdb) bt
+#0 0x000000302b80adfb in __lll_mutex_lock_wait () from /lib64/tls/libpthread.so.0
+#1 0x000000302b1307a8 in main_arena () from /lib64/tls/libc.so.6
+#2 0x000000302b910230 in stack_used () from /lib64/tls/libpthread.so.0
+#3 0x000000302b808dde in pthread_cond_broadcast@@GLIBC_2.3.2 () from /lib64/tls/libpthread.so.0
+#4 0x00000000006b4ce8 in adaptor_finish (zh=0x6902060) at src/mt_adaptor.c:217
+#5 0x00000000006b0fd0 in zookeeper_close (zh=0x6902060) at src/zookeeper.c:2297
+(gdb) p zh->ref_counter
+$5 = 1
+(gdb) p zh->close_requested
+$6 = 1
+(gdb) p *zh
+$7 = {fd = 110112576, hostname = 0x6903620 "", addrs = 0x0, addrs_count = 1,
+watcher = 0x62e5dc <doris::meta_register_mgr_t::register_mgr_watcher(_zhandle*, int, int, char const*, void*)>, last_recv = 
+{tv_sec = 1321510694, tv_usec = 552835}
+, last_send = 
+{tv_sec = 1321510694, tv_usec = 552886}
+, last_ping = 
+{tv_sec = 1321510685, tv_usec = 774869}
+, next_deadline = 
+{ tv_sec = 1321510704, tv_usec = 547831}
+, recv_timeout = 30000, input_buffer = 0x0, to_process = {head = 0x0, last = 0x0, lock = {__m_reserved = 0,
+__m_count = 0, __m_owner = 0x0, __m_kind = 0, __m_lock = {__status = 0, __spinlock = 0}}}, to_send = {head = 0x0, last = 0x0, lock = {
+__m_reserved = 0, __m_count = 0, __m_owner = 0x0, __m_kind = 1, __m_lock = {__status = 0, __spinlock = 0}}}, sent_requests = {head = 0x0, last = 0x0,
+cond = {__c_lock = {_status = 1, __spinlock = -1}, __c_waiting = 0x0, __padding = '\0' <repeats 15 times>, __align = 0}, lock = {_m_reserved = 0,
+__m_count = 0, __m_owner = 0x0, __m_kind = 0, __m_lock = {__status = 0, __spinlock = 0}}}, completions_to_process = {head = 0x2aefbff800,
+last = 0x2af0e05f40, cond = {__c_lock = {__status = 592705486850, __spinlock = -1}, __c_waiting = 0x45,
+_padding = "E\000\000\000\000\000\000\000\220\006\000\000\000", __align = 296352743424}, lock = {_m_reserved = 1, __m_count = 0,
+__m_owner = 0x1000026ca, __m_kind = 0, __m_lock = {__status = 0, __spinlock = 0}}}, connect_index = 0, client_id = 
+{client_id = 86551148676999146, passwd = "G懵擀\233\213\f闬202筴\002錪\034"}
+, last_zxid = 82057372, outstanding_sync = 0, primer_buffer = 
+{buffer = 0x6902290 "", len = 40, curr_offset = 44, next = 0x0}
+, primer_storage = 
+{len = 36, protocolVersion = 0, timeOut = 30000, sessionId = 86551148676999146, passwd_len = 16, passwd = "G懵擀\233\213\f闬202筴\002錪\034"}
+,
+primer_storage_buffer = "\000\000\000$\000\000\000\000\000\000u0\0013}惜薵闬000\000\000\020G懵擀\233\213\f闬202筴\002錪\034", state = 0, context = 0x0,
+auth_h = {auth = 0x0, lock = {__m_reserved = 0, __m_count = 0, __m_owner = 0x0, __m_kind = 0, __m_lock = {__status = 0, __spinlock = 0}}},
+ref_counter = 1, close_requested = 1, adaptor_priv = 0x0, socket_readable = 
+{tv_sec = 0, tv_usec = 0}
+, active_node_watchers = 0x6901520,
+active_exist_watchers = 0x69015d0, active_child_watchers = 0x6902ef0, chroot = 0x0}
+I think the ref_counter is suposed to be 2 or 3 or 4 here. it seems not correct. I think maybe we should increase the ref_counter before we set zh->close_request=1, otherwise the do_io thread and do_completion thread may release the handler just after we set zh->close_request and before we increase zh->ref_counter. Thanks again

@@ -1,0 +1,212 @@
+I have a very large application using multiple Spring Data modules, including Spring Data JPA.  I now have a requirement to add some common logic to all JPA repositories.  I tried implementing this by following the documentation.  However, I have run into issues.
+
+There is no method called RepositoryMetadata.getDomainClass.  There is however a method called RepositoryMetadata.getDomainType.  It seems that the documentation needs an update.  However, given that SimpleJpaRepository has a similar method called getDomainClass, it would be better for the method names to be consistent.
+Having followed the documentation to the tee (except for correcting the method name above), my application failed to start.  I have a class @Entity @QueryEntity public class Company and its corresponding repository public interface CompanyRepository extends JpaRepository<Company, String>, QueryDslPredicateExecutor<Company>.  The application failed to start with the error Caused by: org.springframework.data.mapping.PropertyReferenceException: No property findAll found for type Company!.
+
+For the second error I dug into the code for JpaRepositoryFactory.  I think that structuring the code as follows will help extending the class more easily.
+
+
+
+
+
+
+public class JpaRepositoryFactory extends RepositoryFactorySupport {
+
+
+
+
+  ...
+
+
+
+
+  protected Class<?> getTargetRepositoryClass() {
+
+
+
+
+    return SimpleJpaRepository.class;
+
+
+
+
+  }
+
+
+
+
+ 
+
+
+
+
+  @Override
+
+
+
+
+  protected Class<?> getRepositoryBaseClass(RepositoryMetadata metadata) {
+
+
+
+
+    return isQueryDslExecutor(metadata.getRepositoryInterface())
+
+
+
+
+      ? QueryDslJpaRepository.class
+
+
+
+
+      : getTargetRepositoryClass();
+
+
+
+
+  }
+
+
+
+
+ 
+
+
+
+
+  protected <R extends SimpleJpaRepository<T, ID>, T, ID extends Serializable> getTargetRepository(JpaEntityInformation<?, Serializable> entityInformation, EntityManager entityManager) {
+
+
+
+
+    return new SimpleJpaRepository(entityInformation, entityManager);
+
+
+
+
+  }
+
+
+
+
+ 
+
+
+
+
+  protected <T, ID extends Serializable> SimpleJpaRepository<?, ?> getTargetRepository(RepositoryMetadata metadata, EntityManager entityManager) {
+
+
+
+
+    Class<?> repositoryInterface = metadata.getRepositoryInterface();
+
+
+
+
+    JpaEntityInformation<?, Serializable> entityInformation = getEntityInformation(metadata.getDomainType());
+
+
+
+
+ 
+
+
+
+
+   return isQueryDslExecutor(repositoryInterface)
+
+
+
+
+      ? new QueryDslJpaRepository(entityInformation, entityManager)
+
+
+
+
+      : getTargetRepository(entityInformation, entityManager);
+
+
+
+
+  }
+
+
+
+
+  ...
+
+
+
+
+}
+
+
+
+
+
+
+With this foundation in place, my custom code would have greatly simplified to:
+
+
+
+
+
+
+public class MyJpaRepositoryFactory extends JpaRepositoryFactory {
+
+
+
+
+  @Override
+
+
+
+
+  protected Class<?> getTargetRepositoryClass() {
+
+
+
+
+    return MyJpaRepositoryImpl.class;
+
+
+
+
+  }
+
+
+
+
+ 
+
+
+
+
+  @Override
+
+
+
+
+  protected <R extends SimpleJpaRepository<T, ID>, T, ID extends Serializable> getTargetRepository(JpaEntityInformation<?, Serializable> entityInformation, EntityManager entityManager) {
+
+
+
+
+    return new MyJpaRepositoryImpl(entityInformation, entityManager);
+
+
+
+
+  }
+
+
+
+
+}
+
+
+
+
+

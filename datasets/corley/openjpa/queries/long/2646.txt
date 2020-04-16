@@ -1,0 +1,114 @@
+Hello!  This is a follow up/continuation of JIRA OPENJPA-2609.  I will assume the reader slogged through that one as some of the info in that JIRA is very relevant here.  The fix for that JIRA was necessary to plug a hole in PreparedQuery (PQ) cache.  The fix did reduce my customer's occurrence of the exception by around 90%.  However, they still saw the reported exception and in addition they see following exception:
+
+Caused by: java.lang.NullPointerException
+at org.apache.openjpa.persistence.QueryImpl.preExecute(QueryImpl.java:557)
+at org.apache.openjpa.persistence.QueryImpl.execute(QueryImpl.java:285)
+at org.apache.openjpa.persistence.QueryImpl.getResultList(QueryImpl.java:302)
+at com.ibm.ws.persistence.QueryImpl.getResultList(QueryImpl.java:118)
+.....
+
+
+
+As I mentioned in OJ2609, I was not able to exactly recreate the issue.  I described some of the strategic break points I had to use, and the assumptions I had to make.  Alas, I was able to recreate this issue with a multi threaded test, and specific query string (among other things)!  This JIRA will take the reader on another journey through the laborious process I went through to recreate the issue, and finally track down the very, I mean very, narrow window where the CCEx or NPE can occur.  So, settle in and lets start our fun adventure!  
+
+First, let me give an overview of the issue and look at the code to illustrate how the exceptions can occur.  After that I'll dive into the recreate.  
+The exception can occur when an item (a query string mapped to a PQ in my case) in the CacheMap is moved from the  "soft" cache to the main cache.  Please view the CacheMap code to see what I mean by the main cache (see variable 'cacheMap') and what I mean by the soft cache (see variable 'softMap').  When an item exists in the soft cache, and a thread requests that item, the item is moved out of the soft cache and put in the main cache.  If the main cache is full, another item is kicked out of the main cache.  The item which is removed from the main cache is put into a soft cache.  As this move from soft cache to main cache occurs, there is a narrow window where the item appears to not be in the caches at all.  In other words, if a (reader) thread asks (CacheMap.get) for item X, where another (writer) thread is moving item X from the soft cache to the main cache, the reader thread will not see item X and think the item is not cached.
+To see this better, lets look at CacheMap.get:    
+
+ public Object get(Object key) {
+        readLock();
+        try {
+            // Check the main map first
+            Object  val = cacheMap.get(key);
+            if (val == null) {
+                // if we find the key in the soft map, move it back into
+                // the primary map
+                val = softMap.get(key);
+                if (val != null)
+{
+                    put(key, val);
+                }
+else
+{
+                    val = pinnedMap.get(key);
+                }
+            }
+
+            return val;
+        } finally 
+{
+            readUnlock();
+        }
+    }
+
+
+As you can see, we first look in the main cache for a given key (in my scenario the key is a query string).  If it is not found, we look in the soft map.  If it is in the soft map, we call the 'put' method.  The 'put' method is going to take the key out of the soft map and put it in the main cache map.  Let me paste the relevant parts of the put method (I'll leave it to the reader to view the method in its entirety):
+
+public Object put(Object key, Object value) {
+        writeLock();
+        try {
+........
+            // otherwise, put the value into the map and clear it from the
+            // soft map
+            val = put(cacheMap, key, value);
+            if (val == null) 
+{
+                val = remove(softMap, key);
+........
+        }
+ finally 
+{
+            writeUnlock();
+        }
+
+
+As you can see here, this 'put' method calls to another 'put' method which simply puts the key/value into the specified map.  If the map didn't already contain a value for the given key (which I think should always be the case for the cacheMap, or at least for my scenario), null will be returned.  When null is returned, remove is called to remove the key/value from the soft map.  
+Given this, lets look closer at the 'get' method with concurrency in mind.  Take the case where two threads enter the 'get' method at the same time.  Next, assume both threads are moving lock step and they both call 'cacheMap.get' with the same key, and assume the key is not in the main cache.  So at this time both threads will have a 'val' of null.  Next assume one thread gets focus (so the other thread suspends for a moment) and it calls the soft map with the key.  Assume the soft map contains the key.  In this case the thread will move (via the call to 'put') the key/value from the soft cache to the main cache.  This thread will then have a non-null 'val' and will return.  Next assume the suspended thread gets focus and continues.  Since its 'val' is null, it will ask the soft cache for the key.  However, we know that the other thread just moved the key/value from the soft to main cache!  As such, the thread will not find the key in the soft cache and will return a 'val' of null!!!  This is at the heart of the issue!  That is, one thread thinks there is nothing in the cache for their key!  
+The observant reader may notice that the 'get' and 'put' have a 'readLock' and 'writeLock', respectively, which attempts to get a ReentrantLock.  So one would think that there is proper read/write access of the caches to avoid such situations.  However, one must look at the read/writeLock methods.  If you look at the readLock method, you can see that it locks using a '_readLock' variable.  This variable is null for the CacheMap instance created by the PreparedQueryCacheImpl.  Therefore, the readLock method is a no-op.  This means that a reader thread can do a read at any time without any locking concerns.  
+
+Now that we know the heart of the issue (i.e. one thread received an incorrect cache miss), lets look at the implication of this incorrect cache miss.  What I haven't stated is where the threads are at when they call 'get' on the cache.  This is easier to see when looking at the attached test.  Basically though one thread is in PreparedQueryCacheImpl.register, specifically this line:
+
+PreparedQuery cached = get(id);
+
+Here is the stack from my test which I will describe:
+
+PreparedQueryCacheImpl.get(String) line: 193	
+PreparedQueryCacheImpl.register(String, Query, FetchConfiguration) line: 92	
+QueryImpl<X>.preExecute(Map) line: 554	
+
+If you look at the 'register' method, you can see that if the PreparedQuery is not found in the cache (i.e. 'get(id)' returns null), one will be created and an attempt made to put it into the cache.  If you look at  PreparedQueryCacheImpl.cache, you can see a request is made a second time to see if the value is in the cache.  More than likely this time the value will be found in the cache, in which case true is returned.  If not, false is returned.  Either way, it doesn't matter if true or false is returned.  To see why, look at org.apache.openjpa.persistence.QueryImpl.preExecute.  This is the code which has called PreparedQueryCacheImpl.register (see above stack).  Again, this might be more clear when looking at the provided test in the debugger.  You can see in 'org.apache.openjpa.persistence.QueryImpl.preExecute' that if anything other than null is returned from 'register', the code that calls 
+PreparedQuery.reparametrize is skipped!  This is at the heart of the issue.  To understand why, you need to go back to JIRA OPENJPA-2609 and understand the part about PreparedSQLStoreQuery$PreparedSQLExecutor, or understand the fact that a PreparedSQLStoreQuery$PreparedSQLExecutor is the executor. That is, the threads involved here (again, easier to see in the provided test) are using a PreparedSQLStoreQuery$PreparedSQLExecutor.  Given this the parameter must be reparametrize, in other words the parameter needs to be converted to its parameter index (an int).  Because this is skipped, we see the CCEx when trying to convert a string parameter to an expected Integer.  That is, when you look at this line in org.apache.openjpa.kernel.QueryImpl.execute:
+
+StoreQuery.Executor ex = (isInMemory(operation))
+
+The next couple lines below this is where the CCEx occurs, because the parameters have not been converted.  Note that when we are dealing with a 'ExpressionStoreQuery$DataStoreExecutor' (i.e. the very first time a query is executed - not cached - or caching is disabled), the reparamaterization doesn't need to occur because an ''ExpressionStoreQuery$DataStoreExecutor' expects a string parameters, rather than a paramater (int) index.  If you run with the debug module I provide (see below) I add debug to print the 'executor' making is a little easier to see when each of these two executors are used.
+
+Now, that describes the CCEx, but I've said nothing about the NPE.  Well, if you followed the above, as I'll explain, the NPE is very easy to see.  Again, just like the CCEx stack, the NPE stack is in the org.apache.openjpa.persistence.QueryImpl.preExecute method.  Just as was the case above for the CCEx, this method goes to PreparedQueryCacheImpl.register.  This time though, the 'register' returns null, meaning the PQ is already in the cache.  A few lines after the 'register' call, we see these lines:
+
+PreparedQuery pq = _em.getPreparedQuery(_id);
+    if (pq.isInitialized()) {
+
+The code is going back to the cache for the actual PQ.  Using the same "cache miss" scenario as described above, a null PQ will be returned.....obviously when we call pq.isInitialized() on a null, an NPE will occur!
+While this JIRA describes one way to cause the CCEx, I feel there are other holes that could cause the CCEx, or other exceptions.  For example, if you look at 'org.apache.openjpa.persistence.QueryImpl.ignorePreparedQuery()', you can see that it goes to the cache and if an entry is not found, it returns without doing the recompile.  I see a scenario where this is a problem.  That is, taking a look once again at 'QueryImpl.preExecute'.  Before the call to 'PreparedQueryCacheImpl.register' there is a test for null parameters.  If there is a null parameter, the 'ignorePreparedQuery()' method is called.  If you step into this method you can see that a call is made to the cache.  If we go through the same "cache miss" scenario, we will see that an "ignore" is not performed (by "ignore" it appears the Query is recompiled and in so doing the 'PreparedSQLStoreQuery$PreparedSQLExecutor' would be removed and instead a 'ExpressionStoreQuery$DataStoreExecutor' used).  When the "cache miss" occurs and the "ignore" not performed, we can see that yet again the call to PreparedQuery.reparametrize is skipped, thus leading to the same CCEx.  I think we need to fix the case where a "cache miss" could occur in CacheMap, or look at all the cases where the cache is called and account for the possibility of a "cache miss".  The former is likely the best options.
+
+Finally, let me describe the test I've created and attached.  It is named PreparedQueryCacheTest.java and uses the provided entity (MyEntity.java).  This test can be ran as a stand alone JSE JUnit test.  To execute it simply point your classpath to the OpenJPA snapshot jar of your choice.  You can use a simple persistence.xml file (no properties are necessary).  To make it much easier for the test to recreate the issue, you will need to edit the PreparedQueryCacheImpl.java class.  Therefore this does assume the user can edit and recompile the OpenJPA code.  The user should change the CacheMap in PreparedQueryCacheImpl to:
+
+_delegate = new CacheMap(false,2);
+
+from:
+
+_delegate = new CacheMap();
+
+Again, doing this makes it far more likely the issue will occur and is a necessity when running the debug test.  If you look at the test there is a test method to run when running in a debugger, and a test method to run to automatically recreate the exception.  Each test method is commented with enough text to explain how to recreate the exception.  Especially the debug test, the comments in this method detail exactly where to add break points and the necessary flow to recreate the issue in a debugger.  With my test you'll see a CCEx like this:
+
+Thread (Thread-32): Caught the following exception: <openjpa-2.2.3-SNAPSHOT-r422266:1737410 nonfatal user error> org.apache.openjpa.persistence.ArgumentException: Failed to execute query "select o from MyEntity o where o.comments = :mrn and o.id = 1". Check the query syntax for correctness. See nested exception for details.
+  With cause: java.lang.ClassCastException: java.lang.String cannot be cast to java.lang.Integer
+
+
+In some cases you may see the NPE reported in the beginning of the JIRA.  However, the CCEx occurs more often than the NPE.  
+
+In addition to the test, I've attached a debug module which has system println's to help demonstrate the issue.  The debug module is named PreparedQueryTest.debug. 
+
+Thanks,
+
+Heath Thomann

@@ -1,0 +1,23 @@
+The Problem
+A ZooKeeper Watch can be placed on a single znode and when the znode changes a Watch event is sent to the client. If there are thousands of znodes being watched, when a client (re)connect, it would have to send thousands of watch requests. At Facebook, we have this problem storing information for thousands of db shards. Consequently a naming service that consumes the db shard definition issues thousands of watch requests each time the service starts and changes client watcher.
+
+Proposed Solution
+We add the notion of a Persistent Recursive Watch in ZooKeeper. Persistent means no Watch reset is necessary after a watch-fire. Recursive means the Watch applies to the node and descendant nodes. A Persistent Recursive Watch behaves as follows:
+
+
+	Recursive Watch supports all Watch semantics: CHILDREN, DATA, and EXISTS.
+	CHILDREN and DATA Recursive Watches can be placed on any znode.
+	EXISTS Recursive Watches can be placed on any path.
+	A Recursive Watch behaves like a auto-watch registrar on the server side. Setting a  Recursive Watch means to set watches on all descendant znodes.
+	When a watch on a descendant fires, no subsequent event is fired until a corresponding getData(..) on the znode is called, then Recursive Watch automically apply the watch on the znode. This maintains the existing Watch semantic on an individual znode.
+	A Recursive Watch overrides any watches placed on a descendant znode. Practically this means the Recursive Watch Watcher callback is the one receiving the event and event is delivered exactly once.
+
+
+
+A goal here is to reduce the number of semantic changes. The guarantee of no intermediate watch event until data is read will be maintained. The only difference is we will automatically re-add the watch after read. At the same time we add the convience of reducing the need to add multiple watches for sibling znodes and in turn reduce the number of watch messages sent from the client to the server.
+
+There are some implementation details that needs to be hashed out. Initial thinking is to have the Recursive Watch create per-node watches. This will cause a lot of watches to be created on the server side. Currently, each watch is stored as a single bit in a bit set relative to a session - up to 3 bits per client per znode. If there are 100m znodes with 100k clients, each watching all nodes, then this strategy will consume approximately 3.75TB of ram distributed across all Observers. Seems expensive.
+
+Alternatively, a blacklist of paths to not send Watches regardless of Watch setting can be set each time a watch event from a Recursive Watch is fired. The memory utilization is relative to the number of outstanding reads and at worst case it's 1/3 * 3.75TB using the parameters given above.
+
+Otherwise, a relaxation of no intermediate watch event until read guarantee is required. If the server can send watch events regardless of one has already been fired without corresponding read, then the server can simply fire watch events without tracking.

@@ -1,0 +1,9 @@
+Code lines related are :
+		if (getTransactionManager() != null) {
+			getTransactionManager().getTransaction()....
+We have hit a situation were getTransactionManager() does return not null, however getTransaction() returns null.
+Using WebLogicJtaTransactionManager, we have an environment were JTA transactions are created for us by a different software layer, which is meant to have full control over issuing commit() or rollback() on the transaction passed to us. To guarantee this, we use "PROPAGATION_MANDATORY,+Throwable"
+Investigating the possible misbehaving code that could possibly be written in our layer, we wrote code that performs a lookup to find the inflight JTA UserTransaction, and performs a commit(). According to the UserTransaction API, that would unattach the transaction to the thread.
+When the application shuts down, I believe the house keeping work around this transaction ends up calling the doRegisterAfterCompletionWithJtaTransaction(), which gives NullPointerException, since getTransactionManager().getTransaction() gives null.
+We have put in place an easy workaround by subclassing WebLogicJtaTransactionManager and overwriting doRegisterAfterCompletionWithJtaTransaction() so that it checks for that null and either calls super.doRegister.... to resume normal processing or throws an IllegalStateException, so as to hook with the existing handling foreseen in registerAfterCompletionWithExistingTransaction(). In that way, it returns a more graceful NoTransactionException.
+Are we missing some config settings that could catter better for our requirement (that is, no messing with the state of the incoming, borrowed JTA transaction) ?

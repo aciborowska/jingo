@@ -1,0 +1,104 @@
+running 
+
+org.apache.openjpa.enhance.PCEnhancer -p ptp/test/issue5/persistence.xml
+
+did not do the class file enhancement, result in The class does not have metadata - enhanced as persistence-aware.
+
+The message are
+250  test  TRACE  [main] openjpa.MetaData - Finished parsing metadata resource "file:/C:/workspace/jpatest/TestOpenJPA/bin/ptp/test/issue5/orm.xml".
+250  test  TRACE  [main] openjpa.MetaData - Parsing class "ptp.test.issue5.T5Entity".
+250  test  TRACE  [main] openjpa.Enhance - Enhancing type "class ptp.test.issue5.T5Entity".
+250  test  WARN   [main] openjpa.Enhance - Type "class ptp.test.issue5.T5Entity" has no metadata; enhancing as persistence aware. If you intended for "class ptp.test.issue5.T5Entity" to be persistence-capable, then this means that OpenJPA could not find any metadata for "class ptp.test.issue5.T5Entity". This can happen if the directory containing your metadata is not in your CLASSPATH, or if your metadata files are not named properly. See the documentation on metadata placement for more information.
+250  test  TRACE  [main] openjpa.Tool - The class does not have metadata - enhanced as persistence-aware.
+
+
+
+modify the following method of the PCEnhancer to get it to work
+
+
+    /**
+
+	Enhance the given classes.
+     */
+    public static boolean run(OpenJPAConfiguration conf, String[] args,
+        Flags flags, MetaDataRepository repos, BytecodeWriter writer,
+        ClassLoader loader)
+        throws IOException {
+        if (loader == null)
+            loader = conf.getClassResolverInstance().
+                getClassLoader(PCEnhancer.class, null);
+        if (flags.tmpClassLoader)
+            loader = new TemporaryClassLoader(loader);
+
+
+
+        if (repos == null) 
+{
+            repos = conf.newMetaDataRepositoryInstance();
+            repos.setSourceMode(MetaDataRepository.MODE_META);
+        }
+
+        Log log = conf.getLog(OpenJPAConfiguration.LOG_TOOL);
+        Collection classes;
+        String [] persistentTypeNames = args;
+        if (args.length == 0) {
+            log.info(_loc.get("running-all-classes"));
+            classes = repos.getPersistentTypeNames(true, loader);
+            if (classes == null) 
+{
+            	log.warn(_loc.get("no-class-to-enhance"));
+            	return false;
+            }
+            persistentTypeNames = new String [ classes.size() ];
+            classes.toArray( persistentTypeNames );
+        }
+        ClassArgParser cap = conf.getMetaDataRepositoryInstance().
+            getMetaDataFactory().newClassArgParser();
+        cap.setClassLoader(loader);
+        classes = new HashSet();
+        for (int i = 0; i < persistentTypeNames.length; i++)
+            classes.addAll(Arrays.asList(cap.parseTypes(persistentTypeNames[i])));
+
+
+        Project project = new Project();
+        BCClass bc;
+        PCEnhancer enhancer;
+        int status;
+        for (Iterator itr = classes.iterator(); itr.hasNext() {
+            Object o = itr.next();
+            if (log.isTraceEnabled())
+                log.trace(_loc.get("enhance-running", o));
+
+            if (o instanceof String)
+                bc = project.loadClass((String) o);
+            else
+                bc = project.loadClass((Class) o);
+            enhancer = new PCEnhancer(conf, bc, repos, loader);
+            if (writer != null)
+                enhancer.setBytecodeWriter(writer);
+            enhancer.setDirectory(flags.directory);
+            enhancer.setAddDefaultConstructor(flags.addDefaultConstructor);
+            status = enhancer.run();
+            if (status == ENHANCE_NONE) 
+{
+                if (log.isTraceEnabled())
+                    log.trace(_loc.get("enhance-norun"));
+            }
+ else if (status == ENHANCE_INTERFACE) 
+{
+                if (log.isTraceEnabled())
+                    log.trace(_loc.get("enhance-interface"));
+            }
+ else if (status == ENHANCE_AWARE) 
+{
+                if (log.isTraceEnabled())
+                    log.trace(_loc.get("enhance-aware"));
+                enhancer.record();
+            }
+ else
+                enhancer.record();
+            project.clear();
+        }
+        return true;
+    }
+

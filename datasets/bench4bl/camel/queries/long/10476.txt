@@ -1,0 +1,83 @@
+Problem: When running with a Camel Blueprint project a configAdminFile is not used to populate propertyplacehoders in camel-test-blueprint when exectued with camel-maven-plugin(camel:run). So a user can't run camel locally in a similar way to running in Karaf with file based property placeholder values. 
+Workaround: I think, but haven't tested yet, that you can work around this locally using the methods described here: http://ggrzybek.blogspot.com/2015/12/camel-blueprint-test-support.html and/or how this solution  https://github.com/cschneider/Karaf-Tutorial/tree/master/camel/order/src appears to use exec:java locally and loads the properties via PropertiesComponent.
+To reproduce the problem:
+Create a new project using camel-archetype-blueprint. (You need to change the log4j config to make it run.) To reduce the time, I created a project that runs here: https://github.com/ryanco/propertyconfig. Instead of using a default in the blueprint XML for the propertyplaceholder, I setup the POM to include the following:
+
+
+
+      <plugin>
+
+        <groupId>org.apache.camel</groupId>
+
+        <artifactId>camel-maven-plugin</artifactId>
+
+        <version>2.18.0</version>
+
+        <configuration>
+
+	      <useBlueprint>true</useBlueprint
+
+         <configAdminPid>com.yarsquidy.props.propertyconfig</configAdminPid>
+
+          <configAdminFileName>etc/com.yarsquidy.props.propertyconfig</configAdminFileName>
+
+        </configuration>
+
+      </plugin>
+
+
+
+In Camel 2.15.2 or earlier, this file would be loaded when mvn camel:run was invoked and the properties would be available via the PID at run time. After the changes made in CAMEL-9313, it appears that the method org.apache.camel.test.blueprint.CamelBlueprintHelper#setPersistentFileForConfigAdmin is only called in when the createTestBundle pathway is taken in org.apache.camel.test.blueprint.CamelBlueprintHelper#createBundleContext(java.lang.String, java.lang.String, boolean, java.lang.String, java.lang.String, java.lang.String, java.lang.String[]...). So it appears test using CamelBlueprintTestSupport get this functionality (as shown by the tests) but things executed from camel:run do not.
+Here you can see in Camel 2.14 that call to org.apache.camel.test.blueprint.CamelBlueprintHelper#setPersistentFileForConfigAdmin is made after the bundelContext is created.
+https://github.com/apache/camel/blob/camel-2.14.x/components/camel-test-blueprint/src/main/java/org/apache/camel/test/blueprint/Main.java#L103
+In the master branch version, that call is no longer made from main after the context is returned.
+https://github.com/apache/camel/blob/master/components/camel-test-blueprint/src/main/java/org/apache/camel/test/blueprint/Main.java#L106
+I made a change locally to add a similar call to org.apache.camel.test.blueprint.CamelBlueprintHelper#setPersistentFileForConfigAdmin in Camel 2.18:
+
+
+
+LOG.debug("Starting Blueprint XML file: " + descriptors);
+
+if (configAdminPid != null && configAdminFileName != null) {
+
+		// pid/file is used to set INITIAL content of ConfigAdmin to be used when blueprint container is started
+
+		LOG.info("ConfigAdminPid and ConfigAdminFileName are not null");
+
+		bundleContext = createBundleContext(bundleName, new String[] {configAdminFileName, configAdminPid});
+
+} else {
+
+		bundleContext = createBundleContext(bundleName);
+
+}
+
+CamelBlueprintHelper.setPersistentFileForConfigAdmin(bundleContext, configAdminPid, configAdminFileName, new Properties(), null, null, false);
+
+
+
+Here is the output of the log statement from the example before this change:
+
+[ntext          INFO  Apache Camel 2.18.0 (CamelContext: blueprint-bean-context) started in 0.214 seconds
+
+[ntext) thread #0 - timer://foo] timerToLog                     INFO  The message contains ${greeting} at 2016-11-14 08:42:03
+
+[ntext) thread #0 - timer://foo] timerToLog                     INFO  The message contains ${greeting} at 2016-11-14 08:42:08
+
+
+
+Here is the output of the log statement from the example after this change:
+
+[         Blueprint Extender: 3] BlueprintCamelContext          INFO  Apache Camel 2.18.1-SNAPSHOT (CamelContext: blueprint-bean-context) started in 0.257 seconds
+
+[ntext) thread #0 - timer://foo] timerToLog                     INFO  The message contains Hello From File! at 2016-11-14 08:54:09
+
+[ntext) thread #0 - timer://foo] timerToLog                     INFO  The message contains Hello From File! at 2016-11-14 08:54:14
+
+
+
+As you can see before the change, the $
+{greeting}
+ property is not poplulated via propertyplacehoder. After the change it is replaced.
+Given all the discussion of timing related issues in CAMEL-9313, I'm hesitant to say this is a good enough solution or that it aligns with the intention of the changes made in that fix. Given that configAdminFileName and configAdminPid are passed into createBundleContext, perhaps the call to org.apache.camel.test.blueprint.CamelBlueprintHelper#setPersistentFileForConfigAdmin should happen inside createBundleContext or one of it sub-methods. 
+Overall, I "think" a user should be able to use the configAdminPid and configAdminFileName settings to load properties via camel:run rather than work aound it, but I could be persumptious there.

@@ -1,0 +1,119 @@
+SWS-750 fixed data corruption when first read() from the stream returned just 1 or 2 bytes instead of all three.
+But the BOM removal functionality still won't work e.g. if the first byte is sent separately.
+I suggest a modification like this (haven't tested it):
+
+
+
+
+
+
+   private InputStream checkForUtf8ByteOrderMark(InputStream inputStream) throws IOException {
+
+
+
+
+       PushbackInputStream pushbackInputStream = new PushbackInputStream(new BufferedInputStream(inputStream), 3);
+
+
+
+
+       byte[] bytes = new byte[3];
+
+
+
+
+       int bytesRead = 0;
+
+
+
+
+       // Ensure filling the buffer
+
+
+
+
+       while (bytesRead < bytes.length) {
+
+
+
+
+           int n = pushbackInputStream.read(bytes, bytesRead, bytes.length - bytesRead);
+
+
+
+
+           if (n > 0) {
+
+
+
+
+               bytesRead += n;
+
+
+
+
+           } else {
+
+
+
+
+               break;
+
+
+
+
+           }
+
+
+
+
+       }
+
+
+
+
+       if (bytesRead > 0) {
+
+
+
+
+           // check for the UTF-8 BOM, and remove it if there. See SWS-393
+
+
+
+
+           if (!isByteOrderMark(bytes)) {
+
+
+
+
+               pushbackInputStream.unread(bytes, 0, bytesRead);
+
+
+
+
+           }
+
+
+
+
+       }
+
+
+
+
+       return pushbackInputStream;
+
+
+
+
+   }
+
+
+
+
+
+
+The thing is that the read() call guarantees just one byte. And this situation isn't that rare - some implementations of TLSv1 really send the first byte separately, our customer had this problem with a WS client based on WinHttp.WinHttpRequest object on Windows 2008 R2. We had to workaround SWS-750 by forcing SSLv3 (before we learned that it is actually fixed).
+So if anybody had bad luck of having the TLSv1 + BOM issue, they would be affected.
+Hope this helps.

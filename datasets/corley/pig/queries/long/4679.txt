@@ -1,0 +1,36 @@
+On encountering a non-HDFS location in the input (for example a JOIN involving both HBase tables and intermediate temp files), Pig 0.14 ReducerEstimator is returning total input size as -1 (unknown) where as in Pig 0.12.1 it was returning the sum of temp file sizes as the total size. Since -1 is returned as the input size, Pig end up using only one reducer for the job.
+
+STEPS TO REPRODUCE:
+1.	Create an HBase table with enough data.  Using PerformanceEvaluation tool to generate data
+
+hbase org.apache.hadoop.hbase.PerformanceEvaluation --presplit=20 --rows=1000000 sequentialWrite 10
+
+
+
+2.	Dump the table data into a file which we can then use in a Pig JOIN.  Following Pig script generates the data file
+
+$ pig
+A = LOAD 'hbase://TestTable' USING org.apache.pig.backend.hadoop.hbase.HBaseStorage('info:data', '-loadKey') AS (row_key: chararray, data: chararray);
+STORE A INTO 'hdfs:///tmp/re_test/test_table_data' USING PigStorage('|');
+
+
+
+3.	Check file size to make sure that it is more than 1,000,000,000 which is the default bytes per reducer Pig configuration
+
+$ hdfs dfs -count hdfs:///tmp/re_test/test_table_data
+QA:           1           41        10280000000 hdfs:///tmp/re_test/test_table_data
+PROD:         1           57        10280000000 hdfs:///tmp/re_test/test_table_data
+
+
+
+4.	Run a Pig script that joins the HBase table with the data file.  QA and PROD will use different number of reducers.  QA (176243) should run 1 reducer and PROD (176258) should run 11 reducers (10,280,000,000 / 1,000,000,000)
+
+$ pig
+A = LOAD 'hbase://TestTable' USING org.apache.pig.backend.hadoop.hbase.HBaseStorage('info:data', '-loadKey') AS (row_key: chararray, data: chararray);
+B = LOAD 'hdfs:///tmp/re_test/test_table_data' USING PigStorage('|') AS (row_key: chararray, data: chararray);
+C = JOIN A BY row_key, B BY row_key;
+STORE C INTO 'hdfs:///tmp/re_test/test_table_data_join' USING PigStorage('|');
+
+
+
+Pig 0.12.1 ran 11 reduce, Pig 0.13+ run only 1 reduce.

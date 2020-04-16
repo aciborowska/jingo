@@ -1,0 +1,172 @@
+We are just upgrading to 2.1.8 and our existing xml batch configuration will no longer load.  
+Here is a snippet of the configuration that is failing:
+
+
+
+
+
+
+    <bean id="simpleStep" class="org.springframework.batch.core.step.item.FaultTolerantStepFactoryBean"
+
+
+
+
+          abstract="true">
+
+
+
+
+        <property name="transactionManager" ref="transactionManager"/>
+
+
+
+
+        <property name="jobRepository" ref="jobRepository"/>
+
+
+
+
+        <property name="startLimit" value="100"/>
+
+
+
+
+        <property name="commitInterval" value="1"/>
+
+
+
+
+        <property name="backOffPolicy">
+
+
+
+
+            <bean class="org.springframework.batch.retry.backoff.ExponentialBackOffPolicy">
+
+
+
+
+                <property name="initialInterval" value="1000"/>
+
+
+
+
+            </bean>
+
+
+
+
+        </property>
+
+
+
+
+        <property name="retryLimit" value="5"/>
+
+
+
+
+        <property name="retryableExceptionClasses">
+
+
+
+
+            <map>
+
+
+
+
+                <entry key="org.springframework.dao.ConcurrencyFailureException" value="true"/>
+
+
+
+
+            </map>
+
+
+
+
+        </property>
+
+
+
+
+    </bean>
+
+
+
+
+ 
+
+
+
+
+    <step id="createCatalogueValidateStep" parent="simpleStep" next="createCataloguePostValidateStep">
+
+
+
+
+         <tasklet transaction-manager="transactionManager">
+
+
+
+
+             <chunk reader="csvStagedProductReader" writer="hibernateStagedProductWriter" commit-interval="10"/>
+
+
+
+
+             <listeners>
+
+
+
+
+                 <listener ref="createCatalogueValidateItemListener"/>
+
+
+
+
+             </listeners>
+
+
+
+
+         </tasklet>
+
+
+
+
+    </step>
+
+
+
+
+
+
+And we are getting the error:
+The field 'retry-limit' is not permitted on the step [createCatalogueValidateStep] because there is no 'retryable-exception-classes'.
+When I debug the code, I can see that the StepParserStepFactoryBean has a retryLimit which it got from the parent bean but no retryableExceptionClasses.  Further investigation lead me to this code in ChunkElementParser:
+
+
+
+
+
+
+	// Even if there is no retryLimit, we can still accept exception
+
+
+
+
+	// classes for an abstract parent bean definition
+
+
+
+
+	propertyValues.addPropertyValue("retryableExceptionClasses", retryableExceptions);
+
+
+
+
+
+
+The problem is that this always sets the retryableExceptionClasses property even if it is not provided.  When the bean definitions are merged, the parent bean's definition of retryableExceptionClasses is overridden by an empty definition.

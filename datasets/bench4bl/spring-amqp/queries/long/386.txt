@@ -1,0 +1,195 @@
+It seems like when the JVM is shutting down, there is a possible deadlock condition with org.springframework.amqp.rabbit.listener.SimpleMessageListenerContainer#restart.
+Specifically one thread is executing this stack trace:
+
+
+
+
+
+
+Thread 4856: (state = BLOCKED)
+
+
+
+
+ - java.lang.Object.wait(long) @bci=0 (Interpreted frame)
+
+
+
+
+ - java.lang.Object.wait() @bci=2, line=503 (Interpreted frame)
+
+
+
+
+ - com.rabbitmq.utility.BlockingCell.get() @bci=12, line=50 (Interpreted frame)
+
+
+
+
+ - com.rabbitmq.utility.BlockingCell.uninterruptibleGet() @bci=5, line=89 (Interpreted frame)
+
+
+
+
+ - com.rabbitmq.utility.BlockingValueOrException.uninterruptibleGetValue() @bci=5, line=33 (Interpreted frame)
+
+
+
+
+ - com.rabbitmq.client.impl.AMQChannel$BlockingRpcContinuation.getReply() @bci=8, line=343 (Interpreted frame)
+
+
+
+
+ - com.rabbitmq.client.impl.ChannelN.basicCancel(java.lang.String) @bci=74, line=964 (Interpreted frame)
+
+
+
+
+ - sun.reflect.NativeMethodAccessorImpl.invoke0(java.lang.reflect.Method, java.lang.Object, java.lang.Object[]) @bci=0 (Interpreted frame)
+
+
+
+
+ - sun.reflect.NativeMethodAccessorImpl.invoke(java.lang.Object, java.lang.Object[]) @bci=87, line=57 (Interpreted frame)
+
+
+
+
+ - sun.reflect.DelegatingMethodAccessorImpl.invoke(java.lang.Object, java.lang.Object[]) @bci=6, line=43 (Compiled frame)
+
+
+
+
+ - java.lang.reflect.Method.invoke(java.lang.Object, java.lang.Object[]) @bci=57, line=606 (Compiled frame)
+
+
+
+
+ - org.springframework.amqp.rabbit.connection.CachingConnectionFactory$CachedChannelInvocationHandler.invoke(java.lang.Object, java.lang.reflect.Method, java.lang.Object[]) @bci=520, line=348 (Interpreted frame)
+
+
+
+
+ - com.sun.proxy.$Proxy40.basicCancel(java.lang.String) @bci=20 (Interpreted frame)
+
+
+
+
+ - org.springframework.amqp.rabbit.connection.RabbitUtils.closeMessageConsumer(com.rabbitmq.client.Channel, java.lang.String, boolean) @bci=29, line=126 (Interpreted frame)
+
+
+
+
+ - org.springframework.amqp.rabbit.listener.BlockingQueueConsumer.stop() @bci=104, line=251 (Interpreted frame)
+
+
+
+
+ - org.springframework.amqp.rabbit.listener.SimpleMessageListenerContainer.restart(org.springframework.amqp.rabbit.listener.BlockingQueueConsumer) @bci=37, line=414 (Interpreted frame)
+
+
+
+
+ - org.springframework.amqp.rabbit.listener.SimpleMessageListenerContainer.access$1400(org.springframework.amqp.rabbit.listener.SimpleMessageListenerContainer, org.springframework.amqp.rabbit.listener.BlockingQueueConsumer) @bci=6, line=58 (Interpreted frame)
+
+
+
+
+ - org.springframework.amqp.rabbit.listener.SimpleMessageListenerContainer$AsyncMessageProcessingConsumer.run() @bci=709, line=599 (Interpreted frame)
+
+
+
+
+ - java.lang.Thread.run() @bci=11, line=744 (Interpreted frame)
+
+
+
+
+
+
+This thread seems to run "forever" without advancing while a thread attempts to shutdown:
+
+
+
+
+
+
+Thread 4593: (state = BLOCKED)
+
+
+
+
+ - org.springframework.amqp.rabbit.listener.SimpleMessageListenerContainer.doShutdown() @bci=131, line=371 (Interpreted frame)
+
+
+
+
+ - org.springframework.amqp.rabbit.listener.AbstractMessageListenerContainer.shutdown() @bci=60, line=307 (Interpreted frame)
+
+
+
+
+ - org.springframework.amqp.rabbit.listener.SimpleMessageListenerContainer.doStop() @bci=5, line=347 (Interpreted frame)
+
+
+
+
+ - org.springframework.amqp.rabbit.listener.AbstractMessageListenerContainer.stop() @bci=5, line=388 (Interpreted frame)
+
+
+
+
+ - org.springframework.integration.amqp.inbound.AmqpInboundChannelAdapter.doStop() @bci=8, line=90 (Interpreted frame)
+
+
+
+
+ - org.springframework.integration.endpoint.AbstractEndpoint.stop() @bci=32, line=100 (Interpreted frame)
+
+
+
+
+ - org.springframework.integration.endpoint.AbstractEndpoint.stop(java.lang.Runnable) @bci=17, line=115 (Interpreted frame)
+
+
+
+
+ - org.springframework.context.support.DefaultLifecycleProcessor.doStop(java.util.Map, java.lang.String, java.util.concurrent.CountDownLatch, java.util.Set) @bci=223, line=223 (Interpreted frame)
+
+
+
+
+ - org.springframework.context.support.DefaultLifecycleProcessor.access$300(org.springframework.context.support.DefaultLifecycleProcessor, java.util.Map, java.lang.String, java.util.concurrent.CountDownLatch, java.util.Set) @bci=11, line=51 (Interpreted frame)
+
+
+
+
+ - org.springframework.context.support.DefaultLifecycleProcessor$LifecycleGroup.stop() @bci=195, line=356 (Interpreted frame)
+
+
+
+
+ - org.springframework.context.support.DefaultLifecycleProcessor.stopBeans() @bci=263, line=196 (Interpreted frame)
+
+
+
+
+ - org.springframework.context.support.DefaultLifecycleProcessor.onClose() @bci=5, line=113 (Interpreted frame)
+
+
+
+
+ - org.springframework.context.support.AbstractApplicationContext.doClose() @bci=212, line=1057 (Interpreted frame)
+
+
+
+
+ - org.springframework.context.support.AbstractApplicationContext.close() @bci=18, line=1010 (Interpreted frame)
+
+
+
+
+
+
+It seems that the first thread is holding the consumersMonitor lock indefinitely while preventing the shutdown thread from advancing.

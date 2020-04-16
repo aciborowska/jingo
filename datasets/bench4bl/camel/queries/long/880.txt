@@ -1,0 +1,45 @@
+When running a dynamic script evaluation in a setHeader, the header is lost as the Pipeline chain uses the data from the out body as the source of headers. 
+So trying to figure this out, I looked into the source, and found that if the getOut is not null, the out message is used to set the header in the setHeader processor. Unfortunately in the script engine this block of code always ensures that it's NOT null. 
+script builder class line 520 of Camel 1.4 
+        ScriptContext context = engine.getContext(); 
+        int scope = ScriptContext.ENGINE_SCOPE; 
+        context.setAttribute("context", exchange.getContext(), scope); 
+        context.setAttribute("exchange", exchange, scope); 
+        context.setAttribute("request", exchange.getIn(), scope); 
+        context.setAttribute("response", exchange.getOut(), scope); 
+The place were the out message is used is here in the Pipeline class at line 79 
+            if (first) 
+{ 
+                first = false; 
+            }
+ else 
+{ 
+                nextExchange = createNextExchange(processor, nextExchange); 
+            }
+ 
+The specifics of my setup were:
+Used spring with the following configuration:
+	<camel:camelContext>
+		<camel:route>
+			<camel:from uri="jms://LLAQueue?disableReplyTo=true" />
+			<camel:setHeader headerName="activity.type">
+				<camel:jxpath>exchange.getIn().getBody().getExerciseHighLevelActivity().getActivityType()</camel:jxpath>
+			</camel:setHeader>
+			<camel:choice>
+				<camel:when>
+					<camel:javaScript>
+						exchange.getIn().getHeader('activity.type') == 3
+					</camel:javaScript>
+					<camel:transform>
+						<camel:javaScript>
+							exchange.getIn().getBody().getData() !=
+							undefined ?
+							exchange.getIn().getBody().getData() : ""
+						</camel:javaScript>
+					</camel:transform>
+					<camel:to uri="log:info?showAll=true" />
+				</camel:when>
+			</camel:choice>
+		</camel:route>
+	</camel:camelContext>
+I did not test this problem with other exchange types, just the JMS type.

@@ -1,0 +1,9 @@
+HIVE-13395 solves the the lost update problem with some inefficiencies.
+1. TxhHandler.OperationType is currently derived from LockType.  This doesn't  distinguish between Update and Delete but would be useful.  See comments in TxnHandler.  Should be able to pass in Insert/Update/Delete info from client into TxnHandler.
+2. TxnHandler.addDynamicPartitions() should know the OperationType as well from the client.  It currently extrapolates it from TXN_COMPONENTS.  This works but requires extra SQL statements and is thus less performant.  It will not work multi-stmt txns.  See comments in the code.
+3. TxnHandler.checkLock() see more comments around "isPartOfDynamicPartitionInsert".  If TxnHandler knew whether it is being called as part of an op running with dynamic partitions, it could be more efficient.  In that case we don't have to write to TXN_COMPONENTS at all during lock acquisition.  Conversely, if not running with DynPart then, we can kill current txn on lock grant rather than wait until commit time.
+4. TxnHandler.addDynamicPartitions() - the insert stmt here should combing multiple rows into single SQL stmt (but with a limit for extreme cases)
+5. TxnHandler.enqueueLockWithRetry() - this currently adds components that are only being read to TXN_COMPONENTS.   This is useless at best since read op don't generate anything to compact.  For example, delete from T where t1 in (select c1 from C) - no reason to add C to txn_components but we do.
+All of these require some Thrift changes
+Once done, re-enable TestDbTxnHandler2.testWriteSetTracking11()
+Also see comments in here

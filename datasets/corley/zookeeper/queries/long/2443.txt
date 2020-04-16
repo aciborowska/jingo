@@ -1,0 +1,39 @@
+Hey,
+
+I encountered some issues with the zookeepeer c client.
+
+The problem starts in the zookeeper_init_internal method. A lot of initialization work is performed here and if any of the initialization routines fails, the code jumps to the "abort" label to perform various cleanup tasks [1]. The conceptual issue is that a bunch of the cleanup code tries to take locks on the zk structure that are only intialized in adaptor_init in line 1181 (at the very end of the zookeeper_init_internal method) [2]. So if we fail before reaching adaptor_init this causes trouble.
+
+One specific instance of an invalid memory access that this causes is in free_completions [3]. Here, in line 1651 zoo_lock_auth will fail because it tries to grab an invalid mutex, after which the a_list struct is uninitialized (the linked list next pointer points to random memory) and subsequently the free routine segfaults.
+
+An easy way to trigger this bug-path is to pass an invalid hostname, or do anything else that causes the zookeeper_init_internal method to fail before adaptor_init.
+
+In my local checkout/codebase, I have added correct initialization for the a_list struct in the free_completions routine, which at least fixes the segfault for now. However this still leaves the issue that the cleanup code tries to grab a lot of invalid locks, which all fail. I think in order to fix this properly, one would need to do a larger refactoring of the code (add another adaptor_preinit routine to the adaptor interface maybe?) and I wasn't sure if that would be appreciated, so I didn't attach a patch for now. If someone wants me to try and clean this up, I would be happy to give it a try.
+
+PS: I think this bug was introduced in SVN #1719528, which - as it seems - tried to work around the uninitialized locks problem by adding an int return code to all the lock_xxx functions, allowing them to indicate a failure. The change introduce the invalid memory access since some (always required) init code is only run after the lock was obtained successfully.
+
+However, I think there is a much large issue with the change and I think it must be reverted. Trying to lock an uninitialized mutex is undefined behaviour on POSIX and may lead to deadlocks, etc.
+
+>> If mutex does not refer to an initialized mutex object, the behavior of pthread_mutex_lock(), pthread_mutex_trylock(), and pthread_mutex_unlock() is undefined.
+
+http://pubs.opengroup.org/onlinepubs/9699919799/functions/pthread_mutex_lock.html
+
+[1] https://github.com/apache/zookeeper/blob/trunk/src/c/src/zookeeper.c#L1078
+[2] https://github.com/apache/zookeeper/blob/trunk/src/c/src/zookeeper.c#L1181
+[3] https://github.com/apache/zookeeper/blob/trunk/src/c/src/zookeeper.c#L1651
+
+------------------
+
+BACKTRACE
+
+Program received signal SIGSEGV, Segmentation fault.
+
+0x000000010004f6d5 in free_auth_completion (a_list=0x7fff5fbff048) at /deps/3rdparty/zookeeper/source/src/zookeeper.c:260
+260             tmp = tmp->next;
+
+#0  0x000000010004f6d5 in free_auth_completion (a_list=0x7fff5fbff048) at /deps/3rdparty/zookeeper/source/src/zookeeper.c:260
+#1  0x000000010004f500 in free_completions (zh=0x1003022f0, callCompletion=1, reason=-116) at /deps/3rdparty/zookeeper/source/src/zookeeper.c:1219
+#2  0x0000000100057bfd in cleanup_bufs (zh=0x1003022f0, callCompletion=1, rc=-116) at /deps/3rdparty/zookeeper/source/src/zookeeper.c:1227
+#3  0x000000010004ee42 in destroy (zh=0x1003022f0) at /deps/3rdparty/zookeeper/source/src/zookeeper.c:393
+#4  0x000000010004eaf3 in zookeeper_init (host=0x1006005b0 "xxxinvalidhostname:2181", watcher=0x100007670 <xxx::zk_watch_cb(_zhandle*, int, int, char const*, void*)>, 
+    recv_timeout=10000, clientid=0x0, context=0x100600350, flags=0) at /deps/3rdparty/zookeeper/source/src/zookeeper.c:877

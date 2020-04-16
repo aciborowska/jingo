@@ -1,0 +1,107 @@
+In previous versions of Compress, we used the Compress library in our application without requiring any other libraries.  Since the introduction of XZ, the library crashes because it does not dynamically try to find the XZ classes. Our application does not use or need XZ, and we cannot add another ~100KB file to our application.
+To reproduce:
+
+
+
+        try {
+
+// <properties><mimeTypeRepository resource="/etc/tika-mimetypes.xml" magic="true"/></properties>
+
+            tika = new TikaConfig(getClass().getClassLoader().getResourceAsStream("etc/tika-config.xml"));
+
+        } catch (Throwable t) {
+
+            t.printStackTrace();
+
+            throw new MimeTypeException("Cannot load tika-config.xml", t);
+
+        }
+
+        detector = tika.getDetector();
+
+        MediaType contentType = MediaType.OCTET_STREAM;
+
+        contentType = detector.detect(tika, metadata); // error here
+
+
+
+Calling Detector.detect(InputStream, Metadata) causes a NoClassDefFoundError because it is trying to find the XZ files using a direct reference to the XZ classes.  Detector.detect:61 uses ZipContainerDetector.detect to use CompressorInputStream createCompressorInputStream(InputStream).
+The problem in public CompressorInputStream createCompressorInputStream(InputStream) is it directly calls static methods on the XZCompressorInputStream class which aren't in the classpath.
+
+
+
+      if (BZip2CompressorInputStream.matches(signature, signatureLength)) {
+
+        return new BZip2CompressorInputStream(in);
+
+      }
+
+      if (GzipCompressorInputStream.matches(signature, signatureLength)) {
+
+        return new GzipCompressorInputStream(in);
+
+      }
+
+      if (XZCompressorInputStream.matches(signature, signatureLength)) {
+
+        return new XZCompressorInputStream(in);
+
+      }
+
+      if (Pack200CompressorInputStream.matches(signature, signatureLength))
+
+        return new Pack200CompressorInputStream(in);
+
+
+
+Ass you can see, the XZCompressorInputStream.matches() method is a static method.  When the class loader loads this class, it tries to load the import statements at the top of XZCompressorInputStream:
+
+
+
+import org.apache.commons.compress.compressors.CompressorInputStream;
+
+import org.tukaani.xz.SingleXZInputStream;
+
+import org.tukaani.xz.XZ;
+
+import org.tukaani.xz.XZInputStream;
+
+
+
+And, since these org.tukaani.xz classes don't exist, a NoClassDefFoundError exception is thrown.
+
+
+
+java.lang.NoClassDefFoundError: org/tukaani/xz/XZInputStream
+
+at org.apache.commons.compress.compressors.CompressorStreamFactory.createCompressorInputStream(CompressorStreamFactory.java:120)
+
+at org.apache.tika.parser.pkg.ZipContainerDetector.detectCompressorFormat(ZipContainerDetector.java:95)
+
+at org.apache.tika.parser.pkg.ZipContainerDetector.detect(ZipContainerDetector.java:81)
+
+at org.apache.tika.detect.CompositeDetector.detect(CompositeDetector.java:61)
+
+at com.lookout.mimetype.TikaResourceMetadataFactory.createMetadata(TikaResourceMetadataFactory.java:166)
+
+at com.lookout.mimetype.TikaResourceMetadataFactory.createMetadata(TikaResourceMetadataFactory.java:112)
+
+(...)
+
+Caused by: java.lang.ClassNotFoundException: org.tukaani.xz.XZInputStream
+
+at java.net.URLClassLoader$1.run(URLClassLoader.java:202)
+
+at java.security.AccessController.doPrivileged(Native Method)
+
+at java.net.URLClassLoader.findClass(URLClassLoader.java:190)
+
+at java.lang.ClassLoader.loadClass(ClassLoader.java:306)
+
+at sun.misc.Launcher$AppClassLoader.loadClass(Launcher.java:301)
+
+at java.lang.ClassLoader.loadClass(ClassLoader.java:247)
+
+
+
+The appropriate approach is to see if the classes exist before trying to use them.  If they fail, then XZ is not supported and ZipContainerDetector.detect will not support XZ files.

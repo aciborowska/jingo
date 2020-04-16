@@ -1,0 +1,65 @@
+I am trying to hook up digest password handling and acegi authorization. I have managed to do this successfully with the plain text equivalent. I think I've managed to get close to the problem. When you configure the plain text acegi handler you wire in a ProviderManager. 
+<bean id="acegiHandler"
+          class="org.springframework.ws.soap.security.wss4j.callback.acegi.AcegiPlainTextPasswordValidationCallbackHandler">
+        <property name="authenticationManager" ref="authenticationManager"/>
+    </bean>
+    <bean id="authenticationManager" class="org.acegisecurity.providers.ProviderManager">
+        <property name="providers">
+            <bean class="org.acegisecurity.providers.dao.DaoAuthenticationProvider">
+                <property name="userDetailsService" ref="inMemoryDaoImpl"/>
+            </bean>
+        </property>
+    </bean>
+    <bean id="wsSecurityInterceptor" class="org.springframework.ws.soap.security.wss4j.Wss4jSecurityInterceptor">
+        <property name="validationActions" value="UsernameToken"/>
+        <property name="validationCallbackHandler">
+            <!-<ref local="acegiDigestPasswordHandler"/>->
+            <ref local="acegiHandler"/>
+        </property>
+    </bean>
+    <bean id="inMemoryDaoImpl" class="org.acegisecurity.userdetails.memory.InMemoryDaoImpl">
+        <property name="userMap">
+            <value>
+                Ernie=Bert,ROLE_SUPERVISOR
+            </value>
+        </property>
+    </bean>
+It is the AbstractUserDetailsAuthenticationProvider (called by the AuthenticationManager) which, upon successful authentication, that actually sets the setAuthenticated(true) on the UsernamePasswordAuthenticationToken (see UsernamePasswordAuthenticationToken(principal,  authentication.getCredentials(), user.getAuthorities()); ).
+protected Authentication createSuccessAuthentication(Object principal, Authentication authentication,
+        UserDetails user) 
+{
+        // Ensure we return the original credentials the user supplied,
+        // so subsequent attempts are successful even with encoded passwords.
+        // Also ensure we return the original getDetails(), so that future
+        // authentication events after cache expiry contain the details
+
+// IB this constructor sets 'authenticated' to true
+        UsernamePasswordAuthenticationToken result = new UsernamePasswordAuthenticationToken(principal,
+                authentication.getCredentials(), user.getAuthorities());
+        result.setDetails(authentication.getDetails());
+
+        return result;
+    }
+
+
+In the case of AcegiDigestPasswordValidationCallbackHandler you don't wire in a AuthenticationManager so even thought the credentials are valid it is never set to authentication in acegi SecurityContext. So the authorization fails even though the Principal has the correct GrantedAuthorities.
+<bean id="wsSecurityInterceptor" class="org.springframework.ws.soap.security.wss4j.Wss4jSecurityInterceptor">
+        <property name="validationActions" value="UsernameToken"/>
+        <property name="validationCallbackHandler">
+            <ref local="acegiDigestPasswordHandler"/>
+            <!-<ref local="acegiHandler"/>->
+        </property>
+    </bean>
+    <bean id="inMemoryDaoImpl" class="org.acegisecurity.userdetails.memory.InMemoryDaoImpl">
+        <property name="userMap">
+            <value>
+                Ernie=Bert,ROLE_SUPERVISOR
+            </value>
+        </property>
+    </bean>
+    <bean id="acegiDigestPasswordHandler"
+          class="org.springframework.ws.soap.security.wss4j.callback.acegi.AcegiDigestPasswordValidationCallbackHandler">
+        <property name="userDetailsService">
+            <ref local="inMemoryDaoImpl"/>
+        </property>
+    </bean>

@@ -1,0 +1,17 @@
+If the add_auth method has a callback and we execute another command just after it than we can deadlock the python api.
+Example:
+
+def deadlock(a, b):
+	pass
+
+def watcher(zh, type, state, path):
+	if(state == zookeeper.CONNECTED_STATE):
+		zookeeper.add_auth(zh, 'test', 'test', deadlock)
+		zookeeper.get_children(zh, '/')
+
+zh = zookeeper.init("host:port", watcher)
+
+Looking at the code the problem looks like the following:
+get_children sync call is running on the main thread and have the GIL it blocks until the get_children finished. Meantime on the other thread the callback of add_auth is called and that tries to get the GIL to call the python callback. So this thread is waiting for the main thread to release the GIL but the main thread is waiting for the other thread to process the reply of get_children.
+
+I am not an expert on python binding but I think it can be solved if the GIL would be release before synchronous c api calls.

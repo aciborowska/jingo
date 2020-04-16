@@ -1,0 +1,80 @@
+Using ZK 3.5.4, zookeeper_close() occasionally hangs with a backtrace of the form:
+
+
+#0  0x00002b255fab489c in __lll_lock_wait () from /lib/x86_64-linux-gnu/libpthread.so.0
+#1  0x00002b255fab26b0 in pthread_cond_broadcast@@GLIBC_2.3.2 () from /lib/x86_64-linux-gnu/libpthread.so.0
+#2  0x00002b2560568ced in unlock_completion_list (l=0x13f5430) at src/mt_adaptor.c:69
+#3  0x00002b256055b9ec in free_completions (zh=0x13f5270, callCompletion=1, reason=-116) at src/zookeeper.c:1521
+#4  0x00002b256055d3bc in zookeeper_close (zh=0x13f5270) at src/zookeeper.c:2954
+
+
+
+At which point the zhandle_t struct appears to have already been freed, as it contains garbage:
+
+
+(gdb) p zh->sent_requests.cond
+$19 = {
+  __data = {
+    __lock = 2, 
+    __futex = 0, 
+    __total_seq = 18446744073709551615, 
+    __wakeup_seq = 0, 
+    __woken_seq = 0, 
+    __mutex = 0x0, 
+    __nwaiters = 0, 
+    __broadcast_seq = 0
+  }, 
+  __size = "\002\000\000\000\000\000\000\000\377\377\377\377\377\377\377\377", '\000' <repeats 31 times>, 
+  __align = 2
+}
+
+
+
+There appears to be a race condition in the following code:
+
+
+int api_epilog(zhandle_t *zh,int rc)
+{
+    if(inc_ref_counter(zh,-1)==0 && zh->close_requested!=0)
+        zookeeper_close(zh);
+    return rc;
+}
+
+int zookeeper_close(zhandle_t *zh)
+{
+    int rc=ZOK;
+    if (zh==0)
+        return ZBADARGUMENTS;
+
+    zh->close_requested=1;
+    if (inc_ref_counter(zh,1)>1) {
+
+
+
+As api_epilog() may free zh in between zookeeper_close() setting zh->close_requested=1 and incrementing the reference count.
+
+The following patch should fix the problem:
+
+
+diff --git a/src/c/src/zookeeper.c b/src/c/src/zookeeper.c
+index 6943243..61a263a 100644
+--- a/src/c/src/zookeeper.c
++++ b/src/c/src/zookeeper.c
+@@ -1051,6 +1051,7 @@ zhandle_t *zookeeper_init(const char *host, watcher_fn watcher,
+         goto abort;
+     }
+ 
++    api_prolog(zh);
+     return zh;
+ abort:
+     errnosave=errno;
+@@ -2889,7 +2890,7 @@ int zookeeper_close(zhandle_t *zh)
+         return ZBADARGUMENTS;
+ 
+     zh->close_requested=1;
+-    if (inc_ref_counter(zh,1)>1) {
++    if (inc_ref_counter(zh,0)>1) {
+         /* We have incremented the ref counter to prevent the
+          * completions from calling zookeeper_close before we have
+          * completed the adaptor_finish call below. */
+

@@ -1,0 +1,20 @@
+When parsing/analyzing query, hive treats partition predicate value as int instead of string. This breaks down and leads to incorrect result when the partition predicate value starts with int 0, e.g: hour=00, hour=05 etc.
+The following repro illustrates the bug:
+– create test table and partition, populate with some data
+create table test_partition_pred(col1 int) partitioned by (hour STRING);
+insert into table test_partition_pred partition (hour=00) select 21 FROM  some_table limit 1;
+– this query returns incorrect results, i.e. just empty set.
+select * from test_partition_pred where hour=00;
+OK
+– this query returns correct result. Note predicate value is string literal
+select * from test_partition_pred where hour='00';
+OK
+21	00
+explain plan illustrates how the query was interpreted. Particularly the partition predicate is pushed down as regular filter clause, with hour=0 as predicate. See attached explain plan file.
+Note:
+1. The type of the partition column is defined as string, not int.
+2. This is a regression in Hive 0.12. This used to work in Hive 0.11
+3. Not an issue when the partition value starts with integer other than 0, e.g hour=10, hour=11 etc.
+4. As seen above, workaround is to use string literal hour='00' etc.
+This should not be too bad if in the failing case hive complains that partition hour=0 is not found, or complains literal type doesn't match column type. Instead hive silently pushes it down as filter clause, and query succeeds with empty set as result.
+We found this out in our production tables partitioned by hour, only a few days after it started occurring, when there were empty data sets for partitions hour=00 to hour=09.

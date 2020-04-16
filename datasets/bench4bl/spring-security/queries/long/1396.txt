@@ -1,0 +1,26 @@
+There seems to be a race condition between processing in the HttpSessionContextIntegrationFilter and the SessionFixationProtectionFilter.
+Here is our problem.
+We have a web application with a fairly heavy home page that can be served quite slowly depending on the size of certain attributes associated with the user.  We are currently using Jetty 6.1.21 which supports HTTP 1.1 chunked responses.
+If a user opens their browser and goes directly to the home page URL using a RememberMe token, this initial web request executes down through the filter stack and into the Spring MVC framework.  Steps 1a - 1d describe the processing of this initial request:
+1a. The HttpSessionContextIntegration filter creates a new HttpSession and puts a default SecurityContext into the ThreadLocal handler.
+1b. The RememberMeProcessingFilter authenticates the token and sets the user's Authentication object into the ThreadLocal handler.
+1c. The SessionFixationProtectionFilter detects a new authentication, invalidates the existing HttpSession, and creates a new HttpSession (migrating the attributes).  It does not set the user's Authentication into the HttpSession – this is supposed to be done by the HttpSessionContextIntegration after all request processing is complete.
+1d. The request goes into the Spring MVC framework, causing a response to start to be sent to the client using HTTP chunking.  This response includes the session id of the newly created session (created by the SessionFixationProtectionFilter).
+The client begins receiving the markup, which includes various <script> elements to script files served by the web app.  Steps 2a - 2c describe the processing of this second request.  This processing takes place while the initial request is still being processed.  This second request sends over the session id created by the SessionFixationProtectionFilter for the first request.
+2a. The HttpSessionContextIntegration puts a default SecurityContext into the ThreadLocal handler (since one has not yet been set into the HttpSession).
+2b. The RememberMeProcessingFilter authenticates the token and sets the user's Authentication object into the ThreadLocal handler.
+2c. The SessionFixationProtectionFilter detects another new authentication, invalidates the existing HttpSession, and creates a new HttpSession (migrating the attributes).
+Processing of the initial web request is continuing through the Spring MVC framework.  We happen to use JSP for our view technology.
+1e. Continued processing of a JSP page (or import) for the initial request causes an attempt to deference a variable, causing a IllegalStateException in Jetty's AbstractSessionManager.Session class.
+I can "fix" this by extending the SessionFixationProtectionFilter and overriding 
+protected void startNewSessionIfRequired(
+        HttpServletRequest request, HttpServletResponse response)
+{
+    super.startNewSessionIfRequired(request, response);
+    request.getSession().setAttribute(
+            HttpSessionContextIntegrationFilter.SPRING_SECURITY_CONTEXT_KEY,
+            SecurityContextHolder.getContext().getAuthentication());
+}
+so that the user's Authentication object is stored into the HttpSession before processing enters the Spring MVC framework, causing the execution of filters on the second request to not be considered a new authentication, thus preserving the validity of the session created during the initial request.
+Is this the right way to do this?  It seems to keep session fixation protection working the way it is supposed to, but I'm a little worried about what will happen with the OnRedirectUpdateSessionResponseWrapper created by the HttpSessionContextIntegrationFilter if the request processing results in a sendError() or sendRedirect().  My casual reading of HttpSessionContextIntegrationFilter seems to indicate it would still work correctly.
+Any thoughts or advice would be appreciated.

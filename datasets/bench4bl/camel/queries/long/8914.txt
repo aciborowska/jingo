@@ -1,0 +1,98 @@
+I'm facing an issue with the version of camel 2.15.2 
+I have a component that create an endpoint. 
+This endpoint override the shutdown and doShutdown method so we can log values at shutdown time. 
+But when this endpoint is intercept with the interceptSendToEnpoint method the shutdown is not called. 
+Here is an example of code to reproduce: 
+the Component: 
+public class CustomComponent extends DefaultComponent {
+        @Override
+        protected Endpoint createEndpoint(String uri, String remaining, Map<String, Object> parameters) throws Exception 
+{
+
+            return new CustomEndpoint();
+
+        }
+    }
+the Endpoint: 
+    public class CustomEndpoint extends DefaultEndpoint {
+        @Override
+        public Producer createProducer() throws Exception {
+            return new DefaultProducer(this) {
+                @Override
+                public void process(Exchange exchange) throws Exception 
+{
+
+                    log.info(exchange.getExchangeId());
+
+                }
+            };
+        }
+        @Override
+        public Consumer createConsumer(Processor processor) throws Exception 
+{
+
+            return null;
+
+        }
+
+        @Override
+        public boolean isSingleton() 
+{
+
+            return false;
+
+        }
+
+        @Override
+        public void shutdown() throws Exception 
+{
+
+            super.shutdown();
+
+            System.out.println("SHUTDOWN");
+
+        }
+
+        @Override
+        protected void doShutdown() throws Exception 
+{
+
+            super.doShutdown();
+
+            System.out.println("do SHUTDOWN");
+
+        }
+
+        @Override
+        protected String createEndpointUri() 
+{
+
+            return "myEndpoint";
+
+        }
+    }
+the route: 
+public class MyRoute extends RouteBuilder {
+        @Override
+        public void configure() {
+            try 
+{
+
+                getContext().addComponent("myEndpoint", new CustomComponent());
+
+            }
+ catch (Exception e) 
+{
+
+                e.printStackTrace();
+
+            }
+            interceptSendToEndpoint("myEndpoint:producer")
+                    .log("INTERCEPTED");
+            from("direct:murex").routeId("Trade Repository Route")
+                 .to("myEndpoint:producer");
+        }
+    }
+When there is an interceptor the shutdown on the endpoint is not called, when there is no interceptor the shutdown is called. 
+After some debugging I noticed that in the DefaultCamelContext at the shutdown time the shutdown is called on the list of endpoints, when there is an interceptor the list do not contain the CustomEnpoint but only the Interceptor, and because the interceptor does not implement ShutdownableAware the shutdown is not propagate to the underlying endpoint (here the CustomEndpoint) 
+Without the interceptor the CustomEndpoint appears in the list and the shutdown method is called. 

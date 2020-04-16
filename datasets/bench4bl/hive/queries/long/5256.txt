@@ -1,0 +1,25 @@
+When generating a common join operator, Semantic Analyzer gets the input RowResolver of each parent operators. It then uses the following piece of code to interate the tables from the RowResolver (refer to genJoinOperatorChildren()):
+        RowResolver inputRS = opParseCtx.get(input).getRowResolver();
+        Iterator<String> keysIter = inputRS.getTableNames().iterator();
+		...
+        while (keysIter.hasNext()) {
+          String key = keysIter.next();
+Note that the interation order is not deterministic because of the current RowResolver implementation:
+  private  HashMap<String, LinkedHashMap<String, ColumnInfo>> rslvMap;
+  ...
+  public Set<String> getTableNames() 
+{
+
+    return rslvMap.keySet();
+
+  }
+
+Generally, the interation order has no problem. However, it may be problematic when a common join operator is being converted to a map join operator.
+MapJoinProcessor.convertMapJoin():
+      RowResolver inputRS = opParseCtxMap.get(newParentOps.get(pos)).getRowResolver();
+      List<ExprNodeDesc> values = new ArrayList<ExprNodeDesc>();
+      Iterator<String> keysIter = inputRS.getTableNames().iterator();
+      while (keysIter.hasNext()) {
+The problem is that the table iteration order for a input RowResolver may be different from that in the generation of the common join operator, which result in an in-consistent output row schema. Thus wrong row schema may be input to child operators and will cause problems.
+I found this issue when running a TPC-DS query. And this issue happens to be exposed due to HIVE-4078.
+The proposed fix is to change RowResolver to define rslvMap as LinkedHashMap instead of HashMap. Thus the table iteration order of a RowResolver is fixed.

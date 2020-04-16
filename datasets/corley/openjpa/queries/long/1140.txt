@@ -1,0 +1,139 @@
+When my application detaches objects including collection classes like Set and Map, 
+OpenJPA generates inefficient SQL on commit.
+
+For example, I created following sample case.
+
+
+	model class A has one Set field and one Map field.
+	test class do as follows.
+  1. create A
+  2. add 100 elements to Set field.
+  3. add 100 key and value to Map field.
+  4. persist A and commit
+  5. detached all objects (em.clear())
+  6. add one more element to Set field
+  7. add one more key/value to Map field
+  8. merge detached object to entity manager
+  9. commit
+
+
+
+If my application doesn't call em.clear, last commit() call in step 9 generates following SQL.
+
+
+     [java] 2814  openjpa  TRACE  [main] openjpa.jdbc.SQL - <t 3975755, conn
+13640204> executing prepstmnt 14456678 SELECT t0.ELEMENT FROM JPA_A_ITEMS t0
+WHERE t0.ID = ? [params=(int) 0]
+     [java] 2816  openjpa  TRACE  [main] openjpa.jdbc.SQL - <t 3975755, conn
+13640204> [1 ms] spent
+     [java] 2819  openjpa  TRACE  [main] openjpa.jdbc.SQL - <t 3975755, conn
+13640204> executing prepstmnt 32619928 SELECT JPA_A_ITEMS_ID_SEQUENCE.NEXTVAL
+FROM DUAL
+     [java] 2820  openjpa  TRACE  [main] openjpa.jdbc.SQL - <t 3975755, conn
+13640204> [1 ms] spent
+     [java] 2823  openjpa  TRACE  [main] openjpa.jdbc.SQL - <t 3975755, conn
+13640204> executing prepstmnt 30836417 INSERT INTO JPA_A_ITEMS (ID, ELEMENT,
+A_ITEM_ID) VALUES (?, ?, ?) [params=(int) 1005, (String) AItem: last, (int)
+105]
+     [java] 2824  openjpa  TRACE  [main] openjpa.jdbc.SQL - <t 3975755, conn
+13640204> [1 ms] spent
+     [java] 2825  openjpa  TRACE  [main] openjpa.jdbc.SQL - <t 3975755, conn
+13640204> executing prepstmnt 19459570 INSERT INTO JPA_A_MAPS_C (MAP_ID,
+MAP_KEY, MAP_VALUE) VALUES (?, ?, ?) [params=(int) 105, (String) key:last,
+(String) value:last]
+     [java] 2826  openjpa  TRACE  [main] openjpa.jdbc.SQL - <t 3975755, conn
+13640204> [1 ms] spent
+
+
+It's reasonable for us. But, If my application calls em.clear()to detach object A, 
+OpenJPA generates lots of delete and re-insert/update SQL on last commit() call.
+
+
+     [java] 2843  openjpa  TRACE  [main] openjpa.jdbc.SQL - <t 3975755, conn
+13640204> executing prepstmnt 1335930 SELECT t0.ELEMENT FROM JPA
+_A_ITEMS t0 WHERE t0.ID = ? [params=(int) 0]
+     [java] 2844  openjpa  TRACE  [main] openjpa.jdbc.SQL - <t 3975755, conn
+13640204> [1 ms] spent
+     [java] 2942  openjpa  TRACE  [main] openjpa.jdbc.SQL - <t 3975755, conn
+13640204> executing prepstmnt 4148925 SELECT JPA_A_ITEMS_ID_SEQU
+ENCE.NEXTVAL FROM DUAL
+     [java] 2943  openjpa  TRACE  [main] openjpa.jdbc.SQL - <t 3975755, conn
+13640204> [1 ms] spent
+     [java] 2955  openjpa  TRACE  [main] openjpa.jdbc.SQL - <t 3975755, conn
+13640204> executing prepstmnt 14765441 DELETE FROM JPA_A_MAPS_C
+WHERE MAP_ID = ? [params=(int) 106]
+     [java] 2958  openjpa  TRACE  [main] openjpa.jdbc.SQL - <t 3975755, conn
+13640204> [3 ms] spent
+     [java] 2959  openjpa  TRACE  [main] openjpa.jdbc.SQL - <t 3975755, conn
+13640204> executing prepstmnt 27752604 UPDATE JPA_A_ITEMS SET A_
+ITEM_ID = ? WHERE A_ITEM_ID = ? [params=(null) null, (int) 106]
+     [java] 2963  openjpa  TRACE  [main] openjpa.jdbc.SQL - <t 3975755, conn
+13640204> [2 ms] spent
+     [java] 2963  openjpa  TRACE  [main] openjpa.jdbc.SQL - <t 3975755, conn
+13640204> executing prepstmnt 31416097 INSERT INTO JPA_A_ITEMS (
+ID, ELEMENT, A_ITEM_ID) VALUES (?, ?, ?) [params=(int) 1106, (String) AItem:
+last, (int) 106]
+     [java] 2965  openjpa  TRACE  [main] openjpa.jdbc.SQL - <t 3975755, conn
+13640204> [1 ms] spent
+     [java] 2968  openjpa  TRACE  [main] openjpa.jdbc.SQL - <t 3975755, conn
+13640204> batching prepstmnt 16477279 UPDATE JPA_A_ITEMS SET A_I
+TEM_ID = ? WHERE ID = ? [params=(int) 106, (int) 1037]
+     [java] 2969  openjpa  TRACE  [main] openjpa.jdbc.SQL - <t 3975755, conn
+13640204> [0 ms] spent
+     [java] 2969  openjpa  TRACE  [main] openjpa.jdbc.SQL - <t 3975755, conn
+13640204> batching prepstmnt 16477279 UPDATE JPA_A_ITEMS SET A_I
+TEM_ID = ? WHERE ID = ? [params=(int) 106, (int) 1073]
+     ....
+     [java] 3053  openjpa  TRACE  [main] openjpa.jdbc.SQL - <t 3975755, conn
+13640204> batching prepstmnt 16477279 UPDATE JPA_A_ITEMS SET A_I
+TEM_ID = ? WHERE ID = ? [params=(int) 106, (int) 1007]
+     [java] 3054  openjpa  TRACE  [main] openjpa.jdbc.SQL - <t 3975755, conn
+13640204> [1 ms] spent
+     [java] 3054  openjpa  TRACE  [main] openjpa.jdbc.SQL - <t 3975755, conn
+13640204> executing batch prepstmnt 16477279 UPDATE JPA_A_ITEMS
+SET A_ITEM_ID = ? WHERE ID = ? [params=(int) 106, (int) 1007]
+     [java] 3059  openjpa  TRACE  [main] openjpa.jdbc.SQL - <t 3975755, conn
+13640204> [5 ms] spent
+     [java] 3061  openjpa  TRACE  [main] openjpa.jdbc.SQL - <t 3975755, conn
+13640204> batching prepstmnt 8906500 INSERT INTO JPA_A_MAPS_C (M
+AP_ID, MAP_KEY, MAP_VALUE) VALUES (?, ?, ?) [params=(int) 106, (String)
+key:23, (String) value:23]
+     [java] 3062  openjpa  TRACE  [main] openjpa.jdbc.SQL - <t 3975755, conn
+13640204> [0 ms] spent
+     [java] 3062  openjpa  TRACE  [main] openjpa.jdbc.SQL - <t 3975755, conn
+13640204> batching prepstmnt 8906500 INSERT INTO JPA_A_MAPS_C (M
+AP_ID, MAP_KEY, MAP_VALUE) VALUES (?, ?, ?) [params=(int) 106, (String)
+key:90, (String) value:90]
+     [java] 3063  openjpa  TRACE  [main] openjpa.jdbc.SQL - <t 3975755, conn
+13640204> [0 ms] spent
+     ....
+     [java] 3167  openjpa  TRACE  [main] openjpa.jdbc.SQL - <t 3975755, conn
+13640204> batching prepstmnt 8906500 INSERT INTO JPA_A_MAPS_C (M
+AP_ID, MAP_KEY, MAP_VALUE) VALUES (?, ?, ?) [params=(int) 106, (String)
+key:44, (String) value:44]
+     [java] 3167  openjpa  TRACE  [main] openjpa.jdbc.SQL - <t 3975755, conn
+13640204> [0 ms] spent
+     [java] 3168  openjpa  TRACE  [main] openjpa.jdbc.SQL - <t 3975755, conn
+13640204> executing batch prepstmnt 8906500 INSERT INTO JPA_A_MA
+PS_C (MAP_ID, MAP_KEY, MAP_VALUE) VALUES (?, ?, ?) [params=(int) 106,
+(String) key:44, (String) value:44]
+     [java] 3169  openjpa  TRACE  [main] openjpa.jdbc.SQL - <t 3975755, conn
+13640204> [1 ms] spent
+     [java] check executed SQL.
+
+
+If objects are detached, OpenJPA processes it on commit() call.
+
+1. delete current existing all collections.
+   for Map)
+     DELETE FROM JPA_A_MAPS_C WHERE MAP_ID = ?
+   for Set)
+     UPDATE JPA_A_ITEMS SET A_ITEM_ID = ? WHERE A_ITEM_ID = ?
+
+2. re-insert/update all collections 100 times.
+   for Map)
+     UPDATE JPA_A_ITEMS SET A_ITEM_ID = ? WHERE ID = ?
+   for Set)
+     INSERT INTO JPA_A_MAPS_C (MAP_ID, MAP_KEY, MAP_VALUE) VALUES (?, ?, ?)
+
+I think it could not be accepted for most applications.

@@ -1,0 +1,23 @@
+When using the AclEntryAfterInvocationProvider to check acl access on an object which has been instantiated by (in my case) hibernate, it is possible that hibernate will return a cglib enhanced instance of the object (or it might not).  When  ObjectIdentityRetrievalStrategyImpl then attempts to create an ObjectIdentity for it, that class name it gets is something like "com.mycompany.Foo$$EnhancerByCGLIB$$beb2e4f5", which does not match up with the class reference in the ObjectIdentity database record which is "com.mycompany.Foo", and no corresponding ACL entries will be found for the object.
+I've found a couple of solutions for this, the first is to deproxy the object immediately after the query using a method something like:
+public static Object deproxy(Object obj)
+  {
+    Hibernate.initialize(obj);
+    if (obj == null)
+    {
+      return null;
+    }
+
+    if (HibernateProxy.class.isInstance(obj))
+    {
+      HibernateProxy proxy = (HibernateProxy) obj;
+      return proxy.getHibernateLazyInitializer().getImplementation();
+    }
+
+    return obj;
+  } 
+NOTE: Hibernate.initialise(object) doesn't work, because although it may flesh out the proxied object, it returns void, so we are still left holding onto the proxy.
+I don't particularly like this approach, because for every factory method we need to remember to deproxy the found object, and where collections are returned, we'd need to deproxy every object in the collection.
+An alternative solution is to write a ProxyAwareObjectIdentityRetrievalStrategy implementation.  This is feasible because all (I think) classes that use an ObjectIdentityRetrievalStrategy  support dependency injection.
+I've had a go at this, and got the cglib enhanced case taken care of, but I also thought that the case where a Jdk proxy is returned needs to be addressed also.  I've found a simple way to detect a Jdk proxy, but cannot figure how to get the class name we actually want out of it, as Jdk proxies only work on interfaces, and it's the InvokationHandler that does all the delegation.
+class and tests will be attached.

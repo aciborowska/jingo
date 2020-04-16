@@ -1,0 +1,26 @@
+When LOAD is immediately followed by STREAM, Pig job intermittently fails with either ConcurrentModificationException or IndexOutOfBoundsException. 
+
+a = LOAD '<input>' USING MyLoadFunc();
+b = STREAM a THROUGH dummy AS (foo:chararray);
+DUMP b;
+
+
+The problem is that if the LoadFunc creates a new tuple using TupleFactory.newTupleNoCopy, the fields list object is reused, and it can be concurrently modified by ProcessInputThread and POStream.
+
+/**
+ * Create a tuple from a provided list of objects, keeping the provided
+ * list.  The new tuple will take over ownership of the provided list.
+ * @param list List of objects that will become the fields of the tuple.
+ * @return A tuple with the list objects as its fields
+ */
+public abstract Tuple newTupleNoCopy(List list);
+
+
+Here is an example:
+
+	LoadFunc loads a line and creates a new tuple using List<Object> L.
+	POStream passes it to the ProcessInputThread of ExecutableManager.
+	ProcessInputThread starts iterating L to serialize it before feeding it to the sub-process.
+	LoadFunc loads another line and creates a new tuple by re-using L.
+	ConcurrentModificationException is thrown because L is modified while being iterated.
+

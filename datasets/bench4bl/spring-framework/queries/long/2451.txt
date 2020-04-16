@@ -1,0 +1,75 @@
+Using the following context fragment to inject a request-scoped collection (the per-request state) into a singleton:
+<bean id="onLoadScriptManager" class="bridges.web.view.tags.script.OnLoadScriptManagerImpl">
+        <property name="onLoadScripts" ref="onLoadScripts" />
+    </bean>
+    <bean id="onLoadScripts" class="java.util.ArrayList" scope="request">
+        <aop:scoped-proxy/>
+    </bean>
+The singleton bean is implemented as:
+public class OnLoadScriptManagerImpl extends WebObjectSupport implements OnLoadScriptManager
+{
+    private List<OnLoadScript> m_onLoadScripts;
+    private Comparator m_comparator = new OrderComparator();
+    public OnLoadScriptManagerImpl()
+    {
+        // EMPTY
+    }
+
+    @SuppressWarnings( "unchecked" )
+    public void addOnLoadScript( OnLoadScript script )
+    {
+        m_onLoadScripts.add( script );
+    }
+
+    @SuppressWarnings( "unchecked" )
+    public List<OnLoadScript> getOnLoadScripts()
+    {
+        Collections.sort( m_onLoadScripts, m_comparator );
+        return m_onLoadScripts;
+    }
+
+    @Required
+    public void setOnLoadScripts( List<OnLoadScript> onLoadScripts )
+    {
+        m_onLoadScripts = onLoadScripts;
+    }
+
+}
+...note the typed collection in setOnLoadScripts.  On context initialization, this fails with the below exception / stack trace:
+org.springframework.beans.factory.BeanCreationException: Error creating bean with name 'onLoadScriptManager' defined in file [C:\jboss-3.2.6\server\bridges\deploy\bridges\choices-development.ear\shared-webapp-context\web-context.xml]: Error setting property values; nested exception is org.springframework.beans.factory.BeanCreationException: Error creating bean with name 'scopedTarget.onLoadScripts': Scope 'request' is not active; nested exception is java.lang.IllegalStateException: No thread-bound request: use RequestContextFilter
+Caused by: 
+org.springframework.beans.factory.BeanCreationException: Error creating bean with name 'scopedTarget.onLoadScripts': Scope 'request' is not active; nested exception is java.lang.IllegalStateException: No thread-bound request: use RequestContextFilter
+Caused by: 
+java.lang.IllegalStateException: No thread-bound request: use RequestContextFilter
+	at org.springframework.web.context.request.RequestContextHolder.currentRequestAttributes(RequestContextHolder.java:62)
+	at org.springframework.web.context.request.AbstractRequestAttributesScope.get(AbstractRequestAttributesScope.java:40)
+	at org.springframework.beans.factory.support.AbstractBeanFactory.getBean(AbstractBeanFactory.java:276)
+	at org.springframework.beans.factory.support.AbstractBeanFactory.getBean(AbstractBeanFactory.java:155)
+	at org.springframework.aop.target.AbstractPrototypeBasedTargetSource.newPrototypeInstance(AbstractPrototypeBasedTargetSource.java:58)
+	at org.springframework.aop.target.PrototypeTargetSource.getTarget(PrototypeTargetSource.java:30)
+	at org.springframework.aop.framework.Cglib2AopProxy$DynamicAdvisedInterceptor.getTarget(Cglib2AopProxy.java:673)
+	at org.springframework.aop.framework.Cglib2AopProxy$DynamicAdvisedInterceptor.intercept(Cglib2AopProxy.java:624)
+	at $java.util.ArrayList$$EnhancerByCGLIB$$ab5862d8.size(<generated>)
+	at org.springframework.beans.TypeConverterDelegate.convertToTypedCollection(TypeConverterDelegate.java:301)
+	at org.springframework.beans.TypeConverterDelegate.convertIfNecessary(TypeConverterDelegate.java:189)
+	at org.springframework.beans.TypeConverterDelegate.convertIfNecessary(TypeConverterDelegate.java:127)
+	at org.springframework.beans.BeanWrapperImpl.setPropertyValue(BeanWrapperImpl.java:770)
+	at org.springframework.beans.BeanWrapperImpl.setPropertyValue(BeanWrapperImpl.java:606)
+	at org.springframework.beans.AbstractPropertyAccessor.setPropertyValue(AbstractPropertyAccessor.java:49)
+	at org.springframework.beans.AbstractPropertyAccessor.setPropertyValues(AbstractPropertyAccessor.java:74)
+	at org.springframework.beans.AbstractPropertyAccessor.setPropertyValues(AbstractPropertyAccessor.java:57)
+	at org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory.applyPropertyValues(AbstractAutowireCapableBeanFactory.java:861)
+	at org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory.populateBean(AbstractAutowireCapableBeanFactory.java:624)
+	at org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory.createBean(AbstractAutowireCapableBeanFactory.java:411)
+	at org.springframework.beans.factory.support.AbstractBeanFactory$1.getObject(AbstractBeanFactory.java:242)
+	at org.springframework.beans.factory.support.DefaultSingletonBeanRegistry.getSingleton(DefaultSingletonBeanRegistry.java:141)
+	at org.springframework.beans.factory.support.AbstractBeanFactory.getBean(AbstractBeanFactory.java:239)
+	at org.springframework.beans.factory.support.AbstractBeanFactory.getBean(AbstractBeanFactory.java:155)
+	at org.springframework.beans.factory.support.DefaultListableBeanFactory.preInstantiateSingletons(DefaultListableBeanFactory.java:303)
+	at org.springframework.context.support.AbstractApplicationContext.refresh(AbstractApplicationContext.java:348)
+	at org.springframework.web.context.support.AbstractRefreshableWebApplicationContext.refresh(AbstractRefreshableWebApplicationContext.java:156)
+	at org.springframework.web.context.ContextLoader.createWebApplicationContext(ContextLoader.java:246)
+	at org.springframework.web.context.ContextLoader.initWebApplicationContext(ContextLoader.java:184)
+	at org.springframework.web.context.ContextLoaderListener.contextInitialized(ContextLoaderListener.java:49)
+...it appears that, in the process of converting to a typed collection, the proxy is triggered to fetch the bean from it's respective scope, which is (generally) non-sensical during initialization.
+Working around this by making an OnLoadState object that contains the collection.

@@ -1,0 +1,53 @@
+I think reporting this stackoverflow question to the ZooKeeper team is important.
+
+org.apache.zookeeper.server.NIOServerCnxnFactory.configure(InetSocketAddress, int) has the following code:
+
+@Override
+public void configure(InetSocketAddress addr, int maxcc) throws IOException {
+    configureSaslLogin();
+
+    thread = new Thread(this, "NIOServerCxn.Factory:" + addr);
+    thread.setDaemon(true);
+    maxClientCnxns = maxcc;
+    this.ss = ServerSocketChannel.open();
+    ss.socket().setReuseAddress(true);
+    LOG.info("binding to port " + addr);
+    ss.socket().bind(addr);
+    ss.configureBlocking(false);
+    ss.register(selector, SelectionKey.OP_ACCEPT);
+}
+
+
+
+So the intention is to use SO_REUSEADDR. This does not work under linux (at least with the java version I use). The reason is that sun.nio.ch.ServerSocketChannelImpl.setOption(SocketOption<T>, T) used by ZooKeeper has this code:
+
+
+public <T> ServerSocketChannel setOption(SocketOption<T> paramSocketOption, T paramT) throws IOException
+{
+    if (paramSocketOption == null)
+        throw new NullPointerException();
+    if (!(supportedOptions().contains(paramSocketOption)))
+        throw new UnsupportedOperationException("'" + paramSocketOption + "' not supported");
+    synchronized (this.stateLock) {
+        if (!(isOpen()))
+            throw new ClosedChannelException();
+        if ((paramSocketOption == StandardSocketOptions.SO_REUSEADDR) && (Net.useExclusiveBind()))
+        {
+            this.isReuseAddress = ((Boolean)paramT).booleanValue();
+        }
+        else {
+            Net.setSocketOption(this.fd, Net.UNSPEC, paramSocketOption, paramT);
+        }
+        return this;
+    }
+}
+
+
+
+"Net.useExclusiveBind()" seems to give back always false under linux no matter what value is set for sun.net.useExclusiveBind environment entry.
+
+If someone wants to stop and start an embedded ZooKeeper server, it can result in BindExceptions. If there would be some workaround under Linux, it would be really good.
+
+Also under windows the sun.net.useExclusiveBind env entry seems to be important to have the SO_REUSEADDR option. Maybe it would worth to document this network setting.
+
+I have a test code which can reproduce the BindException under Linux.

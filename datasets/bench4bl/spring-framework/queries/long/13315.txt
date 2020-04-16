@@ -1,0 +1,521 @@
+EDIT: 
+PLEASE DO NOT RECOMMEND THAT I USE TRANSACTION ANNOTAIONS FOR THIS. THIS IS NOT WHAT THIS BUG REPORT IS ABOUT.
+Related: http://stackoverflow.com/questions/31817664/spring-hibernate-manually-creating-transactions-propagation-required-fails-b
+I have run into what appears to be a bug, related to Spring handling of transactions. 
+Please have a look at these two test cases, comments are in the code: 
+Entity class for example: 
+
+
+
+
+
+
+    @Entity
+
+
+
+
+    public class Person{
+
+
+
+
+        @Id
+
+
+
+
+        String name;
+
+
+
+
+    }
+
+
+
+
+
+
+Some methods used:
+
+
+
+
+
+
+    public TransactionStatus requireTransaction() {
+
+
+
+
+            TransactionTemplate template = new TransactionTemplate();
+
+
+
+
+            template.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRED);
+
+
+
+
+            return getTransactionManager().getTransaction(template);
+
+
+
+
+    }
+
+
+
+
+    
+
+
+
+
+    public Session session() {
+
+
+
+
+            return getRepository().session();
+
+
+
+
+    }
+
+
+
+
+    
+
+
+
+
+    public PlatformTransactionManager getTransactionManager() {
+
+
+
+
+            return getRepository().getTransactionManager();
+
+
+
+
+    }
+
+
+
+
+ 
+
+
+
+
+
+
+Here is the first test, testA();
+
+
+
+
+
+
+    @Test
+
+
+
+
+    public void testA() throws InterruptedException {
+
+
+
+
+            // We create the first transaction
+
+
+
+
+            TransactionStatus statusOne = requireTransaction();
+
+
+
+
+    
+
+
+
+
+            // Create person one
+
+
+
+
+            Person pOne = new Person();
+
+
+
+
+            pOne.name = "PersonOne";
+
+
+
+
+            session().persist(pOne);
+
+
+
+
+    
+
+
+
+
+            // ---> 111) NOTE! We do not commit! Intentionally!
+
+
+
+
+    
+
+
+
+
+            // We requireTransaction again. We should be getting the same transaction status.
+
+
+
+
+    
+
+
+
+
+            TransactionStatus statusTwo = requireTransaction();
+
+
+
+
+            if ( !statusTwo.isNewTransaction() ) {
+
+
+
+
+                    System.out.println("isNewTransaction: false! As expected! Meaning we are getting the original transaction status!");
+
+
+
+
+            }
+
+
+
+
+    
+
+
+
+
+    
+
+
+
+
+            // Create person two
+
+
+
+
+            Person pTwo = new Person();
+
+
+
+
+            pTwo.name = "PersonTwo";
+
+
+
+
+            session().persist(pTwo);
+
+
+
+
+    
+
+
+
+
+            // We will now be committing statusTwo which should actually be the first one, statusOne,
+
+
+
+
+            // since we are using propagation required and the previous transaction was never committed
+
+
+
+
+            // or rolledback or completed in any other fashion!
+
+
+
+
+    
+
+
+
+
+            getTransactionManager().commit(statusTwo);
+
+
+
+
+    
+
+
+
+
+            // !!!!!!! However !!!!!! Nothing is actually written to the database here!
+
+
+
+
+    
+
+
+
+
+            // This must be a bug. It existed on Spring 4.0.4 and I have upgraded to 4.2.0 and still the same thing happens!
+
+
+
+
+    
+
+
+
+
+            // Lets go on to the next test. testB() below.
+
+
+
+
+    
+
+
+
+
+            // If we now, at 111) instead do, let me repeat the entire logic:
+
+
+
+
+    }
+
+
+
+
+ 
+
+
+
+
+
+
+Here is the second test, testA();
+
+
+
+
+
+
+@Test
+
+
+
+
+    public void testB() throws InterruptedException {
+
+
+
+
+            // We create the first transaction
+
+
+
+
+            TransactionStatus statusOne = requireTransaction();
+
+
+
+
+    
+
+
+
+
+            Person pOne = new Person();
+
+
+
+
+            pOne.name = "PersonOne";
+
+
+
+
+            session().persist(pOne);
+
+
+
+
+    
+
+
+
+
+            // -----> 111) NOW WE ARE COMMITTING INSTEAD, SINCE WE ARE ALMOST FORCED TO BUT DO NOT WANT TO
+
+
+
+
+            getTransactionManager().commit(statusOne);
+
+
+
+
+    
+
+
+
+
+            // ----> 222) HOWEVER, NOW WE WILL NOT BE ABLE TO ROLLBACK THIS AT A LATER POINT
+
+
+
+
+    
+
+
+
+
+            // We requireTransaction again. We should be getting A NEW transaction status.
+
+
+
+
+    
+
+
+
+
+            TransactionStatus statusTwo = requireTransaction();
+
+
+
+
+            if ( statusTwo.isNewTransaction() ) {
+
+
+
+
+                    System.out.println("isNewTransaction: true! As expected! Meaning we are getting a new transaction status!");
+
+
+
+
+            }
+
+
+
+
+    
+
+
+
+
+            Person pTwo = new Person();
+
+
+
+
+            pTwo.name = "PersonTwo";
+
+
+
+
+            session().persist(pTwo);
+
+
+
+
+    
+
+
+
+
+            getTransactionManager().commit(statusTwo);
+
+
+
+
+    
+
+
+
+
+            // Now we will have two instances in the database, as expected.
+
+
+
+
+    
+
+
+
+
+            // If we instead of committing statusTwo would have done:
+
+
+
+
+            // getTransactionManager().rollback(statusTwo)
+
+
+
+
+            // then only the last one will be rolledback which is not desired!
+
+
+
+
+    
+
+
+
+
+            // Why are we forced to commit the first one to have any effect on future transactions!
+
+
+
+
+            // Delegation will not work like this!
+
+
+
+
+    }
+
+
+
+
+
+
+Was that clear? 
+This is obviously a bug, is it not? 
+Why purpose would requireTransaction with PROPAGATION_REQUIRED have other than destroy future commits by the same thread? 
+Why is the commit on *statusTwo* in *testA()* not sufficient to commit the work on the first one as well?
+Should this be done some other way? I think not, right? Bug!

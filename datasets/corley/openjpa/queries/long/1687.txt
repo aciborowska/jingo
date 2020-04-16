@@ -1,0 +1,99 @@
+OpenJPA advertises itself as an expandable framework and provides @Strategy (and undocumented) @ElementStrategy annotations to create custom java<->SQL mappings.
+
+I would like to create support for already existing JDBC4 standard mapping of primitive arrays in i.e. Postgres:
+
+java double[] <-> SQL float8[]
+
+Unfortunately it is not possible using @Strategy as enhancer blindly checks if the field is a collection/array and refuses to do anything with it.
+In the case like this a field should not be delegated to an external table but simply embedded - same way LOBs are, with different toDataStoreValue/toObjectValue pair as provided in the strategy implementation below..
+
+If we use @ElementStrategy however, i.e.:
+
+<class>
+ @PersistentCollection
+    @ElementStrategy("gaia.cu7.dal.PostgresJPAArrayHandler")
+    @ElementColumns(
+{
+        @ElementColumn(name="TDOUBLE")
+    }
+)
+
+ private double tdouble[];
+</class>
+
+then enhancer accepts it. Schema synchronisation creates wrong DDL suppressing given SQL type and mapping it to SQL keyword ARRAY in the external table.
+
+
+Does this rather simple requirement is not covered by openJPA? 
+
+
+public class PostgresJPAArrayHandler
+    extends AbstractValueHandler {
+
+ public PostgresJPAArrayHandler()
+ {
+
+ }
+     /**
+
+	Serialization ID
+	 */
+	private static final long serialVersionUID = 1L;
+	private static final PostgresJPAArrayHandler _instance =
+            new PostgresJPAArrayHandler();
+
+
+
+    /**
+
+	Singleton instance.
+     */
+    public static PostgresJPAArrayHandler getInstance() 
+{
+        return _instance;
+    }
+
+
+
+    public Column[] map(ValueMapping vm, String name, ColumnIO io,
+        boolean adapt) {
+        Column col = new Column();
+        col.setName(name);        
+        col.setType(JavaSQLTypes.SQL_ARRAY);
+        col.setTypeName("float8[]");    //////<<<--------------------- this gets reset in mergeField or whereabouts
+
+        return new Column[]
+{ col }
+;
+    }
+
+    public Object toDataStoreValue(ValueMapping vm, Object val,
+        JDBCStore store) {
+    	//this has to be array of some integer or double for now
+    	if (val instanceof double[]) {
+
+			try 
+{
+				Array darr = store.getConnection().createArrayOf("double", (Object[]) ( ArrayUtils.toObject((double[])val)));
+				return darr;
+			}
+ catch (SQLException e) 
+{
+				// TODO Auto-generated catch block
+				e.printStackTrace();
+			}
+
+		}
+
+        return  null;
+
+    }
+    /** Convert from DB rep into OM representation */
+    public Object toObjectValue(ValueMapping vm, Object val) 
+{
+        if (val == null)
+            return null;
+        return ArrayUtils.toPrimitive((Double[])val);
+    }
+
+}

@@ -1,0 +1,47 @@
+I have identified a couple of issues in Bookie compaction code. 
+
+Compacted entries are not properly synced when index is updated
+
+When compacting, we read "active" entries from an entry log and we re-append to current entry log. After compacting a number of entries, by default 100K, or at the very end, we need to update the index pointing to the new entry log and offset.
+
+Before updating the index, we need to wait for this entries to be flushed and fsynced, otherwise a bookie crash might leave the index updated, pointing to an invalid offset.
+
+The current code that is supposed to wait until flushed is:
+
+
+// GarbageCollectorThread.java:178
+EntryLocation lastOffset = offsets.get(offsets.size()-1);
+long lastOffsetLogId = EntryLogger.logIdForOffset(lastOffset.location);
+while (lastOffsetLogId < entryLogger.getLeastUnflushedLogId() && running) {
+    synchronized (flushLock) {
+        flushLock.wait(1000);
+    }
+
+    lastOffset = offsets.get(offsets.size()-1);
+    lastOffsetLogId = EntryLogger.logIdForOffset(lastOffset.location);
+}
+
+// update the index 
+
+
+
+The condition lastOffsetLogId < entryLogger.getLeastUnflushedLogId() is wrong, because if the last compacted entry was written in an earlier entry log than the least unflushed log, it means that the entries are already flushed and thus we don't need to wait.
+
+In the normal case what happens is that lastOffsetLogId} is actually the current entryLog and it's equal to {{entryLogger.getLeastUnflushedLogId(), so we don't wait. But, in this case the entries appended to the current entrylog are not flushed nor synced, hence the problem. 
+
+Exception during index flush
+
+Having an exception when updating the index, combined with the above issue, makes the bookie GC to stop indefinitely. 
+What happens is that the offset list is not cleared, and at the next bookie GC iteration it will find the old compacted entries in that list, for which now the entryLogId is less than the current log id, and that makes the while loop to never exit.
+
+Another problem is that, any IOException during the index flush, will make the GC thread to bail out and it will not remove even the entry logs that were compacted and flushed. Next time, these entry logs will be compacted again.
+
+Proposed solution
+I think the best solution is to trigger the entryLogger.flush() form the bookie GC thread before updating the indexes. That would simplify the code and I don't see any disadvantages in doing that. 
+Another improvement would be to delete compacted entry logs individually, as soon as the compacted data is flush, without waiting the end of the whole compaction process. 
+
+The advantages are : 
+
+	If compaction stop halfway, at least we don't have to re-compact what we just compacted
+	Compaction won't require significant space overhead. Today a major compaction can end up reappending a large amount of data and then deleting all the entry logs at the very end, requiring twice the size of the active data set to be stored on disk at some point in time.
+

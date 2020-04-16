@@ -1,0 +1,118 @@
+I have a Problem with my OpenJPA, and i think its a bug. The Getter/Proxy dont get all elements of a List.
+Following the complete Testcase scenario:
+
+For the test the following Settings are used. Cache have to be disabled, otherwise the test will pass because cached data.
+persistence.xml::
+...
+<class>hellojpa.T1</class>
+<class>hellojpa.T2</class>
+<class>hellojpa.T3</class>
+<properties>
+   <property name="openjpa.Log" value="SQL=TRACE"/>
+   <property name="openjpa.OrphanedKeyAction" value="log(Channel=Orphans, Level=TRACE)"/>
+
+   <property name="openjpa.Multithreaded" value="true" />
+   <property name="openjpa.InverseManager" value="true"/>
+   <property name="openjpa.LockManager" value="none"/>
+   <property name="openjpa.WriteLockLevel"    value="none"/>
+   <property name="openjpa.Compatibility" value="QuotedNumbersInQueries=true,CopyOnDetach=true"/>
+
+   <property name="openjpa.DetachState" value="fetch-groups"/>
+   <property name="openjpa.jdbc.SynchronizeMappings" value="buildSchema" />
+   // Using Mysql but i think the prob is the query it selves 
+   <property name="openjpa.ConnectionURL" value="jdbc:mysql://localhost/jpatest" />
+   <property name="openjpa.ConnectionDriverName" value="com.mysql.jdbc.Driver" />
+   <property name="openjpa.ConnectionUserName" value="jpatest" />
+   <property name="openjpa.ConnectionPassword" value="XXXXXXXXX" />
+</properties>
+...
+
+
+My Entityclasses:
+@Entity
+@Inheritance(strategy=InheritanceType.SINGLE_TABLE)
+public class T1 {
+   @Id
+   @GeneratedValue
+   private Integer id;
+     public void setId(Integer id) 
+{
+       this.id = id;
+   }
+
+   public Integer getId() 
+{
+       return id;
+   }
+}
+@Entity
+public class T2 extends T1{
+     @OneToMany(fetch=FetchType.LAZY, cascade=CascadeType.PERSIST)
+   private List<T2> t2List;
+
+   public void setT1List(List<T2> t2List) 
+{
+       this.t2List = t2List;
+   }
+
+   public List<T2> getT2List() 
+{
+       return t2List;
+   }
+}
+@Entity
+public class T3 extends T2 {
+  }
+
+We have 3 Classes on the top of each other, at the middle a List with T2s.
+
+
+My Testclasses:
+private static void commit(){
+   em.getTransaction().begin();
+   em.getTransaction().commit();
+}
+
+// Create a TestEntity
+T2 t2 = new T2();
+em.persist(t2);
+commit();
+
+// Put a T2
+t2.getT2List().add(new T2());
+commit();
+em.refresh(t2);   // important to cause a new DB-Query.
+assert(t2.getT2List().size()==1);  // its OK
+
+// Put a T3
+t2.getT2List().add(new T3());
+commit();
+em.refresh(t2);   // important to cause a new DB-Query.
+assert(t2.getT2List().size()==2);// it FAILS
+
+Database after the Test:
+T1:
+id -> DTYPE
+51 -> T2
+52 -> T2
+53 -> T3
+T1_T1
+T2_ID -> T2_T2LIST
+51 -> 52
+51 -> 53
+
+In the Database, there are both Elements correctly. I think the Problem is, that OpenJPA creates the following SQL-Queries:
+SELECT t1.id, t1.DTYPE
+   FROM T1_T1 t0 INNER JOIN T1 t1 ON t0.T2_ID = t1.id
+   WHERE t0.T2_ID = ? AND *t1.DTYPE = ? *
+[params=(int) 3601, (String) *T2*]
+
+So the T3 Entities would be ignored. in this query. Did anyone have an Idea why jpa makes such a strange query with ignoring the subclasses of T2.
+
+My other trys:
+
+	Marks with @Nonpolymorphic(NonpolymorphicType.JOINABLE)
+	Marks with @ElementNonpolymorphic(NonpolymorphicType.JOINABLE)
+	Take Set instead of List
+	The Scenario without a List and a Single Relation would pass and gets an query with t1.DTYPE IN (T2, T3). So its only with Lists.
+

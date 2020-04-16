@@ -1,0 +1,41 @@
+AbstractPlatformTransactionManager can get itself in an unrecoverable state when it suspends one transaction and gets an error trying to create a new connection in the same thread of execution. Details and fix follow.
+The symptom is the exception:
+java.lang.IllegalStateException: Cannot deactivate transaction synchronization - not active
+  at org.springframework.transaction.support.TransactionSynchronizationManager.clearSynchronization(TransactionSynchronizationManager.java:263)
+  at org.springframework.transaction.support.AbstractPlatformTransactionManager.cleanupAfterCompletion(AbstractPlatformTransactionManager.java:746)
+  at org.springframework.transaction.support.AbstractPlatformTransactionManager.processRollback(AbstractPlatformTransactionManager.java:615)
+  at org.springframework.transaction.support.AbstractPlatformTransactionManager.rollback(AbstractPlatformTransactionManager.java:560)
+  at org.springframework.transaction.interceptor.TransactionAspectSupport.doCloseTransactionAfterThrowing(TransactionAspectSupport.java:285)
+  at org.springframework.transaction.interceptor.TransactionInterceptor.invoke(TransactionInterceptor.java:100)
+  at org.springframework.aop.framework.ReflectiveMethodInvocation.proceed(ReflectiveMethodInvocation.java:170)
+  at org.springframework.aop.framework.JdkDynamicAopProxy.invoke(JdkDynamicAopProxy.java:176)
+  ...
+When this exception happens the first connection is never closed resulting in abandoned connections in the connection pool. Ouch.
+To reproduce this error, we have a connection pool with only one connection available. We are using declarative transactions with AOP TransactionInterceptor. methodA() is configured with PROPAGATION_REQUIRED and calls methodB() which is configured with PROPAGATION_REQUIRES_NEW.
+Calling methodA() results in:
+1. New connection and transaction for methodA() execution
+2. methodA() calls methodB() resulting in:
+3. AbstractPlatformTransactionManager calls suspend(transaction) at line 321
+4. AbstractPlatformTransactionManager calls doBegin() at line 322 and gets a timeout exception waiting for a new connection
+5. Exception bubbles up causing a rollback but the original transaction is not in place to be rolled back
+6. An exception is thrown in rollback (IllegalStateException) so connection is never closed
+It appears that the fix would be to catch the exception in doBegin() and to resume the original transaction before rethrowing the exception.
+This patch appears to do it for this specific case. I'm not sure if doBegin() should have the same handling elsewhere:
+AbstractPlatformTransactionManager.java
+322c322,330
+<                       doBegin(transaction, definition);
+—
+>                       try
+>                       
+{
+>                               doBegin(transaction, definition);
+>                       }
+>                       catch (RuntimeException e)
+>                       
+{
+>                               resume(transaction, (SuspendedResourcesHolder) suspendedResources);
+>                               throw e;
+>                       }
+
+With this fix, the connection pool timeout exception bubbles all the way up and causes a rollback for the first transaction.
+Alon

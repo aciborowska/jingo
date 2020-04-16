@@ -1,0 +1,20 @@
+Summary of findings
+Spring Security should persist the SecurityContext immediately if any of the following methods are invoked since they commit the response and can hand control back to the client immediately. This is similar to SEC-398.
+
+HttpServletResponse.flushBuffer()
+HttpServletResponse.getWriter().close()
+HttpServletResponse.getWriter().flush()
+HttpServletRespose.getOutputStream().close()
+HttpServletRespose.getOutputStream().flush()
+
+Original description
+During stress/loadtesting of our web application we are experiencing some severe-error issues regarding the freshness of a spring-security security context.
+The referenced forum post contains a bit more detail but here is a summary.
+A single loadtest client (during high tomcat-7/server load) can execute a "login" establishing a security context and a subsequent API call requiring a security context will fail.  The loadtest client (grinder/jython single threaded (per client)) uses a CommonsHttpInvokerRequestExecutor sending and receiving hessian content over a "typical" http request/response.
+The login request is handled by our login service bean which establishes a spring security context.  That security context is persisted in spring-security scope in a "finally" block of SecurityContextPersistenceFilter.doFilter.  
+However, the underlying components (take your pick here... tomcat-7 Connector thread, java input/output streams, etc...) have sent the http response content-length number of bytes across the wire and therefore completed the HTTP request and response pair.
+The completion of the HTTP request is realized by the loadtest client (and any client I suppose) and moves on to the next HTTP request expecting the proper cookie handling and security context to be applied to the next request.  
+This next HTTP request is accepted by the appserver and processed by spring and further spring-security before the finally block on the previous request has executed.  Therefore the spring security context is not available in this subsequent request.  
+If I place a client-side delay (100ms or so), that is typically enough time to ensure that the complete spring stack has executed and the spring security context is valid.
+We also have this semantically similar issue during "logout".  Prior to logout, we make a call to our server that requires a security context (the last API call of our loadtest workflow).  This call appears "complete" to our clients because the http reqeust/response is complete.  So we continue our loadtest workflow sending a "logout" command.  This clears the spring security context before the finally block of the previous call has executed therefore the completion of the previous request throws an exception because the session is invalid.
+Once again, if we place a 100ms delay prior to the logout, no race condition occurs and things work as expected.

@@ -1,0 +1,108 @@
+We are seeing the following exception in our MetaStore logs
+
+2016-02-11 00:00:19,002 DEBUG metastore.MetaStoreDirectSql (MetaStoreDirectSql.java:timingTrace(602)) - Direct SQL query in 5.842372ms + 1.066728ms, the query is [select "PARTITIONS"."PART_ID" from "PARTITIONS"  inner join "TBLS" on "PART
+
+ITIONS"."TBL_ID" = "TBLS"."TBL_ID"     and "TBLS"."TBL_NAME" = ?   inner join "DBS" on "TBLS"."DB_ID" = "DBS"."DB_ID"      and "DBS"."NAME" = ?  order by "PART_NAME" asc]
+
+2016-02-11 00:00:19,021 ERROR metastore.ObjectStore (ObjectStore.java:handleDirectSqlError(2243)) - Direct SQL failed, falling back to ORM
+
+MetaException(message:Unexpected null for one of the IDs, SD 6437, column null, serde 6437 for a non- view)
+
+        at org.apache.hadoop.hive.metastore.MetaStoreDirectSql.getPartitionsViaSqlFilterInternal(MetaStoreDirectSql.java:360)
+
+        at org.apache.hadoop.hive.metastore.MetaStoreDirectSql.getPartitions(MetaStoreDirectSql.java:224)
+
+        at org.apache.hadoop.hive.metastore.ObjectStore$1.getSqlResult(ObjectStore.java:1563)
+
+        at org.apache.hadoop.hive.metastore.ObjectStore$1.getSqlResult(ObjectStore.java:1559)
+
+        at org.apache.hadoop.hive.metastore.ObjectStore$GetHelper.run(ObjectStore.java:2208)
+
+        at org.apache.hadoop.hive.metastore.ObjectStore.getPartitionsInternal(ObjectStore.java:1570)
+
+        at org.apache.hadoop.hive.metastore.ObjectStore.getPartitions(ObjectStore.java:1553)
+
+        at sun.reflect.GeneratedMethodAccessor43.invoke(Unknown Source)
+
+        at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)
+
+        at java.lang.reflect.Method.invoke(Method.java:483)
+
+        at org.apache.hadoop.hive.metastore.RawStoreProxy.invoke(RawStoreProxy.java:108)
+
+        at com.sun.proxy.$Proxy5.getPartitions(Unknown Source)
+
+        at org.apache.hadoop.hive.metastore.HiveMetaStore$HMSHandler.get_partitions(HiveMetaStore.java:2526)
+
+        at org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore$Processor$get_partitions.getResult(ThriftHiveMetastore.java:8747)
+
+        at org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore$Processor$get_partitions.getResult(ThriftHiveMetastore.java:8731)
+
+        at org.apache.thrift.ProcessFunction.process(ProcessFunction.java:39)
+
+        at org.apache.thrift.TBaseProcessor.process(TBaseProcessor.java:39)
+
+        at org.apache.hadoop.hive.thrift.HadoopThriftAuthBridge20S$Server$TUGIAssumingProcessor$1.run(HadoopThriftAuthBridge20S.java:617)
+
+        at org.apache.hadoop.hive.thrift.HadoopThriftAuthBridge20S$Server$TUGIAssumingProcessor$1.run(HadoopThriftAuthBridge20S.java:613)
+
+        at java.security.AccessController.doPrivileged(Native Method)
+
+        at javax.security.auth.Subject.doAs(Subject.java:422)
+
+        at org.apache.hadoop.security.UserGroupInformation.doAs(UserGroupInformation.java:1591)
+
+        at org.apache.hadoop.hive.thrift.HadoopThriftAuthBridge20S$Server$TUGIAssumingProcessor.process(HadoopThriftAuthBridge20S.java:613)
+
+        at org.apache.thrift.server.TThreadPoolServer$WorkerProcess.run(TThreadPoolServer.java:206)
+
+        at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1142)
+
+        at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:617)
+
+        at java.lang.Thread.run(Thread.java:745)
+
+
+
+
+
+This direct SQL call fails for every getPartitions call and then falls back to ORM.
+The query which fails is
+
+
+
+select 
+
+  PARTITIONS.PART_ID, SDS.SD_ID, SDS.CD_ID,
+
+  SERDES.SERDE_ID, PARTITIONS.CREATE_TIME,
+
+  PARTITIONS.LAST_ACCESS_TIME, SDS.INPUT_FORMAT, SDS.IS_COMPRESSED,
+
+  SDS.IS_STOREDASSUBDIRECTORIES, SDS.LOCATION, SDS.NUM_BUCKETS,
+
+  SDS.OUTPUT_FORMAT, SERDES.NAME, SERDES.SLIB 
+
+from PARTITIONS
+
+  left outer join SDS on PARTITIONS.SD_ID = SDS.SD_ID 
+
+  left outer join SERDES on SDS.SERDE_ID = SERDES.SERDE_ID 
+
+  where PART_ID in (  ?  ) order by PART_NAME asc;
+
+
+
+By looking at the source MetaStoreDirectSql.java, the third column in the query ( SDS.CD_ID), the column descriptor ID, is null, which triggers the exception. This exception is not thrown from the ORM layer since it is more forgiving to the null column descriptor. See ObjectStore.java:1197
+
+
+
+ List<MFieldSchema> mFieldSchemas = msd.getCD() == null ? null : msd.getCD().getCols();
+
+
+
+I verified that this exception gets triggered in the first place when we add a new partition without setting column level schemas for the partition, using the MetaStoreClient API. This exception does not occur when adding partitions using the CLI
+I see two ways to solve the issue.
+1. Make the MetaStoreClient API more strict and not allow creating partition without having column level schemas set. (This could break clients which use the MetaStoreclient API)
+2. Make the Direct SQL code path and the ORM code path more consistent, where the Direct SQL does not fail on null column descriptor ID.
+I feel 2 is more safer and easier to fix.

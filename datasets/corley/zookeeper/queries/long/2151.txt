@@ -1,0 +1,49 @@
+We are seeing one follower server in our quorum stuck with thousands of outstanding requests:
+---------------------------------------------
+node04:~$ telnet 10.10.10.6 2181
+Trying 10.10.10.6...
+Connected to 10.10.10.6.
+Escape character is '^]'.
+stat
+Zookeeper version: 3.5.0-1547702, built on 05/15/2014 03:06 GMT
+Clients:
+ /10.10.10.6:60646[0](queued=0,recved=1,sent=0)
+ /10.10.10.6:60648[0](queued=0,recved=1,sent=0)
+ /10.10.10.6:41786[0](queued=1,recved=3,sent=1)
+
+Latency min/avg/max: 0/0/1887
+Received: 3064156900
+Sent: 3064134581
+Connections: 3
+Outstanding: 24395
+Zxid: 0x11050f7e4b
+Mode: follower
+Node count: 6969
+Connection closed by foreign host.
+---------------------------------------------
+
+When this happens, our c client is able to establish an initial connection to the server, but any request then times out.  It re-establishes a connection, then times out, rinse, repeat.  We are noticing this because we set up this particular client to connect directly to only one server in the quorum, so any problem with that server will be noticed.  Our other clients are just connecting to the next server in the list, which is why only this client notices a problem.
+
+We were able to capture a heap dump in one instance.  This is what we observed:
+
+
+	FollowerZookeeperServer.requestsInProcess has count ~24K
+	CommitProcessor.queuedRequest list has the 24K items in it, so the FinalRequestProcessor's processRequest function isn't ever getting called to complete the requests.
+	CommitProcessor.isWaitingForCommit()==true
+	CommitProcessor.committedRequests.isEmpty()==true
+	CommitProcessor.nextPending is a create request
+	CommitProcessor.currentlyCommitting is null
+	CommitProcessor.numRequestsProcessing is 0
+	FollowerZookeeperServer, who should be calling commit() on the CommitProcessor, has no elements in its pendingTxns list, which indicates that it thinks it has already passed a COMMIT message to the CommitProcessor for every request that is stuck in the queuedRequests list and nextPending member of CommitProcessor.
+
+
+
+The CommitProcessor's run() is doing this:
+
+Thread 23510: (state = BLOCKED)
+   java.lang.Object.wait(long) @bci=0 (Compiled frame; information may be imprecise)
+   org.apache.zookeeper.server.quorum.CommitProcessor.run() @bci=165, line=182 (Compiled frame)
+
+When we attached via gdb to get the dump, sockets closed that caused a new round of leader election.  When this happened, the issued corrected itself since the whole FollowerZookeeperServer got restarted.
+
+I've confirmed that no time changing was happening before things got stuck 2 days before we noticed it.

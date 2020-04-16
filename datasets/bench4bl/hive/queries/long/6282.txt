@@ -1,0 +1,20 @@
+nextBatch() method that computes the batchSize is only aware of stripe boundaries. This will not work when PPD in ORC is enabled as PPD works at row group level (stripe contains multiple row groups). By default, row group stride is 10000. When PPD is enabled, some row groups may get eliminated. After row group elimination, disk ranges are computed based on the selected row groups. If batchSize computation is not aware of this, it will lead to BufferUnderFlowException (reading beyond disk range). Following scenario should illustrate it more clearly
+
+
+
+|--------------------------------- STRIPE 1 ------------------------------------|
+
+|-- row grp 1 --|-- row grp 2 --|-- row grp 3 --|-- row grp 4 --|-- row grp 5 --|
+
+                |--------- diskrange 1 ---------|               |- diskrange 2 -|
+
+                                                ^
+
+                                             (marker)   
+
+
+
+diskrange1 will have 20000 rows and diskrange 2 will have 10000 rows. Since nextBatch() was not aware of row groups and hence the diskranges, it tries to read 1024 values from the end of diskrange 1 where it should only read 20000 % 1024 = 544 values. This will result in BufferUnderFlowException.
+To fix this, a marker is placed at the end of each range and batchSize is computed accordingly. 
+
+batchSize = Math.min(VectorizedRowBatch.DEFAULT_SIZE, (markerPosition - rowInStripe));

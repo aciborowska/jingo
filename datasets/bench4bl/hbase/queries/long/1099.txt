@@ -1,0 +1,54 @@
+In master log, I see master trying to process split of a crashed server.  Its split two of three logs.  The server that just crashed comes back on line.  Balancing cuts in and master starts assigning the new server regions.  New regionserver starts opening regions and messing with the log file that master is trying to write.  It makes for a mess.  Here is how the events playout with a focus on a region that gets opened while master is processing split:
+
+2008-12-29 16:16:38,456 INFO org.apache.hadoop.hbase.master.ServerManager: XX.XX.XX.53:60020 lease expired
+...
+2008-12-29 16:16:39,494 DEBUG org.apache.hadoop.hbase.regionserver.HLog: Creating new log file writer for path hdfs://XX.XX.XX.XX:50000/data/hbase/content/1526904420/oldlogfile.log and region content,36946541ed9a62f419cf7238d32a6a38,1230448587552
+...
+2008-12-29 16:17:19,686 INFO org.apache.hadoop.hbase.master.ServerManager: Received start message from: XX.XX.XX.53:60020
+....
+2008-12-29 16:17:22,480 DEBUG org.apache.hadoop.hbase.master.BaseScanner: Current assignment of content,36946541ed9a62f419cf7238d32a6a38,1230448587552 is not valid. serverInfo: address: XX.XX.XX.53:60020, startcode: 1230585439593, load: (requests=3, regions=0, usedHeap=28, maxHeap=1777), passed startCode: 1230577089035, storedInfo.startCode: 1230585439593 Region is not unassigned, assigned or pending
+...
+2008-12-29 16:17:23,622 INFO org.apache.hadoop.hbase.master.RegionManager: assigning region content,36946541ed9a62f419cf7238d32a6a38,1230448587552 to server XX.XX.XX.53:60020
+...
+2008-12-29 16:17:26,632 INFO org.apache.hadoop.hbase.master.ServerManager: Received MSG_REPORT_PROCESS_OPEN: content,36946541ed9a62f419cf7238d32a6a38,1230448587552 from XX.XX.XX.53:60020
+...
+2008-12-29 16:17:29,666 INFO org.apache.hadoop.hbase.master.ServerManager: Received MSG_REPORT_OPEN: content,36946541ed9a62f419cf7238d32a6a38,1230448587552 from XX.XX.XX.53:60020
+....
+2008-12-29 16:17:31,933 DEBUG org.apache.hadoop.hbase.regionserver.HLog: Applied 100001 total edits from hdfs://XX.XX.XX.XX:50000/data/hbase/log_XX.XX.XX.53_1230577089035_60020/hlog.dat.1230582612406
+2008-12-29 16:17:31,941 DEBUG org.apache.hadoop.hbase.regionserver.HLog: Splitting 3 of 3: hdfs://XX.XX.XX.XX:50000/data/hbase/log_XX.XX.XX.53_1230577089035_60020/hlog.dat.1230584516314
+....
+2008-12-29 16:17:34,522 INFO org.apache.hadoop.dfs.DFSClient: org.apache.hadoop.ipc.RemoteException: org.apache.hadoop.dfs.LeaseExpiredException: No lease on /data/hbase/content/1526904420/oldlogfile.log File does not exist. [Lease.  Hold
+er: DFSClient_-1506530059, pendingcreates: 45]
+        at org.apache.hadoop.dfs.FSNamesystem.checkLease(FSNamesystem.java:1172)
+        at org.apache.hadoop.dfs.FSNamesystem.getAdditionalBlock(FSNamesystem.java:1103)
+        at org.apache.hadoop.dfs.NameNode.addBlock(NameNode.java:330)
+        at sun.reflect.GeneratedMethodAccessor15.invoke(Unknown Source)
+        at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:25)
+        at java.lang.reflect.Method.invoke(Method.java:597)
+        at org.apache.hadoop.ipc.RPC$Server.call(RPC.java:481)
+        at org.apache.hadoop.ipc.Server$Handler.run(Server.java:888)
+...
+
+
+Regionserver side I see this when it tries to open above region:
+
+2008-12-29 21:17:28,811 WARN org.apache.hadoop.hbase.regionserver.HStore: Exception processing reconstruction log hdfs://XX.XX.XX.XX:50000/data/hbase/content/1526904420/oldlogfile.log opening [B@12183272 -- continuing
+.  Probably lack-of-HADOOP-1700 causing DATA LOSS!
+java.io.EOFException
+        at java.io.DataInputStream.readFully(DataInputStream.java:180)
+        at org.apache.hadoop.io.DataOutputBuffer$Buffer.write(DataOutputBuffer.java:64)
+        at org.apache.hadoop.io.DataOutputBuffer.write(DataOutputBuffer.java:102)
+        at org.apache.hadoop.io.SequenceFile$Reader.next(SequenceFile.java:1933)
+        at org.apache.hadoop.io.SequenceFile$Reader.next(SequenceFile.java:1833)
+        at org.apache.hadoop.io.SequenceFile$Reader.next(SequenceFile.java:1879)
+        at org.apache.hadoop.hbase.regionserver.HStore.doReconstructionLog(HStore.java:351)
+        at org.apache.hadoop.hbase.regionserver.HStore.runReconstructionLog(HStore.java:296)
+        at org.apache.hadoop.hbase.regionserver.HStore.<init>(HStore.java:236)
+        at org.apache.hadoop.hbase.regionserver.HRegion.instantiateHStore(HRegion.java:1624)
+        at org.apache.hadoop.hbase.regionserver.HRegion.initialize(HRegion.java:270)
+        at org.apache.hadoop.hbase.regionserver.HRegionServer.instantiateRegion(HRegionServer.java:1364)
+        at org.apache.hadoop.hbase.regionserver.HRegionServer.openRegion(HRegionServer.java:1335)
+        at org.apache.hadoop.hbase.regionserver.HRegionServer$Worker.run(HRegionServer.java:1251)
+        at java.lang.Thread.run(Thread.java:619)
+...
+

@@ -1,0 +1,15 @@
+While working on a wrapper for the C API I puzzled over the problem of how to determine when the multi-threaded adaptor's IO and completion threads had exited.  Looking at the code in api_epilog() and adaptor_finish() it seemed clear that any thread could be the "last one out the door", and whichever was last would "turn out the lights" by calling zookeeper_close().
+
+However, on further examination I found that in fact, the close_requested flag guards entry to zookeeper_close() in api_epilog(), and close_requested can only be set non-zero within zookeeper_close().   Thus, only the user's main thread can invoke zookeeper_close() and kick off the shutdown process.  When that happens, zookeeper_close() then invokes adaptor_finish() and returns ZOK immediately afterward.
+
+Since adaptor_finish() is only called in this one context, it means all the code in that function to check pthread_self() and call pthread_detach() if the current thread is the IO or completion thread is redundant.  The adaptor_finish() function always signals and then waits to join with the IO and completion threads because it can only be called by the user's main thread.
+
+After joining with the two internal threads, adaptor_finish() calls api_epilog(), which might seem like a trivial final action.  However, this is actually where all the work gets done, because in this one case, api_epilog() sees a non-zero close_requested flag value and invokes zookeeper_close().  Note that zookeeper_close() is already on the stack; this is a re-entrant invocation.
+
+This time around, zookeeper_close() skips the call to adaptor_finish() – assuming the reference count has been properly decremented to zero! – and does the actual final cleanup steps, including deallocating the zh structure.  Fortunately, none of the callers on the stack (api_epilog(), adaptor_finish(), and the first zookeeper_close()) touches zh after this.
+
+This all works OK, and in particular, the fact that I can be certain that the IO and completion threads have exited after zookeeper_close() returns is great.  So too is the fact that those threads can't invoke zookeeper_close() without my knowing about it.
+
+However, the actual mechanics of the shutdown seem unnecessarily complex.  I'd be worried a bit about a new maintainer looking at adaptor_finish() and reasonably concluding that it can be called by any thread, including the IO and completion ones.  Or thinking that the zh handle can still be used after that innocuous-looking call to adaptor_finish() in zookeeper_close() – the one that actually causes all the work to be done and the handle to be deallocated!
+
+I'll attach a patch which I think simplifies the code a bit and makes the shutdown mechanics a little more clear, and might prevent unintentional errors in the future.

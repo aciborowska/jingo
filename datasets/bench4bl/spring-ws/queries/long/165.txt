@@ -1,0 +1,72 @@
+When trying to use gzip compression with a spring-ws client, i get this exception:
+2007-08-10 16:06:40,375 INFO [org.springframework.ws.soap.saaj.SaajSoapMessageFactory::afterPropertiesSet] - <Creating SAAJ 1.3 MessageFactory with SOAP 1.1 Protocol>
+java.io.IOException: Not in GZIP format
+	at java.util.zip.GZIPInputStream.readHeader(GZIPInputStream.java:132)
+	at java.util.zip.GZIPInputStream.<init>(GZIPInputStream.java:58)
+	at java.util.zip.GZIPInputStream.<init>(GZIPInputStream.java:68)
+	at org.springframework.ws.transport.http.AbstractHttpSenderConnection.getResponseInputStream(AbstractHttpSenderConnection.java:78)
+	at org.springframework.ws.transport.AbstractSenderConnection$ResponseTransportInputStream.createInputStream(AbstractSenderConnection.java:100)
+	at org.springframework.ws.transport.TransportInputStream.getInputStream(TransportInputStream.java:42)
+	at org.springframework.ws.transport.TransportInputStream.read(TransportInputStream.java:79)
+	at com.sun.xml.messaging.saaj.util.ByteOutputStream.write(ByteOutputStream.java:80)
+	at com.sun.xml.messaging.saaj.util.JAXMStreamSource.<init>(JAXMStreamSource.java:50)
+	at com.sun.xml.messaging.saaj.soap.SOAPPartImpl.setContent(SOAPPartImpl.java:227)
+	at com.sun.xml.messaging.saaj.soap.MessageImpl.init(MessageImpl.java:364)
+	at com.sun.xml.messaging.saaj.soap.MessageImpl.<init>(MessageImpl.java:273)
+	at com.sun.xml.messaging.saaj.soap.ver1_1.Message1_1Impl.<init>(Message1_1Impl.java:68)
+	at com.sun.xml.messaging.saaj.soap.ver1_1.SOAPMessageFactory1_1Impl.createMessage(SOAPMessageFactory1_1Impl.java:62)
+	at org.springframework.ws.soap.saaj.SaajSoapMessageFactory.createWebServiceMessage(SaajSoapMessageFactory.java:163)
+	at org.springframework.ws.transport.AbstractWebServiceConnection.receive(AbstractWebServiceConnection.java:52)
+	at org.springframework.ws.client.core.WebServiceTemplate.sendAndReceive(WebServiceTemplate.java:408)
+	at org.springframework.ws.client.core.WebServiceTemplate.doSendAndReceive(WebServiceTemplate.java:357)
+	at org.springframework.ws.client.core.WebServiceTemplate.sendSourceAndReceiveToResult(WebServiceTemplate.java:305)
+	at org.springframework.ws.client.core.WebServiceTemplate.sendSourceAndReceiveToResult(WebServiceTemplate.java:296)
+        ....
+I tried to debug a little. This is my client code:
+        DOMResult responseResult = new DOMResult(documentResponse);
+        boolean err = !getWebServiceTemplate().sendSourceAndReceiveToResult(
+                new DOMSource(document), new SoapActionCallback("findByIdOperation"),
+                responseResult);
+        if (err)
+            throw new Exception("blah blah blah");
+What happens (approximatively) is:
+
+the soap request is sent to the remote server
+response comes back with a Content-Encoding http header set to "gzip" and payload is gzipped
+in org.springframework.ws.transport.http.AbstractHttpSenderConnection, getResponseInputStream() is called:
+
+    protected final InputStream getResponseInputStream() throws IOException {
+        InputStream inputStream;
+        if (responseBuffer != null) 
+{
+            inputStream = new ByteArrayInputStream(responseBuffer);
+        }
+        else {
+            inputStream = getRawResponseInputStream();
+        }
+        return isGzipResponse() ? new GZIPInputStream(inputStream) : inputStream;
+    }
+
+    /** Determine whether the given response is a GZIP response. */
+    private boolean isGzipResponse() throws IOException {
+        for (Iterator iterator = getResponseHeaders(HttpTransportConstants.HEADER_CONTENT_ENCODING);
+             iterator.hasNext() {
+            String encodingHeader = (String) iterator.next();
+            return encodingHeader.toLowerCase().indexOf(HttpTransportConstants.CONTENT_ENCODING_GZIP) != -1;
+        }
+        return false;
+    }
+
+The first time the function is called, responseBuffer is null, so a raw input stream is created and wrapped into a gzip input stream (since isGzipResponse() return true). Next time function is called, responseBuffer (which holds the now unzipped payload) is wrapped into a bytearray input stream ... but also into a gzip input stream (since isGzipResponse() still returns true). Gzip complains about not finding the magic bytes at the beginning of the stream (which in fact starts by "<?xml version=").
+
+At first glance, getResponseInputStream() should be (but couldn't test it so don't know about side effects :-O):
+
+        if (responseBuffer != null) {            inputStream = new ByteArrayInputStream(responseBuffer);        }
+        else 
+{
+            inputStream = getRawResponseInputStream();
+            if(isGzipResponse())
+                inputStream = new GZIPInputStream(inputStream);
+        }
+        return inputStream;
+Best regards.    

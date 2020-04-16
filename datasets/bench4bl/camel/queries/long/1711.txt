@@ -1,0 +1,54 @@
+I've a spring based web application that has 2 applicationContexts (the second has the first as parent). My problem is that the SpringCamelContext listens to the ContextRefreshedEvent and starts the camel context.
+This works fine if you have only 1 context but if the ContextRefreshedEvent of the second context is received the routes are started a second time.
+The second start of the camel context is catched correctly (in ServiceSupport) but I think the the startRoutes() in the start()-method of DefaultCamelContext should also prevent to be called twice...  
+See discussion here http://www.nabble.com/How-to-prevent-routes-from-started-twice--td23983653.html
+Attached is a test-project. The core project simply defines a service that is exported in the web project. The applicationContext-services.xml creates the camelContext and the DispatcherServlet is used to export the service as remoteService.
+Start the webapp with the jetty-run.cmd in the web project. The logfile is created in the web project.
+The root web application context is started:
+
+2009-06-15 11:43:24.771 DEBUG [main][org.apache.camel.spring.SpringCamelContext] - Publishing spring-event: \
+   org.springframework.context.event.ContextRefreshedEvent[source=org.springframework.web.context.support.XmlWebApplicationContext@1d4e49a: \
+   display name [Root WebApplicationContext]; startup date [Mon Jun 15 11:43:22 CEST 2009]; root of context hierarchy]
+2009-06-15 11:43:24.771 DEBUG [main][org.apache.camel.spring.SpringCamelContext] - Starting the CamelContext now that the ApplicationContext has started
+2009-06-15 11:43:24.771 INFO  [main][org.apache.camel.impl.DefaultCamelContext] - Apache Camel 1.6.1 (CamelContext:camel-amq) is starting
+....
+2009-06-15 11:43:25.245 INFO  [main][org.apache.camel.impl.DefaultCamelContext] - Apache Camel 1.6.1 (CamelContext:camel-amq) started
+....
+2009-06-15 11:43:25.372 INFO  [main][org.springframework.web.context.ContextLoader] - Root WebApplicationContext: initialization completed in 2420 ms
+2009-06-15 11:43:25.435 INFO  [main][/camel-spring-problem-web] - Initializing Spring FrameworkServlet 'CamelSpringProblem'
+2009-06-15 11:43:25.435 INFO  [main][org.springframework.web.servlet.DispatcherServlet] - FrameworkServlet 'CamelSpringProblem': initialization started
+2009-06-15 11:43:25.435 INFO  [main][org.springframework.web.context.support.XmlWebApplicationContext] - Refreshing org.springframework.web.context.support.XmlWebApplicationContext@1ccbdf7: \
+   display name [WebApplicationContext for namespace 'CamelSpringProblem-servlet']; startup date [Mon Jun 15 11:43:25 CEST 2009]; parent: \
+   org.springframework.web.context.support.XmlWebApplicationContext@1d4e49a
+...
+
+
+And now the web application context for the servlet is started:
+
+2009-06-15 11:43:25.530 DEBUG [main][org.apache.camel.spring.SpringCamelContext] - Publishing spring-event: \
+   org.springframework.context.event.ContextRefreshedEvent[source=org.springframework.web.context.support.XmlWebApplicationContext@1ccbdf7: \
+   display name [WebApplicationContext for namespace 'CamelSpringProblem-servlet']; startup date [Mon Jun 15 11:43:25 CEST 2009]; \
+   parent: org.springframework.web.context.support.XmlWebApplicationContext@1d4e49a]
+2009-06-15 11:43:25.530 DEBUG [main][org.apache.camel.spring.SpringCamelContext] - Starting the CamelContext now that the ApplicationContext has started
+2009-06-15 11:43:25.530 DEBUG [main][org.apache.camel.management.DefaultInstrumentationAgent] - Registered MBean with objectname: \
+   org.apache.camel:context=chaw389c/camel-amq,type=consumers,name=JmsConsumer(0x14bcb5c)
+2009-06-15 11:43:25.530 INFO  [main][org.apache.camel.impl.DefaultCamelContext] - Apache Camel 1.6.1 (CamelContext:camel-amq) started
+2009-06-15 11:43:25.530 INFO  [main][org.springframework.web.servlet.DispatcherServlet] - FrameworkServlet 'CamelSpringProblem': initialization completed in 95 ms
+
+
+The ContextRefreshedEvent is published and causes the SpringCamelContext to handle the event and try to start the camel context again. But the start() in DefaultCamelContext calls super.start() and ServiceSupport detects correctly that the context is already started and does nothing but the call to startRoutes(...) is executed and this should no happen.
+DefaultCamelContext.java
+public void start() throws Exception {
+        super.start();
+        
+        // the context is now considered started (i.e. isStarted() == true))
+        // starting routes is done after, not during context startup
+        synchronized (this) {
+            startRoutes(routes);
+        }
+
+        LOG.info("Apache Camel " + getVersion() + " (CamelContext:" + getName() + ") started");
+}
+
+
+My favorite solution would be to add a flag that would prevent the camel context to be started from the ContextRefreshed event but allows to start the context manually from another user defined bean (possible by calling the start() method on SpringCamelContext. The shouldStartContext blocks both ways if set to false.

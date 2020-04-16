@@ -1,0 +1,62 @@
+A deadlock can occur if a thread closes an application context and a second thread then tries to get a singleton bean which it needs to create (bean has not been created yet). The two threads are trying to synchronize on two locks but in opposite order.
+A simple fix may be to change AbstractApplicationContext.destroySingletons() to:
+synchronized (this.singletonCache) {
+    synchronized (this.disposableBeans) {
+            String[] disposableBeanName = StringUtils.toStringArray(this.disposableBeans.keySet());
+            for (int i = 0; i < disposableBeanName.length; i++) 
+{
+                destroyDisposableBean(disposableBeanName[i]);
+            }
+        }
+    this.singletonCache.clear();
+}
+But I have not tested that fix or investigated the code enough to know the implications of that change.
+Stack trace from version 1.2.7.
+Thread 1:
+at org.springframework.beans.factory.support.AbstractBeanFactory.removeSingleton(AbstractBeanFactory.java:520)
+
+waiting to lock <0x00002aaafa700b70> (a java.util.HashMap)
+        at org.springframework.beans.factory.support.AbstractBeanFactory.destroyDisposableBean(AbstractBeanFactory.java:995)
+        at org.springframework.beans.factory.support.AbstractBeanFactory.destroyBean(AbstractBeanFactory.java:1024)
+        at org.springframework.beans.factory.support.AbstractBeanFactory.destroyDisposableBean(AbstractBeanFactory.java:1002)
+        at org.springframework.beans.factory.support.AbstractBeanFactory.destroyBean(AbstractBeanFactory.java:1024)
+        at org.springframework.beans.factory.support.AbstractBeanFactory.destroyDisposableBean(AbstractBeanFactory.java:1002)
+        at org.springframework.beans.factory.support.AbstractBeanFactory.destroyBean(AbstractBeanFactory.java:1024)
+        at org.springframework.beans.factory.support.AbstractBeanFactory.destroyDisposableBean(AbstractBeanFactory.java:1002)
+        at org.springframework.beans.factory.support.AbstractBeanFactory.destroySingletons(AbstractBeanFactory.java:566)
+locked <0x00002aaafa7220d0> (a java.util.LinkedHashMap)
+        at org.springframework.context.support.AbstractApplicationContext.close(AbstractApplicationContext.java:512)
+
+Thread 2:
+ at org.springframework.beans.factory.support.AbstractBeanFactory.registerDisposableBeanIfNecessary(AbstractBeanFactory.java:905)
+
+waiting to lock <0x00002aaafa7220d0> (a java.util.LinkedHashMap)
+        at org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory.createBean(AbstractAutowireCapableBeanFactory.java:408)
+        at org.springframework.beans.factory.support.AbstractBeanFactory.getBean(AbstractBeanFactory.java:233)
+locked <0x00002aaafa700b70> (a java.util.HashMap)
+        at org.springframework.beans.factory.support.AbstractBeanFactory.getBean(AbstractBeanFactory.java:145)
+        at org.springframework.beans.factory.support.BeanDefinitionValueResolver.resolveReference(BeanDefinitionValueResolver.java:186)
+        at org.springframework.beans.factory.support.BeanDefinitionValueResolver.resolveValueIfNecessary(BeanDefinitionValueResolver.java:106)
+        at org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory.applyPropertyValues(AbstractAutowireCapableBeanFactory.java:1046)
+        at org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory.populateBean(AbstractAutowireCapableBeanFactory.java:857)
+        at org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory.createBean(AbstractAutowireCapableBeanFactory.java:378)
+        at org.springframework.beans.factory.support.AbstractBeanFactory.getBean(AbstractBeanFactory.java:233)
+locked <0x00002aaafa700b70> (a java.util.HashMap)
+        at org.springframework.beans.factory.support.AbstractBeanFactory.getBean(AbstractBeanFactory.java:145)
+        at org.springframework.beans.factory.support.BeanDefinitionValueResolver.resolveReference(BeanDefinitionValueResolver.java:186)
+        at org.springframework.beans.factory.support.BeanDefinitionValueResolver.resolveValueIfNecessary(BeanDefinitionValueResolver.java:106)
+        at org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory.applyPropertyValues(AbstractAutowireCapableBeanFactory.java:1046)
+        at org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory.populateBean(AbstractAutowireCapableBeanFactory.java:857)
+        at org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory.createBean(AbstractAutowireCapableBeanFactory.java:378)
+        at org.springframework.beans.factory.support.AbstractBeanFactory.getBean(AbstractBeanFactory.java:233)
+locked <0x00002aaafa700b70> (a java.util.HashMap)
+        at org.springframework.beans.factory.support.AbstractBeanFactory.getBean(AbstractBeanFactory.java:145)
+        at org.springframework.beans.factory.support.BeanDefinitionValueResolver.resolveReference(BeanDefinitionValueResolver.java:186)
+        at org.springframework.beans.factory.support.BeanDefinitionValueResolver.resolveValueIfNecessary(BeanDefinitionValueResolver.java:106)
+        at org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory.applyPropertyValues(AbstractAutowireCapableBeanFactory.java:1046)
+        at org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory.populateBean(AbstractAutowireCapableBeanFactory.java:857)
+        at org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory.createBean(AbstractAutowireCapableBeanFactory.java:378)
+        at org.springframework.beans.factory.support.AbstractBeanFactory.getBean(AbstractBeanFactory.java:252)
+        at org.springframework.beans.factory.support.AbstractBeanFactory.getBean(AbstractBeanFactory.java:145)
+        at org.springframework.context.support.AbstractApplicationContext.getBean(AbstractApplicationContext.java:537)
+

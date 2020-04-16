@@ -1,0 +1,56 @@
+After I have switched my software to ServiceMix 4.5.2 I have faced very strange blocking issue.
+I have bidirection relation: OneToMany and ManyToOne that was working fine before switching to ServiceMix 4.5.2. 
+After switching to ServiceMix 4.5.2 i am getting this Exception:
+
+
+Caused by: java.lang.ClassCastException: org.apache.openjpa.util.LongId cannot be cast to XXXXXXXXXXXXXXX.PARENT
+        at XXXXXXXXXXXXXXX.CHILD.pcReplaceField(CHILD.java)[227:XXXXXXXXXXXXXXX:4.0.1.SNAPSHOT]
+        at org.apache.openjpa.kernel.StateManagerImpl.replaceField(StateManagerImpl.java:3213)
+        at org.apache.openjpa.kernel.StateManagerImpl.storeObjectField(StateManagerImpl.java:2643)
+        at org.apache.openjpa.kernel.StateManagerImpl.storeObject(StateManagerImpl.java:2633)
+        at org.apache.openjpa.jdbc.kernel.JDBCStoreManager.setMappedBy(JDBCStoreManager.java:478)
+        at org.apache.openjpa.jdbc.kernel.JDBCStoreManager.initializeState(JDBCStoreManager.java:404)
+        at org.apache.openjpa.jdbc.kernel.JDBCStoreManager.initialize(JDBCStoreManager.java:306)
+        at org.apache.openjpa.kernel.DelegatingStoreManager.initialize(DelegatingStoreManager.java:112)
+        at org.apache.openjpa.kernel.ROPStoreManager.initialize(ROPStoreManager.java:57)
+        at org.apache.openjpa.kernel.BrokerImpl.initialize(BrokerImpl.java:1046)
+        at org.apache.openjpa.kernel.BrokerImpl.find(BrokerImpl.java:1004)
+        ... 133 more
+
+
+
+As I have done some debugging, it looks like as some synchronization problems in OpenJPA.
+I'm getting this exception, because ClassMappings are constructed and putted into MODE_META state, before MetaDataRepository that owns them reaches MODE_MAPPING_INIT. So then when MetaDataRepository reaches MODE_MAPPING_INIT state, all ClassMappings are already in MODE_META state and will never be putted into MODE_MAPPING_INIT state as implemented in resolve method in MetaDataRepository:
+
+
+    /**
+     * Resolve the given metadata if needed. There are three goals:
+     * <ol>
+     * <li>Make sure no unresolved metadata gets back to the client.</li>
+     * <li>Avoid infinite reentrant calls for mutually-dependent metadatas by allowing unresolved
+     * metadata to be returned to other metadatas.</li>
+     * <li>Always make sure the superclass metadata is resolved before the subclass metadata so that
+     * the subclass can access the super's list of fields.</li>
+     * </ol>
+     * Note that the code calling this method is synchronized, so this method doesn't have to be.
+     */
+    private void resolve(ClassMetaData meta) {
+        // return anything that has its metadata resolved, because that means
+        // it is either fully resolved or must at least be in the process of
+        // resolving mapping, etc since we do that right after meta resolve
+        if (meta == null || _resMode == MODE_NONE || (meta.getResolve() & MODE_META) != 0)
+            return;
+
+
+
+So it makes ClassMapping's strategy impossible to initialize, once it reaches MODE_META state.
+
+Due to above problem for example the RelationFieldStrategy will never get initialized, so then the FieldMetadata has _intermediate filed set to false which causes OpenJPA to set a LongId value to the field of type PARENT.
+
+In my case, this is a blocker.
+Unfortunately i am not able to write a testcase for this bug due to both: do not have a time for this and scenerio is way too complex- multithreaded app.
+
+In my case problem occurs in aprox 95% app starts.
+
+Tested on versions 2.2.2, 2.2.0, so same problems probably occurs on 2.2.1.
+All test has been made with ServiceMix 4.5.2.

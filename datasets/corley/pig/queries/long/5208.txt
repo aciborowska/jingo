@@ -1,0 +1,65 @@
+I posted this issue to the mailing list awhile back and didn't get a response. Today, I picked this back up, tried on Tez instead of Mapreduce and got the same error. In local mode, this works. As far as I can tell, I've been able to replicate this enough that I feel this is a real bug in pig.
+
+Here's the original mailing list post with all the details I have from the original time I documented this error: https://www.mail-archive.com/user@pig.apache.org/msg10553.html
+
+Here's the stack trace from my tez run today: 
+
+2084439 [main] ERROR org.apache.pig.tools.grunt.GruntParser  - ERROR 2998: Unhandled internal error. Vertex failed, vertexName=scope-1797, vertexId=vertex_1490968035192_0008_1_01, diagnostics=[Task failed, taskId=task_1490968035192_0008_1_01_000000, diagnostics=[TaskAttempt 0 failed, info=[Error: Error while running task ( failure ) : org.apache.tez.runtime.library.common.shuffle.orderedgrouped.Shuffle$ShuffleError: Error while doing final merge
+        at org.apache.tez.runtime.library.common.shuffle.orderedgrouped.Shuffle$RunShuffleCallable.callInternal(Shuffle.java:318)
+        at org.apache.tez.runtime.library.common.shuffle.orderedgrouped.Shuffle$RunShuffleCallable.callInternal(Shuffle.java:285)
+        at org.apache.tez.common.CallableWithNdc.call(CallableWithNdc.java:36)
+        at java.util.concurrent.FutureTask.run(FutureTask.java:266)
+        at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1142)
+        at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:617)
+        at java.lang.Thread.run(Thread.java:745)
+Caused by: java.lang.ClassCastException: org.apache.pig.backend.hadoop.hbase.TableSplitComparable cannot be cast to org.apache.hadoop.hbase.mapreduce.TableSplit
+        at org.apache.pig.backend.hadoop.hbase.TableSplitComparable.compareTo(TableSplitComparable.java:26)
+        at org.apache.pig.data.DataType.compare(DataType.java:566)
+        at org.apache.pig.data.DataType.compare(DataType.java:464)
+        at org.apache.pig.data.BinInterSedes$BinInterSedesTupleRawComparator.compareDatum(BinInterSedes.java:1106)
+        at org.apache.pig.data.BinInterSedes$BinInterSedesTupleRawComparator.compare(BinInterSedes.java:1082)
+        at org.apache.pig.data.BinInterSedes$BinInterSedesTupleRawComparator.compareBinSedesTuple(BinInterSedes.java:787)
+        at org.apache.pig.data.BinInterSedes$BinInterSedesTupleRawComparator.compare(BinInterSedes.java:728)
+        at org.apache.pig.backend.hadoop.executionengine.mapReduceLayer.PigTupleSortComparator.compare(PigTupleSortComparator.java:100)
+        at org.apache.tez.runtime.library.common.sort.impl.TezMerger$MergeQueue.lessThan(TezMerger.java:684)
+        at org.apache.hadoop.util.PriorityQueue.upHeap(PriorityQueue.java:128)
+        at org.apache.hadoop.util.PriorityQueue.put(PriorityQueue.java:55)
+        at org.apache.tez.runtime.library.common.sort.impl.TezMerger$MergeQueue.merge(TezMerger.java:783)
+        at org.apache.tez.runtime.library.common.sort.impl.TezMerger$MergeQueue.merge(TezMerger.java:694)
+        at org.apache.tez.runtime.library.common.sort.impl.TezMerger.merge(TezMerger.java:150)
+        at org.apache.tez.runtime.library.common.sort.impl.TezMerger.merge(TezMerger.java:132)
+        at org.apache.tez.runtime.library.common.shuffle.orderedgrouped.MergeManager.finalMerge(MergeManager.java:1124)
+        at org.apache.tez.runtime.library.common.shuffle.orderedgrouped.MergeManager.close(MergeManager.java:583)
+        at org.apache.tez.runtime.library.common.shuffle.orderedgrouped.Shuffle$RunShuffleCallable.callInternal(Shuffle.java:314)
+        ... 6 more
+
+
+
+And here's the test script I was using with the names of tables and columns changed: 
+
+side_a = LOAD 'hbase://ads' USING
+          org.apache.pig.backend.hadoop.hbase.HBaseStorage(
+            'cf1:user_id cf1:ad_id',
+            '-minTimestamp=1470024000000 -maxTimestamp=1491019199000 -regex=\\\\|agds=(156)\\\\|'
+          ) AS (user_id:chararray, ad_id:chararray);
+side_a = FILTER side_a BY ad_id == '440';
+
+side_b = LOAD 'hbase://ads' USING
+          org.apache.pig.backend.hadoop.hbase.HBaseStorage(
+            'cf1:user_id cf1:ad_id',
+            '-minTimestamp=1470024000000 -maxTimestamp=1491019199000 -regex=\\\\|agds=(156)\\\\|'
+          ) AS (user_id:chararray, ad_id:chararray);
+side_b = FILTER side_b BY ad_id == '439';
+
+side_b = JOIN
+              side_a BY user_id,
+              side_b BY user_id
+               USING 'merge';
+after_merge_join = FOREACH side_b GENERATE
+                side_b::user_id;
+
+STORE after_merge_join
+  INTO 'hbase://results'
+  USING org.apache.pig.backend.hadoop.hbase.HBaseStorage('', '');
+
+

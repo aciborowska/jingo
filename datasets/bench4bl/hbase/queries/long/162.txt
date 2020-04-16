@@ -1,0 +1,136 @@
+Currently client side retries are handled by HConnectionManager$TableServers.scanOneMetaRegion. This is ok for regions that have never been on-line, because they won't be found in the meta table.
+However, for regions that have been on-line and have gone off-line (for a region split for example) there are entries in the meta table for the table being found, but they are incorrect.
+In the latter case, the scan of the meta table succeeded, but the new regions are not yet on-line. If any retries are done, they are done without any wait period. For example:
+
+2007-12-03 05:57:30,433 INFO  [RegionServer:0.splitter] org.apache.hadoop.hbase.HRegion.needsSplit(HRegion.java:657): Splitting mrtest,,1196661378142 because largest aggregate size is 815.3k and desired size is 256.0k
+2007-12-03 05:57:30,436 DEBUG [RegionServer:0.splitter] org.apache.hadoop.hbase.HRegionServer$Splitter.closing(HRegionServer.java:217): mrtest,,1196661378142 closing (Adding to retiringRegions)
+2007-12-03 05:57:30,436 DEBUG [RegionServer:0.splitter] org.apache.hadoop.hbase.HRegion.snapshotMemcaches(HRegion.java:828): Started memcache flush for region mrtest,,1196661378142. Size 35.9k
+2007-12-03 05:57:30,702 DEBUG [RegionServer:0.cacheFlusher] org.apache.hadoop.hbase.HRegionServer$Flusher.run(HRegionServer.java:449): flushing region -ROOT-,,0
+2007-12-03 05:57:30,702 DEBUG [RegionServer:0.cacheFlusher] org.apache.hadoop.hbase.HRegion.internalFlushcache(HRegion.java:882): Not flushing cache for region -ROOT-,,0: snapshotMemcaches() determined that there was nothing to do
+2007-12-03 05:57:30,894 DEBUG [RegionServer:0.splitter] org.apache.hadoop.hbase.HStore.internalFlushCache(HStore.java:930): Added -1097746468/text/7689205514340304602 with sequence id 30021 and size 42.9k
+2007-12-03 05:57:30,932 DEBUG [RegionServer:0.splitter] org.apache.hadoop.hbase.HStore.internalFlushCache(HStore.java:930): Added -1097746468/contents/6256958480029690533 with sequence id 30021 and size 110.0
+2007-12-03 05:57:30,933 DEBUG [RegionServer:0.splitter] org.apache.hadoop.hbase.HRegion.internalFlushcache(HRegion.java:939): Finished memcache flush for region mrtest,,1196661378142 in 497ms, sequenceid=30021
+2007-12-03 05:57:30,933 DEBUG [RegionServer:0.splitter] org.apache.hadoop.hbase.HStore.close(HStore.java:840): closed -1097746468/text
+2007-12-03 05:57:30,934 DEBUG [RegionServer:0.splitter] org.apache.hadoop.hbase.HStore.close(HStore.java:840): closed -1097746468/contents
+2007-12-03 05:57:30,934 INFO  [RegionServer:0.splitter] org.apache.hadoop.hbase.HRegion.close(HRegion.java:428): closed mrtest,,1196661378142
+2007-12-03 05:57:30,934 DEBUG [RegionServer:0.splitter] org.apache.hadoop.hbase.HRegionServer$Splitter.closed(HRegionServer.java:231): mrtest,,1196661378142 closed
+2007-12-03 05:57:31,924 DEBUG [RegionServer:0.splitter] org.apache.hadoop.hbase.HStore.<init>(HStore.java:581): starting -730914122/contents (no reconstruction log)
+2007-12-03 05:57:31,964 DEBUG [RegionServer:0.splitter] org.apache.hadoop.hbase.HStore.<init>(HStore.java:617): maximum sequence id for hstore -730914122/contents is 30021
+2007-12-03 05:57:31,979 DEBUG [RegionServer:0.splitter] org.apache.hadoop.hbase.HStore.<init>(HStore.java:581): starting -730914122/text (no reconstruction log)
+2007-12-03 05:57:31,996 DEBUG [RegionServer:0.splitter] org.apache.hadoop.hbase.HStore.<init>(HStore.java:617): maximum sequence id for hstore -730914122/text is 30021
+2007-12-03 05:57:32,856 INFO  [HMaster.rootScanner] org.apache.hadoop.hbase.HMaster$BaseScanner.scanRegion(HMaster.java:212): HMaster.rootScanner scanning meta region regionname: -ROOT-,,0, startKey: <>, server: 140.211.11.75:47137}
+2007-12-03 05:57:33,479 WARN  [Task Commit Thread] org.apache.hadoop.mapred.JobTracker$TaskCommitQueue.run(JobTracker.java:2011): Task Commit Thread exiting...
+2007-12-03 05:57:33,481 ERROR [IPC Server handler 3 on 47137] org.apache.hadoop.hbase.HRegionServer.openScanner(HRegionServer.java:1378): Error opening scanner (fsOk: true)
+org.apache.hadoop.hbase.NotServingRegionException: mrtest,,1196661378142
+	at org.apache.hadoop.hbase.HRegionServer.getRegion(HRegionServer.java:1510)
+	at org.apache.hadoop.hbase.HRegionServer.getRegion(HRegionServer.java:1482)
+	at org.apache.hadoop.hbase.HRegionServer.openScanner(HRegionServer.java:1365)
+	at sun.reflect.GeneratedMethodAccessor20.invoke(Unknown Source)
+	at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:25)
+	at java.lang.reflect.Method.invoke(Method.java:585)
+	at org.apache.hadoop.ipc.RPC$Server.call(RPC.java:379)
+	at org.apache.hadoop.ipc.Server$Handler.run(Server.java:596)
+2007-12-03 05:57:33,485 DEBUG [RegionServer:0.splitter] org.apache.hadoop.hbase.HRegion.<init>(HRegion.java:299): Next sequence id for region mrtest,,1196661450435 is 30022
+2007-12-03 05:57:33,486 INFO  [RegionServer:0.splitter] org.apache.hadoop.hbase.HRegion.<init>(HRegion.java:327): region mrtest,,1196661450435 available
+2007-12-03 05:57:33,487 DEBUG [main] org.apache.hadoop.hbase.HTable$ClientScanner.nextScanner(HTable.java:944): reloading table servers because: org.apache.hadoop.hbase.NotServingRegionException: mrtest,,1196661378142
+	at org.apache.hadoop.hbase.HRegionServer.getRegion(HRegionServer.java:1510)
+	at org.apache.hadoop.hbase.HRegionServer.getRegion(HRegionServer.java:1482)
+	at org.apache.hadoop.hbase.HRegionServer.openScanner(HRegionServer.java:1365)
+	at sun.reflect.GeneratedMethodAccessor20.invoke(Unknown Source)
+	at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:25)
+	at java.lang.reflect.Method.invoke(Method.java:585)
+	at org.apache.hadoop.ipc.RPC$Server.call(RPC.java:379)
+	at org.apache.hadoop.ipc.Server$Handler.run(Server.java:596)
+
+2007-12-03 05:57:33,487 DEBUG [main] org.apache.hadoop.hbase.HConnectionManager$TableServers.findServersForTable(HConnectionManager.java:427): Wiping out all we know of mrtest
+2007-12-03 05:57:33,488 DEBUG [HMaster.rootScanner] org.apache.hadoop.hbase.HMaster$BaseScanner.scanRegion(HMaster.java:248): HMaster.rootScanner scanner: -5727235478161864863 regioninfo: {regionname: .META.,,1, startKey: <>, tableDesc: {name: .META., families: {info:={name: info, max versions: 1, compression: NONE, in memory: false, max length: 2147483647, bloom filter: none}}}}, server: 140.211.11.75:47137, startCode: 1196661340435
+2007-12-03 05:57:33,488 DEBUG [HMaster.rootScanner] org.apache.hadoop.hbase.HMaster$BaseScanner.checkAssigned(HMaster.java:451): Checking .META.,,1 is assigned
+2007-12-03 05:57:33,490 INFO  [HMaster.rootScanner] org.apache.hadoop.hbase.HMaster$BaseScanner.scanRegion(HMaster.java:294): HMaster.rootScanner scan of meta region regionname: -ROOT-,,0, startKey: <>, server: 140.211.11.75:47137} complete
+2007-12-03 05:57:33,494 DEBUG [RegionServer:0.splitter] org.apache.hadoop.hbase.HStore.<init>(HStore.java:581): starting -1599058941/contents (no reconstruction log)
+2007-12-03 05:57:33,496 DEBUG [main] org.apache.hadoop.hbase.HConnectionManager$TableServers.scanOneMetaRegion(HConnectionManager.java:698): Found 2 servers for table mrtest
+2007-12-03 05:57:33,497 DEBUG [main] org.apache.hadoop.hbase.HConnectionManager$TableServers.reloadTableServers(HConnectionManager.java:333): Result of findTable on mrtest: 0. address=140.211.11.75:47137, mrtest,,1196661378142 1. address=140.211.11.75:47137, mrtest,mwu~`@#$%^&*()-_+=:;',.<>/?[]{}|,1196661378142
+2007-12-03 05:57:33,498 ERROR [IPC Server handler 1 on 47137] org.apache.hadoop.hbase.HRegionServer.openScanner(HRegionServer.java:1378): Error opening scanner (fsOk: true)
+org.apache.hadoop.hbase.NotServingRegionException: mrtest,,1196661378142
+	at org.apache.hadoop.hbase.HRegionServer.getRegion(HRegionServer.java:1510)
+	at org.apache.hadoop.hbase.HRegionServer.getRegion(HRegionServer.java:1482)
+	at org.apache.hadoop.hbase.HRegionServer.openScanner(HRegionServer.java:1365)
+	at sun.reflect.GeneratedMethodAccessor20.invoke(Unknown Source)
+	at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:25)
+	at java.lang.reflect.Method.invoke(Method.java:585)
+	at org.apache.hadoop.ipc.RPC$Server.call(RPC.java:379)
+	at org.apache.hadoop.ipc.Server$Handler.run(Server.java:596)
+2007-12-03 05:57:33,500 DEBUG [main] org.apache.hadoop.hbase.HTable$ClientScanner.nextScanner(HTable.java:944): reloading table servers because: org.apache.hadoop.hbase.NotServingRegionException: mrtest,,1196661378142
+	at org.apache.hadoop.hbase.HRegionServer.getRegion(HRegionServer.java:1510)
+	at org.apache.hadoop.hbase.HRegionServer.getRegion(HRegionServer.java:1482)
+	at org.apache.hadoop.hbase.HRegionServer.openScanner(HRegionServer.java:1365)
+	at sun.reflect.GeneratedMethodAccessor20.invoke(Unknown Source)
+	at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:25)
+	at java.lang.reflect.Method.invoke(Method.java:585)
+	at org.apache.hadoop.ipc.RPC$Server.call(RPC.java:379)
+	at org.apache.hadoop.ipc.Server$Handler.run(Server.java:596)
+
+2007-12-03 05:57:33,501 DEBUG [main] org.apache.hadoop.hbase.HConnectionManager$TableServers.findServersForTable(HConnectionManager.java:427): Wiping out all we know of mrtest
+2007-12-03 05:57:33,525 DEBUG [main] org.apache.hadoop.hbase.HConnectionManager$TableServers.scanOneMetaRegion(HConnectionManager.java:698): Found 2 servers for table mrtest
+2007-12-03 05:57:33,526 DEBUG [main] org.apache.hadoop.hbase.HConnectionManager$TableServers.reloadTableServers(HConnectionManager.java:333): Result of findTable on mrtest: 0. address=140.211.11.75:47137, mrtest,,1196661378142 1. address=140.211.11.75:47137, mrtest,mwu~`@#$%^&*()-_+=:;',.<>/?[]{}|,1196661378142
+2007-12-03 05:57:33,526 ERROR [IPC Server handler 4 on 47137] org.apache.hadoop.hbase.HRegionServer.openScanner(HRegionServer.java:1378): Error opening scanner (fsOk: true)
+org.apache.hadoop.hbase.NotServingRegionException: mrtest,,1196661378142
+	at org.apache.hadoop.hbase.HRegionServer.getRegion(HRegionServer.java:1510)
+	at org.apache.hadoop.hbase.HRegionServer.getRegion(HRegionServer.java:1482)
+	at org.apache.hadoop.hbase.HRegionServer.openScanner(HRegionServer.java:1365)
+	at sun.reflect.GeneratedMethodAccessor20.invoke(Unknown Source)
+	at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:25)
+	at java.lang.reflect.Method.invoke(Method.java:585)
+	at org.apache.hadoop.ipc.RPC$Server.call(RPC.java:379)
+	at org.apache.hadoop.ipc.Server$Handler.run(Server.java:596)
+2007-12-03 05:57:33,528 DEBUG [RegionServer:0.splitter] org.apache.hadoop.hbase.HStore.<init>(HStore.java:617): maximum sequence id for hstore -1599058941/contents is 30021
+2007-12-03 05:57:33,528 DEBUG [main] org.apache.hadoop.hbase.HTable$ClientScanner.nextScanner(HTable.java:944): reloading table servers because: org.apache.hadoop.hbase.NotServingRegionException: mrtest,,1196661378142
+	at org.apache.hadoop.hbase.HRegionServer.getRegion(HRegionServer.java:1510)
+	at org.apache.hadoop.hbase.HRegionServer.getRegion(HRegionServer.java:1482)
+	at org.apache.hadoop.hbase.HRegionServer.openScanner(HRegionServer.java:1365)
+	at sun.reflect.GeneratedMethodAccessor20.invoke(Unknown Source)
+	at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:25)
+	at java.lang.reflect.Method.invoke(Method.java:585)
+	at org.apache.hadoop.ipc.RPC$Server.call(RPC.java:379)
+	at org.apache.hadoop.ipc.Server$Handler.run(Server.java:596)
+
+2007-12-03 05:57:33,529 DEBUG [main] org.apache.hadoop.hbase.HConnectionManager$TableServers.findServersForTable(HConnectionManager.java:427): Wiping out all we know of mrtest
+2007-12-03 05:57:33,537 DEBUG [main] org.apache.hadoop.hbase.HConnectionManager$TableServers.scanOneMetaRegion(HConnectionManager.java:698): Found 2 servers for table mrtest
+2007-12-03 05:57:33,543 DEBUG [main] org.apache.hadoop.hbase.HConnectionManager$TableServers.reloadTableServers(HConnectionManager.java:333): Result of findTable on mrtest: 0. address=140.211.11.75:47137, mrtest,,1196661378142 1. address=140.211.11.75:47137, mrtest,mwu~`@#$%^&*()-_+=:;',.<>/?[]{}|,1196661378142
+2007-12-03 05:57:33,544 ERROR [IPC Server handler 2 on 47137] org.apache.hadoop.hbase.HRegionServer.openScanner(HRegionServer.java:1378): Error opening scanner (fsOk: true)
+org.apache.hadoop.hbase.NotServingRegionException: mrtest,,1196661378142
+	at org.apache.hadoop.hbase.HRegionServer.getRegion(HRegionServer.java:1510)
+	at org.apache.hadoop.hbase.HRegionServer.getRegion(HRegionServer.java:1482)
+	at org.apache.hadoop.hbase.HRegionServer.openScanner(HRegionServer.java:1365)
+	at sun.reflect.GeneratedMethodAccessor20.invoke(Unknown Source)
+	at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:25)
+	at java.lang.reflect.Method.invoke(Method.java:585)
+	at org.apache.hadoop.ipc.RPC$Server.call(RPC.java:379)
+	at org.apache.hadoop.ipc.Server$Handler.run(Server.java:596)
+2007-12-03 05:57:33,545 DEBUG [main] org.apache.hadoop.hbase.HTable$ClientScanner.nextScanner(HTable.java:944): reloading table servers because: org.apache.hadoop.hbase.NotServingRegionException: mrtest,,1196661378142
+	at org.apache.hadoop.hbase.HRegionServer.getRegion(HRegionServer.java:1510)
+	at org.apache.hadoop.hbase.HRegionServer.getRegion(HRegionServer.java:1482)
+	at org.apache.hadoop.hbase.HRegionServer.openScanner(HRegionServer.java:1365)
+	at sun.reflect.GeneratedMethodAccessor20.invoke(Unknown Source)
+	at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:25)
+	at java.lang.reflect.Method.invoke(Method.java:585)
+	at org.apache.hadoop.ipc.RPC$Server.call(RPC.java:379)
+	at org.apache.hadoop.ipc.Server$Handler.run(Server.java:596)
+
+2007-12-03 05:57:33,547 DEBUG [main] org.apache.hadoop.hbase.HConnectionManager$TableServers.findServersForTable(HConnectionManager.java:427): Wiping out all we know of mrtest
+2007-12-03 05:57:33,548 DEBUG [RegionServer:0.splitter] org.apache.hadoop.hbase.HStore.<init>(HStore.java:581): starting -1599058941/text (no reconstruction log)
+2007-12-03 05:57:33,558 DEBUG [main] org.apache.hadoop.hbase.HConnectionManager$TableServers.scanOneMetaRegion(HConnectionManager.java:698): Found 2 servers for table mrtest
+2007-12-03 05:57:33,559 DEBUG [main] org.apache.hadoop.hbase.HConnectionManager$TableServers.reloadTableServers(HConnectionManager.java:333): Result of findTable on mrtest: 0. address=140.211.11.75:47137, mrtest,,1196661378142 1. address=140.211.11.75:47137, mrtest,mwu~`@#$%^&*()-_+=:;',.<>/?[]{}|,1196661378142
+2007-12-03 05:57:33,560 ERROR [IPC Server handler 0 on 47137] org.apache.hadoop.hbase.HRegionServer.openScanner(HRegionServer.java:1378): Error opening scanner (fsOk: true)
+org.apache.hadoop.hbase.NotServingRegionException: mrtest,,1196661378142
+	at org.apache.hadoop.hbase.HRegionServer.getRegion(HRegionServer.java:1510)
+	at org.apache.hadoop.hbase.HRegionServer.getRegion(HRegionServer.java:1482)
+	at org.apache.hadoop.hbase.HRegionServer.openScanner(HRegionServer.java:1365)
+	at sun.reflect.GeneratedMethodAccessor20.invoke(Unknown Source)
+	at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:25)
+	at java.lang.reflect.Method.invoke(Method.java:585)
+	at org.apache.hadoop.ipc.RPC$Server.call(RPC.java:379)
+	at org.apache.hadoop.ipc.Server$Handler.run(Server.java:596)
+
+
+Note that the split starts at 05:57:30,433 and the last retry attempt is at 05:57:33,560, hardly the 5 * 10 seconds configured for TestTableMapReduce.
+Moving the retry logic to findServersForTable would handle both the cases described above.

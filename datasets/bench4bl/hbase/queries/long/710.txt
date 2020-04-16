@@ -1,0 +1,42 @@
+On the Jon Gray cluster, his clocks are skewed badly.  I see weird stuff in .META.
+
+2008-06-25 14:57:57,728 DEBUG org.apache.hadoop.hbase.HMaster: HMaster.metaScanner regioninfo: {regionname: items,823ce1e3-d414-474f-ac70-c4081cecef0f,1214416614697, startKey: <823ce1e3-d414-474f-ac70-c4081cecef0f>, endKey: <86f8df20-e237-4bb3-9748-88cef892bd70>, encodedName: 1157924217, offline: true, split: true, tableDesc: {name: items, families: {cfrecs:={name: cfrecs, max versions: 2, compression: NONE, in memory: false, max length: 2147483647, bloom filter: none}, clusters:={name: clusters, max versions: 2, compression: NONE, in memory: false, max length: 2147483647, bloom filter: none}, content:={name: content, max versions: 2, compression: NONE, in memory: false, max length: 2147483647, bloom filter: none}, readby:={name: readby, max versions: 2, compression: NONE, in memory: false, max length: 2147483647, bloom filter: none}, receivedby:={name: receivedby, max versions: 2, compression: NONE, in memory: false, max length: 2147483647, bloom filter: none}, savedby:={name: savedby, max versions: 2, compression: NONE, in memory: false, max length: 2147483647, bloom filter: none}, sentby:={name: sentby, max versions: 2, compression: NONE, in memory: false, max length: 2147483647, bloom filter: none}}}}, server: 192.168.249.223:60020, startCode: 1214406344634
+2008-06-25 14:57:57,732 DEBUG org.apache.hadoop.hbase.HMaster: HMaster.metaScanner regioninfo: {regionname: items,823ce1e3-d414-474f-ac70-c4081cecef0f,1214416641213, startKey: <823ce1e3-d414-474f-ac70-c4081cecef0f>, endKey: <83fca0e2-f324-4f9e-99c1-1fdbeff63b3d>, encodedName: 541300165, tableDesc: {name: items, families: {cfrecs:={name: cfrecs, max versions: 2, compression: NONE, in memory: false, max length: 2147483647, bloom filter: none}, clusters:={name: clusters, max versions: 2, compression: NONE, in memory: false, max length: 2147483647, bloom filter: none}, content:={name: content, max versions: 2, compression: NONE, in memory: false, max length: 2147483647, bloom filter: none}, readby:={name: readby, max versions: 2, compression: NONE, in memory: false, max length: 2147483647, bloom filter: none}, receivedby:={name: receivedby, max versions: 2, compression: NONE, in memory: false, max length: 2147483647, bloom filter: none}, savedby:={name: savedby, max versions: 2, compression: NONE, in memory: false, max length: 2147483647, bloom filter: none}, sentby:={name: sentby, max versions: 2, compression: NONE, in memory: false, max length: 2147483647, bloom filter: none}}}}, server: 192.168.249.220:60020, startCode: 1214424347649
+2008-06-25 14:57:57,738 DEBUG org.apache.hadoop.hbase.HMaster: HMaster.metaScanner regioninfo: {regionname: items,823ce1e3-d414-474f-ac70-c4081cecef0f,1214434560891, startKey: <823ce1e3-d414-474f-ac70-c4081cecef0f>, endKey: <9066d4f3-314b-4d9c-90e8-7aa08a52fdd4>, encodedName: 1673833201, offline: true, split: true, tableDesc: {name: items, families: {cfrecs:={name: cfrecs, max versions: 2, compression: NONE, in memory: false, max length: 2147483647, bloom filter: none}, clusters:={name: clusters, max versions: 2, compression: NONE, in memory: false, max length: 2147483647, bloom filter: none}, content:={name: content, max versions: 2, compression: NONE, in memory: false, max length: 2147483647, bloom filter: none}, readby:={name: readby, max versions: 2, compression: NONE, in memory: false, max length: 2147483647, bloom filter: none}, receivedby:={name: receivedby, max versions: 2, compression: NONE, in memory: false, max length: 2147483647, bloom filter: none}, savedby:={name: savedby, max versions: 2, compression: NONE, in memory: false, max length: 2147483647, bloom filter: none}, sentby:={name: sentby, max versions: 2, compression: NONE, in memory: false, max length: 2147483647, bloom filter: none}}}}, server: 192.168.249.221:60020, startCode: 1214406358315
+
+
+Thats 3 regions with same start code; 2 are offline.
+Looking at the regionids – these are timestamps – I see that they don't jibe with how they should be aligned.  Parents should come before daughters in timestamps.
+Looking at clocks on cluster, they are badly skewed:
+
+{code
+<st^ack>	[hbase@mb0 logs]$ for i in 0 1 2 3 4 5 6 7 8 9; do ssh hb$i "hostname; date"; done
+	<st^ack>	hb0.streamy.com
+	<st^ack>	Wed Jun 25 16:47:29 PDT 2008
+	<st^ack>	hb1.streamy.com
+	<st^ack>	Wed Jun 25 11:47:39 PDT 2008
+	<st^ack>	hb2.streamy.com
+	<st^ack>	Wed Jun 25 11:47:40 PDT 2008
+	<st^ack>	hb3.streamy.com
+	<st^ack>	Wed Jun 25 11:47:26 PDT 2008
+	<st^ack>	hb4.streamy.com
+	<st^ack>	Wed Jun 25 11:47:35 PDT 2008
+	<st^ack>	hb5.streamy.com
+	<st^ack>	Wed Jun 25 16:47:29 PDT 2008
+	<st^ack>	hb6.streamy.com
+	<st^ack>	Wed Jun 25 16:47:29 PDT 2008
+	<st^ack>	hb7.streamy.com
+	<st^ack>	Wed Jun 25 16:47:29 PDT 2008
+	<st^ack>	hb8.streamy.com
+	<st^ack>	Wed Jun 25 16:47:30 PDT 2008
+	<st^ack>	hb9.streamy.com
+	<st^ack>	Wed Jun 25 16:47:30 PDT 2008
+{code}
+
+Looking at split code, looks like the regionserver sets the regionid/timestamp on the new daughter regions inside in the HRegionInfo constructor that gets called when splitting:
+
+    this.regionId = System.currentTimeMillis();
+
+
+Daughters update the .META. table; they need to have a basic check that they are not inserting with a timestamp that is older than the parent they are splitting.
+This is a bit like HBASE-609

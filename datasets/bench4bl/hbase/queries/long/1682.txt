@@ -1,0 +1,90 @@
+I've been using the IndexedTable stuff from contrib and come across a bit of an issue.
+When I delete a column my indexes are removed for that column. I've run through the code in IndexedRegion and used very similar code in my own classes to recreate the index after I've run the delete.
+I've also noticed that if I run a Put after the Delete then the index will be re-created.
+Neither the Delete or the subsequent Put in the second example uses any of the columns that are part of the index (either indexed or additional columns).
+org.apache.hadoop.hbase.regionserver.tableindexed.IndexedRegion.java
+
+
+
+
+@Override
+
+ public void delete(Delete delete, final Integer lockid, boolean writeToWAL)
+
+     throws IOException {
+
+
+
+   if (!getIndexes().isEmpty()) {
+
+     // Need all columns
+
+     NavigableSet<byte[]> neededColumns = getColumnsForIndexes(getIndexes());
+
+
+
+     Get get = new Get(delete.getRow());
+
+     for (byte [] col : neededColumns) {
+
+      get.addColumn(col);
+
+     }
+
+
+
+     Result oldRow = super.get(get, null);
+
+     SortedMap<byte[], byte[]> oldColumnValues = convertToValueMap(oldRow);
+
+
+
+
+
+     for (IndexSpecification indexSpec : getIndexes()) {
+
+       removeOldIndexEntry(indexSpec, delete.getRow(), oldColumnValues);
+
+     }
+
+
+
+     // Handle if there is still a version visible.
+
+     if (delete.getTimeStamp() != HConstants.LATEST_TIMESTAMP) {
+
+       get.setTimeRange(1, delete.getTimeStamp());
+
+       oldRow = super.get(get, null);
+
+       SortedMap<byte[], byte[]> currentColumnValues = convertToValueMap(oldRow);
+
+       LOG.debug("There are " + currentColumnValues + " entries to re-index");
+
+
+
+       for (IndexSpecification indexSpec : getIndexes()) {
+
+         if (IndexMaintenanceUtils.doesApplyToIndex(indexSpec, currentColumnValues)) {
+
+           updateIndex(indexSpec, delete.getRow(), currentColumnValues);
+
+         }
+
+       }
+
+     }
+
+   }
+
+   super.delete(delete, lockid, writeToWAL);
+
+ }
+
+
+
+
+
+It seems that any delete will remove the indexes, but they will only be rebuilt if the delete is of a previous version for the row, and then the index will then be built using data from the version prior to that which you've just deleted - which seems to mean it would, more often than not, always be out of date.
+More broadly it also occurs to me that it may make sense not to delete the indexes at all unless the Delete would otherwise affect them. In my case there isn't really any reason to remove the indexes, the column I'm deleting is completely unrelated.
+Will follow with a patch shortly to resolve at least the first part of the issue. 

@@ -1,0 +1,25 @@
+Zookeeper enters into deadlock while shutting down itself, thus making zookeeper service unavailable as deadlocked server is a leader. Here is the thread dump:
+
+"QuorumPeer[myid=1](plain=/0:0:0:0:0:0:0:0:2181)(secure=disabled)" #25 prio=5 os_prio=0 tid=0x00007fbc502a6800 nid=0x834 in Object.wait() [0x00007fbc4d9a8000]      java.lang.Thread.State: WAITING (on object monitor)      at java.lang.Object.wait(Native Method)      at java.lang.Thread.join(Thread.java:1245)      - locked <
+0x00000000feb78000> (a org.apache.zookeeper.server.SyncRequestProcessor)      at java.lang.Thread.join(Thread.java:1319)      at org.apache.zookeeper.server.SyncRequestProcessor.shutdown(SyncRequestProcessor.java:196)      at org.apache.zookeeper.server.quorum.ProposalRequestProcessor.shutdown(ProposalRequestProcessor.java:90)      at org.apache.zookeeper.server.PrepRequestProcessor.shutdown(PrepRequestProcessor.java:1016)      at org.apache.zookeeper.server.quorum.LeaderRequestProcessor.shutdown(LeaderRequestProcessor.java:78)      at org.apache.zookeeper.server.ZooKeeperServer.shutdown(ZooKeeperServer.java:561)      - locked <
+0x00000000feb61e20> (a org.apache.zookeeper.server.quorum.LeaderZooKeeperServer)      at org.apache.zookeeper.server.quorum.QuorumZooKeeperServer.shutdown(QuorumZooKeeperServer.java:169)      - locked <
+0x00000000feb61e20> (a org.apache.zookeeper.server.quorum.LeaderZooKeeperServer)      at org.apache.zookeeper.server.quorum.LeaderZooKeeperServer.shutdown(LeaderZooKeeperServer.java:102)      - locked <
+0x00000000feb61e20> (a org.apache.zookeeper.server.quorum.LeaderZooKeeperServer)      at org.apache.zookeeper.server.quorum.Leader.shutdown(Leader.java:637)      at org.apache.zookeeper.server.quorum.Leader.lead(Leader.java:590)      - locked <
+0x00000000feb781a0> (a org.apache.zookeeper.server.quorum.Leader)      at org.apache.zookeeper.server.quorum.QuorumPeer.run(QuorumPeer.java:1108)
+
+
+"SyncThread:1" #46 prio=5 os_prio=0 tid=0x00007fbc5848f000 nid=0x867 waiting for monitor entry [0x00007fbc4ca90000]      java.lang.Thread.State: BLOCKED (on object monitor)      at org.apache.zookeeper.server.quorum.Leader.processAck(Leader.java:784)      - waiting to lock <0x00000000feb781a0> (a org.apache.zookeeper.server.quorum.Leader)      at org.apache.zookeeper.server.quorum.AckRequestProcessor.processRequest(AckRequestProcessor.java:46)      at org.apache.zookeeper.server.SyncRequestProcessor.flush(SyncRequestProcessor.java:183)      at org.apache.zookeeper.server.SyncRequestProcessor.run(SyncRequestProcessor.java:113)
+
+
+
+Leader.lead() calls shutdown() from the synchronized block, it acquired lock on Leader.java instance
+
+while (true) {
+                synchronized (this) {
+                long start = Time.currentElapsedTime();
+				.....
+
+
+In the shutdown flow SyncThread is trying to acquire lock on the same Leader.java instance. 
+
+Leader thread acquired lock and waiting for SyncThread shutdown. SyncThread waiting for the lock to complete its shutdown.  This is how ZooKeeper entered into deadlock

@@ -1,0 +1,127 @@
+When using FileSystemUtils.freeSpaceWindows in an empty share directory, the line containing the free space does not exist which causes an infinite loop (the outerloop doesn't decrease the i index).
+In fact to deal with all possible errors, I propose to test the exitCode of the dir command.
+Here is a proposed new code for this function :
+    /**
+
+Find free space on the Windows platform using the 'dir' command.
+     *
+@param path  the path to get free space for, including the colon
+@return the amount of free drive space on the drive
+@throws IOException if an error occurs
+     */
+    long freeSpaceWindows(String path) throws IOException {
+        path = FilenameUtils.normalize(path);
+        if (path.length() > 2 && path.charAt(1) == ':') 
+{
+            path = path.substring(0, 2);  // seems to make it work
+        }
+
+        // build and run the 'dir' command
+        String[] cmdAttrbs = new String[] 
+{"cmd.exe", "/C", "dir /-c " + path}
+;
+        // read in the output of the command to an ArrayList
+        BufferedReader in = null;
+        String line = null;
+        ArrayList lines = new ArrayList();
+        int errorLevel = 0;
+        try {
+            Process proc = Runtime.getRuntime().exec(cmdAttrbs);
+            in = new BufferedReader(
+                new InputStreamReader(proc.getInputStream()));
+            line = in.readLine();
+            while (line != null) 
+{
+                line = line.toLowerCase().trim();
+                lines.add(line);
+                line = in.readLine();
+            }
+
+            proc.waitFor();
+            errorLevel = proc.exitValue();
+        } finally 
+{
+            IOUtils.closeQuietly(in);
+        }
+
+        if (lines.size() == 0) 
+{
+            // unknown problem, throw exception
+            throw new IOException(
+                    "Command line 'dir /-c' did not return any info " +
+                    "for command '" + cmdAttrbs[2] + "'");
+        }
+
+        if (errorLevel != 0) {
+            if (errorLevel == 2) 
+{
+                // Empty directory : unable to calculate the freeSpace
+                return Integer.MAX_VALUE; // ???
+            }
+ else 
+{
+                // unknown problem, throw exception
+                throw new IOException(
+                        "Command line 'dir /-c' error [" + errorLevel +
+                        "] for command '" + cmdAttrbs[2] + "'");
+            }
+        }
+        // now iterate over the lines we just read and find the LAST
+        // non-empty line (the free space bytes should be in the last element
+        // of the ArrayList anyway, but this will ensure it works even if it's
+        // not, still assuming it is on the last non-blank line)
+        long bytes = -1;
+        int i = lines.size() - 1;
+        int bytesStart = 0;
+        int bytesEnd = 0;
+        outerLoop: while (i > 0) {
+            line = (String) lines.get;
+            if (line.length() > 0) {
+                // found it, so now read from the end of the line to find the
+                // last numeric character on the line, then continue until we
+                // find the first non-numeric character, and everything between
+                // that and the last numeric character inclusive is our free
+                // space bytes count
+                int j = line.length() - 1;
+                innerLoop1: while (j >= 0) {
+                    char c = line.charAt(j);
+                    if (Character.isDigit(c)) 
+{
+                      // found the last numeric character, this is the end of
+                      // the free space bytes count
+                      bytesEnd = j + 1;
+                      break innerLoop1;
+                    }
+                    j--;
+                }
+                innerLoop2: while (j >= 0) {
+                    char c = line.charAt(j);
+                    if (!Character.isDigit(c) && c != ',' && c != '.') 
+{
+                      // found the next non-numeric character, this is the
+                      // beginning of the free space bytes count
+                      bytesStart = j + 1;
+                      break innerLoop2;
+                    }
+                    j--;
+                }
+                break outerLoop;
+            } else 
+{
+                // If the last line is empty we are unable to parse the freeSpace
+                throw new IOException(
+                        "Command line 'dir /-c' did not return valid info " +
+                        "for command '" + cmdAttrbs[2] + "'");
+            }
+        }
+        // remove commas and dots in the bytes count
+        StringBuffer buf = new StringBuffer(line.substring(bytesStart, bytesEnd));
+        for (int k = 0; k < buf.length(); k++) {
+            if (buf.charAt(k) == ',' || buf.charAt(k) == '.') 
+{
+                buf.deleteCharAt(k--);
+            }
+        }
+        bytes = Long.parseLong(buf.toString());
+        return bytes;
+    }

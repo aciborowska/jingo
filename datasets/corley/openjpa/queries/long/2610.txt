@@ -1,0 +1,62 @@
+We get this exception from time to time (at the beginning of running a new flow). 
+We get it about once at 10 runs. I've seen this error mentioned in openjpa dev forum as well: 
+http://openjpa.208410.n2.nabble.com/Supposed-concurrent-access-issue-to-PCPath-instance-td7585102.html (just added this reply there as well) 
+
+
+Here is the stack trace (I've obfuscated the query and removed most of our internal calls due to our comp policy): 
+
+<openjpa-0.0.0-rnull nonfatal user error> org.apache.openjpa.persistence.ArgumentException: Failed to execute query "SELECT DISTINCT e0 FROM a.b.c.d.OurClass e0 WHERE  :p0 MEMBER OF e0.ourClassSet". Check the query syntax for correctness. See nested exception for details. 
+    at org.apache.openjpa.kernel.QueryImpl.execute(QueryImpl.java:872) 
+    at org.apache.openjpa.kernel.QueryImpl.execute(QueryImpl.java:794) 
+    at org.apache.openjpa.kernel.DelegatingQuery.execute(DelegatingQuery.java:542) 
+    at org.apache.openjpa.persistence.QueryImpl.execute(QueryImpl.java:315) 
+    at org.apache.openjpa.persistence.QueryImpl.getResultList(QueryImpl.java:331) 
+    .... (internal app code) 
+Caused by: java.util.ConcurrentModificationException 
+    at java.util.LinkedList$ListItr.checkForComodification(LinkedList.java:966) 
+    at java.util.LinkedList$ListItr.next(LinkedList.java:888) 
+    at org.apache.openjpa.jdbc.kernel.exps.PCPath.getPCPathString(PCPath.java:260) 
+    at org.apache.openjpa.jdbc.kernel.exps.ContainsExpression.initialize(ContainsExpression.java:44) 
+    at org.apache.openjpa.jdbc.kernel.exps.SelectConstructor.initialize(SelectConstructor.java:232) 
+    at org.apache.openjpa.jdbc.kernel.exps.SelectConstructor.newSelect(SelectConstructor.java:173) 
+    at org.apache.openjpa.jdbc.kernel.exps.SelectConstructor.evaluate(SelectConstructor.java:87) 
+    at org.apache.openjpa.jdbc.kernel.JDBCStoreQuery.createWhereSelects(JDBCStoreQuery.java:360) 
+    at org.apache.openjpa.jdbc.kernel.JDBCStoreQuery.executeQuery(JDBCStoreQuery.java:193) 
+    at org.apache.openjpa.kernel.ExpressionStoreQuery$DataStoreExecutor.executeQuery(ExpressionStoreQuery.java:782) 
+    at org.apache.openjpa.kernel.QueryImpl.execute(QueryImpl.java:1005) 
+    at org.apache.openjpa.kernel.QueryImpl.execute(QueryImpl.java:863) 
+    ... 29 more 
+
+
+
+We've tracked this down as being a problem with the initialize call in the ContainsExpression method calling the setContainsId while another thread executing the same ContainsExpression initialize method, doing a getPCPathString on the same PCPath object. 
+So while a thread adds elements to the _actions list, another is iterating through it, causing CME. 
+
+The first call to setContainsId will set the _cid flag to true, so after that flag is set the _actions linkedlist is not updated anymore. (those we only get the error at the beginning of running a specific flow) 
+
+One quick solution that we're testing right now since this is a critical issue for us, is to add the code in a single sync method 
+ public synchronized void setContainsId(Map contains) 
+    { 
+        String path = getPCPathString(); 
+        // update the count for this path 
+        Integer count = (Integer) contains.get(path); 
+        if (count == null) 
+            count = 0; 
+        else 
+            count = count.intValue() + 1; 
+        contains.put(path, count); 
+
+        setContainsId(count.toString()); 
+    } 
+
+        into the PCPath class and call that from the ContainsExpression#initialize. 
+
+        This way the getPCPathString will not get called at the same time with calling setContainsId. 
+
+
+        Now this seems to work for now in our tests, but i'm not that familiar with openjpa code, so maybe a more elegant solution can be added? Or I'm fine with moving with this solution unless you see any possible issues with it. 
+
+This does not seem to be caused by using the same EM in multiple threads, seems to be a race condition in using the contains (MEMBER OF) in our queries. 
+Our query is not a NamedQuery, we build the filters dynamically. Please let me know if you need more details.
+
+We currently use openjpa 2.1.1 with the plan to migrate, but I've seen the same code in your latest version, so the problem could be present there as well.

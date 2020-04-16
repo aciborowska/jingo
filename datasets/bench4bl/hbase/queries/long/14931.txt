@@ -1,0 +1,46 @@
+60010 webpage shows that a region is online on one RS, but when access data in the region throw notServingRegion. After lookup the source code and logs, found that it's because active master switches during the region openning:
+1, master1 open region 'region1', sent open region request to rs and create node in zk
+2, master1 stoped
+3, master2 became active master
+4, master2 obtain all region status,  'region1' status is offline
+5, rs opened 'region1' node changed to opened in zk, and sent message to master2
+6, master2 received RS_ZK_REGION_OPENED, but the status is not pending open or openning, sent unassign to rs, 'region1' closed
+AssignmentManager.java
+
+
+        case RS_ZK_REGION_OPENED:
+
+          // Should see OPENED after OPENING but possible after PENDING_OPEN.
+
+          if (regionState == null
+
+              || !regionState.isPendingOpenOrOpeningOnServer(sn)) {
+
+            LOG.warn("Received OPENED for " + prettyPrintedRegionName
+
+              + " from " + sn + " but the region isn't PENDING_OPEN/OPENING here: "
+
+              + regionStates.getRegionState(encodedName));
+
+
+
+            if (regionState != null) {
+
+              // Close it without updating the internal region states,
+
+              // so as not to create double assignments in unlucky scenarios
+
+              // mentioned in OpenRegionHandler#process
+
+              unassign(regionState.getRegion(), null, -1, null, false, sn);
+
+            }
+
+            return;
+
+          }
+
+
+
+7, master2 continue handle regioninfo when master1 stoped, found that 'region1' status in zk is opened, update status in memory to opened.
+8, up to now, 'region1' status is opened on webpage of master status, but not opened on any regionserver.

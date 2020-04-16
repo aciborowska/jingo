@@ -1,0 +1,56 @@
+We are seeing a NPE when replication (or in this case async wal replay for region replicas) is run on top of an HDFS cluster with TDE configured.
+This is the stack trace:
+
+
+
+java.lang.NullPointerException
+
+        at org.apache.hadoop.hbase.CellUtil.matchingRow(CellUtil.java:370)
+
+        at org.apache.hadoop.hbase.replication.regionserver.ReplicationSource.countDistinctRowKeys(ReplicationSource.java:649)
+
+        at org.apache.hadoop.hbase.replication.regionserver.ReplicationSource.readAllEntriesToReplicateOrNextFile(ReplicationSource.java:450)
+
+        at org.apache.hadoop.hbase.replication.regionserver.ReplicationSource.run(ReplicationSource.java:346)
+
+
+
+This stack trace can only happen if WALEdit.getCells() returns an array containing null entries. I believe this happens due to KeyValueCodec.parseCell() uses KeyValueUtil.iscreate() which returns null in case of EOF at the beginning. However, the contract for the Decoder.parseCell() is not clear whether returning null is acceptable or not. The other Decoders (CompressedKvDecoder, CellCodec, etc) do not return null while KeyValueCodec does. 
+BaseDecoder has this code: 
+
+
+
+  public boolean advance() throws IOException {
+
+    if (!this.hasNext) return this.hasNext;
+
+    if (this.in.available() == 0) {
+
+      this.hasNext = false;
+
+      return this.hasNext;
+
+    }
+
+    try {
+
+      this.current = parseCell();
+
+    } catch (IOException ioEx) {
+
+      rethrowEofException(ioEx);
+
+    }
+
+    return this.hasNext;
+
+  }
+
+
+
+which is not correct since it uses IS.available() not according to the javadoc: (https://docs.oracle.com/javase/7/docs/api/java/io/InputStream.html#available()). DFSInputStream implements available() as the remaining bytes to read from the stream, so we do not see the issue there. CryptoInputStream.available() does a similar thing but see the issue. 
+So two questions: 
+
+What should be the interface for Decoder.parseCell()? Can it return null?
+How to properly fix  BaseDecoder.advance() to not rely on available() call.
+

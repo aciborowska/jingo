@@ -1,0 +1,23 @@
+We known that ZooKeeper server will call fsync to make sure that log data has been successfully saved to disk. But ZooKeeper server does not call fsync to make sure that a snapshot has been successfully saved, which may cause potential problems. Since a close to a file description does not make sure that data is written to disk, see http://man7.org/linux/man-pages/man2/close.2.html#notes for more details.
+
+ 
+
+If the snapshot is not successfully  saved to disk, it may lead to data inconsistency. Here is my example, which is also a real problem I have ever met.
+
+1. I deployed a 3-node ZooKeeper cluster: zk1, zk2, and zk3, zk2 was the leader.
+
+2. Both zk1 and zk2 had the log records from log1~logX, X was the zxid.
+
+3. The machine of zk1 restarted, and during the reboot,  log(X+1) ~ log Y are saved to log files of both zk2(leader) and zk3(follower).
+
+4. After zk1 restarted successfully, it found itself to be a follower, and it began to synchronize data with the leader. The leader sent a snapshot(records from log 1 ~ log Y) to zk1, zk1 then saved the snapshot to local disk by calling the method ZooKeeperServer.takeSnapshot. But unfortunately, when the method returned, the snapshot data was not saved to disk yet. In fact the snapshot file was created, but the size was 0.
+
+5. zk1 finished the synchronization and began to accept new requests from the leader. Say log records from log(Y + 1) ~ log Z were accepted by zk1 and  saved to log file. With fsync zk1 could make sure log data was not lost.
+
+6. zk1 restarted again. Since the snapshot's size was 0, it would not be used, therefore zk1 recovered using the log files. But the records from log(X+1) ~ logY were lost ! 
+
+ 
+
+Sorry for my poor English.
+
+ 

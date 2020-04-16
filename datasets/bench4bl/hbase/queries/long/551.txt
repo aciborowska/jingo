@@ -1,0 +1,57 @@
+Lars cluster is sick with master trying to split logs.   The logs its replaying have millions of edits in them.  
+Here is sample from log.   First we get the shutdown and then in the shutdown process, we start to split up the shutdown servers log:
+
+2008-03-28 16:29:45,305 INFO org.apache.hadoop.hbase.HMaster: process shutdown of server 192.168.105.37:60020: logSplit: false, rootRes
+canned: false, numberOfMetaRegions: 1, onlineMetaRegions.size(): 1
+2008-03-28 16:29:45,310 INFO org.apache.hadoop.hbase.HLog: splitting 3 log(s) in hdfs://lv1-xen-pdc-2.worldlingo.com:9000/hbase/log_192
+.168.105.37_1206741382563_60020
+2008-03-28 16:29:45,311 DEBUG org.apache.hadoop.hbase.HLog: Splitting 0 of 3: hdfs://lv1-xen-pdc-2.worldlingo.com:9000/hbase/log_192.16
+8.105.37_1206741382563_60020/hlog.dat.002
+2008-03-28 16:29:45,380 DEBUG org.apache.hadoop.hbase.HLog: Creating new log file writer for path hdfs://lv1-xen-pdc-2.worldlingo.com:9
+000/hbase/pdc-docs/488338803/oldlogfile.log and region pdc-docs,EP01108687NWA2,1205739919655
+2008-03-28 16:29:45,390 DEBUG org.apache.hadoop.hbase.HLog: Creating new log file writer for path hdfs://lv1-xen-pdc-2.worldlingo.com:9
+000/hbase/pdc-docs/447465883/oldlogfile.log and region pdc-docs,EP01900680NWA1,1205754584444
+2008-03-28 16:29:45,403 DEBUG org.apache.hadoop.hbase.HLog: Creating new log file writer for path hdfs://lv1-xen-pdc-2.worldlingo.com:9
+000/hbase/pdc-docs/2035706226/oldlogfile.log and region pdc-docs,EP01119588NWA2,1205754281917
+2008-03-28 16:29:45,428 DEBUG org.apache.hadoop.hbase.HLog: Creating new log file writer for path hdfs://lv1-xen-pdc-2.worldlingo.com:9
+000/hbase/pdc-docs/437772136/oldlogfile.log and region pdc-docs,EP00200190NWA2,120576451593
+...
+
+
+We open a file in each region to take edits.  We then start replaying the 3 WAL files from the regionserver.
+On the second one, we get exception... 
+
+2008-03-28 16:40:36,537 WARN org.apache.hadoop.hbase.HLog: Old log file hdfs://lv1-xen-pdc-2.worldlingo.com:9000/hbase/pdc-docs/1045858
+46/oldlogfile.log already exists. Copying existing file to new file
+2008-03-28 16:40:36,545 DEBUG org.apache.hadoop.hbase.HLog: Creating new log file writer for path hdfs://lv1-xen-pdc-2.worldlingo.com:9
+000/hbase/pdc-docs/104585846/oldlogfile.log and region pdc-docs,EP96104830NWA1,1205768785572
+2008-03-28 16:40:36,979 DEBUG org.apache.hadoop.hbase.HLog: Copied 220000 edits
+2008-03-28 16:40:38,853 DEBUG org.apache.hadoop.hbase.HLog: Applied 222812 total edits
+2008-03-28 16:40:38,853 DEBUG org.apache.hadoop.hbase.HLog: Splitting 1 of 3: hdfs://lv1-xen-pdc-2.worldlingo.com:9000/hbase/log_192.16
+8.105.37_1206741382563_60020/hlog.dat.003
+2008-03-28 16:40:56,883 WARN org.apache.hadoop.hbase.HLog: Old log file hdfs://lv1-xen-pdc-2.worldlingo.com:9000/hbase/pdc-docs/2118067
+194/oldlogfile.log already exists. Copying existing file to new file
+2008-03-28 16:40:56,891 DEBUG org.apache.hadoop.hbase.HLog: Creating new log file writer for path hdfs://lv1-xen-pdc-2.worldlingo.com:9
+000/hbase/pdc-docs/2118067194/oldlogfile.log and region pdc-docs,EP97302517NWA2,1205726201776
+2008-03-28 16:41:12,910 DEBUG org.apache.hadoop.hbase.HLog: Applied 36638 total edits
+2008-03-28 16:41:12,910 DEBUG org.apache.hadoop.hbase.HLog: Splitting 2 of 3: hdfs://lv1-xen-pdc-2.worldlingo.com:9000/hbase/log_192.16
+8.105.37_1206741382563_60020/hlog.dat.004
+2008-03-28 16:41:18,684 WARN org.apache.hadoop.hbase.HMaster: Processing pending operations: ProcessServerShutdown of 192.168.105.37:60
+020
+java.io.EOFException
+        at java.io.DataInputStream.readFully(DataInputStream.java:178)
+        at org.apache.hadoop.io.DataOutputBuffer$Buffer.write(DataOutputBuffer.java:56)
+        at org.apache.hadoop.io.DataOutputBuffer.write(DataOutputBuffer.java:90)
+        at org.apache.hadoop.io.SequenceFile$Reader.next(SequenceFile.java:1829)
+        at org.apache.hadoop.io.SequenceFile$Reader.next(SequenceFile.java:1729)
+        at org.apache.hadoop.io.SequenceFile$Reader.next(SequenceFile.java:1775)
+        at org.apache.hadoop.hbase.HLog.splitLog(HLog.java:540)
+        at org.apache.hadoop.hbase.HMaster$ProcessServerShutdown.process(HMaster.java:2167)
+        at org.apache.hadoop.hbase.HMaster.run(HMaster.java:1085)
+
+
+
+A finally clause makes sure we close up all the new files we've made in all regions.  These new files have accumulated some edits from the splitting of the first file.
+Because we got an exception, the shutdown processing runs again.
+Because regions have files in place with edits, we won't overwrite them second time through.  We instead copy the old into a new file to which we start appending until the exception happens again.
+After a couple of hours, we're up into the millions of edits.

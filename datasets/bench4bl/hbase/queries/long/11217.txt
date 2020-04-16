@@ -1,0 +1,70 @@
+Some time ago, we reported a test failure in HBASE-11036, which resulted in already-split and merged regions coming back to life, causing split brain for region boundaries and resulting in data loss. 
+It turns out that the root cause was not concurrent online schema change + region split/merge, but meta log splitting failing and the meta updates getting lost. This in turn causes the region split/merge information and assignment to be lost causing large scale data loss. 
+Logs below shows that the split task for meta log is created, but before the znode is created, the timeout thread kicks in and sees the unassigned task. Then it does a get on znode which fails with NoNode (because the znode is not created yet). This causes the task to be marked complete (setDone(path, SUCCESS)) which means that the logs are lost. Meta is assigned elsewhere (and opened with the same seqId as previous) confirming data loss in meta. 
+
+
+
+2014-04-16 18:31:26,267 INFO  [MASTER_META_SERVER_OPERATIONS-hor13n02:60000-2] handler.MetaServerShutdownHandler: Splitting hbase:meta logs for hor13n03.gq1.ygridcore.net,60020,1397672668647
+
+2014-04-16 18:31:26,274 DEBUG [MASTER_META_SERVER_OPERATIONS-hor13n02:60000-2] master.MasterFileSystem: Renamed region directory: hdfs://hor13n01.gq1.ygridcore.net:8020/apps/hbase/data/WALs/hor13n03.gq1.ygridcore.net,60020,1397672668647-splitting
+
+2014-04-16 18:31:26,274 INFO  [MASTER_META_SERVER_OPERATIONS-hor13n02:60000-2] master.SplitLogManager: dead splitlog workers [hor13n03.gq1.ygridcore.net,60020,1397672668647]
+
+2014-04-16 18:31:26,276 DEBUG [MASTER_META_SERVER_OPERATIONS-hor13n02:60000-2] master.SplitLogManager: Scheduling batch of logs to split
+
+2014-04-16 18:31:26,276 INFO  [MASTER_META_SERVER_OPERATIONS-hor13n02:60000-2] master.SplitLogManager: started splitting 1 logs in [hdfs://hor13n01.gq1.ygridcore.net:8020/apps/hbase/data/WALs/hor13n03.gq1.ygridcore.net,60020,1397672668647-splitting]
+
+2014-04-16 18:31:26,276 INFO  [hor13n02.gq1.ygridcore.net,60000,1397672191204.splitLogManagerTimeoutMonitor] master.SplitLogManager: total tasks = 1 unassigned = 1 tasks={/hbase/splitWAL/WALs%2Fhor13n03.gq1.ygridcore.net%2C60020%2C1397672668647-splitting%2Fhor13n03.gq1.ygridcore.net%252C60020%252C1397672668647.1397672681632.meta=last_update = -1 last_version = -
+
+2014-04-16 18:31:26,276 DEBUG [hor13n02.gq1.ygridcore.net,60000,1397672191204.splitLogManagerTimeoutMonitor] master.SplitLogManager: resubmitting unassigned task(s) after timeout
+
+2014-04-16 18:31:26,277 WARN  [main-EventThread] master.SplitLogManager$GetDataAsyncCallback: task znode /hbase/splitWAL/WALs%2Fhor13n03.gq1.ygridcore.net%2C60020%2C1397672668647-splitting%2Fhor13n03.gq1.ygridcore.net%252C60020%252C1397672668647.1397672681632.meta vanished.
+
+2014-04-16 18:31:26,277 INFO  [main-EventThread] master.SplitLogManager: Done splitting /hbase/splitWAL/WALs%2Fhor13n03.gq1.ygridcore.net%2C60020%2C1397672668647-splitting%2Fhor13n03.gq1.ygridcore.net%252C60020%252C1397672668647.1397672681632.meta
+
+2014-04-16 18:31:26,282 DEBUG [main-EventThread] master.SplitLogManager: put up splitlog task at znode /hbase/splitWAL/WALs%2Fhor13n03.gq1.ygridcore.net%2C60020%2C1397672668647-splitting%2Fhor13n03.gq1.ygridcore.net%252C60020%252C1397672668647.1397672681632.meta                                                                                                      
+
+2014-04-16 18:31:26,286 WARN  [MASTER_META_SERVER_OPERATIONS-hor13n02:60000-2] master.SplitLogManager: returning success without actually splitting and deleting all the log files in path hdfs://hor13n01.gq1.ygridcore.net:8020/apps/hbase/data/WALs/hor13n03.gq1.ygridcore.net,60020,1397672668647-splitting
+
+2014-04-16 18:31:26,286 INFO  [MASTER_META_SERVER_OPERATIONS-hor13n02:60000-2] master.SplitLogManager: finished splitting (more than or equal to) 9 bytes in 1 log files in [hdfs://hor13n01.gq1.ygridcore.net:8020/apps/hbase/data/WALs/hor13n03.gq1.ygridcore.net,60020,1397672668647-splitting] in 10ms
+
+2014-04-16 18:31:26,290 DEBUG [main-EventThread] master.SplitLogManager$DeleteAsyncCallback: deleted /hbase/splitWAL/WALs%2Fhor13n03.gq1.ygridcore.net%2C60020%2C1397672668647-splitting%2Fhor13n03.gq1.ygridcore.net%252C60020%252C1397672668647.1397672681632.meta
+
+2014-04-16 18:31:26,290 WARN  [main-EventThread] master.SplitLogManager$GetDataAsyncCallback: task znode /hbase/splitWAL/WALs%2Fhor13n03.gq1.ygridcore.net%2C60020%2C1397672668647-splitting%2Fhor13n03.gq1.ygridcore.net%252C60020%252C1397672668647.1397672681632.meta vanished.
+
+2014-04-16 18:31:26,290 DEBUG [main-EventThread] master.SplitLogManager: unacquired orphan task is done /hbase/splitWAL/WALs%2Fhor13n03.gq1.ygridcore.net%2C60020%2C1397672668647-splitting%2Fhor13n03.gq1.ygridcore.net%252C60020%252C1397672668647.1397672681632.meta
+
+2014-04-16 18:31:26,291 INFO  [main-EventThread] master.SplitLogManager: task /hbase/splitWAL/RESCAN0000000383 entered state: DONE hor13n02.gq1.ygridcore.net,60000,1397672191204
+
+2014-04-16 18:31:26,291 DEBUG [MASTER_META_SERVER_OPERATIONS-hor13n02:60000-2] master.AssignmentManager: based on AM, current region=hbase:meta,,1.1588230740 is on server=hor13n03.gq1.ygridcore.net,60020,1397672668647 server being checked: hor13n03.gq1.ygridcore.net,60020,1397672668647
+
+2014-04-16 18:31:26,291 INFO  [MASTER_META_SERVER_OPERATIONS-hor13n02:60000-2] handler.MetaServerShutdownHandler: Server hor13n03.gq1.ygridcore.net,60020,1397672668647 was carrying META. Trying to assign.
+
+2014-04-16 18:31:26,291 INFO  [MASTER_META_SERVER_OPERATIONS-hor13n02:60000-2] master.RegionStates: Transitioned {1588230740 state=OPEN, ts=1397672681933, server=hor13n03.gq1.ygridcore.net,60020,1397672668647} to {1588230740 state=OFFLINE, ts=1397673086291, server=hor13n03.gq1.ygridcore.net,60020,1397672668647}
+
+2014-04-16 18:31:26,291 INFO  [MASTER_META_SERVER_OPERATIONS-hor13n02:60000-2] master.RegionStates: Offlined 1588230740 from hor13n03.gq1.ygridcore.net,60020,1397672668647
+
+2014-04-16 18:31:26,299 INFO  [main-EventThread] master.SplitLogManager$DeleteAsyncCallback: /hbase/splitWAL/WALs%2Fhor13n03.gq1.ygridcore.net%2C60020%2C1397672668647-splitting%2Fhor13n03.gq1.ygridcore.net%252C60020%252C1397672668647.1397672681632.meta does not exist. Either was created but deleted behind our back by another pending delete OR was deleted in earl
+
+2014-04-16 18:31:26,299 DEBUG [main-EventThread] master.SplitLogManager: deleted task without in memory state /hbase/splitWAL/WALs%2Fhor13n03.gq1.ygridcore.net%2C60020%2C1397672668647-splitting%2Fhor13n03.gq1.ygridcore.net%252C60020%252C1397672668647.1397672681632.meta
+
+2014-04-16 18:31:26,299 DEBUG [main-EventThread] master.SplitLogManager$DeleteAsyncCallback: deleted /hbase/splitWAL/RESCAN0000000383
+
+2014-04-16 18:31:26,299 DEBUG [main-EventThread] master.SplitLogManager: deleted task without in memory state /hbase/splitWAL/RESCAN0000000383
+
+2014-04-16 18:31:26,301 INFO  [MASTER_META_SERVER_OPERATIONS-hor13n02:60000-2] catalog.CatalogTracker: Failed verification of hbase:meta,,1 at address=hor13n03.gq1.ygridcore.net,60020,1397672668647, exception=java.net.ConnectException: Connection refused
+
+2014-04-16 18:31:26,301 INFO  [MASTER_META_SERVER_OPERATIONS-hor13n02:60000-2] zookeeper.ZooKeeperNodeTracker: Unsetting hbase:meta region location in ZooKeeper
+
+2014-04-16 18:31:26,315 DEBUG [MASTER_META_SERVER_OPERATIONS-hor13n02:60000-2] master.AssignmentManager: No previous transition plan found (or ignoring an existing plan) for hbase:meta,,1.1588230740; generated random plan=hri=hbase:meta,,1.1588230740, src=, dest=hor13n04.gq1.ygridcore.net,60020,1397672685370; 3 (online=3, available=3) available servers, forceNew
+
+2014-04-16 18:31:26,315 DEBUG [MASTER_META_SERVER_OPERATIONS-hor13n02:60000-2] zookeeper.ZKAssign: master:60000-0x3456a48dd7d0223, quorum=hor13n04.gq1.ygridcore.net:2181,hor13n03.gq1.ygridcore.net:2181,hor13n20.gq1.ygridcore.net:2181, baseZNode=/hbase Creating (or updating) unassigned node 1588230740 with OFFLINE state
+
+2014-04-16 18:31:26,323 INFO  [MASTER_META_SERVER_OPERATIONS-hor13n02:60000-2] master.AssignmentManager: Assigning hbase:meta,,1.1588230740 to hor13n04.gq1.ygridcore.net,60020,1397672685370
+
+2014-04-16 18:31:26,323 INFO  [MASTER_META_SERVER_OPERATIONS-hor13n02:60000-2] master.RegionStates: Transitioned {1588230740 state=OFFLINE, ts=1397673086315, server=hor13n03.gq1.ygridcore.net,60020,1397672668647} to {1588230740 state=PENDING_OPEN, ts=1397673086323, server=hor13n04.gq1.ygridcore.net,60020,1397672685370}
+
+2014-04-16 18:31:28,337 DEBUG [MASTER_META_SERVER_OPERATIONS-hor13n02:60000-2] master.DeadServer: Finished processing hor13n03.gq1.ygridcore.net,60020,1397672668647
+
+
+

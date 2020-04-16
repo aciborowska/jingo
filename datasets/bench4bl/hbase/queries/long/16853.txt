@@ -1,0 +1,64 @@
+Problem
+If there are Region Servers registered as "draining", they will continue to have "draining" znodes after a HMaster failover; however, the balancer will assign regions to them.
+How to reproduce (on hbase master):
+
+Add regionserver to /hbase/draining: bin/hbase-jruby bin/draining_servers.rb add server1:16205
+Unload the regionserver:  bin/hbase-jruby bin/region_mover.rb unload server1:16205
+Kill the Active HMaster and failover to the Backup HMaster
+Run the balancer: hbase shell <<< "balancer"
+Notice regions get assigned on new Active Master to Region Servers in /hbase/draining
+
+Root Cause
+The Backup HMaster initializes the DrainingServerTracker before the Region Servers are registered as "online" with the ServerManager.  As a result, the ServerManager.drainingServers isn't populated with existing Region Servers in draining when we have an HMaster failover.
+E.g., 
+
+We have a region server in draining: server1,16205,1000
+The RegionServerTracker starts up and adds a ZK watcher on the Znode for this RegionServer: /hbase/rs/server1,16205,1000
+The DrainingServerTracker starts and processes each Znode under /hbase/draining, but the Region Server isn't registered as "online" so it isn't added to the ServerManager.drainingServers list.
+The Region Server is added to the DrainingServerTracker.drainingServers list.
+The Region Server's Znode watcher is triggered and the ZK watcher is restarted.
+The Region Server is registered with ServerManager as "online".
+
+END STATE: The Region Server has a Znode in /hbase/draining, but it is registered as "online" and the Balancer will start assigning regions to it.
+
+
+
+$ bin/hbase-jruby bin/draining_servers.rb list
+
+[1] server1,16205,1000
+
+
+
+$ grep server1,16205,1000 logs/master-server1.log
+
+2016-10-14 16:02:47,713 DEBUG [server1:16001.activeMasterManager] zookeeper.ZKUtil: master:16001-0x157c56adc810014, quorum=localhost:2181, baseZNode=/hbase Set watcher on existing znode=/hbase/rs/server1,16205,1000
+
+
+
+[2] 2016-10-14 16:02:47,722 DEBUG [server1:16001.activeMasterManager] zookeeper.RegionServerTracker: Added tracking of RS /hbase/rs/server1,16205,1000
+
+
+
+2016-10-14 16:02:47,730 DEBUG [server1:16001.activeMasterManager] zookeeper.ZKUtil: master:16001-0x157c56adc810014, quorum=localhost:2181, baseZNode=/hbase Set watcher on existing znode=/hbase/draining/server1,16205,1000
+
+
+
+[3] 2016-10-14 16:02:47,731 WARN  [server1:16001.activeMasterManager] master.ServerManager: Server server1,16205,1000 is not currently online. Ignoring request to add it to draining list.
+
+
+
+[4] 2016-10-14 16:02:47,731 INFO  [server1:16001.activeMasterManager] zookeeper.DrainingServerTracker: Draining RS node created, adding to list [server1,16205,1000]
+
+
+
+2016-10-14 16:02:47,971 DEBUG [main-EventThread] zookeeper.ZKUtil: master:16001-0x157c56adc810014, quorum=localhost:2181, baseZNode=/hbase Set watcher on existing znode=/hbase/rs/dev6918.prn2.facebook.com,16205,1476486047114
+
+
+
+[5] 2016-10-14 16:02:47,976 DEBUG [main-EventThread] zookeeper.RegionServerTracker: Added tracking of RS /hbase/rs/server1,16205,1000
+
+
+
+[6] 2016-10-14 16:02:52,084 INFO  [RpcServer.FifoWFPBQ.default.handler=29,queue=2,port=16001] master.ServerManager: Registering server=server1,16205,1000
+
+

@@ -1,0 +1,12 @@
+we have seen a pattern in tests, that the regions are stuck in OPENING state for a very long time when the region server who is opening the region fails. My understanding of the process: 
+
+master calls rs to open the region. If rs is offline, a new plan is generated (a new rs is chosen). RegionState is set to PENDING_OPEN (only in master memory, zk still shows OFFLINE). See HRegionServer.openRegion(), HMaster.assign()
+RegionServer, starts opening a region, changes the state in znode. But that znode is not ephemeral. (see ZkAssign)
+Rs transitions zk node from OFFLINE to OPENING. See OpenRegionHandler.process()
+rs then opens the region, and changes znode from OPENING to OPENED
+when rs is killed between OPENING and OPENED states, then zk shows OPENING state, and the master just waits for rs to change the region state, but since rs is down, that wont happen.
+There is a AssignmentManager.TimeoutMonitor, which does exactly guard against these kind of conditions. It periodically checks (every 10 sec by default) the regions in transition to see whether they timedout (hbase.master.assignment.timeoutmonitor.timeout). Default timeout is 30 min, which explains what you and I are seeing.
+ServerShutdownHandler in Master does not reassign regions in OPENING state, although it handles other states.
+
+Lowering that threshold from the configuration is one option, but still I think we can do better. 
+Will investigate more. 

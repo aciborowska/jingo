@@ -1,0 +1,206 @@
+We are using TLS with bind authentication for LDAP as the first authentication provider. The second authentication provider is a DaoAuthenticationProvider. 
+Our config is similar to:
+
+
+
+
+
+
+@EnableWebSecurity
+
+
+
+
+public class SecurityContext {
+
+
+
+
+ 
+
+
+
+
+    @Autowired
+
+
+
+
+    private UserService userService;
+
+
+
+
+ 
+
+
+
+
+    @Autowired
+
+
+
+
+    public void globalConfig(AuthenticationManagerBuilder builder) throws Exception {
+
+
+
+
+        final LdapContextSource contextSource = new LdapContextSource();
+
+
+
+
+        contextSource.setPooled(false);
+
+
+
+
+        contextSource.setUrl("ldap://localhost:11111");
+
+
+
+
+        contextSource.setAnonymousReadOnly(true);
+
+
+
+
+        contextSource.afterPropertiesSet();
+
+
+
+
+ 
+
+
+
+
+        final KeyStore trustStore  = KeyStore.getInstance("jks");
+
+
+
+
+        String file = getClass().getResource("/ldapTestServer.jks").getFile();
+
+
+
+
+        trustStore.load(Files.newInputStream(new File(file).toPath()), "password".toCharArray());
+
+
+
+
+        SSLContext sslcontext = SSLContexts.custom()
+
+
+
+
+                .loadTrustMaterial(trustStore)
+
+
+
+
+                .build();
+
+
+
+
+ 
+
+
+
+
+        DefaultTlsDirContextAuthenticationStrategy authenticationStrategy = new DefaultTlsDirContextAuthenticationStrategy();
+
+
+
+
+        authenticationStrategy.setHostnameVerifier(new AllowAllHostnameVerifier());
+
+
+
+
+        authenticationStrategy.setSslSocketFactory(sslcontext.getSocketFactory());
+
+
+
+
+        authenticationStrategy.setShutdownTlsGracefully(true);
+
+
+
+
+ 
+
+
+
+
+        contextSource.setAuthenticationStrategy(authenticationStrategy);
+
+
+
+
+ 
+
+
+
+
+        final BindAuthenticator authenticator = new BindAuthenticator(contextSource);
+
+
+
+
+        authenticator.setUserDnPatterns(new String[]{"uid={0},ou=People,dc=test,dc=com"});
+
+
+
+
+ 
+
+
+
+
+        builder
+
+
+
+
+                .authenticationProvider(new LdapAuthenticationProvider(authenticator, new UserDetailsServiceLdapAuthoritiesPopulator(new SpringUserService(userService)))())
+
+
+
+
+                .userDetailsService(new SpringUserService(userService)).passwordEncoder(new Md5PasswordEncoder());
+
+
+
+
+    }
+
+
+
+
+ 
+
+
+
+
+        ....
+
+
+
+
+  }
+
+
+
+
+
+
+We are testing this against an embedded LDAP server (com.unboundid.ldap.listener.InMemoryDirectoryServer) configured for TLS authentication.
+When a user is not authenticated with the LdapAuthenticationProvider  (because the user is not in LDAP) we expect the  DaoAuthenticationProvider to be called. This is not happening.
+When the BindAuthenticator.bindWithDn() is called, the line:
+Attributes attrs = ctx.getAttributes(userDn, getUserAttributes());
+throws a javax.naming.AuthenticationException, which is converted to a org.springframework.ldap.AuthenticationException and throws. This is caught by LdapAuthenticationProvider.doAuthentication() which converts the exception to a InternalAuthenticationServiceException and throws. This is caught by ProviderManager.authenticate() and re-throws, and in so doing, stops the next DaoAuthenticationProvider from being called.
+We would expect a javax.naming.AuthenticationException arising from user credentials not being present to still allow the next DaoAuthenticationProvider to be called.

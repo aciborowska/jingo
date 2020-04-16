@@ -1,0 +1,206 @@
+I found the issue using the Specification and PageRequest when i have joins and distinct at the same time in my query. When i call Page.getTotalElements() i get wrong number, bigger than it should be. Seems that duplicate items introduced by join get counted for total elements.
+So the problem is that i use joins while building a Predicate, so to eliminate duplicates i set distinct property of query object to true:
+
+
+
+
+
+
+public Predicate toPredicate(Root<Parent> root, CriteriaQuery<?> query, CriteriaBuilder cb) {
+
+
+
+
+                Path<Set<Child>> childrenPath = root.get("children");
+
+
+
+
+                root.join("children");
+
+
+
+
+                query.distinct(true);
+
+
+
+
+                return cb.isNotEmpty(childrenPath);
+
+
+
+
+            }
+
+
+
+
+
+
+As i see from DATA JPA code before doing the actual select query it performs count query, from my log it's the following:
+
+
+
+
+
+
+select
+
+
+
+
+        distinct count(*) as col_0_0_ 
+
+
+
+
+    from
+
+
+
+
+        parent parent0_ 
+
+
+
+
+    inner join
+
+
+
+
+        parent_children children1_ 
+
+
+
+
+            on parent0_.id=children1_.parent_id 
+
+
+
+
+    inner join
+
+
+
+
+        child child2_ 
+
+
+
+
+            on children1_.child_id=child2_.id 
+
+
+
+
+    where
+
+
+
+
+        exists (
+
+
+
+
+            select
+
+
+
+
+                child4_.id 
+
+
+
+
+            from
+
+
+
+
+                parent_children children3_,
+
+
+
+
+                child child4_ 
+
+
+
+
+            where
+
+
+
+
+                parent0_.id=children3_.parent_id 
+
+
+
+
+                and children3_.child_id=child4_.id
+
+
+
+
+        )
+
+
+
+
+
+
+As i understand distinct clause should be inside count() function:
+
+
+
+
+
+
+select count(distinct *) ...
+
+
+
+
+
+
+If i run such query directly in DB i'll get the right number of items.
+I believe this issue can be fixed by using countDistinct instead of count() here https://github.com/SpringSource/spring-data-jpa/blob/master/src/main/java/org/springframework/data/jpa/repository/support/SimpleJpaRepository.java#L459
+Or it can be conditionally ran 
+
+
+
+
+
+
+if (query.isDistinct()) {
+
+
+
+
+    query.select(builder.countDistinct(root));
+
+
+
+
+} else {
+
+
+
+
+    query.select(builder.count(root));
+
+
+
+
+}
+
+
+
+
+
+
+Please see the attached zip file of the test project.
+Please let me know if there is any workaround.

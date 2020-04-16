@@ -1,0 +1,139 @@
+Take the following hierarchy: -
+
+
+
+
+
+
+keystore=xxx
+
+
+
+
+    alias=yyy
+
+
+
+
+        certificate-chain=default
+
+
+
+
+        certificate-chain=x509
+
+
+
+
+
+
+
+keystore is a regular resource with storage=configuration.
+alias is a regular resource with storage=runtime
+certificate-chain=default and certificate-chain=x509 are regular resources with storage=runtime.
+So alias represents a single alias from a Java KeyStore, this may or may not have a certificate chain and it may be a default chain or it may be an x509 chain.
+The recursive read-resource is fine with regular resources such as alias as it has to rely on the underlying resource implementation to identify the instances that actually exist.
+For the singleton resources however the following method is called: -
+
+
+
+
+
+
+org.jboss.as.controller.operations.global.GlobalOperationHandlers.getChildAddresses(OperationContext, PathAddress, ImmutableManagementResourceRegistration, Resource, String)
+
+
+
+
+
+
+
+Within this method the following check takes place: -
+
+
+
+
+
+
+                if (resource != null && resource.hasChildren(childType)) {
+
+
+
+
+                    Set<String> childNames = resource.getChildrenNames(childType);
+
+
+
+
+                    if (element.isWildcard()) {
+
+
+
+
+                        set.addAll(childNames);
+
+
+
+
+                    } else if (childNames.contains(element.getValue())) {
+
+
+
+
+                        set.add(element.getValue());
+
+
+
+
+                    }
+
+
+
+
+
+
+
+Up to this point all is fine, the children the resource claims are available are the only ones added.
+But further down this happens: -
+
+
+
+
+
+
+            if (!element.isWildcard()) {
+
+
+
+
+                ImmutableManagementResourceRegistration childReg = registry.getSubModel(PathAddress.pathAddress(element));
+
+
+
+
+                if (childReg != null && childReg.isRuntimeOnly()) {
+
+
+
+
+                    set.add(element.getValue());
+
+
+
+
+                }
+
+
+
+
+            }
+
+
+
+
+
+
+
+So even though the resource was previously checked and missing children excluded they are now added back.
+The end result in this example is that the recursive read resource attempts to read for certificate-chain=default when it should only be reading for certificate-chain=x509 as already reported by the resource implementation.
+From a discussion in HipChat yesterday there was general agreement this behaviour seems to be wrong, however support for Proxied resources may be (incorrectly) dependent on this.

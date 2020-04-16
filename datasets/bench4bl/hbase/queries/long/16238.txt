@@ -1,0 +1,59 @@
+After HBASE-5549, SESSIONEXPIRED exception was caught and retried with other zookeeper exceptions like ConnectionLoss. But it is useless to retry when a session expired happens, since the retry will never be successful. Though there is a config called "zookeeper.recovery.retry" to control retry times, in our cases, we set this config to a very big number like "99999". When a session expired happens, the regionserver should kill itself, but because of the retrying, threads of regionserver stuck at trying to reconnect to zookeeper, and never properly shut down.
+
+
+
+public Stat exists(String path, boolean watch)
+
+  throws KeeperException, InterruptedException {
+
+    TraceScope traceScope = null;
+
+    try {
+
+      traceScope = Trace.startSpan("RecoverableZookeeper.exists");
+
+      RetryCounter retryCounter = retryCounterFactory.create();
+
+      while (true) {
+
+        try {
+
+          return checkZk().exists(path, watch);
+
+        } catch (KeeperException e) {
+
+          switch (e.code()) {
+
+            case CONNECTIONLOSS:
+
+            case SESSIONEXPIRED: //we shouldn't catch this
+
+            case OPERATIONTIMEOUT:
+
+              retryOrThrow(retryCounter, e, "exists");
+
+              break;
+
+
+
+            default:
+
+              throw e;
+
+          }
+
+        }
+
+        retryCounter.sleepUntilNextRetry();
+
+      }
+
+    } finally {
+
+      if (traceScope != null) traceScope.close();
+
+    }
+
+  }
+
+

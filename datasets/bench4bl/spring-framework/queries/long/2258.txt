@@ -1,0 +1,29 @@
+[Quoting part of a reply to a post by Peter Veentjer on the Concurrency-Interest mailing list:]
+There seems to be almost a guarantee for Policy/Strategy support in most of the Spring framework: pure interface, partial base implementations providing useful defaults, and a default instance in the places that need it all this - in contrast with overriding methods. This is good, for many reasons.
+Now, a good idea would be to extend this flexibility to thread context creation in the framework in general: Global/ThreadLocal/InheritableThreadLocal, and the new ActuallyWorksWithGCThreadLocal mentioned by Doug some days ago. This is not because I want the new deterministic threadlocal garbage collection option, but because InheritableThreadLocal is hardcoded in 2 places in Spring: the locale holder, and the new scoping support.
+I find this to cause uncollectable reference leaks, in most applications of fair complexity, on all relevant platforms (ibm, bea, sun).
+The reason (as stated in the thread mentioned above) is simple: there are two groups of components: those that create InheritableThreadLocals, and those that create threads. The mix of these two usually results in references dangling off live threads long after the relevant ClassLoader would have been released. A minimal example would be:
+--------------------------------------
+public class ImageController implements Controller {
+    public ModelAndView handleRequest(HttpServletRequest request, HttpServletResponse response) throws Exception 
+{
+
+        BufferedImage image = new BufferedImage(20, 20, BufferedImage.TYPE_INT_RGB);
+        Graphics2D g = image.createGraphics();
+        response.setContentType("image/png");
+        OutputStream out = response.getOutputStream();
+        ImageIO.write(image, "png", out);
+        out.close(); out.flush(); g.dispose();
+
+        return null;
+    }
+}
+--------------------------------------
+There isn't much to see in the code, but this controller will activate the Java 2D subsystem, which happens to include starting the sun.java2d.Disposer thread, which will only exit at JVM shutdown (this can be verified with a JVMTI agent). See what I mean by saying that InheritableThreadLocal creators can't fathom all thread creation sites above their stack? I'll bet good money I can find 3 other leaks possibilities of this type caused by Spring in the Sun JVM alone (although I also found these two spring ITLs in a different place).
+Now, next for a related story - in the Acegi Security subframework (is there such a thing?):
+http://opensource.atlassian.com/projects/spring/browse/SEC-152
+In the beginning, Acegi used a regular ThreadLocal for auth context. Then developers using JFC or RMI requested transparent propagation to child threads, resulting in a patch to use InheritableThreadLocal. Some IBM 1.3 users reported bugs in their JVM implementation, causing the migration back to a regular ThreadLocal. This could, of course, not please everybody, so a more configurable solution was devised: let the framework user choose an implementation of a Strategy interface for 'thread bound context' creation:
+http://www.acegisecurity.org/multiproject/acegi-security/apidocs/org/acegisecurity/context/SecurityContextHolderStrategy.html
+Now this is a good solution, but not perfect: the modus of configuration is not very flexible, and it's Acegi-specific.
+I propose an extension to spring itself, exposing a strategy/polity extension point for child frameworks like Acegi, infrastructure like the Spring MVC locale support, the new Scoped AOP, and (most important of all) RMI/Swing/etc developers seeking a problem-specific solution.
+I think the place for such support would be somewhere on the ApplicationContext itself, making (for instance) configuration in web.xml possible.

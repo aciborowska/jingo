@@ -1,0 +1,12 @@
+I was testing Spring Batch for the first time with 2.1.9 and an HSQL database.  It was working fine until I tried to restart a failed job.  At that point, a NPE was thrown from the Spring Batch core code.  The reason was that a DAO query for fetching the last job execution details did not return any rows, even though there was a row in the database.
+I tried Spring Batch 2.1.8 and it worked fine.  I traced it down to the SQL query itself, which is defined here:
+org.springframework.batch.core.repository.dao.JdbcJobExecutionDao.GET_LAST_EXECUTION
+This query was recently changed in commit 16e23fc on May 16, 2012.  While part of the change was good (changing to use an ID rather than timestamp to match rows), it broke compatibility with HSQLDB.  Here is the SQL that returns no results:
+SELECT JOB_EXECUTION_ID, START_TIME, END_TIME, STATUS, EXIT_CODE, EXIT_MESSAGE, CREATE_TIME, LAST_UPDATED, VERSION
+from BATCH_JOB_EXECUTION E where JOB_INSTANCE_ID = 6 and 
+JOB_EXECUTION_ID = (SELECT max(JOB_EXECUTION_ID) 
+	from BATCH_JOB_EXECUTION E2 where E.JOB_INSTANCE_ID = E2.JOB_INSTANCE_ID)
+The problem is that HSQLDB supports correlated subqueries, but apparently not when using the "=" operator.  This query works properly in HSQLDB when making one of the following changes:
+1. Change the comparison operator for JOB_EXECUTION_ID from "=" to "IN".  HSQLDB supports the IN clause w/ correlated subqueries.
+2. OR remove the subquery correlation by repeating the JDBC parameter instead of referencing E_JOB_INSTANCE_ID.  This is apparently how the query used to work.
+I do not know if either proposed change would cause issues in the other supported databases, but I would suspect not.  I also do not know if there are other SQL compatibility issues in 2.1.9, but I can say I didn't notice any problems when my jobs succeeded.

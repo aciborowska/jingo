@@ -1,0 +1,28 @@
+I encountered a problem with the constructor resolution based on indices. I have a bean configured via a DefaultListableBeanFactory from an XML file. The bean provides two constructors and configuration fails due to selecting the wrong constructor (in spite of using the index attributes).
+The simplified scenario is as following:
+--------------------
+class P1 {}
+class P2 extends P1 {}
+class MyBean {
+  public MyBean(int i, String s) {} // Ctor1
+  public MyBean(int i, P1 p) {}  // Ctor2
+}
+--------------------
+The configuration looks like this:
+<bean id="MyBean" class="MyBean">
+  <constructor-arg index="0">
+    <value>42</value>
+  </constructor-arg>
+  <constructor-arg index="1">
+    <ref local="PBean"/>
+  </constructor-arg>
+</bean>
+<bean id="PBean" class="P2">
+</bean>
+--------------------
+I debugged the configuration and found an explanation for the erroneous behaviour in the Method DefaultListableBeanFactory#autowireConstructor(String beanName, RootBeanDefinition mergedBeanDefinition);
+As I saw, for each constructor an argument list is being created. In that step conversions are applied as applicable (BeanWrapperImpl#doTypeConversionIfNecessary). In case of Ctor1 the second argument cannot be converted (P2 -> String) and is left as is. In the case of Ctor2 a conversion is not necessary.
+Afterwards in the Method DefaultListableBeanFactory#getTypeDifferenceWeight the conversion from P2 -> String is assumed to be better than the conversion P2 -> P1. So the wrong constructor will be chosen.
+I see two possible solutions: Either discard Ctor1 if the argument conversion cannot be applied on building the argument list, or modify the weight calculation for the case, that a type does not match at all.
+Regards,
+Andreas

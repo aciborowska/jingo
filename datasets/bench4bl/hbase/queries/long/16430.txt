@@ -1,0 +1,142 @@
+It will be good when move one table at the same time. 
+However,will appear abnormal when move two or more tables at once.
+For example,move tableA and tableB from Group foo to Group bar:
+
+
+
+hbase(main):001:0> get_rsgroup 'foo'
+
+GROUP INFORMATION                                                                                                                                                                            
+
+Servers:                                                                                                                                                                                     
+
+hbase-rs1:60020                                                                                                                                                                     
+
+Tables:                                                                                                                                                                                      
+
+tableA                                                                                                                                                                                       
+
+tableB                                                                                                                                                                                       
+
+5 row(s) in 0.2800 seconds
+
+
+
+hbase(main):002:0> get_rsgroup 'bar'
+
+GROUP INFORMATION                                                                                                                                                                            
+
+Servers:                                                                                                                                                                                     
+
+hbase-rs2:60020                                                                                                                                                                     
+
+Tables:                                                                                                                                                                                      
+
+3 row(s) in 0.0050 seconds
+
+
+
+hbase(main):003:0> move_rsgroup_tables 'bar',['tableA','tableB']
+
+
+
+hbase(main):004:0> get_rsgroup 'foo'
+
+GROUP INFORMATION                                                                                                                                                                            
+
+Servers:                                                                                                                                                                                     
+
+hbase-rs1:60020                                                                                                                                                                     
+
+Tables:                                                                                                                                                                                      
+
+tableB                                                                                                                                                                                       
+
+4 row(s) in 0.0120 seconds
+
+
+
+hbase(main):005:0> get_rsgroup 'bar'
+
+GROUP INFORMATION                                                                                                                                                                            
+
+Servers:                                                                                                                                                                                     
+
+hbase-rs2:60020                                                                                                                                                                    
+
+Tables:                                                                                                                                                                                      
+
+tableA                                                                                                                                                                                       
+
+tableB                                                                                                                                                                                       
+
+5 row(s) in 0.0130 seconds
+
+
+
+Now, you will be find tableB belongs to Group foo and Group bar.
+Implementation of the moveTables as follows：
+RSGroupInfoManagerImpl.java
+
+
+@Override
+
+  public synchronized void moveTables(
+
+      Set<TableName> tableNames, String groupName) throws IOException {
+
+    if (groupName != null && !rsGroupMap.containsKey(groupName)) {
+
+      throw new DoNotRetryIOException("Group "+groupName+" does not exist or is a special group");
+
+    }
+
+
+
+    Map<String,RSGroupInfo> newGroupMap = Maps.newHashMap(rsGroupMap);
+
+    for(TableName tableName: tableNames) {
+
+      if (tableMap.containsKey(tableName)) {
+
+        RSGroupInfo src = new RSGroupInfo(rsGroupMap.get(tableMap.get(tableName)));
+
+        src.removeTable(tableName);
+
+        newGroupMap.put(src.getName(), src);
+
+      }
+
+      if(groupName != null) {
+
+        RSGroupInfo dst = new RSGroupInfo(newGroupMap.get(groupName));
+
+        dst.addTable(tableName);
+
+        newGroupMap.put(dst.getName(), dst);
+
+      }
+
+    }
+
+    flushConfig(newGroupMap);
+
+  }
+
+
+
+Should use newGroupMap instead of rsGroupMap:
+
+
+
+RSGroupInfo src = new RSGroupInfo(rsGroupMap.get(tableMap.get(tableName)));
+
+
+
+==>
+
+
+
+RSGroupInfo src = new RSGroupInfo(newGroupMap.get(tableMap.get(tableName)));
+
+

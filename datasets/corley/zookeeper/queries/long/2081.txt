@@ -1,0 +1,33 @@
+I noticed a situation when one of our 3-node clusters on RHEL lost a machine due to PSU failure. The remaining two nodes failed to complete leader election and would continually restart the leader election process.
+Restarting the nodes would not help and they would reach the same exact state.
+
+This was curious so I spent some time and managed to reproduce this on my local machine and found what looks like the main factor:
+When a node is unreachable (timeouts), this somehow causes the election process to get out of sync.  Once a leader is decided, the follower tries to connect to the leader only when the leader is not listening.
+Then the follower gives up and the process starts again ad infinitum.
+
+How to reproduce on a local machine:
+
+1. Setup up a 3 node cluster of ZK.  Note we only need to set up 2 boxes since we'll just make the third unreachable:
+
+MyId 1:
+
+server.1=MyMachine:2881:3881
+server.2=<Put any IP that we can block>:2882:3882
+server.3=MyMachine:2883:3883
+
+MyId 3:
+
+server.1=MyMachine:2881:3881
+server.2=<Put any IP that we can block>:2882:3882
+server.3=MyMachine:2883:3883
+
+Now set up a blackhole route for the IP you choose (Mac OSX, Linux is similar):
+> route add -host <IP you selected> 127.0.0.1 -blackhole
+
+Start your 2 nodes.  They will never reach quorum.
+
+However, if I remove the blackhole route and just not start the 3rd instance (but the host is still reachable), it will work fine and quorum will be reached almost immediately.
+
+It seems the difference between the “timeout” and a "connection refused” makes all the difference somehow in the election process.
+
+I verified this behavior on 3.4.6 and 3.3.6.

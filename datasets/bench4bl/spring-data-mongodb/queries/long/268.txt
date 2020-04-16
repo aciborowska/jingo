@@ -1,0 +1,209 @@
+I have asymmetric converters Converter<DBObject,ThirdPartyClass> for certain entities that I am persisting which do not have a constructor that can be used by the mapper ie. I do no custom Converter<ThirdPartyClass,DBObject>. I also don't have source code to add a @PersistenceConstructor because the classes I am persisting are 3rd party. After stepping through the source code, I've determined that this part of CustomConversions is too liberal, and causing my error:
+
+
+
+
+
+
+	private void register(ConvertiblePair pair) {
+
+
+
+
+ 
+
+
+
+
+		if (isMongoBasicType(pair.getSourceType())) {
+
+
+
+
+			readingPairs.add(pair);
+
+
+
+
+			customSimpleTypes.add(pair.getTargetType());
+
+
+
+
+		}
+
+
+
+
+ 
+
+
+
+
+		if (isMongoBasicType(pair.getTargetType())) {
+
+
+
+
+			writingPairs.add(pair);
+
+
+
+
+			customSimpleTypes.add(pair.getSourceType());
+
+
+
+
+		}
+
+
+
+
+	}
+
+
+
+
+
+
+customSimpleTypes is then given to the SimpleTypeHolder (still in CustomConversions):
+
+
+
+
+
+
+this.simpleTypeHolder = new SimpleTypeHolder(customSimpleTypes, MongoSimpleTypes.HOLDER);
+
+
+
+
+
+
+And eventually is determined to be a simple type inside AbstractMappingContext/ AbstractPersistentProperty.
+It seems that because my custom entity is a target type it is considered a simple type, and it is left as-is when attempting to write to to Mongo, which fails:
+
+
+
+
+
+
+java.lang.IllegalArgumentException: can't serialize class com.example.ThirdPartyClass
+
+
+
+
+	at org.bson.BSONEncoder._putObjectField(BSONEncoder.java:234)
+
+
+
+
+	at org.bson.BSONEncoder.putObject(BSONEncoder.java:140)
+
+
+
+
+	at org.bson.BSONEncoder.putObject(BSONEncoder.java:86)
+
+
+
+
+	at com.mongodb.OutMessage.putObject(OutMessage.java:190)
+
+
+
+
+	at com.mongodb.DBApiLayer$MyCollection.insert(DBApiLayer.java:253)
+
+
+
+
+	at com.mongodb.DBApiLayer$MyCollection.insert(DBApiLayer.java:217)
+
+
+
+
+	at com.mongodb.DBCollection.insert(DBCollection.java:87)
+
+
+
+
+	at org.springframework.data.mongodb.core.MongoTemplate$10.doInCollection(MongoTemplate.java:669)
+
+
+
+
+	at org.springframework.data.mongodb.core.MongoTemplate.execute(MongoTemplate.java:329)
+
+
+
+
+	at org.springframework.data.mongodb.core.MongoTemplate.insertDBObject(MongoTemplate.java:665)
+
+
+
+
+	at org.springframework.data.mongodb.core.MongoTemplate.doInsert(MongoTemplate.java:571)
+
+
+
+
+	at org.springframework.data.mongodb.core.MongoTemplate.insert(MongoTemplate.java:530)
+
+
+
+
+	at _________
+
+
+
+
+	at _________
+
+
+
+
+	at _________(_____Test.java:71)
+
+
+
+
+	at org.springframework.test.context.junit4.statements.RunBeforeTestMethodCallbacks.evaluate(RunBeforeTestMethodCallbacks.java:74)
+
+
+
+
+	at org.springframework.test.context.junit4.statements.RunAfterTestMethodCallbacks.evaluate(RunAfterTestMethodCallbacks.java:82)
+
+
+
+
+	at org.springframework.test.context.junit4.statements.SpringRepeat.evaluate(SpringRepeat.java:72)
+
+
+
+
+	at org.springframework.test.context.junit4.SpringJUnit4ClassRunner.runChild(SpringJUnit4ClassRunner.java:240)
+
+
+
+
+	at org.springframework.test.context.junit4.statements.RunBeforeTestClassCallbacks.evaluate(RunBeforeTestClassCallbacks.java:61)
+
+
+
+
+	at org.springframework.test.context.junit4.statements.RunAfterTestClassCallbacks.evaluate(RunAfterTestClassCallbacks.java:70)
+
+
+
+
+	at org.springframework.test.context.junit4.SpringJUnit4ClassRunner.run(SpringJUnit4ClassRunner.java:180)
+
+
+
+
+
+
+I would expect that MappingMongoConverter writes the object normally (ie. handles converting the bean to a DBObject automatically) if there is no Converter<ThirdPartyClass,DBObject> converter.

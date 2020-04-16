@@ -1,0 +1,31 @@
+ReplicationSinkManager is not thread-safe. This can cause problems in HBaseInterClusterReplicationEndpoint,  when the walprovider is multiwal. 
+For example: 
+1. When multiple threads report bad sinks, the sink list can be non-empty but report a negative size because the ArrayList itself is not thread-safe. 
+2. HBaseInterClusterReplicationEndpoint depends on the number of sinks to batch edits for shipping. However, it's quite possible that the following code makes it assume that there are no batches to process (sink size is non-zero, but by the time we reach the "batching" part, sink size becomes zero.)
+
+
+
+if (replicationSinkMgr.getSinks().size() == 0) {
+
+    return false;
+
+}
+
+...
+
+int n = Math.min(Math.min(this.maxThreads, entries.size()/100+1),
+
+               replicationSinkMgr.getSinks().size());
+
+
+
+[Update] This leads to ArithmeticException: division by zero at:
+
+
+
+entryLists.get(Math.abs(Bytes.hashCode(e.getKey().getEncodedRegionName())%n)).add(e);
+
+
+
+which is benign and will just lead to retries by the ReplicationSource.
+The idea is to make all operations in ReplicationSinkManager thread-safe and do a verification on the size of replicated edits before we report success.

@@ -1,0 +1,88 @@
+Hi all, 
+
+While using zookeeper at midokura we hit an interesting bug in zookeeper. We did hit it sporadically 
+while developing some functional tests so i had to build a test case for it. 
+
+I finally created the test case and i think i narrowed down the conditions under which it happens. 
+So i wanted to let you know my findings since they are somewhat troublesome. 
+
+We need:
+
+	one running zookeeper server (didn't test that with a cluster)
+      let's name this: server
+
+
+
+
+	one running zookeeper client that will create an ephemeral node under the tree created by the next client
+      let's name this: the ephemeral client
+
+
+
+
+	one running zookeeper client that will create a persistent tree and try to delete that tree
+      let's name this: the persistent client
+
+
+
+What needs to happen is this:
+
+ step 1. - the server starts
+ step 2. - the persistent client connects and creates a tree
+ step 3. - the ephemeral client connects and adds a ephemeral node under the tree created by the persistent client
+ step 4. - the persistent client will try to delete the tree recursively (without including the ephemeral node in the multi op
+ step 5. - the ephemeral client crashes hard (the equivalent of kill -9)
+ step 6. - the persistent client will try to delete the tree recursively again (and fail with NoEmptyNode even if when we list the node we don't see any childrens)
+
+	the zookeeper server needs to be restarted in order for this to work.
+
+
+
+The step 4 is critical in the sense that if we don't have that (there is no previous error trying to remove a tree) then the nexts steps behave as we would expect them to behave (aka pass). 
+
+Also no amount of fiddling with zookeeper connection timeouts (between zookeeper and ephemeral node) will help. 
+
+If the ephemeral client is shutdown properly it seems like everything will behave properly (even with step 4). 
+
+The test code is available here:
+   https://github.com/mtoadermido/play
+
+It needs an zookeepr 3.4.2 installed on the system (it uses the installed jars from the deb to spawn the zookeeper server).
+
+The entry point is https://github.com/mtoadermido/play/blob/master/src/main/java/com/midokura/tests/zookeeper/BlockingBug.java
+
+There is a lot of boiler plate since i didn't want it to be depending on stuff from midonet but the interesting part is the BlockingBug.main() method. 
+
+It will launch a zookeeper process, an external ephemeral client process, and after that act as the second client. 
+
+Available tweaks:
+
+	the zookeeper client timeout for the ephemeral client here:
+  https://github.com/mtoadermido/play/blob/master/src/main/java/com/midokura/tests/zookeeper/BlockingBug.java#L56
+
+
+
+
+	the step 4 here (set to true / false):
+ https://github.com/mtoadermido/play/blob/master/src/main/java/com/midokura/tests/zookeeper/BlockingBug.java#L69
+
+
+
+
+	the shutdown of the ephemeral client (soft aka clean shutdown, hard aka kill -9):
+ https://github.com/mtoadermido/play/blob/master/src/main/java/com/midokura/tests/zookeeper/BlockingBug.java#L88
+
+
+
+The result is displayed depending on the fact that the final recursive deletion succeeded or not:
+
+We hit it !. The clear tree failed.
+   https://github.com/mtoadermido/play/blob/master/src/main/java/com/midokura/tests/zookeeper/BlockingBug.java#L103
+
+"No error "  
+   https://github.com/mtoadermido/play/blob/master/src/main/java/com/midokura/tests/zookeeper/BlockingBug.java#L99
+
+
+The conclusion is that the bug seems to be inside the zookeeper codebase and it's prone to being triggered by this 
+particular usage of zookeeper combined with the misfortune of having to kill the ephemeral process hard. 
+

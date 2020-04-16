@@ -1,0 +1,32 @@
+This is a regression in the new logical plan that causes incorrect results in 0.8/0.9, and a fatal "duplicate uid in schema" error on trunk. The following script demonstrates the problem (extracted and simplified from a much larger script):
+
+
+A = LOAD 'bug.in' AS (x:{t:(x:int)}, y:{t:(y:int)});
+B1 = FOREACH A GENERATE FLATTEN(x),FLATTEN(y);
+B2 = FOREACH A GENERATE FLATTEN(y),FLATTEN(x);
+C = UNION B1, B2;
+D = GROUP C BY *;
+
+
+Input data:
+
+{(1)}	{(2)}
+{(1)}	{(3)}
+
+
+C contains the correct data:
+
+(1,2)
+(2,1)
+(1,3)
+(3,1)
+
+
+D should use the entire tuple as the group key (making it essentially a DISTINCT) but instead the output is:
+
+((1,1),{(1,2),(1,3)})
+((2,2),{(2,1)})
+((3,3),{(3,1)})
+
+
+The GROUP operation is using ($0,$0) as the key instead of ($0,$1). The logical plan includes the line: C: (Name: LOUnion Schema: x::x#37:int,y::y#37:int). Switching to the old logical plan produces the correct output in 0.8, but apparently this is no longer possible in 0.9 and later versions. 

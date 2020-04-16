@@ -1,0 +1,281 @@
+Hi,
+Suppose you have a properties file of this type
+
+
+
+#PROPERTIES CONCATENATION
+
+prop1=file:
+
+prop2=dirname
+
+concat.property={{prop1}}{{prop2}}
+
+
+
+#PROPERTIES WITHOUT CONCATENATION
+
+property.complete=file:dirname
+
+
+
+and you want to use the property concat.property. Using Camel 2.10.3 loading this property doesn't create any kind of problem. When I upgrade to Camel 2.12.3 I get an exception, that you can reproduce with the following informations.
+In DefaultPropertiesParser class of org.apache.camel.component.properties package, I found a strange behaviour relative to that specific kind of property.  When I execute a test like the following, (the first try to use concatenated property and the second try to use property without concatenation):
+PropertiesComponentConcatenatePropertiesTest.java
+
+
+import org.apache.camel.CamelContext;
+
+import org.apache.camel.ContextTestSupport;
+
+import org.apache.camel.builder.RouteBuilder;
+
+
+
+public class PropertiesComponentConcatenatePropertiesTest extends ContextTestSupport {
+
+    
+
+    @Override
+
+    protected CamelContext createCamelContext() throws Exception {
+
+        CamelContext context = super.createCamelContext();
+
+        context.addComponent("properties", new PropertiesComponent("classpath:org/apache/camel/component/properties/concatenation.properties"));
+
+        return context;
+
+    }
+
+    
+
+    @Override
+
+    protected void setUp() throws Exception {
+
+        System.setProperty("environment", "junit");
+
+        super.setUp();
+
+    }
+
+    
+
+    @Override
+
+    protected void tearDown() throws Exception {
+
+        System.clearProperty("environment");
+
+        super.tearDown();
+
+    }
+
+    
+
+    public void testConcatPropertiesComponentDefault() throws Exception {
+
+        context.addRoutes(new RouteBuilder() {
+
+            @Override
+
+            public void configure() throws Exception {
+
+                from("direct:start").setBody(simple("${properties:concat.property}"))
+
+                .to("mock:result");
+
+            }
+
+        });
+
+        context.start();
+
+
+
+        getMockEndpoint("mock:result").expectedBodiesReceived("file:dirname");
+
+
+
+        template.sendBody("direct:start", "Test");
+
+
+
+        assertMockEndpointsSatisfied();
+
+    }
+
+    
+
+    public void testWithoutConcatPropertiesComponentDefault() throws Exception {
+
+        context.addRoutes(new RouteBuilder() {
+
+            @Override
+
+            public void configure() throws Exception {
+
+                from("direct:start").setBody(simple("${properties:property.complete}"))
+
+                .to("mock:result");
+
+            }
+
+        });
+
+        context.start();
+
+
+
+        getMockEndpoint("mock:result").expectedBodiesReceived("file:dirname");
+
+
+
+        template.sendBody("direct:start", "Test");
+
+
+
+        assertMockEndpointsSatisfied();
+
+    }
+
+}
+
+
+
+The first test return the following exception:
+
+
+
+org.apache.camel.CamelExecutionException: Exception occurred during execution on the exchange: Exchange[Message: Test]
+
+	at org.apache.camel.util.ObjectHelper.wrapCamelExecutionException(ObjectHelper.java:1379)
+
+	at org.apache.camel.util.ExchangeHelper.extractResultBody(ExchangeHelper.java:622)
+
+	at org.apache.camel.impl.DefaultProducerTemplate.extractResultBody(DefaultProducerTemplate.java:467)
+
+	at org.apache.camel.impl.DefaultProducerTemplate.extractResultBody(DefaultProducerTemplate.java:463)
+
+	at org.apache.camel.impl.DefaultProducerTemplate.sendBody(DefaultProducerTemplate.java:139)
+
+	at org.apache.camel.impl.DefaultProducerTemplate.sendBody(DefaultProducerTemplate.java:144)
+
+	at org.apache.camel.component.properties.PropertiesComponentConcatenatePropertiesTest.testConcatPropertiesComponentDefault(PropertiesComponentConcatenatePropertiesTest.java:56)
+
+	at sun.reflect.NativeMethodAccessorImpl.invoke0(Native Method)
+
+	at sun.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:57)
+
+	at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)
+
+	at java.lang.reflect.Method.invoke(Method.java:606)
+
+	at junit.framework.TestCase.runTest(TestCase.java:176)
+
+	at junit.framework.TestCase.runBare(TestCase.java:141)
+
+	at org.apache.camel.TestSupport.runBare(TestSupport.java:58)
+
+	at junit.framework.TestResult$1.protect(TestResult.java:122)
+
+	at junit.framework.TestResult.runProtected(TestResult.java:142)
+
+	at junit.framework.TestResult.run(TestResult.java:125)
+
+	at junit.framework.TestCase.run(TestCase.java:129)
+
+	at junit.framework.TestSuite.runTest(TestSuite.java:255)
+
+	at junit.framework.TestSuite.run(TestSuite.java:250)
+
+	at org.junit.internal.runners.JUnit38ClassRunner.run(JUnit38ClassRunner.java:84)
+
+	at org.eclipse.jdt.internal.junit4.runner.JUnit4TestReference.run(JUnit4TestReference.java:50)
+
+	at org.eclipse.jdt.internal.junit.runner.TestExecution.run(TestExecution.java:38)
+
+	at org.eclipse.jdt.internal.junit.runner.RemoteTestRunner.runTests(RemoteTestRunner.java:467)
+
+	at org.eclipse.jdt.internal.junit.runner.RemoteTestRunner.runTests(RemoteTestRunner.java:683)
+
+	at org.eclipse.jdt.internal.junit.runner.RemoteTestRunner.run(RemoteTestRunner.java:390)
+
+	at org.eclipse.jdt.internal.junit.runner.RemoteTestRunner.main(RemoteTestRunner.java:197)
+
+Caused by: org.apache.camel.RuntimeCamelException: java.lang.IllegalArgumentException: Expecting }} but found end of string from text: prop1}}{{prop2
+
+	at org.apache.camel.util.ObjectHelper.wrapRuntimeCamelException(ObjectHelper.java:1363)
+
+	at org.apache.camel.builder.ExpressionBuilder$78.evaluate(ExpressionBuilder.java:1784)
+
+	at org.apache.camel.support.ExpressionAdapter.evaluate(ExpressionAdapter.java:36)
+
+	at org.apache.camel.builder.SimpleBuilder.evaluate(SimpleBuilder.java:83)
+
+	at org.apache.camel.processor.SetBodyProcessor.process(SetBodyProcessor.java:46)
+
+	at org.apache.camel.processor.RedeliveryErrorHandler.process(RedeliveryErrorHandler.java:398)
+
+	at org.apache.camel.processor.CamelInternalProcessor.process(CamelInternalProcessor.java:191)
+
+	at org.apache.camel.processor.Pipeline.process(Pipeline.java:118)
+
+	at org.apache.camel.processor.Pipeline.process(Pipeline.java:80)
+
+	at org.apache.camel.processor.CamelInternalProcessor.process(CamelInternalProcessor.java:191)
+
+	at org.apache.camel.component.direct.DirectProducer.process(DirectProducer.java:51)
+
+	at org.apache.camel.processor.CamelInternalProcessor.process(CamelInternalProcessor.java:191)
+
+	at org.apache.camel.processor.UnitOfWorkProducer.process(UnitOfWorkProducer.java:73)
+
+	at org.apache.camel.impl.ProducerCache$2.doInProducer(ProducerCache.java:378)
+
+	at org.apache.camel.impl.ProducerCache$2.doInProducer(ProducerCache.java:1)
+
+	at org.apache.camel.impl.ProducerCache.doInProducer(ProducerCache.java:242)
+
+	at org.apache.camel.impl.ProducerCache.sendExchange(ProducerCache.java:346)
+
+	at org.apache.camel.impl.ProducerCache.send(ProducerCache.java:184)
+
+	at org.apache.camel.impl.DefaultProducerTemplate.send(DefaultProducerTemplate.java:124)
+
+	at org.apache.camel.impl.DefaultProducerTemplate.sendBody(DefaultProducerTemplate.java:137)
+
+	... 22 more
+
+Caused by: java.lang.IllegalArgumentException: Expecting }} but found end of string from text: prop1}}{{prop2
+
+	at org.apache.camel.component.properties.DefaultPropertiesParser.doParseUri(DefaultPropertiesParser.java:90)
+
+	at org.apache.camel.component.properties.DefaultPropertiesParser.parseUri(DefaultPropertiesParser.java:51)
+
+	at org.apache.camel.component.properties.DefaultPropertiesParser.parseUri(DefaultPropertiesParser.java:38)
+
+	at org.apache.camel.component.properties.DefaultPropertiesParser.createPlaceholderPart(DefaultPropertiesParser.java:189)
+
+	at org.apache.camel.component.properties.DefaultPropertiesParser.doParseUri(DefaultPropertiesParser.java:105)
+
+	at org.apache.camel.component.properties.DefaultPropertiesParser.parseUri(DefaultPropertiesParser.java:51)
+
+	at org.apache.camel.component.properties.PropertiesComponent.parseUri(PropertiesComponent.java:158)
+
+	at org.apache.camel.component.properties.PropertiesComponent.parseUri(PropertiesComponent.java:117)
+
+	at org.apache.camel.builder.ExpressionBuilder$78.evaluate(ExpressionBuilder.java:1781)
+
+	... 40 more
+
+
+
+It seems that DefaultPropertiesParser doesn't like concatenation of properties. I've forked Camel project on GitHub and I've added the unit test posted above. Here is the link: https://github.com/ancosen/camel
+Investigating the history of the particular class I found that the problem should arise from:
+CAMEL-5328 supports resolution of nested properties in PropertiesComponent
+Here is the link of the commit:
+https://github.com/apache/camel/commit/83f4b0f485521967d05de4e65025c4558a75ff3c
+Thanks.
+Bye

@@ -1,0 +1,45 @@
+I was testing master branch on distributed cluster and i notice that when master is restarted  on running cluster regionservers are unable report back when master is up again. 
+Things back to normal after i restarted regionservers. Logs showing that regionservers are correctly detecting master znode.  
+After some digging i notice that we have changed client implementation in RpcClientFactory to  AsyncRpcClient so i have tried running cluster with previous  RpcClientImpl and issue was gone. 
+So issue is probably caused by AsyncRpcClient which is unable reconnect to master once original connection is gone.
+I was able to fix issue by creating new rpcClient object inside HRegionServer#createRegionServerStatusStub() and using it for channel creation here is diff:
+
+
+
+diff --git a/hbase-server/src/main/java/org/apache/hadoop/hbase/regionserver/HRegionServer.java b/hbase-server/src/main/java/org/apache/hadoop/hbase/regionserver/HRegionServer.java
+
+index fa56966..27e658c 100644
+
+--- a/hbase-server/src/main/java/org/apache/hadoop/hbase/regionserver/HRegionServer.java
+
++++ b/hbase-server/src/main/java/org/apache/hadoop/hbase/regionserver/HRegionServer.java
+
+@@ -2219,8 +2219,11 @@ public class HRegionServer extends HasThread implements
+
+           break;
+
+         }
+
+         try {
+
++          LOG.info("***Creating new client connection");
+
++          rpcClient = RpcClientFactory.createClient(conf, clusterId, new InetSocketAddress(
+
++            rpcServices.isa.getAddress(), 0));
+
+           BlockingRpcChannel channel =
+
+-            this.rpcClient.createBlockingRpcChannel(sn, userProvider.getCurrent(),
+
++          rpcClient.createBlockingRpcChannel(sn, userProvider.getCurrent(),
+
+               shortOperationTimeout);
+
+           intf = RegionServerStatusService.newBlockingStub(channel);
+
+           break;
+
+
+
+If this is acceptable way for fixing this issue i will create and attach patch?

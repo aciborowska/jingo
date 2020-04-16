@@ -1,0 +1,48 @@
+Hi,
+I am encountering a performance problem in SetUniqueList.removeAll().
+It appears in version 3.2.1 and also in revision 1344775 (31 May
+2012).  I have attached a test that exposes this problem and a
+one-line patch that fixes it.  The patch makes the code two times
+faster for this test.
+To run the test, just do:
+$ java Test
+The output for the un-patched version is:
+Time is: 5027
+The output for the patched version is:
+Time is: 2554
+The one-line patch I attached changes the 
+SetUniqueList.removeAll(Collection<?> coll) code from:
+boolean result = super.removeAll(coll);
+set.removeAll(coll);
+return result;
+to:
+boolean result = super.removeAll(coll);
+if (result) set.removeAll(coll);
+return result;
+If "super.removeAll(coll)" did not change the collection, there is no
+need to call "set.removeAll(coll)", because we already know there is
+nothing to remove.
+As one may expect "set.removeAll(coll)" (on a set) to be faster than
+"super.removeAll(coll)" (on a list), one may have expected the speedup
+gained by avoiding "set.removeAll(coll)" to be smaller than 2X
+achieved for the attached test.  However, the speedup is 2X because
+"java.util.HashSet.removeAll(Collection<?> collection)" has quadratic
+(not linear) complexity if "this.size() <= collection.size()" and the
+"collection" is a list.  Thus, "set.removeAll(coll)" is about as slow
+as "super.removeAll(coll)" in this case, and not executing
+"set.removeAll(coll)" reduces the work done by half.  The quadratic
+behavior of "java.util.HashSet.removeAll(Collection<?> collection)"
+comes from "java.util.AbstractSet.removeAll(Collection<?> c)" and is
+discussed for example here:
+http://mail.openjdk.java.net/pipermail/core-libs-dev/2011-July/007148.html
+(The link is for OpenJDK, but Oracle JDK has the same problem.)
+In many other cases "set.removeAll(coll)" is actually faster than
+"super.removeAll(coll)", so one can get even more speedup by
+reordering those two checks:
+boolean result = set.removeAll(coll);
+if (result) super.removeAll(coll);
+return result;
+Is this a bug, or am I misunderstanding the intended behavior?  If so,
+can you please confirm that the patch is correct?
+Thanks,
+Adrian

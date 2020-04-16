@@ -1,0 +1,72 @@
+I've met a problem startup HBase.
+I setup hbase with hdfs,
+My server's network card has a ipv4 address and also a ipv6 address.
+When I first startup hbase with default configuration file,
+I found that the region server can't 
+register to master. And I found lots of 127.0.0.1 in log.
+So I suppose interface "default" would not work and add following:
+<property>
+  <name>dfs.datanode.dns.interface</name>
+  <value>eth0</value>
+  <description>The name of the Network Interface from which a data node should 
+  report its IP address.
+  </description>
+ </property>
+However, when this is done. HBase master crashes;
+And I see ipv6 addresses in the log.
+So I dig into the source code,
+found that HBase fails to deal with IPv6 address.
+Details is in following:
+In class  org.apache.hadoop.hbase.HRegionServer
+the method getThisIP() invoke the method of class belongs to Hadoop-core package
+The class is: org.apache.hadoop.net.DNS
+the method is: getDefaultIP(String strInterface)
+This method invokes another method in the same class: getIPs(String strInterface)
+Method getIPs always returns the first ip address  no matter it is ipv4 or ipv6
+I have fixed it by modifying method of org.apache.hadoop.net.DNS.getIPs(String
+strInterface)
+Such that it always returns ipv4 address
+It is working now for me.
+But when hadoop upgrades, I have to modify again.
+In order to avoid the problem,
+I modify a method in class: org.apache.hadoop.net.DNS
+The following is the modified code of this method, it would not return IPv6
+address now.
+/**
+
+Returns all the IPs associated with the provided interface, if any, in
+textual form.
+
+@param strInterface
+The name of the network interface to query (e.g. eth0)
+@return A string vector of all the IPs associated with the provided
+interface
+@throws UnknownHostException
+If an UnknownHostException is encountered in querying the
+default interface
+   */
+  public static String[] getIPs(String strInterface)
+  throws UnknownHostException {
+	    try {
+	      NetworkInterface netIF = NetworkInterface.getByName(strInterface);
+	      if (netIF == null)
+	        return new String[] 
+{ InetAddress.getLocalHost()
+	                              .getHostAddress() }
+;
+	      else {
+	        Vector<String> ips = new Vector<String>();
+	        Enumeration e = netIF.getInetAddresses();
+	        while (e.hasMoreElements())
+	          				{
+	        	String addr=((InetAddress) e.nextElement()).getHostAddress();
+	        	if(addr.length()<=15)//only when it is a IPv4 address
+	        		ips.add(addr);
+	        	//ips.add(((InetAddress) e.nextElement()).getHostAddress());
+	          				}
+	        return ips.toArray(new String[] {});
+	      }
+	    } catch (SocketException e) 
+Unknown macro: {	      return new String[] { InetAddress.getLocalHost().getHostAddress() };	    } 
+  }
+

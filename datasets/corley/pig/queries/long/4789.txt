@@ -1,0 +1,45 @@
+Please find below a minimal example of a Pig script that uses splits and replicated joins and where the output differs between MapReduce and TEZ as execution engine. The attachment also contains the sample input data.
+
+The expected output, as created by MapReduce engine is:
+
+(id1,123,A,)
+(id2,234,,B)
+(id3,456,,)
+(id4,567,A,)
+
+
+whereas TEZ produces
+
+(id1,123,A,A)
+(id2,234,B,B)
+(id3,456,,)
+(id4,567,A,A)
+
+
+
+Removing the USING 'replicated' and using a regular join yields correct results. I am not sure if this is a Pig issue or a TEZ issue. However, as this issue silently can lead to data corruption I rated it critical. So far searching didn't indicate a similar bug or anybody being aware of it.
+
+
+classdata = LOAD '/tez_bug_input1.csv' USING PigStorage(',') AS (classid:chararray, class:chararray);
+
+data = LOAD '/tez_bug_input2.csv' USING PigStorage(',') AS (eventid:chararray, classid:chararray);
+
+basedata = LOAD '/tez_bug_input3.csv' USING PigStorage(',') AS (eventid:chararray, foo:int);
+
+dataJclassdata = JOIN classdata BY classid, data BY classid;
+
+SPLIT dataJclassdata INTO classA IF class == 'A', classB IF class == 'B';
+
+dataA = JOIN basedata BY eventid LEFT OUTER, classA BY data::eventid USING 'replicated';
+dataA = foreach dataA generate basedata::eventid as eventid
+	, basedata::foo as foo
+	, classA::classdata::class as classA;
+
+dataB = JOIN dataA BY eventid LEFT OUTER, classB BY eventid USING 'replicated';
+dataB = foreach dataB generate dataA::eventid as eventid
+	, dataA::foo as foo
+	, dataA::classA as classA
+    , classB::classdata::class as classB;
+
+DUMP dataB;
+

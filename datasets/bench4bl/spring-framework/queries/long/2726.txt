@@ -1,0 +1,52 @@
+The method extractJarFileURL in org.springframework.util.ResourceUtils attempts to construct a new URL using only the file portion of the original URL, this results in a java.net.MalformedURLException because there is not a valid protocol specified. This error does not occur when running locally from Eclipse, only when running in WebLogic.
+I am attempting to setup a LocalContainerEntityManagerFactory:
+    <bean id="entityManagerFactory"
+        class="org.springframework.orm.jpa.LocalContainerEntityManagerFactoryBean">
+        <property name="persistenceUnitName" value="jpajta" />
+        <property name="dataSource" ref="dataSource" />
+        <property name="jpaVendorAdapter">
+            <bean class="org.springframework.orm.jpa.vendor.HibernateJpaVendorAdapter"/>
+        </property>
+    </bean>    
+My persistence.xml is:
+<?xml version="1.0" encoding="UTF-8"?>
+<persistence xmlns="http://java.sun.com/xml/ns/persistence"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="http://java.sun.com/xml/ns/persistence http://java.sun.com/xml/ns/persistence/persistence_1_0.xsd"
+    version="1.0">
+    <persistence-unit name="jpajta">
+        <class>dto.Invoice</class>
+        <class>dto.InvoiceLine</class>
+        <exclude-unlisted-classes>true</exclude-unlisted-classes>
+        <properties>
+            <property name="hibernate.dialect"
+                value="org.hibernate.dialect.DerbyDialect" />
+            <property name="hibernate.show_sql" value="true"/>
+        </properties>
+    </persistence-unit>
+</persistence>
+I am using the WebLogicJtaTransactionManager in WebLogic:
+    <bean id="transactionManager"
+        class="org.springframework.transaction.jta.WebLogicJtaTransactionManager">
+    </bean>
+and the JpaTransactionManager locally:
+    <bean id="transactionManager"
+        class="org.springframework.orm.jpa.JpaTransactionManager">
+        <property name="entityManagerFactory" ref="entityManagerFactory" />
+        <property name="dataSource" ref="dataSource" />
+    </bean>
+I am using the same JNDI based datastore in both configurations (the datasource is setup in WebLogic JNDI).
+I am using annotation driven transactions:
+    <tx:annotation-driven transaction-manager="transactionManager" />
+The URL that comes back from the ClassLoader.getResources("META-INF/persistence.xml") call looks like:
+zip:/sandbox/wl9/domains/jpajta/./servers/bcdevapp1/tmp/_WL_user/_appsdir_getResources_war/cnul88/war/WEB-INF/lib/_wl_cls_gen.jar!/META-INF/persistence.xml
+The extractJarFileURL method first calls getFile on the URL to get:
+D:/sandbox/wl9/domains/jpajta/./servers/bcdevapp1/tmp/_WL_user/_appsdir_getResources_war/cnul88/war/WEB-INF/lib/_wl_cls_gen.jar!/META-INF/persistence.xml
+And then strips off the everything after (and including) !/ which leaves:
+D:/sandbox/wl9/domains/jpajta/./servers/bcdevapp1/tmp/_WL_user/_appsdir_getResources_war/cnul88/war/WEB-INF/lib/_wl_cls_gen.jar
+The method than attempts to construct a URL using that string which is not a valid URL spec.
+If the method is changed from:
+			return new URL(urlFile.substring(0, separatorIndex));
+to:
+			return new URL(jarUrl.getProtocol(), jarUrl.getHost(), jarUrl.getPort(), urlFile.substring(0, separatorIndex));
+the URL will no longer be malformed.

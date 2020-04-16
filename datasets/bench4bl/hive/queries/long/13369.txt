@@ -1,0 +1,35 @@
+The JavaDoc on getAcidState() reads, in part:
+"Note that because major compactions don't
+   preserve the history, we can't use a base directory that includes a
+   transaction id that we must exclude."
+which is correct but there is nothing in the code that does this.
+And if we detect a situation where txn X must be excluded but and there are deltas that contain X, we'll have to abort the txn.  This can't (reasonably) happen with auto commit mode, but with multi statement txns it's possible.
+Suppose some long running txn starts and lock in snapshot at 17 (HWM).  An hour later it decides to access some partition for which all txns < 20 (for example) have already been compacted (i.e. GC'd).  
+==========================================================
+Here is a more concrete example.  Let's say the file for table A are as follows and created in the order listed.
+delta_4_4
+delta_5_5
+delta_4_5
+base_5
+delta_16_16
+delta_17_17
+base_17  (for example user ran major compaction)
+let's say getAcidState() is called with ValidTxnList(20:16), i.e. with HWM=20 and ExceptionList=<16>
+Assume that all txns <= 20 commit.
+Reader can't use base_17 because it has result of txn16.  So it should chose base_5 "TxnBase bestBase" in getChildState().
+Then the reset of the logic in getAcidState() should choose delta_16_16 and delta_17_17 in Directory object.  This would represent acceptable snapshot for such reader.
+The issue is if at the same time the Cleaner process is running.  It will see everything with txnid<17 as obsolete.  Then it will check lock manger state and decide to delete (as there may not be any locks in LM for table A).  The order in which the files are deleted is undefined right now.  It may delete delta_16_16 and delta_17_17 first and right at this moment the read request with ValidTxnList(20:16) arrives (such snapshot may have bee locked in by some multi-stmt txn that started some time ago.  It acquires locks after the Cleaner checks LM state and calls getAcidState(). This request will choose base_5 but it won't see delta_16_16 and delta_17_17 and thus return the snapshot w/o modifications made by those txns.
+[This is not possible currently since we only support autoCommit=true.  The reason is the a query (0) opens txn (if appropriate), (1) acquires locks, (2) locks in the snapshot.  The cleaner won't delete anything for a given compaction (partition) if there are locks on it.  Thus for duration of the transaction, nothing will be deleted so it's safe to use base_5]
+This is a subtle race condition but possible.
+1. So the safest thing to do to ensure correctness is to use the latest base_x as the "best" and check against exceptions in ValidTxnList and throw an exception if there is an exception <=x.
+2. A better option is to keep 2 exception lists: aborted and open and only throw if there is an open txn <=x.  Compaction throws away data from aborted txns and thus there is no harm using base with aborted txns in its range.
+3. You could make each txn record the lowest open txn id at its start and prevent the cleaner from cleaning anything delta with id range that includes this open txn id for any txn that is still running.  This has a drawback of potentially delaying GC of old files for arbitrarily long periods.  So this should be a user config choice.   The implementation is not trivial.
+I would go with 1 now and do 2/3 together with multi-statement txn work.
+Side note:  if 2 deltas have overlapping ID range, then 1 must be a subset of the other
+A more concrete example (autoCommit=true)  (given 2.1 codebase)
+Suppose base_2 exists.
+1. lock table T
+2. Lock in the snapshot, txnid 3 open, hwm 5.
+3. a long GC pause or more practically the query is submitted but there are no resources to start App Master which is where getAcidState() is called from.
+4. getAcidState() is called
+It's not unreasonable that during #3 txnid 3 commits and base_5 is produced and is seen in #4.

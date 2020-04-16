@@ -1,0 +1,18 @@
+When upgrading from Acegi 1.0.6 to Spring Security 2.0.0, we found that URL path matching did not work in some cases (we are still using the old definition source style since it's a big app and it will take time to migrate to the new simplified XML).
+We narrowed this down to patterns that contained both lowercase and uppercase characters. We have disabled the flag in the object definition source that marked whether we wanted to turn both the pattern and path to lowercase before comparison.
+The reason for this is that a different AntUrlPathMatcher instance is used when initializing the FilterChainProxyBean, than when the comparison is actually made. One instance has the requiresLowerCaseUrl set to true (the initial, default instance), while the second one which used the object definition source flag has requiresLowerCaseUrl set to false. Why does this happen? See subtle error:
+    public void afterPropertiesSet() throws Exception {
+        // Convert the FilterDefinitionSource to a filterChainMap if set
+        if (fids != null) 
+{
+            Assert.isNull(uncompiledFilterChainMap, "Set the filterChainMap or FilterInvocationDefinitionSource but not both");
+            FIDSToFilterChainMapConverter converter = new FIDSToFilterChainMapConverter(fids, applicationContext);
+            setFilterChainMap(converter.getFilterChainMap()); <--------------- THIS SHOULD BE CALLED AFTER setMatcher(converter.getMatcher())
+            setMatcher(converter.getMatcher());                            <---------------
+            fids = null;
+        }
+
+        Assert.notNull(uncompiledFilterChainMap, "filterChainMap must be set");
+    }
+The reason is that setFilterChainMap calls createCompiledMap which is turn uses the matcher instance field. At this point the instance matcher has not been changed yet, so that causes the compiled map to have been compiled with the wrong matcher.
+Our workaround has been to enable the CONVERT_URL_TO_LOWERCASE_BEFORE_COMPARISON flag and lowercase all patterns.

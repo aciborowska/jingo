@@ -1,0 +1,12 @@
+If you try to have the SchedulerFactoryBean add the same Trigger in two Quartz clustered instances (and you are only adding Triggers), you can get a race condition in registerJobsAndTriggers() where both instances don't find the Trigger, and both then try to add it using scheduleJob.  In this case, the last one in will fail with an org.quartz.ObjectAlreadyExistsException, which will keep the SchedulerFactoryBean  from successfully starting.  
+There is discussion of this issue in the Quartz forums here: http://forums.opensymphony.com/thread.jspa?messageID=45028&#45028
+and here: http://forums.opensymphony.com/thread.jspa?messageID=45027&#45027
+There is a similar issue in the org.quartz.plugins.xml.JobInitializationPlugin as documented here:
+http://jira.opensymphony.com/browse/QUARTZ-295
+Spring is actually exposed to this QUARTZ-295 problem as well because registerJobsAndTriggers() can make use of ResourceJobSchedulingDataProcessor which extends the JobSchedulingDataProcessor.  However, this can only manifest itself if the user didn't provide a transactionManager to the SchedulerFactoryBean.
+Unfortunately, there is no great way to fix these problems right now without some enhancements to the Quartz interface.  
+My best suggestion for solving the first problem right now is to catch the ObjectAlreadyExistsException thrown by this.scheduler.scheduleJob(trigger) and either
+   a. Simply swallow the exception, possibly with a log message indicating that this is assumed to be due to a cluster race condition and can be safely ignored.
+   b. Try to rescheduleJob() the Trigger if overwriteExistingJobs is true.
+There isn't much that can be done about the second problem other than perhaps emphasising in the javadoc that you should be passing in a transactionManager if you are using the jobSchedulingDataLocation(s) properties.
+As an aside, it is a little unclear to me why, if a Trigger is not new, but is a JobDetailAwareTrigger, SchedulerFactoryBean does not try to replace the Trigger's JobDetail.  I'm not sure the current behavior would be expected, and I think it would be easy to assume the opposite based on the current SchedulerFactoryBean javadoc.

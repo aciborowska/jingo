@@ -1,0 +1,39 @@
+Just upgraded from 2.0-RC2 to 2.0-Final. The refactoring of LocalSessionFactoryBean to introduce an Abstract baseclass seems to have broken the call to updateDatabaseSchema on initialisation. This means that setting schemaUpdate to true always causes a failure on startup.
+Previously the SessionFactory was created entirely within the afterPropertiesSet method, at the end of which updateDatabaseSchema was called.
+However, now the behaviour is as follows:
+AbstractSessionFactoryBean:
+	public void afterPropertiesSet() throws Exception 
+{
+		SessionFactory rawSf = buildSessionFactory();
+		this.sessionFactory = wrapSessionFactoryIfNecessary(rawSf);
+	}
+
+LocalSessionFactoryBean:
+	protected SessionFactory buildSessionFactory() throws Exception {
+		SessionFactory sf = null;
+                ...
+		// Execute schema update if requested.
+		if (this.schemaUpdate) 
+{
+			updateDatabaseSchema();
+		}
+
+		return sf;
+	}
+LocalSessionFactoryBean:
+	public void updateDatabaseSchema() throws DataAccessException 
+{
+		logger.info("Updating database schema for Hibernate SessionFactory");
+		HibernateTemplate hibernateTemplate = new HibernateTemplate(getSessionFactory());
+                ...
+	}
+
+AbstractSessionFactoryBean:
+	protected final SessionFactory getSessionFactory() {
+		if (this.sessionFactory == null) 
+{
+			throw new IllegalStateException("SessionFactory not initialized yet");
+		}
+		return this.sessionFactory;
+	}
+At which point an "java.lang.IllegalStateException: SessionFactory not initialized yet" is thrown every time. This is because the call to getSessionFactory() happens as part of updatedDatabaseSchema(), which is called from buildSessionFactory() - which has not yet returned, and therefore the sessionFactory has not been assigned yet. Possibly the sessionFactory "sf" in the buildSessionFactory method should be passed as an argument to updateDatabaseSchema.

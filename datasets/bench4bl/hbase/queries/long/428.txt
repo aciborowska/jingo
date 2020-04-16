@@ -1,0 +1,38 @@
+I have installed 0.16.0 rc 1 which I believe contains a fix for similar issue HBASE-138,  but I still see the same problem.
+
+I am using a single node.
+The client application runs in a single thread, loading data into a single table.
+I get good throughput of about 200 rows/sec to start with, with occasional significant drops due to NotServingRegionException's that are recoverable on client retry (internal to hbase).
+After 54 minutes, and about 500,000 rows I start to see WrongRegionException's in the client application, i.e. real failures. (Note that this compares to 0.15.3 which would being to throw NotServingRegionExceptions after a few tens of thousands of rows).
+
+My data consists of a single table with 5 column families. The data written is as follows:>>
+key: a URL
+family 1: a small string, often emty, 2 longs, 1 int
+family 2: a byte averaging averaging between 1k and 10k, a small string
+family 3: several columns with different names per row, values of small strings
+family 4: most rows have zero columns, some rows have 1 or more columns with a UL value
+The URLs are typically "long-ish" URL as seen when crawling a site, not short home page URLs  
+I am assuming the data is stored in files of the form <hbaseroot>//<tablename>/<9digitnum>/data/mapfiles/<19digitnum>/data. I have attached a csv file showing the distribution of size of these files. Average size is 19Mb, but the sizes are not evenly distributed at all
+Here are two sample exceptions thrown, copied from the region server log:
+2008-02-08 02:08:22,495 INFO org.apache.hadoop.ipc.Server: IPC Server handler 4 on 60020, call batchUpdate(pagefetch,http://galsn1.mobilook.mobiwap.com/bm/listproducts;jsessionid=D2ED1EB898163CDB27135DC2CF6958B3.197B?rsi=78011 wap2 20080102052924,1202401088077, 9223372036854775807, org.apache.hadoop.hbase.io.BatchUpdate@feb215) from 66.135.42.137:38484: error: org.apache.hadoop.hbase.WrongRegionException: Requested row out of range for HRegion pagefetch,http://galsn1.mobilook.mobiwap.com/bm/listproducts;jsessionid=D2ED1EB898163CDB27135DC2CF6958B3.197B?rsi=78011 wap2 20080102052924,1202401088077, startKey='http://galsn1.mobilook.mobiwap.com/bm/listproducts;jsessionid=D2ED1EB898163CDB27135DC2CF6958B3.197B?rsi=78011 wap2 20080102052924', getEndKey()='http://galsn1.mobilook.mobiwap.com/bm/listproducts;jsessionid=D2ED1EB898163CDB27135DC2CF6958B3.197B?rsi=78011 wap2 20080102052924', row='http://go2purdue.com/Redeemer_University.cfm?pt=2&sp=2&vid=1199243289_3X02X1468757255&rpt=2&kt=4&kp=1 wap2 20080102081237'
+org.apache.hadoop.hbase.WrongRegionException: Requested row out of range for HRegion pagefetch,http://galsn1.mobilook.mobiwap.com/bm/listproducts;jsessionid=D2ED1EB898163CDB27135DC2CF6958B3.197B?rsi=78011 wap2 20080102052924,1202401088077, startKey='http://galsn1.mobilook.mobiwap.com/bm/listproducts;jsessionid=D2ED1EB898163CDB27135DC2CF6958B3.197B?rsi=78011 wap2 20080102052924', getEndKey()='http://galsn1.mobilook.mobiwap.com/bm/listproducts;jsessionid=D2ED1EB898163CDB27135DC2CF6958B3.197B?rsi=78011 wap2 20080102052924', row='http://go2purdue.com/Redeemer_University.cfm?pt=2&sp=2&vid=1199243289_3X02X1468757255&rpt=2&kt=4&kp=1 wap2 20080102081237'
+        at org.apache.hadoop.hbase.HRegion.checkRow(HRegion.java:1486)
+        at org.apache.hadoop.hbase.HRegion.obtainRowLock(HRegion.java:1531)
+        at org.apache.hadoop.hbase.HRegion.batchUpdate(HRegion.java:1226)
+        at org.apache.hadoop.hbase.HRegionServer.batchUpdate(HRegionServer.java:1433)
+        at sun.reflect.GeneratedMethodAccessor10.invoke(Unknown Source)
+        at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:25)
+        at java.lang.reflect.Method.invoke(Method.java:585)
+        at org.apache.hadoop.hbase.ipc.HbaseRPC$Server.call(HbaseRPC.java:413)
+        at org.apache.hadoop.ipc.Server$Handler.run(Server.java:910)
+2008-02-08 02:08:22,696 INFO org.apache.hadoop.ipc.Server: IPC Server handler 6 on 60020, call batchUpdate(pagefetch,http://galsn1.mobilook.mobiwap.com/bm/listproducts;jsessionid=D2ED1EB898163CDB27135DC2CF6958B3.197B?rsi=78011 wap2 20080102052924,1202401088077, 9223372036854775807, org.apache.hadoop.hbase.io.BatchUpdate@15d9be1) from 66.135.42.137:38484: error: org.apache.hadoop.hbase.WrongRegionException: Requested row out of range for HRegion pagefetch,http://galsn1.mobilook.mobiwap.com/bm/listproducts;jsessionid=D2ED1EB898163CDB27135DC2CF6958B3.197B?rsi=78011 wap2 20080102052924,1202401088077, startKey='http://galsn1.mobilook.mobiwap.com/bm/listproducts;jsessionid=D2ED1EB898163CDB27135DC2CF6958B3.197B?rsi=78011 wap2 20080102052924', getEndKey()='http://galsn1.mobilook.mobiwap.com/bm/listproducts;jsessionid=D2ED1EB898163CDB27135DC2CF6958B3.197B?rsi=78011 wap2 20080102052924', row='http://go2umass.com/Travel.cfm?pt=2&sp=2&vid=1199230721_3X04X1485302803&rpt=2&kt=5&kp=8 wap2 20080102081239'
+org.apache.hadoop.hbase.WrongRegionException: Requested row out of range for HRegion pagefetch,http://galsn1.mobilook.mobiwap.com/bm/listproducts;jsessionid=D2ED1EB898163CDB27135DC2CF6958B3.197B?rsi=78011 wap2 20080102052924,1202401088077, startKey='http://galsn1.mobilook.mobiwap.com/bm/listproducts;jsessionid=D2ED1EB898163CDB27135DC2CF6958B3.197B?rsi=78011 wap2 20080102052924', getEndKey()='http://galsn1.mobilook.mobiwap.com/bm/listproducts;jsessionid=D2ED1EB898163CDB27135DC2CF6958B3.197B?rsi=78011 wap2 20080102052924', row='http://go2umass.com/Travel.cfm?pt=2&sp=2&vid=1199230721_3X04X1485302803&rpt=2&kt=5&kp=8 wap2 20080102081239'
+        at org.apache.hadoop.hbase.HRegion.checkRow(HRegion.java:1486)
+        at org.apache.hadoop.hbase.HRegion.obtainRowLock(HRegion.java:1531)
+        at org.apache.hadoop.hbase.HRegion.batchUpdate(HRegion.java:1226)
+        at org.apache.hadoop.hbase.HRegionServer.batchUpdate(HRegionServer.java:1433)
+        at sun.reflect.GeneratedMethodAccessor10.invoke(Unknown Source)
+        at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:25)
+        at java.lang.reflect.Method.invoke(Method.java:585)
+        at org.apache.hadoop.hbase.ipc.HbaseRPC$Server.call(HbaseRPC.java:413)
+        at org.apache.hadoop.ipc.Server$Handler.run(Server.java:910)

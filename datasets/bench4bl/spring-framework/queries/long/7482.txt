@@ -1,0 +1,667 @@
+I have a JSP page using spring:eval tag as below
+
+
+
+
+
+
+<spring:eval expression="command.products" var="items" />
+
+
+
+
+
+
+When run the mvn jetty:run command (both jetty 6.1.22 and jetty 6.1.25), I always receive the below NullPointerException (see the stacktrace at the bottom) when I access JSP page on the second time (I don't receive any error for the first time).After debugging the code, I find out that sometimes EvalTag reuses instance variable evaluationContext for the next requests, which was initialized with the PageContext of the some previous request. Here is the code which caching evaluationContext through many requests
+
+
+
+
+
+
+EvalTag.java
+
+
+
+
+
+
+if (this.evaluationContext == null) {
+
+
+
+
+    this.evaluationContext = createEvaluationContext(pageContext);
+
+
+
+
+}
+
+
+
+
+.... 
+
+
+
+
+String result = this.expression.getValue(this.evaluationContext, String.class);
+
+
+
+
+...
+
+
+
+
+
+
+Here are the steps which lead to the exception:
+1. User sends a request to page
+2. Jetty creates EvalTag#1, which will initialize EvalTag#1.evaluationContext using PageContextImpl#1 (at the moment, PageContextImpl#1.request=HttpServletRequest#1). The tag will be called successfully.
+3. Result is returned to user. 
+4. Jetty recycles PageContextImpl#1 by calling release() method. PageContextImpl#1.request=null
+Jetty recycles EvalTag#1 by calling release() method. But EvalTag#1.evaluationContext still != null.  EvalTag#1.evaluationContext still have references to PageContextImpl#1 indirectly
+6. User clicks Refresh button to reload the page
+7. Jetty reuses EvalTag#1 to evaluate expression and as a result, the old value of EvalTag#1.evaluationContext is also be reused. This time Jetty creates a new object PageContextImpl#2 (note: somehow Jetty doesn't reuse the PageContextImpl#1 here on my page). At the moment, Jetty will throw NPE when EvalTag#1.doEndTag() is called because EvalTag#1.evaluationContext...PageContextImpl#1.request is null (it should be EvalTag#1.evaluationContext...PageContextImpl#2.request)
+For other pages (which this NPE doesn't happen), at step 7 the PageContextImpl#1 is reused by Jetty and PageContextImpl#1.request is initialized correctly by Jetty so the NPE doesn't happen. 
+I think EvalTag.evaluationContext should NOT be cached to avoid this error.
+
+
+
+
+
+
+2010-08-21 21:40:13,093 [501538@qtp-18977449-3] ERROR [org.mortbay.log] - Nested in org.apache.jasper.JasperException: org.springframework.expression.spel.SpelEvaluationException: EL1021E:(pos 0): A problem occurred whilst attempting to access the property 'command': 'Unexpected exception occurred accessing 'command' as an implicit variable':
+
+
+
+
+org.springframework.expression.spel.SpelEvaluationException: EL1021E:(pos 0): A problem occurred whilst attempting to access the property 'command': 'Unexpected exception occurred accessing 'command' as an implicit variable'
+
+
+
+
+	at org.springframework.expression.spel.ast.PropertyOrFieldReference.readProperty(PropertyOrFieldReference.java:199)
+
+
+
+
+	at org.springframework.expression.spel.ast.PropertyOrFieldReference.getValueInternal(PropertyOrFieldReference.java:71)
+
+
+
+
+	at org.springframework.expression.spel.ast.CompoundExpression.getValueInternal(CompoundExpression.java:52)
+
+
+
+
+	at org.springframework.expression.spel.ast.SpelNodeImpl.getValue(SpelNodeImpl.java:93)
+
+
+
+
+	at org.springframework.expression.spel.standard.SpelExpression.getValue(SpelExpression.java:88)
+
+
+
+
+	at org.springframework.web.servlet.tags.EvalTag.doEndTag(EvalTag.java:108)
+
+
+
+
+	at org.apache.jsp.search_jsp._jspx_meth_spring_eval_3(org.apache.jsp.search_jsp:320)
+
+
+
+
+	at org.apache.jsp.search_jsp._jspService(org.apache.jsp.search_jsp:120)
+
+
+
+
+	at org.apache.jasper.runtime.HttpJspBase.service(HttpJspBase.java:109)
+
+
+
+
+	at javax.servlet.http.HttpServlet.service(HttpServlet.java:820)
+
+
+
+
+	at org.apache.jasper.servlet.JspServletWrapper.service(JspServletWrapper.java:389)
+
+
+
+
+	at org.apache.jasper.servlet.JspServlet.serviceJspFile(JspServlet.java:486)
+
+
+
+
+	at org.apache.jasper.servlet.JspServlet.service(JspServlet.java:380)
+
+
+
+
+	at javax.servlet.http.HttpServlet.service(HttpServlet.java:820)
+
+
+
+
+	at org.mortbay.jetty.servlet.ServletHolder.handle(ServletHolder.java:511)
+
+
+
+
+	at org.mortbay.jetty.servlet.ServletHandler$CachedChain.doFilter(ServletHandler.java:1166)
+
+
+
+
+	at com.opensymphony.sitemesh.webapp.SiteMeshFilter.doFilter(SiteMeshFilter.java:59)
+
+
+
+
+	at org.mortbay.jetty.servlet.ServletHandler$CachedChain.doFilter(ServletHandler.java:1157)
+
+
+
+
+	at org.mortbay.jetty.servlet.ServletHandler.handle(ServletHandler.java:388)
+
+
+
+
+	at org.mortbay.jetty.security.SecurityHandler.handle(SecurityHandler.java:216)
+
+
+
+
+	at org.mortbay.jetty.servlet.SessionHandler.handle(SessionHandler.java:182)
+
+
+
+
+	at org.mortbay.jetty.handler.ContextHandler.handle(ContextHandler.java:765)
+
+
+
+
+	at org.mortbay.jetty.webapp.WebAppContext.handle(WebAppContext.java:440)
+
+
+
+
+	at org.mortbay.jetty.servlet.Dispatcher.forward(Dispatcher.java:327)
+
+
+
+
+	at org.mortbay.jetty.servlet.Dispatcher.forward(Dispatcher.java:126)
+
+
+
+
+	at org.springframework.web.servlet.view.InternalResourceView.renderMergedOutputModel(InternalResourceView.java:238)
+
+
+
+
+	at org.springframework.web.servlet.view.AbstractView.render(AbstractView.java:250)
+
+
+
+
+	at org.springframework.web.servlet.DispatcherServlet.render(DispatcherServlet.java:1031)
+
+
+
+
+	at org.springframework.web.servlet.DispatcherServlet.doDispatch(DispatcherServlet.java:815)
+
+
+
+
+	at org.springframework.web.servlet.DispatcherServlet.doService(DispatcherServlet.java:717)
+
+
+
+
+	at org.springframework.web.servlet.FrameworkServlet.processRequest(FrameworkServlet.java:644)
+
+
+
+
+	at org.springframework.web.servlet.FrameworkServlet.doPost(FrameworkServlet.java:560)
+
+
+
+
+	at javax.servlet.http.HttpServlet.service(HttpServlet.java:727)
+
+
+
+
+	at javax.servlet.http.HttpServlet.service(HttpServlet.java:820)
+
+
+
+
+	at org.mortbay.jetty.servlet.ServletHolder.handle(ServletHolder.java:511)
+
+
+
+
+	at org.mortbay.jetty.servlet.ServletHandler$CachedChain.doFilter(ServletHandler.java:1166)
+
+
+
+
+	at com.opensymphony.sitemesh.webapp.SiteMeshFilter.obtainContent(SiteMeshFilter.java:129)
+
+
+
+
+	at com.opensymphony.sitemesh.webapp.SiteMeshFilter.doFilter(SiteMeshFilter.java:77)
+
+
+
+
+	at org.mortbay.jetty.servlet.ServletHandler$CachedChain.doFilter(ServletHandler.java:1157)
+
+
+
+
+	at org.tuckey.web.filters.urlrewrite.RuleChain.handleRewrite(RuleChain.java:176)
+
+
+
+
+	at org.tuckey.web.filters.urlrewrite.RuleChain.doRules(RuleChain.java:145)
+
+
+
+
+	at org.tuckey.web.filters.urlrewrite.UrlRewriter.processRequest(UrlRewriter.java:92)
+
+
+
+
+	at org.tuckey.web.filters.urlrewrite.UrlRewriteFilter.doFilter(UrlRewriteFilter.java:381)
+
+
+
+
+	at org.mortbay.jetty.servlet.ServletHandler$CachedChain.doFilter(ServletHandler.java:1157)
+
+
+
+
+	at net.sf.ehcache.constructs.web.filter.GzipFilter.doFilter(GzipFilter.java:80)
+
+
+
+
+	at net.sf.ehcache.constructs.web.filter.Filter.doFilter(Filter.java:86)
+
+
+
+
+	at org.mortbay.jetty.servlet.ServletHandler$CachedChain.doFilter(ServletHandler.java:1157)
+
+
+
+
+	at myapp.filter.RequestContextFilter.doFilterInternal(RequestContextFilter.java:83)
+
+
+
+
+	at org.springframework.web.filter.OncePerRequestFilter.doFilter(OncePerRequestFilter.java:76)
+
+
+
+
+	at org.mortbay.jetty.servlet.ServletHandler$CachedChain.doFilter(ServletHandler.java:1157)
+
+
+
+
+	at org.springframework.security.web.FilterChainProxy$VirtualFilterChain.doFilter(FilterChainProxy.java:343)
+
+
+
+
+	at org.springframework.security.web.access.intercept.FilterSecurityInterceptor.invoke(FilterSecurityInterceptor.java:109)
+
+
+
+
+	at org.springframework.security.web.access.intercept.FilterSecurityInterceptor.doFilter(FilterSecurityInterceptor.java:83)
+
+
+
+
+	at org.springframework.security.web.FilterChainProxy$VirtualFilterChain.doFilter(FilterChainProxy.java:355)
+
+
+
+
+	at org.springframework.security.web.access.ExceptionTranslationFilter.doFilter(ExceptionTranslationFilter.java:97)
+
+
+
+
+	at org.springframework.security.web.FilterChainProxy$VirtualFilterChain.doFilter(FilterChainProxy.java:355)
+
+
+
+
+	at org.springframework.security.web.session.SessionManagementFilter.doFilter(SessionManagementFilter.java:100)
+
+
+
+
+	at org.springframework.security.web.FilterChainProxy$VirtualFilterChain.doFilter(FilterChainProxy.java:355)
+
+
+
+
+	at org.springframework.security.web.authentication.AnonymousAuthenticationFilter.doFilter(AnonymousAuthenticationFilter.java:78)
+
+
+
+
+	at org.springframework.security.web.FilterChainProxy$VirtualFilterChain.doFilter(FilterChainProxy.java:355)
+
+
+
+
+	at org.springframework.security.web.servletapi.SecurityContextHolderAwareRequestFilter.doFilter(SecurityContextHolderAwareRequestFilter.java:54)
+
+
+
+
+	at org.springframework.security.web.FilterChainProxy$VirtualFilterChain.doFilter(FilterChainProxy.java:355)
+
+
+
+
+	at org.springframework.security.web.savedrequest.RequestCacheAwareFilter.doFilter(RequestCacheAwareFilter.java:35)
+
+
+
+
+	at org.springframework.security.web.FilterChainProxy$VirtualFilterChain.doFilter(FilterChainProxy.java:355)
+
+
+
+
+	at org.springframework.security.web.authentication.www.BasicAuthenticationFilter.doFilter(BasicAuthenticationFilter.java:177)
+
+
+
+
+	at org.springframework.security.web.FilterChainProxy$VirtualFilterChain.doFilter(FilterChainProxy.java:355)
+
+
+
+
+	at org.springframework.security.web.authentication.ui.DefaultLoginPageGeneratingFilter.doFilter(DefaultLoginPageGeneratingFilter.java:91)
+
+
+
+
+	at org.springframework.security.web.FilterChainProxy$VirtualFilterChain.doFilter(FilterChainProxy.java:355)
+
+
+
+
+	at org.springframework.security.web.authentication.AbstractAuthenticationProcessingFilter.doFilter(AbstractAuthenticationProcessingFilter.java:187)
+
+
+
+
+	at org.springframework.security.web.FilterChainProxy$VirtualFilterChain.doFilter(FilterChainProxy.java:355)
+
+
+
+
+	at org.springframework.security.web.authentication.logout.LogoutFilter.doFilter(LogoutFilter.java:105)
+
+
+
+
+	at org.springframework.security.web.FilterChainProxy$VirtualFilterChain.doFilter(FilterChainProxy.java:355)
+
+
+
+
+	at org.springframework.security.web.context.SecurityContextPersistenceFilter.doFilter(SecurityContextPersistenceFilter.java:79)
+
+
+
+
+	at org.springframework.security.web.FilterChainProxy$VirtualFilterChain.doFilter(FilterChainProxy.java:355)
+
+
+
+
+	at org.springframework.security.web.FilterChainProxy.doFilter(FilterChainProxy.java:149)
+
+
+
+
+	at org.springframework.web.filter.DelegatingFilterProxy.invokeDelegate(DelegatingFilterProxy.java:237)
+
+
+
+
+	at org.springframework.web.filter.DelegatingFilterProxy.doFilter(DelegatingFilterProxy.java:167)
+
+
+
+
+	at org.mortbay.jetty.servlet.ServletHandler$CachedChain.doFilter(ServletHandler.java:1157)
+
+
+
+
+	at org.springframework.web.filter.HiddenHttpMethodFilter.doFilterInternal(HiddenHttpMethodFilter.java:77)
+
+
+
+
+	at org.springframework.web.filter.OncePerRequestFilter.doFilter(OncePerRequestFilter.java:76)
+
+
+
+
+	at org.mortbay.jetty.servlet.ServletHandler$CachedChain.doFilter(ServletHandler.java:1157)
+
+
+
+
+	at org.springframework.web.multipart.support.MultipartFilter.doFilterInternal(MultipartFilter.java:113)
+
+
+
+
+	at org.springframework.web.filter.OncePerRequestFilter.doFilter(OncePerRequestFilter.java:76)
+
+
+
+
+	at org.mortbay.jetty.servlet.ServletHandler$CachedChain.doFilter(ServletHandler.java:1157)
+
+
+
+
+	at org.springframework.web.filter.CharacterEncodingFilter.doFilterInternal(CharacterEncodingFilter.java:88)
+
+
+
+
+	at org.springframework.web.filter.OncePerRequestFilter.doFilter(OncePerRequestFilter.java:76)
+
+
+
+
+	at org.mortbay.jetty.servlet.ServletHandler$CachedChain.doFilter(ServletHandler.java:1157)
+
+
+
+
+	at org.mortbay.jetty.servlet.ServletHandler.handle(ServletHandler.java:388)
+
+
+
+
+	at org.mortbay.jetty.security.SecurityHandler.handle(SecurityHandler.java:216)
+
+
+
+
+	at org.mortbay.jetty.servlet.SessionHandler.handle(SessionHandler.java:182)
+
+
+
+
+	at org.mortbay.jetty.handler.ContextHandler.handle(ContextHandler.java:765)
+
+
+
+
+	at org.mortbay.jetty.webapp.WebAppContext.handle(WebAppContext.java:440)
+
+
+
+
+	at org.mortbay.jetty.handler.ContextHandlerCollection.handle(ContextHandlerCollection.java:230)
+
+
+
+
+	at org.mortbay.jetty.handler.HandlerCollection.handle(HandlerCollection.java:114)
+
+
+
+
+	at org.mortbay.jetty.handler.HandlerWrapper.handle(HandlerWrapper.java:152)
+
+
+
+
+	at org.mortbay.jetty.Server.handle(Server.java:326)
+
+
+
+
+	at org.mortbay.jetty.HttpConnection.handleRequest(HttpConnection.java:542)
+
+
+
+
+	at org.mortbay.jetty.HttpConnection$RequestHandler.content(HttpConnection.java:943)
+
+
+
+
+	at org.mortbay.jetty.HttpParser.parseNext(HttpParser.java:756)
+
+
+
+
+	at org.mortbay.jetty.HttpParser.parseAvailable(HttpParser.java:218)
+
+
+
+
+	at org.mortbay.jetty.HttpConnection.handle(HttpConnection.java:404)
+
+
+
+
+	at org.mortbay.io.nio.SelectChannelEndPoint.run(SelectChannelEndPoint.java:410)
+
+
+
+
+	at org.mortbay.thread.QueuedThreadPool$PoolThread.run(QueuedThreadPool.java:582)
+
+
+
+
+Caused by: org.springframework.expression.AccessException: Unexpected exception occurred accessing 'command' as an implicit variable
+
+
+
+
+	at org.springframework.web.servlet.tags.EvalTag$JspPropertyAccessor.resolveImplicitVariable(EvalTag.java:186)
+
+
+
+
+	at org.springframework.web.servlet.tags.EvalTag$JspPropertyAccessor.canRead(EvalTag.java:159)
+
+
+
+
+	at org.springframework.expression.spel.ast.PropertyOrFieldReference.readProperty(PropertyOrFieldReference.java:189)
+
+
+
+
+	... 102 more
+
+
+
+
+Caused by: java.lang.NullPointerException
+
+
+
+
+	at org.apache.jasper.runtime.PageContextImpl.doFindAttribute(PageContextImpl.java:541)
+
+
+
+
+	at org.apache.jasper.runtime.PageContextImpl.findAttribute(PageContextImpl.java:527)
+
+
+
+
+	at javax.servlet.jsp.el.ScopedAttributeELResolver.getValue(ScopedAttributeELResolver.java:123)
+
+
+
+
+	at javax.el.CompositeELResolver.getValue(CompositeELResolver.java:175)
+
+
+
+
+	at org.apache.jasper.runtime.VariableResolverImpl.resolveVariable(VariableResolverImpl.java:97)
+
+
+
+
+	at org.springframework.web.servlet.tags.EvalTag$JspPropertyAccessor.resolveImplicitVariable(EvalTag.java:183)
+
+
+
+
+	... 104 more
+
+
+
+
+

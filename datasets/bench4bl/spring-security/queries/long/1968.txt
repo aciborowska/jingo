@@ -1,0 +1,21 @@
+When the pre-authenticated user is null, the previously authenticated user's security context remains, and as such, the previous user remains authenticated.
+It seems like the AbstractPreAuthenticatedProcessingFilter should clear out the security context in doAuthenticate if the principal is null.  I can override the getPreAuthenticatedPrincipal call to do this (if I return  null for the principal), but it seems that this is not something the user should have to manage.  And, it seems like a side-effect / hack to put something like that in a method that should just be getting the principal, and doAuthenticate itself is private.  This is dangerous because later in the chain, in AbstractSecurityInterceptor.beforeInvocation(Object object) the security context is not null, even though it should be, and so, no exception is thrown from:
+        if (SecurityContextHolder.getContext().getAuthentication() == null) 
+{
+            credentialsNotFound(messages.getMessage("AbstractSecurityInterceptor.authenticationNotFound",
+                    "An Authentication object was not found in the SecurityContext"), object, attributes);
+        }
+
+It could also possibly be argued that the security context should be cleared in AbstractPreAuthenticatedFilter.requiresAuthentication in the session invalidation on a principal change - namely in here:
+        if (invalidateSessionOnPrincipalChange) {
+            HttpSession session = request.getSession(false);
+            if (session != null) 
+{
+                logger.debug("Invalidating existing session");
+                session.invalidate();
+                request.getSession();
+            }
+        }
+I have attached a test application that demonstrates this in the simplest format I could come up with. Basically the pre-authentication occurs by grabbing a username from a request parameter, and then it displays the logged in user's username on the home page.
+So if I go to http://localhost:8080/security/?username=bob the application will display 'Hello bob'.  If I hit http://localhost:8080/security/?username=jimi, it will switch to saying 'Hello jimi', but if I do http://localhost:8080/security/?username= it will remain at 'Hello jimi' (or whatever the previously authenticated user was), instead of requiring authentication.
+However, if in getPreAuthenticatedPrincipal() I call SecurityContextHolder.clearContext(), then hitting http://localhost:8080/security/?username= will result in taking me to the login page which I think is the desired behavior if the user is not pre-authenticated - indicated by getPreAuthenticatedPrincipal() returning null.

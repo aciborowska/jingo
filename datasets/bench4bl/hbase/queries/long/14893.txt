@@ -1,0 +1,75 @@
+During system test involving Phoenix local index, we observed the following in region server log:
+
+
+
+2015-11-25 08:20:03,258 DEBUG [B.defaultRpcServer.handler=38,queue=2,port=49524] ipc.RpcServer: B.defaultRpcServer.handler=38,queue=2,port=49524: callId: 28 service:             ClientService methodName: Scan size: 277 connection: 100.75.224.9:64138^M
+
+org.apache.hadoop.hbase.NotServingRegionException: GIGANTIC_TABLE,,1448439565197.0dc568cba621f11fd848ef87241d8535. is closing^M
+
+  at org.apache.hadoop.hbase.regionserver.HRegion.startRegionOperation(HRegion.java:7649)^M
+
+  at org.apache.hadoop.hbase.regionserver.HRegion.batchMutate(HRegion.java:2803)^M
+
+  at org.apache.hadoop.hbase.regionserver.HRegion.batchMutate(HRegion.java:2760)^M
+
+  at org.apache.phoenix.coprocessor.UngroupedAggregateRegionObserver.commitBatch(UngroupedAggregateRegionObserver.java:140)^M
+
+  at org.apache.phoenix.coprocessor.UngroupedAggregateRegionObserver.doPostScannerOpen(UngroupedAggregateRegionObserver.java:417)^M
+
+  at org.apache.phoenix.coprocessor.BaseScannerRegionObserver.postScannerOpen(BaseScannerRegionObserver.java:177)^M
+
+  at org.apache.hadoop.hbase.regionserver.RegionCoprocessorHost$52.call(RegionCoprocessorHost.java:1318)^M
+
+  at org.apache.hadoop.hbase.regionserver.RegionCoprocessorHost$RegionOperation.call(RegionCoprocessorHost.java:1673)^M
+
+  at org.apache.hadoop.hbase.regionserver.RegionCoprocessorHost.execOperation(RegionCoprocessorHost.java:1748)^M
+
+  at org.apache.hadoop.hbase.regionserver.RegionCoprocessorHost.execOperationWithResult(RegionCoprocessorHost.java:1712)^M
+
+  at org.apache.hadoop.hbase.regionserver.RegionCoprocessorHost.postScannerOpen(RegionCoprocessorHost.java:1313)^M
+
+  at org.apache.hadoop.hbase.regionserver.RSRpcServices.scan(RSRpcServices.java:2259)^M
+
+  at org.apache.hadoop.hbase.protobuf.generated.ClientProtos$ClientService$2.callBlockingMethod(ClientProtos.java:32205)^M
+
+  at org.apache.hadoop.hbase.ipc.RpcServer.call(RpcServer.java:2114)^M
+
+
+
+Here is related code snippet from UngroupedAggregateRegionObserver:
+
+
+
+        region.startRegionOperation();
+
+        try {
+
+...
+
+                            // Commit in batches based on UPSERT_BATCH_SIZE_ATTRIB in config
+
+                            if (!indexMutations.isEmpty() && batchSize > 0 &&
+
+                                    indexMutations.size() % batchSize == 0) {
+
+                            	commitBatch(region, indexMutations, null);
+
+
+
+In startRegionOperation(), read lock on region was obtained. So region close should not proceed until the operation completes.
+However, we still got region closing because region#closing is set to true before write lock is taken in region#doClose() :
+
+
+
+    this.closing.set(true);
+
+    status.setStatus("Disabling writes for close");
+
+    // block waiting for the lock for closing
+
+    lock.writeLock().lock();
+
+
+
+Proposed fix is to obtain write lock first.
+Thanks to Rajeshbabu for offline discussion.

@@ -1,0 +1,54 @@
+Today, Zookeeper server syncs transaction log files to disk by default, but does not sync snapshot files.  Consequently, an untimely crash may result in a lost or incomplete snapshot file.  During recovery, if the server finds a valid older snapshot file, it will load it and replay subsequent log(s), skipping the incomplete snapshot file.  It's possible that the skipped file had some transactions which are not present in the replayed transaction logs.  Since quorum synchronization is based on last transaction ID of each server, this will never get noticed, resulting in inconsistency between servers and possible data loss.
+
+Following sequence of events describes a sample scenario where this can happen:
+
+
+	Server F is a follower in a Zookeeper ensemble.
+	F's most recent valid snapshot file is named "snapshot.10" containing state up to zxid = 10.  F is currently writing to the transaction log file "log.11", with the most recent zxid = 20.
+	Fresh round of election.
+	F receives a few new transactions 21 to 30 from new leader L as the "diff".  Current server behavior is to dump current state plus diff to a new snapshot file, "snapshot.30".
+	F finalizes the snapshot file, but file contents are still buffered in OS caches.  Zookeeper does not sync snapshot file contents to disk.
+	F receives a new transaction 31 from the leader, which it appends to the existing transaction log file, "log.11" and syncs the file to disk.
+	Server machine crashes or is cold rebooted.
+	After recovery, snapshot file "snapshot.30" may not exist or may be empty.  See below for why that may happen.
+	In either case, F looks for the last finalized snapshot file, finds and loads "snapshot.10".  It then replays transactions from "log.11".  Ultimately, its last seen zxid will be 31, but it would not have replayed transactions 21 to 30 received via the "diff" from the leader.
+	Clients which are connected to F may see different data than clients connected to other members of the ensemble, violating single system image invariant.  Also, if F were to become a leader at some point, it could use its state to seed other servers, and they all could lose the writes in the missing interval above.
+
+
+
+Notes:
+
+	Reason why snapshot file may be missing or incomplete:
+	
+		Zookeeper does not sync the data directory after creating a snapshot file.  Even if a newly created file is synced to disk, if the corresponding directory entry is not, then the file will not be visible in the namespace.
+		Zookeeper does not sync snapshot files.  So, they may be empty or incomplete during recovery from an untimely crash.
+	
+	
+	In step (6) above, the server could also have written the new transaction 31 to a new log file, "log.31".  The final outcome would still be the same.
+
+
+
+We are able to deterministically reproduce this problem using the following steps:
+
+
+	Create a new Zookeeper ensemble on 3 hosts: A, B, and C.
+	Ensured each server has at least one snapshot file in its data dir.
+	Stop Zookeeper process on server A.
+	Slow down disk syncs on server A (see example script below). This ensures that snapshot files written by Zookeeper don't make it to disk spontaneously.  Log files will be written to disk as Zookeeper explicitly issues a sync call on such files.
+	Connect to server B and create a new znode /test1.
+	Start Zookeeper process on A, wait for it to write a new snapshot to its datadir.  This snapshot would contain /test1 but it won’t be synced to disk yet.
+	Connect to A and verify that /test1 is visible.
+	Connect to B and create another znode /test2.  This will cause A’s transaction log to grow further to receive /test2.
+	Cold reboot A.
+	A’s last snapshot is a zero-sized file or is missing altogether since it did not get synced to disk before reboot.  We have seen both in different runs.
+	Connect to A and verify that /test1 does not exist.  It exists on B and C.
+
+
+
+Slowing down disk syncs:
+
+echo 360000 | sudo tee /proc/sys/vm/dirty_writeback_centisecs
+echo 360000 | sudo tee /proc/sys/vm/dirty_expire_centisecs
+echo 99 | sudo tee /proc/sys/vm/dirty_background_ratio
+echo 99 | sudo tee /proc/sys/vm/dirty_ratio
+

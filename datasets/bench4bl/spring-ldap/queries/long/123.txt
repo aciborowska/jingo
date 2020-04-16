@@ -1,0 +1,30 @@
+Our project is using Spring-2.0.7 and spring-ldap-1.2.1.
+When the ContextSourceAndDataSourceTransactionManager is used within another transaction manager, and they use the same data source, an exception occurs when the inner transaction is rolled back.
+The stack trace is:
+java.lang.ClassCastException: org.springframework.ldap.transaction.compensating.manager.ContextSourceAndDataSourceTransactionManager$ContextSourceAndDataSourceTransactionObject
+       at org.springframework.jdbc.datasource.DataSourceTransactionManager.doSetRollbackOnly(DataSourceTransactionManager.java:284)
+       at org.springframework.transaction.support.AbstractPlatformTransactionManager.processRollback(AbstractPlatformTransactionManager.java:761)
+       at org.springframework.transaction.support.AbstractPlatformTransactionManager.rollback(AbstractPlatformTransactionManager.java:730)
+This seems to be because ContextSourceAndDataSourceTransactionManager does not override doSetRollbackOnly().  So when this is called, it uses the DataSourceTransactionManager's implementation, which doesn't know how to handle the ContextSourceAndDataSourceTransactionObject provided in status.getTransaction().
+The following test case, using EasyMock, demonstrates the exception:
+   public void testNestedTransaction() throws Exception 
+{
+
+       DataSource mockDataSource = createMock(DataSource.class);
+       expect(mockDataSource.getConnection()).andReturn(createMock(Connection.class));
+       replay(mockDataSource);
+
+       PlatformTransactionManager outerTxnManager = new DataSourceTransactionManager(mockDataSource);
+
+       outerTxnManager.getTransaction(new DefaultTransactionDefinition());
+
+       ContextSourceAndDataSourceTransactionManager innerTxnManager =
+                   new ContextSourceAndDataSourceTransactionManager();
+       innerTxnManager.setContextSource(createMock(ContextSource.class));
+       innerTxnManager.setDataSource(mockDataSource);
+
+       TransactionStatus innerTxnStatus = innerTxnManager.getTransaction(new DefaultTransactionDefinition());
+
+       innerTxnManager.rollback(innerTxnStatus);
+
+   }

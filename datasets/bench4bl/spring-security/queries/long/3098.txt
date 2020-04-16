@@ -1,0 +1,256 @@
+Here's the authenticate method for the PAC:
+
+
+
+
+
+
+	public DirContextOperations authenticate(final Authentication authentication) {
+
+
+
+
+		Assert.isInstanceOf(UsernamePasswordAuthenticationToken.class, authentication,
+
+
+
+
+				"Can only process UsernamePasswordAuthenticationToken objects");
+
+
+
+
+		// locate the user and check the password
+
+
+
+
+ 
+
+
+
+
+		DirContextOperations user = null;
+
+
+
+
+		String username = authentication.getName();
+
+
+
+
+		String password = (String) authentication.getCredentials();
+
+
+
+
+ 
+
+
+
+
+		SpringSecurityLdapTemplate ldapTemplate = new SpringSecurityLdapTemplate(
+
+
+
+
+				getContextSource());
+
+
+
+
+ 
+
+
+
+
+		for (String userDn : getUserDns(username)) {
+
+
+
+
+			try {
+
+
+
+
+				user = ldapTemplate.retrieveEntry(userDn, getUserAttributes());
+
+
+
+
+			}
+
+
+
+
+			catch (NameNotFoundException ignore) {
+
+
+
+
+			}
+
+
+
+
+			if (user != null) {
+
+
+
+
+				break;
+
+
+
+
+			}
+
+
+
+
+		}
+
+
+
+
+ 
+
+
+
+
+		if (user == null && getUserSearch() != null) {
+
+
+
+
+			user = getUserSearch().searchForUser(username);
+
+
+
+
+		}
+
+
+
+
+ 
+
+
+
+
+		if (user == null) {
+
+
+
+
+			throw new UsernameNotFoundException("User not found: " + username);
+
+
+
+
+		}
+
+
+
+
+ 
+
+
+
+
+		if (logger.isDebugEnabled()) {
+
+
+
+
+			logger.debug("Performing LDAP compare of password attribute '"
+
+
+
+
+					+ passwordAttributeName + "' for user '" + user.getDn() + "'");
+
+
+
+
+		}
+
+
+
+
+ 
+
+
+
+
+		if (usePasswordAttrCompare && isPasswordAttrCompare(user, password)) {
+
+
+
+
+			return user;
+
+
+
+
+		}
+
+
+
+
+		else if (isLdapPasswordCompare(user, ldapTemplate, password)) {
+
+
+
+
+			return user;
+
+
+
+
+		}
+
+
+
+
+		throw new BadCredentialsException(messages.getMessage(
+
+
+
+
+				"PasswordComparisonAuthenticator.badCredentials", "Bad credentials"));
+
+
+
+
+	}
+
+
+
+
+
+
+
+If the authentication is done via userDN patterns then the resulting DirContextOperations result has only the attributes set in the getUserAttributes() method.  However, if the code goes past the loop for the userDN patterns and does a search for the user, then all attributes are returned. 
+It appears that the following code should be inserted before the "if (usePasswordAttrCompare && isPasswordAttrCompare(user, password)) {"  line:
+
+
+
+
+
+
+Attributes attrs = user.getAttributes(user.getDn().toString(), getUserAttributes());
+
+
+
+
+user = new DirContextAdapter(attrs, user.getDn().toString(), getContextSource().getBaseLdapPath());
+
+
+
+
+
+
+

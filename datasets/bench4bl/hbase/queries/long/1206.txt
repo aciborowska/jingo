@@ -1,0 +1,49 @@
+I had a MR job that would launch multiple scanners on a region that made updates to the same column family as they were scanning on (but not the same column). As a result, there were lots of processes that had to grep through all of the irrelevent inserts many times as flushes occurred.
+However, if I put the column that I was outputting to in the list of columns to scan for, everything worked quickly.
+The code that's causing this is:
+01:13 < BenM>       keys[i] = new HStoreKey(HConstants.EMPTY_BYTE_ARRAY, this.store.getHRegionInfo());
+01:13 < BenM>       if (firstRow != null && firstRow.length != 0) {
+01:13 < BenM>         if (findFirstRow(i, firstRow)) 
+{
+
+01:13 < BenM>           continue;
+
+01:13 < BenM>         }
+01:13 < BenM>       }
+01:13 < BenM>       while (getNext) {
+01:13 < BenM>         if (columnMatch) 
+{
+
+01:13 < BenM>           break;
+
+01:13 < BenM>         }
+01:13 < BenM>       }
+columnMatch() on the stuff that just got flushed out never returns true. This caused lots of problems to build up.
+The fix for this is:
+(10:58:30 PM) BenM: IMHO, this is a somewhat easier issue to fix
+(10:58:38 PM) BenM: i think it could be done in a way that cleans up the code
+(10:58:50 PM) BenM: right now, the code just scans through each of the map files
+(10:59:02 PM) BenM: without regard to the relative key positions
+(10:59:12 PM) BenM: i think it could use a priority queue so that it only works on the relevent files
+(11:01:22 PM) St^Ack_: BenM: please expand, I don't follow exactly
+(11:01:50 PM) BenM: lets say we have two map files
+(11:02:09 PM) BenM: one with 1/foo:bar 2/foo:bar 3/foo:bar
+(11:02:17 PM) BenM: (row/family:col)
+(11:02:31 PM) BenM: and the other with 1000/blah:blah 1001/blah:blah
+(11:02:39 PM) BenM: the curent logic is
+(11:02:44 PM) BenM: for each map file:
+(11:02:56 PM) BenM:    find the first potential row in this file
+(11:03:08 PM) BenM: look at min(all potential rows)
+(11:03:34 PM) BenM: the algorith should be:
+(11:03:43 PM) BenM: q = new PriorityQueue()
+(11:04:05 PM) BenM: for each map file: insert the HStoreKey of the first key in the file
+(11:04:17 PM) BenM: while(k = q.pop()) 
+{
+
+(11:04:37 PM) BenM:   if (k is intersting) break;
+
+(11:04:37 PM) BenM:   advance k
+
+(11:04:37 PM) BenM:   q.push(k)
+
+(11:04:38 PM) BenM: }

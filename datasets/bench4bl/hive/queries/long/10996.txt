@@ -1,0 +1,132 @@
+We see the following problem on 1.1.0 and 1.2.0 but not 0.13 which seems like a regression.
+The following query (Q1) produces no results:
+
+
+
+select s
+
+from (
+
+  select last.*, action.st2, action.n
+
+  from (
+
+    select purchase.s, purchase.timestamp, max (mevt.timestamp) as last_stage_timestamp
+
+    from (select * from purchase_history) purchase
+
+    join (select * from cart_history) mevt
+
+    on purchase.s = mevt.s
+
+    where purchase.timestamp > mevt.timestamp
+
+    group by purchase.s, purchase.timestamp
+
+  ) last
+
+  join (select * from events) action
+
+  on last.s = action.s and last.last_stage_timestamp = action.timestamp
+
+) list;
+
+
+
+
+
+While this one (Q2) does produce results :
+
+
+
+select *
+
+from (
+
+  select last.*, action.st2, action.n
+
+  from (
+
+    select purchase.s, purchase.timestamp, max (mevt.timestamp) as last_stage_timestamp
+
+    from (select * from purchase_history) purchase
+
+    join (select * from cart_history) mevt
+
+    on purchase.s = mevt.s
+
+    where purchase.timestamp > mevt.timestamp
+
+    group by purchase.s, purchase.timestamp
+
+  ) last
+
+  join (select * from events) action
+
+  on last.s = action.s and last.last_stage_timestamp = action.timestamp
+
+) list;
+
+1	21	20	Bob	1234
+
+1	31	30	Bob	1234
+
+3	51	50	Jeff	1234
+
+
+
+
+
+The setup to test this is:
+
+
+
+create table purchase_history (s string, product string, price double, timestamp int);
+
+insert into purchase_history values ('1', 'Belt', 20.00, 21);
+
+insert into purchase_history values ('1', 'Socks', 3.50, 31);
+
+insert into purchase_history values ('3', 'Belt', 20.00, 51);
+
+insert into purchase_history values ('4', 'Shirt', 15.50, 59);
+
+
+
+create table cart_history (s string, cart_id int, timestamp int);
+
+insert into cart_history values ('1', 1, 10);
+
+insert into cart_history values ('1', 2, 20);
+
+insert into cart_history values ('1', 3, 30);
+
+insert into cart_history values ('1', 4, 40);
+
+insert into cart_history values ('3', 5, 50);
+
+insert into cart_history values ('4', 6, 60);
+
+
+
+create table events (s string, st2 string, n int, timestamp int);
+
+insert into events values ('1', 'Bob', 1234, 20);
+
+insert into events values ('1', 'Bob', 1234, 30);
+
+insert into events values ('1', 'Bob', 1234, 25);
+
+insert into events values ('2', 'Sam', 1234, 30);
+
+insert into events values ('3', 'Jeff', 1234, 50);
+
+insert into events values ('4', 'Ted', 1234, 60);
+
+
+
+
+
+I realize select * and select s are not all that interesting in this context but what lead us to this issue was select count(distinct s) was not returning results. The above queries are the simplified queries that produce the issue. 
+I will note that if I convert the inner join to a table and select from that the issue does not appear.
+Update: Found that turning off  hive.optimize.remove.identity.project fixes this issue. This optimization was introduced in https://issues.apache.org/jira/browse/HIVE-8435

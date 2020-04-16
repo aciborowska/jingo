@@ -1,0 +1,24 @@
+We experience a small amount of lost acknowledged writes in production on July 1st (~700 identified so far).
+What happened was that we had NTP turned off since June 29th to prevent issues due to the leap second on June 30th. NTP was turned back on July 1st.
+The next day, we noticed we were missing writes to a few of our higher throughput aggregation tables.
+We found that this is caused by HBase taking the current time using System.currentTimeMillis, which may be set backwards by NTP, and using this without any checks to populate the timestamp of rows for which the client didn't supply a timestamp.
+Our application uses a read-modify-write pattern using get+checkAndPut to perform aggregation as follows:
+1. read version 1
+2. mutate
+3. write version 2
+4. read version 2
+5. mutate
+6. write version 3
+The application retries the full read-modify-write if the checkAndPut fails.
+What must have happened on July 1st, after we started NTP back up, was this (timestamps added):
+1. read version 1 (timestamp 10)
+2. mutate
+3. write version 2 (HBase-assigned timestamp 11)
+4. read version 2 (timestamp 11)
+5. mutate
+6. write version 3 (HBase-assigned timestamp 10)
+Hence, the last write was eclipsed by the first write, and hence, an acknowledged write was lost.
+While this seems to match documented behavior (paraphrasing: "if timestamp is not specified HBase will assign a timestamp using System.currentTimeMillis" "the row with the highest timestamp will be returned by get"), I think it is very unintuitive and needs at least a big warning in the documentation, along the lines of "Acknowledged writes may not be visible unless the timestamp is explicitly specified and equal to or larger than the highest timestamp for that row".
+I would also like to use this ticket to start a discussion on if we can make the behavior better:
+Could HBase assign a timestamp of max(max timestamp for the row, System.currentTimeMillis()) in the checkAndPut write path, instead of blindly taking System.currentTimeMillis(), similar to what has been done in HBASE-12449 for increment and append?
+Thoughts?

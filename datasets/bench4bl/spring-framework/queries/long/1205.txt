@@ -1,0 +1,96 @@
+The before() method of a MethodBeforeAdvice instance is never entered if the advice has been added to a cglib proxy at runtime. The bug may well exist for other advice types, but I haven't tested that. 
+Following are a few files, including a test case, that illustrate this problem.  Note that the problem only exists when 'optimize' is set to true.  If you set the the value to false (i.e., use jdkProxy instead of cglib) the test case will succeed.  Note further that this problem has been discussed in the AOP Spring Forum http://forum.springframework.org/viewtopic.php?t=4271&highlight=ctassoni
+***applicationContext.xml*********************** 
+[code] 
+<?xml version="1.0" encoding="UTF-8"?> 
+<!DOCTYPE beans PUBLIC "-//SPRING//DTD BEAN//EN" "http://www.springframework.org/dtd/spring-beans.dtd"> 
+<beans> 
+   <bean id="simpleBean" 
+   class="org.springframework.aop.framework.ProxyFactoryBean"> 
+      <property name="frozen"><value>false</value></property> 
+         <property name="optimize"><value>true</value></property>     
+        <property name="opaque"><value>false</value></property>    
+       <property name="proxyInterfaces"> 
+         <value>bugexample.SimpleBean</value> 
+      </property> 
+      <property name="target"> 
+         <bean class="bugexample.SimpleBeanImpl"> 
+         </bean>    
+      </property>    
+     </bean>    
+</beans>    
+[/code]
+***bugexample.SimpleBean********************* 
+[code] 
+package bugexample; 
+/** 
+
+@author ctassoni
+ */ 
+public interface SimpleBean { 
+   public void doNothing(); 
+} 
+
+[/code]
+***bugexample.SimpleBeanImpl********************* 
+[code] 
+package bugexample; 
+/** 
+
+@author ctassoni
+ */ 
+public class SimpleBeanImpl implements SimpleBean { 
+
+   public SimpleBeanImpl(){ 
+   } 
+   public void doNothing(){ 
+   } 
+} 
+[/code]
+***bugexample.AddAdvisorTest********************* 
+[code]
+package bugexample; 
+import java.lang.reflect.Method; 
+import junit.framework.Assert; 
+import junit.framework.TestCase; 
+import org.springframework.aop.MethodBeforeAdvice; 
+import org.springframework.aop.framework.Advised; 
+import org.springframework.aop.support.NameMatchMethodPointcutAdvisor; 
+import org.springframework.context.ApplicationContext; 
+import org.springframework.context.support.ClassPathXmlApplicationContext; 
+/** 
+
+@author ctassoni
+ */ 
+public class AddAdvisorTest extends TestCase { 
+
+   public void testAddAdvisor(){ 
+      ApplicationContext ctx = new ClassPathXmlApplicationContext("applicationContext.xml"); 
+      SimpleBean simpleBean = (SimpleBean) ctx.getBean("simpleBean"); 
+      Advised proxy = (Advised) simpleBean; 
+        NameMatchMethodPointcutAdvisor advisor = 
+           new NameMatchMethodPointcutAdvisor(new MakeRuntimeExceptionBefore()); 
+        advisor.setMappedName("doNothing"); 
+        proxy.addAdvisor(advisor); 
+        try
+{ 
+           simpleBean.doNothing(); 
+           Assert.fail("Advice body was not entered or else" + 
+                 " \ncalling simpleBean.doNothing would cause an exception.  This test fails when" + 
+                 " \napplicationContext.xml uses cglib proxy like so: " + 
+                 " \n<property name=\"optimize\"><value>true</value></property>" + 
+                 " \nbut succeeds when applicationContext.xml uses jdkProxy:" + 
+                 " \n<property name=\"optimize\"><value>false</value></property>" ); 
+        }
+catch(RuntimeException e){ 
+        } 
+   } 
+   class MakeRuntimeExceptionBefore implements MethodBeforeAdvice{ 
+      public void before(Method method, Object[] args, Object target) throws Throwable 
+{ 
+         throw new RuntimeException("Advice body has been entered"); 
+      }
+ 
+   } 
+} 
+[/code]

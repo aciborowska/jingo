@@ -1,0 +1,87 @@
+When we want  to split a region, we need to  get the middle rowkey from the biggest store file. 
+Here is the code from HFileBlockIndex.midkey() which help us find a approximation middle key.
+
+
+
+// Caching, using pread, assuming this is not a compaction.
+
+        HFileBlock midLeafBlock = cachingBlockReader.readBlock(
+
+            midLeafBlockOffset, midLeafBlockOnDiskSize, true, true, false, true,
+
+            BlockType.LEAF_INDEX, null);
+
+
+
+        ByteBuffer b = midLeafBlock.getBufferWithoutHeader();
+
+        int numDataBlocks = b.getInt();
+
+        int keyRelOffset = b.getInt(Bytes.SIZEOF_INT * (midKeyEntry + 1));
+
+        int keyLen = b.getInt(Bytes.SIZEOF_INT * (midKeyEntry + 2)) -
+
+            keyRelOffset - SECONDARY_INDEX_ENTRY_OVERHEAD;
+
+        int keyOffset = Bytes.SIZEOF_INT * (numDataBlocks + 2) + keyRelOffset
+
+            + SECONDARY_INDEX_ENTRY_OVERHEAD;
+
+        targetMidKey = ByteBufferUtils.toBytes(b, keyOffset, keyLen);
+
+
+
+and in each entry of Non-root block index contains three object:
+1. Offset of the block referenced by this entry in the file (long)
+2 .Ondisk size of the referenced block (int)
+3. RowKey. 
+But when we caculating the keyLen from the entry, we forget to take away the 12 byte overhead(1,2 above, SECONDARY_INDEX_ENTRY_OVERHEAD in the code). So the keyLen is always 12 bytes bigger than the real rowkey length.
+Every time we read the rowkey form the entry, we read 12 bytes from the next entry. 
+No exception will throw unless the middle key is in the last entry of the Non-root block index. which will cause a IndexOutOfBoundsException. That is exactly what HBASE-16097 is suffering from.
+
+
+
+2016-11-16 05:27:31,991 ERROR [MemStoreFlusher.1] regionserver.MemStoreFlusher: Cache flusher failed for entry [flush region hitsdb,\x14\x03\x83\x1AX\x1A\x9A \x00\x00\x07\x00\x00\x07\x00\x00\x09\x00\x00\x09\x00\x01\x9F\x00F\xE3\x00\x00\x0A\x00\x01~\x00\x00\x08\x00\x5C\x09\x00\x03\x11\x00\xEF\x99,1478311873096.79d3f7f285396b6896f3229e2bcac7af.]
+
+java.lang.IndexOutOfBoundsException
+
+        at java.nio.Buffer.checkIndex(Buffer.java:532)
+
+        at java.nio.HeapByteBuffer.get(HeapByteBuffer.java:139)
+
+        at org.apache.hadoop.hbase.util.ByteBufferUtils.toBytes(ByteBufferUtils.java:490)
+
+        at org.apache.hadoop.hbase.io.hfile.HFileBlockIndex$BlockIndexReader.midkey(HFileBlockIndex.java:349)
+
+        at org.apache.hadoop.hbase.io.hfile.HFileReaderV2.midkey(HFileReaderV2.java:529)
+
+        at org.apache.hadoop.hbase.regionserver.StoreFile$Reader.midkey(StoreFile.java:1527)
+
+        at org.apache.hadoop.hbase.regionserver.StoreFile.getFileSplitPoint(StoreFile.java:684)
+
+        at org.apache.hadoop.hbase.regionserver.DefaultStoreFileManager.getSplitPoint(DefaultStoreFileManager.java:126)
+
+        at org.apache.hadoop.hbase.regionserver.HStore.getSplitPoint(HStore.java:1976)
+
+        at org.apache.hadoop.hbase.regionserver.RegionSplitPolicy.getSplitPoint(RegionSplitPolicy.java:82)
+
+        at org.apache.hadoop.hbase.regionserver.HRegion.checkSplit(HRegion.java:7614)
+
+        at org.apache.hadoop.hbase.regionserver.MemStoreFlusher.flushRegion(MemStoreFlusher.java:521)
+
+        at org.apache.hadoop.hbase.regionserver.MemStoreFlusher.flushRegion(MemStoreFlusher.java:471)
+
+        at org.apache.hadoop.hbase.regionserver.MemStoreFlusher.access$800(MemStoreFlusher.java:75)
+
+        at org.apache.hadoop.hbase.regionserver.MemStoreFlusher$FlushHandler.run(MemStoreFlusher.java:259)
+
+        at java.lang.Thread.run(Thread.java:756)
+
+
+
+
+
+It is a quite serious bug. It may exsits from HFileV2 was invented. But no one has found out! Since this bug ONLY happens when finding a middlekey, and since we compare a rowkey from the left side, adding 12 bytes more to the right side is totally OK, no one cares!
+It even won't throw IndexOutOfBoundsException before HBASE-12297. since Arrays.copyOfRange is used, which will check the limit to ensue the length won't running past the end of the array.
+ But now, ByteBufferUtils.toBytes is used and IndexOutOfBoundsException will been thrown. 
+It happens in our production environment. Because of this bug, the region can't be split can grow bigger and bigger.

@@ -1,0 +1,31 @@
+According to SQLErrorCodesFactory (http://www.springframework.org/docs/api/org/springframework/jdbc/support/SQLErrorCodesFactory.html), when sql-error-codes.xml is found in the classpath, the error codes defined in that file will be used to translate SQLExceptions.
+However, it appears that HibernateTransactionManager has a bug that will prevent the use of this exception translator.  In the class definition, the getter method for SQLExceptionTranslator will create a SQLErrorCodeSQLExceptionTranslator if the HibernateTransactionManager is aware of a DataSource:
+/**
+
+Return the JDBC exception translator for this transaction manager.
+Creates a default one for the specified SessionFactory if none set.
+ */
+public SQLExceptionTranslator getJdbcExceptionTranslator() {
+  if (this.jdbcExceptionTranslator == null) 
+Unknown macro: {    if (getDataSource() != null) {
+      setJdbcExceptionTranslator(new 
+        SQLErrorCodeSQLExceptionTranslator(getDataSource()));
+    }    else {
+      setJdbcExceptionTranslator(
+        SessionFactoryUtils.newJdbcExceptionTranslator(
+        getSessionFactory()));
+    }  } 
+  return this.jdbcExceptionTranslator;
+}
+
+However, in the class definition the translator is initialized when the class is created:
+private SQLExceptionTranslator jdbcExceptionTranslator = new SQLStateSQLExceptionTranslator();
+Therefore, the setter never gets a chance to create a translator to use the defined error codes; instead it always falls back to SQLStateSQLExceptionTranslator.
+I suspect that the fix for this bug is to simply initialize jdbcExceptionTranslator to null and let the getter method do its thing.  A workaround for now is to set jdbcExceptionTranslator to null in the xml configuration file so that it can be initialized correctly:
+<bean id="transactionManager" 
+class="org.springframework.orm.hibernate.HibernateTransactionManager">
+<property name="sessionFactory">
+  <ref bean="sessionFactory"/>
+</property>
+<property name="jdbcExceptionTranslator"><null/></property>
+</bean>

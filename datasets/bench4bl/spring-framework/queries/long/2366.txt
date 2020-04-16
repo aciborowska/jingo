@@ -1,0 +1,85 @@
+I am trying to do a very simple prototype application using Spring 2.0 with it's JMX support. The issue I am having is I am getting the following warning from jconsole when I register for notifications for my sample MBean:
+WARNING: Failed to deserialize a notification: java.lang.ClassNotFoundException: com.real.common.bandwidth.ByteGenerator (no security manager: RMI class loader disabled)
+On the face of it it's pretty simple - the client, in this case jconsole, needs to have access to the ByteGenerator bytecode.
+I am no JMX expert but looking at the Javadoc for Notification it says:
+Quote:
+The Notification class represents a notification emitted by an MBean. It contains a reference to the source MBean: if the notification has been forwarded through the MBean server, and the original source of the notification was a reference to the emitting MBean object, then the MBean server replaces it by the MBean's ObjectName. If the listener has registered directly with the MBean, this is either the object name or a direct reference to the MBean.
+It is strongly recommended that notification senders use the object name rather than a reference to the MBean object as the source.
+This seems to suggest that Spring should be replacing my actual object with the name that it was registered with in it's MBean server. Am I missing something with my code/config below which is preventing this from happening?
+Thanks for any help in advance,
+Ian.
+Code and XML follows
+=======================
+The code for the bean is simple enough too (I had to make a couple of fields transient to prevent NotSerializableExceptions):
+import org.springframework.jmx.export.notification.Notifi cationPublisherAware;
+import org.springframework.jmx.export.notification.Notifi cationPublisher;
+import org.springframework.jmx.export.annotation.ManagedA ttribute;
+import org.springframework.jmx.export.annotation.ManagedR esource;
+import javax.management.Notification;
+import java.io.Serializable;
+import java.util.Random;
+/**
+
+Super simple class which just generates some number of characters which when
+encoded with UTF-8 will be a single byte each.
+*
+@author ibutcher
+*/
+@ManagedResource(objectName="bean:name=ByteGenerat or")
+public class ByteGenerator implements NotificationPublisherAware, Serializable {
+
+private transient NotificationPublisher publisher;
+private transient static final Random random = new Random(System.currentTimeMillis());
+private static final int ONE_KAY = 1024;
+private static final int NUMBER_OF_CHARACTERS_IN_ALPHABET = 26;
+private static final int CAPITAL_A = 65;
+private static int numberOfExecutions;
+public void setNotificationPublisher(NotificationPublisher notificationPublisher) {
+this.publisher = notificationPublisher;
+}
+@ManagedAttribute (description="How many times?")
+public int getNumberOfExecutions(){
+return numberOfExecutions;
+}
+String getBytes(int numberOfBytes) {
+StringBuffer buffer = new StringBuffer(numberOfBytes * ONE_KAY);
+for (int i = 0; i < (numberOfBytes * ONE_KAY); ++i) {
+buffer.append((char) (CAPITAL_A + random.nextInt(NUMBER_OF_CHARACTERS_IN_ALPHABET))) ;
+}
+numberOfExecutions++;
+publisher.sendNotification(new Notification("ByteGenerator.execute", this, getNumberOfExecutions()));
+return buffer.toString();
+}
+}
+As you can see I'm using the fancy new Java 5 annotations to instrument the bean. By context file is here:
+<?xml version="1.0" ?>
+<!DOCTYPE beans PUBLIC "-//SPRING//DTD BEAN//EN" "http://www.springframework.org/dtd/spring-beans.dtd">
+<beans>
+<bean id="exporter" class="org.springframework.jmx.export.MBeanExporte r">
+<property name="assembler" ref="assembler"/>
+<property name="namingStrategy" ref="namingStrategy"/>
+<property name="autodetect" value="true"/>
+</bean>
+<bean id="jmxAttributeSource"
+class="org.springframework.jmx.export.annotation.A nnotationJmxAttributeSource"/>
+<!-- will create management interface using annotation metadata -->
+<bean id="assembler"
+class="org.springframework.jmx.export.assembler.Me tadataMBeanInfoAssembler">
+<property name="attributeSource" ref="jmxAttributeSource"/>
+</bean>
+<!-- will pick up ObjectName from annotation -->
+<bean id="namingStrategy"
+class="org.springframework.jmx.export.naming.Metad ataNamingStrategy">
+<property name="attributeSource" ref="jmxAttributeSource"/>
+</bean>
+<bean id="viewResolver" class="org.springframework.web.servlet.view.Intern alResourceViewResolver">
+<property name="prefix" value="/WEB-INF/jsp/"/>
+<property name="suffix" value=".jsp"/>
+</bean>
+<bean id="handlerMapping" class="org.springframework.web.servlet.handler.Bea nNameUrlHandlerMapping"/>
+<bean name="/bytes" class="com.real.common.bandwidth.ByteGeneratorCont roller">
+<property name="generator" ref="byteGenerator"/>
+</bean>
+<bean name="byteGenerator" class="com.real.common.bandwidth.ByteGenerator">
+</bean>
+</beans>

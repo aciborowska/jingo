@@ -1,0 +1,262 @@
+ServerInventoryImpl.reconnectServer is registering the ProxyController for the reconnecting server with the DomainModelControllerService. The problem is that ProxyController is not yet in a state where it can forward requests to the server. That won't happen until the server calls back with a DomainServerProtocol.SERVER_RECONNECT_REQUEST and the ServerToHostProtocolHandler.ServerReconnectRequestHandler handles it. The effect is if a request for the server comes in during this window, it will fail. If that request is part of a domain operation rollout (because during the window the HC regarded the server as 'live' and instructed the DC to send rollout ops to it), then the domain rollout will be affected. This happened in the testsuite failure I just saw. Most significant logging is as follows:
+
+
+
+
+
+
+2015-09-18 17:59:32,229 INFO  [org.jboss.as] (Controller Boot Thread) WFLYSRV0025: WildFly Core 2.0.0.CR2-SNAPSHOT "Kenny" (Host Controller) started in 93ms - Started 48 of 51 services (15 services are lazy, passive or on-demand)
+
+
+
+
+2015-09-18 17:59:32,247 INFO  [org.jboss.as.controller.management-operation] (Remoting "slave:MANAGEMENT" task-16) Initialized for 1849055188
+
+
+
+
+2015-09-18 17:59:32,247 INFO  [org.jboss.as.host.controller] (Remoting "slave:MANAGEMENT" task-14) WFLYHC0021: Server [Server:main-three] connected using connection [Channel ID 08aa200b (inbound) of Remoting connection 27e3d90d to /127.0.0.1:49272]
+
+
+
+
+2015-09-18 17:59:32,247 INFO  [org.jboss.as.host.controller] (Remoting "slave:MANAGEMENT" task-15) WFLYHC0021: Server [Server:other-two] connected using connection [Channel ID 02bd2646 (inbound) of Remoting connection 64a8b7f2 to /127.0.0.1:49273]
+
+
+
+
+2015-09-18 17:59:32,247 INFO  [org.jboss.as.controller.management-operation] (Host Controller Service Threads - 34) Initialized for 1849055188
+
+
+
+
+2015-09-18 17:59:32,252 INFO  [org.jboss.as.controller.management-operation] (Host Controller Service Threads - 34) sending prepared response for 1849055188  --- interrupted: false
+
+
+
+
+2015-09-18 17:59:32,254 INFO  [org.jboss.as.controller.management-operation] (Remoting "slave:MANAGEMENT" task-1) Initialized for 1933145457
+
+
+
+
+2015-09-18 17:59:32,254 INFO  [org.jboss.as.controller.management-operation] (Remoting "slave:MANAGEMENT" task-1) Initialized for 481103151
+
+
+
+
+2015-09-18 17:59:32,254 INFO  [org.jboss.as.controller.management-operation] (Host Controller Service Threads - 36) Initialized for 1933145457
+
+
+
+
+2015-09-18 17:59:32,254 INFO  [org.jboss.as.controller.management-operation] (Host Controller Service Threads - 37) Initialized for 481103151
+
+
+
+
+2015-09-18 17:59:32,255 INFO  [org.jboss.as.controller.management-operation] (Host Controller Service Threads - 36) sending pre-prepare failed response for 1933145457  --- interrupted: false
+
+
+
+
+2015-09-18 17:59:32,256 INFO  [org.jboss.as.controller.management-operation] (Host Controller Service Threads - 37) sending pre-prepare failed response for 481103151  --- interrupted: false
+
+
+
+
+
+
+
+The HC completes boot. Then servers main-three and other-two register. The HC sends a prepared response to a request. This is the host rollout request to the slave from the DC with the response being the ops to invoke on the servers. The HC reports sending a "pre-prepare failed response" to two requests. These are the requests the DC has asked it to proxy to the servers.
+The result of all this for the client is the following failure of a management op:
+
+
+
+
+
+
+Failed operation:
+
+
+
+
+{
+
+
+
+
+    "operation" => "add",
+
+
+
+
+    "address" => [("extension" => "org.jboss.as.test.hc.extension")]
+
+
+
+
+}
+
+
+
+
+Response:
+
+
+
+
+{
+
+
+
+
+    "outcome" => "failed",
+
+
+
+
+    "result" => undefined,
+
+
+
+
+    "failure-description" => {"WFLYDC0074: Operation failed or was rolled back on all servers. Server failures:" => {"server-group" => {
+
+
+
+
+        "main-server-group" => {"host" => {"slave" => {"main-three" => "WFLYHC0153: Channel closed"}}},
+
+
+
+
+        "other-server-group" => {"host" => {"slave" => {"other-two" => "WFLYHC0153: Channel closed"}}}
+
+
+
+
+    }}},
+
+
+
+
+    "rolled-back" => true,
+
+
+
+
+    "server-groups" => {
+
+
+
+
+        "main-server-group" => {"host" => {
+
+
+
+
+            "master" => {"main-one" => {"response" => {
+
+
+
+
+                "outcome" => "failed",
+
+
+
+
+                "result" => [("HC" => "1.1.1")],
+
+
+
+
+                "rolled-back" => true
+
+
+
+
+            }}},
+
+
+
+
+            "slave" => {"main-three" => {"response" => {
+
+
+
+
+                "outcome" => "failed",
+
+
+
+
+                "result" => undefined,
+
+
+
+
+                "failure-description" => "WFLYHC0153: Channel closed",
+
+
+
+
+                "rolled-back" => true
+
+
+
+
+            }}}
+
+
+
+
+        }},
+
+
+
+
+        "other-server-group" => {"host" => {"slave" => {"other-two" => {"response" => {
+
+
+
+
+            "outcome" => "failed",
+
+
+
+
+            "result" => undefined,
+
+
+
+
+            "failure-description" => "WFLYHC0153: Channel closed",
+
+
+
+
+            "rolled-back" => true
+
+
+
+
+        }}}}}
+
+
+
+
+    }
+
+
+
+
+}
+
+
+
+
+
+
+
+The "WFLYHC0153: Channel closed" failure is what is produced when an attempt is made to invoke on a disconnected proxy controller.

@@ -1,0 +1,18 @@
+Occasionally, we'll find it takes long time to elect a leader, might longer then 1 minute, depends on how big the initLimit and tickTime are set.
+  
+ This exposes an issue in leader election protocol. During leader election, before the voter goes to the LEADING/FOLLOWING state, it will wait for a finalizeWait time before changing its state. Depends on the order of notifications, some voter might change mind just after it voting for a server. If the server it was previous voting for has majority of votes after considering this one, then that server will goto LEADING state. In some corner cases, the leader may end up with timeout waiting for epoch ACK from majority, because of the changed mind voter. This usually happen when there are even number of servers in the ensemble (either because one of the server is down or being restarted and it takes long time to restart). If there are 5 servers in the ensemble, then we'll find two of them in LEADING/FOLLOWING state, another two in LOOKING state, but the LOOKING servers cannot join the quorum since they're waiting for majority servers FOLLOWING the current leader before changing to FOLLOWING as well.
+  
+ As far as we know, this voter will change mind if it received a vote from another host which just started and start to vote itself, or there is a server takes long time to shutdown it's previous ZK server and start to vote itself when starting the leader election process.
+  
+ Also the follower may abandon the leader if the leader is not ready for accepting learner connection when the follower tried to connect to it.
+  
+ To solve this issue, there are multiple options: 
+
+1. increase the finalizeWait time
+
+2. smartly detect this state on leader and quit earlier
+
+ 
+ The 1st option is straightforward and easier to change, but it will cause longer leader election time in common cases.
+  
+ The 2nd option is more complexity, but it can efficiently solve the problem without sacrificing the performance in common cases. It remembers the first majority servers voting for it, checking if there is anyone changed mind while it's waiting for epoch ACK. The leader will wait for sometime before quitting LEADING state, since one voter changed may not be a problem if there are still majority voters voting for it.

@@ -1,0 +1,368 @@
+Hi
+After profiling (well sampling) my code I have noticed that AnnotationParameterNameDiscoverer taking up a large portion of time is taken up by 
+
+
+
+
+
+AnnotationParameterNameDiscoverer.ParameterNameFactory.findAnnotationsAt()
+
+
+
+
+
+
+For 10k requests which takes 24seconds, about 5.7 seconds was spent in that method 
+Here is an example of a method that will take a long time to run
+
+
+
+
+
+
+@RequestMapping(value = "/c/{c}/bar", method = RequestMethod.PUT, params = {"!redirectTarget"})
+
+
+
+
+  @PreAuthorize("hasPermission(#c, 'c') and hasRole('sec.awsome')")
+
+
+
+
+  public Response something(
+
+
+
+
+      @PathVariable String c,
+
+
+
+
+      @RequestParam("k") String k,
+
+
+
+
+      @RequestBody byte[] content,
+
+
+
+
+      @RequestParam(value="f", required=false) String f,
+
+
+
+
+      @RequestHeader(value="Content-Type", required=false, defaultValue="application/octet-stream") String mimeType,
+
+
+
+
+      @RequestHeader(required=false) Map<String, String> headers
+
+
+
+
+      ) throws Exception {
+
+
+
+
+         //do almost nothing.
+
+
+
+
+      }
+
+
+
+
+
+
+while here is an example of something that runs quickly.
+
+
+
+
+
+
+    @RequestMapping(value = "/c/{c}/s", method = RequestMethod.GET)
+
+
+
+
+    @PreAuthorize("hasPermission(#c, 'c') and hasRole('sec.can.dance')")
+
+
+
+
+    public AnnotatedStateResponse getState(
+
+
+
+
+        @PathVariable String collection) throws Exception {
+
+
+
+
+        //not much stuff
+
+
+
+
+    }
+
+
+
+
+
+
+That takes considerably less time and almost not time (less than a second ) is spent in that findAnnotationsAt method.
+Looking at the code I realise what the problem is I will guid you though it now:
+
+
+
+
+
+
+    private static final ParameterNameFactory<Method> METHOD_METHODPARAM_FACTORY = new ParameterNameFactory<Method>() {
+
+
+
+
+       .......
+
+
+
+
+        public Annotation[] findAnnotationsAt(Method method, int index) {
+
+
+
+
+            //THIS TAKES A LONG TIME AND IS CALLED MANY TIMES!
+
+
+
+
+            return method.getParameterAnnotations()[index];
+
+
+
+
+        }
+
+
+
+
+    };
+
+
+
+
+
+
+Now the part that calls it:
+
+
+
+
+
+
+/**
+
+
+
+
+     * Gets the parameter names or null if not found.
+
+
+
+
+     *
+
+
+
+
+     * @param parameterNameFactory the {@link ParameterNameFactory} to use
+
+
+
+
+     * @param t the {@link AccessibleObject} to find the parameter names on (i.e. Method or Constructor)
+
+
+
+
+     * @return the parameter names or null
+
+
+
+
+     */
+
+
+
+
+    private <T extends AccessibleObject> String[] lookupParameterNames(
+
+
+
+
+            ParameterNameFactory<T> parameterNameFactory, T t) {
+
+
+
+
+        int parameterCount = parameterNameFactory.getParamCount(t);
+
+
+
+
+        String[] paramNames = new String[parameterCount];
+
+
+
+
+        boolean found = false;
+
+
+
+
+        for (int i = 0; i < parameterCount; i++) {
+
+
+
+
+            //HERE is the part of the problem!
+
+
+
+
+            Annotation[] annotations = parameterNameFactory.findAnnotationsAt(t, i);
+
+
+
+
+            String parameterName = findParameterName(annotations);
+
+
+
+
+            if (parameterName != null) {
+
+
+
+
+                found = true;
+
+
+
+
+                paramNames[i] = parameterName;
+
+
+
+
+            }
+
+
+
+
+        }
+
+
+
+
+        return found ? paramNames : null;
+
+
+
+
+    }
+
+
+
+
+
+
+the problem is if we have say 6 parameters we will call 
+
+
+
+
+
+findAnnotationsAt(t, i)
+
+
+
+
+
+ 6 times, each time it calls that it will use reflection to get the annotations on the methods 
+
+
+
+
+
+method.getParameterAnnotations()
+
+
+
+
+
+. Of course the more methods the more costly 
+
+
+
+
+
+method.getParameterAnnotations()
+
+
+
+
+
+ is.
+Lets look at it in big O notations. If 
+
+
+
+
+
+method.getParameterAnnotations()
+
+
+
+
+
+ costs the number of parameters lets call that n, the complexity is:
+O(n*n)
+I would recommend that we avoid calling 
+
+
+
+
+
+method.getParameterAnnotations()
+
+
+
+
+
+ multiple times.
+I think we should also consider caching the result of 
+
+
+
+
+
+method.getParameterAnnotations()
+
+
+
+
+

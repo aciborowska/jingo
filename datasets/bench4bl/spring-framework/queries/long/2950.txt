@@ -1,0 +1,36 @@
+Hello,
+Folowing call for getJdbcTemplate().query(sql,new Object[]
+{"001"},new RowCallbackHandler(){...});
+may result in improper data. The same is true for getJdbcTemplate().update("select mumu from SOME_TABLE where umum=?",new Object[]{"001"}
+);
+but in latter case data in DB may be corrupted so this issue is rather critical.
+The problem is caused by following code in StatementCreatorUtils.setParameterValue (that presumable has appeared there as result of SPR--1150 resolution, http://opensource.atlassian.com/projects/spring/browse/SPR-1150), line 186 in 2.0.1.
+else if (sqlType == SqlTypeValue.TYPE_UNKNOWN) {
+//-----------------> Offendig check !!!!
+	if (inValue instanceof StringBuffer || inValue instanceof StringWriter) 
+{
+		ps.setString(paramIndex, inValue.toString());
+	}
+	else if ((inValue instanceof java.util.Date) && !(inValue instanceof java.sql.Date ||
+		inValue instanceof java.sql.Time || inValue instanceof java.sql.Timestamp)) 
+{
+		ps.setTimestamp(paramIndex, new java.sql.Timestamp(((java.util.Date) inValue).getTime()));
+	}
+	else if (inValue instanceof Calendar) 
+{
+		Calendar cal = (Calendar) inValue;
+		ps.setTimestamp(paramIndex, new java.sql.Timestamp(cal.getTime().getTime()));
+	}
+	else 
+{
+		// Fall back to generic setObject call without SQL type specified.
+		ps.setObject(paramIndex, inValue);
+	}
+}
+As it can be seen from this code, StringBuffer gets special treatment and is recognized as string, but String itself  (along with StringBuider)- not! 
+As result databases treat this as parameter as integer if it is string representation of integer, that may render invalid results, 
+especially  if string has leading zeros. Do not know, if this behavior is database dependent, but at least Oracle exhibits it.
+In my opinion above-marked check should look as follows
+	if (inValue instanceof CharcterSequence || inValue instanceof StringWriter) {
+Regards, 
+Oleksandr

@@ -1,0 +1,51 @@
+Bug was found with version 1.2.2.RELEASE of spring-data-gemfire, gemfire 7.0 and Spring framework 3.2.0.RELEASE.
+Method doCommit of GemfireTransactionManager catches org.springframework.transaction.TransactionException while com.gemstone.gemfire.cache.CacheTransactionManager.commit() throws com.gemstone.gemfire.cache.TransactionException when commit fails.
+So gemfire exception is ignored by GemfireTransactionManager and is caught in
+org.springframework.transaction.support.AbstractPlatformTransactionManager (line 779) as RuntimeException and isRollbackOnCommitFailure is ignored.
+Roll back attempt fails with "java.lang.IllegalStateException: Thread does not have an active transaction" exception.
+Here are code fragments from AbstractPlatformTransactionManager:
+-------------
+                        catch (TransactionException ex) {
+                                // can only be caused by doCommit
+                                if (isRollbackOnCommitFailure()) 
+{
+                                        doRollbackOnCommitException(status, ex);
+                                }
+                                else 
+{
+                                        triggerAfterCompletion(status, TransactionSynchronization.STATUS_UNKNOWN);
+                                }
+                                throw ex;
+                        }
+                        catch (RuntimeException ex) {
+                                if (!beforeCompletionInvoked) 
+{
+                                        triggerBeforeCompletion(status);
+                                }
+                                doRollbackOnCommitException(status, ex);
+                                throw ex;
+                        }
+-------------
+and GemfireTransactionManager:
+        @Override
+        protected void doCommit(DefaultTransactionStatus status) throws TransactionException {
+                // CacheTransactionObject txObject = (CacheTransactionObject)
+                // status.getTransaction();
+                if (status.isDebug()) 
+{
+                        logger.debug("Committing Gemfire local transaction on Cache [" + cache + "]");
+                }
+                try 
+{
+                        cache.getCacheTransactionManager().commit();
+                }
+                catch (IllegalStateException ex) 
+{
+                        throw new NoTransactionException(
+                                        "No transaction associated with the current thread; are there multiple transaction managers ?", ex);
+                }
+                catch (TransactionException ex) 
+{
+                        throw new GemfireTransactionCommitException("Unexpected failure on commit of Cache local transaction", ex);
+                }
+        }

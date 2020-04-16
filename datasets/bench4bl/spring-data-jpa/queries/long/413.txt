@@ -1,0 +1,368 @@
+I have 2 JPA entities that have compound keys, and so both are using the @IdClass object to store the compound primary key.
+The first entity and id class uses two integers as the compound key.
+
+
+
+
+
+
+ 
+
+
+
+
+@Entity
+
+
+
+
+@IdClass(ItemId.class)
+
+
+
+
+public class Item {
+
+
+
+
+	
+
+
+
+
+	@Id
+
+
+
+
+	@Column(columnDefinition = "INT")
+
+
+
+
+	private Integer id;
+
+
+
+
+ 
+
+
+
+
+	@Id
+
+
+
+
+	@Column(name = "sales_device_id", columnDefinition = "INT")
+
+
+
+
+	private Integer salesDeviceId;
+
+
+
+
+ 
+
+
+
+
+	....
+
+
+
+
+}
+
+
+
+
+ 
+
+
+
+
+ 
+
+
+
+
+public class ItemId implements Serializable {
+
+
+
+
+	
+
+
+
+
+	public Integer id;
+
+
+
+
+	
+
+
+
+
+	public Integer salesDeviceId;
+
+
+
+
+ 
+
+
+
+
+	....
+
+
+
+
+}
+
+
+
+
+
+
+The second entity and id class uses three integers as the compound key, however I am using entities as the @Id values.  Two of the primary key columns are part of the Item entity, and the third column belongs to the Site entity.
+
+
+
+
+
+
+ 
+
+
+
+
+@Entity
+
+
+
+
+@IdClass(ItemSiteId.class)
+
+
+
+
+public class ItemSite {
+
+
+
+
+	
+
+
+
+
+	@Id
+
+
+
+
+	@ManyToOne
+
+
+
+
+	private Item item;
+
+
+
+
+	
+
+
+
+
+	@Id
+
+
+
+
+	@ManyToOne
+
+
+
+
+	private Site site;
+
+
+
+
+ 
+
+
+
+
+	....
+
+
+
+
+}
+
+
+
+
+
+
+For this case the Id class for ItemSite must use the Id class from Item as described in the OpenJPA documentation in example 5.6 http://openjpa.apache.org/builds/2.2.2/apache-openjpa/docs/ref_guide_pc_oid.htmll 
+
+
+
+
+
+
+ 
+
+
+
+
+public class ItemSiteId implements Serializable {
+
+
+
+
+	
+
+
+
+
+	public ItemId item;
+
+
+
+
+	
+
+
+
+
+	public Integer site;
+
+
+
+
+ 
+
+
+
+
+	....
+
+
+
+
+}
+
+
+
+
+
+
+Using these nested Id classes, spring data throws an exception of type conversion failure from the JpaMetamodelEntityInformation class.  After downloading version 1.4.1 source, I applied a rewrite of the IdentifierDerivingDirectFieldAccessFallbackBeanWrapper method setPropertyValue (around line 323 in JpaMetamodelEntityInformation) and it resolves the exception.  
+Here is my change:
+
+
+
+
+
+
+ 
+
+
+
+
+@Override
+
+
+
+
+public void setPropertyValue(String propertyName, Object value) {
+
+
+
+
+ 
+
+
+
+
+	if (isIdentifierDerivationNecessary(value)) {
+
+
+
+
+ 
+
+
+
+
+		// Derive the identifer from the nested entity that is part of the composite key.
+
+
+
+
+		@SuppressWarnings({ "rawtypes", "unchecked" })
+
+
+
+
+		JpaMetamodelEntityInformation nestedEntityInformation = new JpaMetamodelEntityInformation(value.getClass(),
+
+
+
+
+				this.metamodel);
+
+
+
+
+		
+
+
+
+
+		super.setPropertyValue(propertyName, nestedEntityInformation.getId(value));
+
+
+
+
+		return;
+
+
+
+
+	}
+
+
+
+
+ 
+
+
+
+
+	super.setPropertyValue(propertyName, value);
+
+
+
+
+}
+
+
+
+
+
+ 

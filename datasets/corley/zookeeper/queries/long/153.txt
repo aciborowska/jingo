@@ -1,0 +1,39 @@
+Subscribe Method
+(note, this was moved from http://zookeeper.wiki.sourceforge.net/SubscribeMethod)
+
+Outline of the semantics and the requirements of a yet-to-be-implemented subscribe() method.
+
+Background
+
+ZooKeeper uses a very light weight one-time notification method for notifying interested clients of changes to ZooKeeper data nodes (znode). Clients can set a watch on a node when they request information about a znode. The watch is atomically set and the data returned, so that any subsequent changes to the znode that affect the data returned will trigger a watch event. The watch stays in place until triggered or the client is disconnected from a ZooKeeper server. A disconnect watch event implicitly triggers all watches.
+
+ZooKeeper users have wondered if they can set permanent watches rather than one time watches. In reality such permanent watches do not provide any extra benefit over one time watches. Specifically, no data is included in a watch event, so the client still needs to do a query operation to get the data corresponding to a change; even then, the znode can change yet again after the event is received and before the client sends the query operation. Even the number of of changes to a znode can be found using one time watches and checking the mzxid in the stat structure of the znode. And the client will still miss events that happen when the client switches ZooKeeper servers.
+
+There are use cases that require clients to see every change to a ZooKeeper node. The most general case is when a client behaves like a state machine and each change to the znode changes the state of the client. In these cases ZooKeeper is much more like a publish/subscribe system than a distributed register. To support this case we need not only reliable permanent watches (we even get the events that happen while switching servers) but also the data that caused the change, so that the client doesn't miss data that occurs between rapid fire changes.
+
+Semantics
+
+The subscribe(String path) causes ZooKeeper to register a subscription for a znode. The initial value of the znode and any subsequent changes to that znode will cause a watch event with the data to be sent to the client. The client will see all changes in order. If a client switches servers, any missed events with the corresponding data will be sent to the client when the client reconnects to a server.
+
+There are three ways to cancel a subscription:
+
+   1. Calling unsubscribe(String path)
+   2. Closing the ZooKeeper session or letting it expire
+   3. Falling too far behind. If the server decides that a client is not processing the watch events fast enough, it will cancel the subscription and send a SUBSCRIPTION_CANCELLED watch event.
+
+
+Requirements
+
+There are a couple of things that make it hard to implement the subscribe() method:
+
+   1. Servers must have complete transaction logs - Currently ZooKeeper servers just need to have their data trees and in flight transaction logs in sync. When a follower syncs to a leader, the leader can just blast down a new snapshot of its data tree; it does not need to send past transactions that the follower might have missed. However in order to send changes that might have been missed by a client, the ZooKeeper server must be able to look into the past to send missed changes.
+   2. Servers must be able to send clients information about past changes - Currenly ZooKeeper servers just send clients information about the current state of the system. However, to implement subscribe clients must be able to go back into the log and send watches for past changes.
+
+
+Implementation Hints
+
+There are things that work in our favor. ZooKeeper does have a bound on the amount of time it needs to look into the past. A ZooKeeper server bounds the session expiration time. The server does not need to keep a record of transactions older than this bound.
+
+ZooKeeper also keeps a log of transactions. As long as the log is complete enough (as all the transaction back to the longest expiration time) the server has the information it needs and it isn't hard to process.
+
+We do not want to cause the log disk to seek while looking at past transactions. There are two complimentary approaches to handling this problems: keep a few of the transactions from the recent past in memory and log to two disks. The first log disk will be synced before letting requests proceed and the second disk will not be synced. Recovery uses the first log disk and ensures that the second log disk has the same log at recovery time. The second log disk is to look into the past. Using the two disks in this way allows synchronous logging to be fast because seeks are avoided on the disk with the synchronous log.

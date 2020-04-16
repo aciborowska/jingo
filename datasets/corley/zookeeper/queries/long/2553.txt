@@ -1,0 +1,53 @@
+I am running a three node ZooKeeper cluster. 
+
+When a new log file is created by ZooKeeper, I see the following sequence of system calls:
+
+1. creat(new_log)
+2. write(new_log, count=16) // This is a log header I believe/
+3. truncate(new_log, from 16 bytes to 16 KBytes) // I have configured the log size to be 16K. 
+
+When the above sequence of operations complete, it is reasonable to expect the newly created log file to contain the header(16 bytes) and then filled with zeros till the end of the log.
+
+But when a crash occurs (due to a power failure), while the truncate system call is in progress, it is possible for the log to contain garbage data when the system restarts from the crash. Note that if the crash occurs just after the truncate system call completes, then there is no problem. Basically, the truncate needs to be atomically persisted for ZooKeeper to recover from crashes correctly  or (more realistically) the recovery code needs to deal with the case of expecting garbage in a newly created log. 
+
+As mentioned, if a crash occurs during the truncate system call, then ZooKeeper will fail to start with the following exception. Here is the stack trace:
+
+java.io.IOException: Unreasonable length = -295704495
+        at org.apache.jute.BinaryInputArchive.checkLength(BinaryInputArchive.java:127)
+        at org.apache.jute.BinaryInputArchive.readBuffer(BinaryInputArchive.java:92)
+        at org.apache.zookeeper.server.persistence.Util.readTxnBytes(Util.java:233)
+        at org.apache.zookeeper.server.persistence.FileTxnLog$FileTxnIterator.next(FileTxnLog.java:625)
+        at org.apache.zookeeper.server.persistence.FileTxnLog$FileTxnIterator.next(FileTxnLog.java:652)
+        at org.apache.zookeeper.server.persistence.FileTxnLog$FileTxnIterator.init(FileTxnLog.java:552)
+        at org.apache.zookeeper.server.persistence.FileTxnLog$FileTxnIterator.<init>(FileTxnLog.java:527)
+        at org.apache.zookeeper.server.persistence.FileTxnLog.read(FileTxnLog.java:354)
+        at org.apache.zookeeper.server.persistence.FileTxnSnapLog.restore(FileTxnSnapLog.java:132)
+        at org.apache.zookeeper.server.ZKDatabase.loadDataBase(ZKDatabase.java:223)
+        at org.apache.zookeeper.server.quorum.QuorumPeer.loadDataBase(QuorumPeer.java:510)
+        at org.apache.zookeeper.server.quorum.QuorumPeer.start(QuorumPeer.java:500)
+        at org.apache.zookeeper.server.quorum.QuorumPeerMain.runFromConfig(QuorumPeerMain.java:153)
+        at org.apache.zookeeper.server.quorum.QuorumPeerMain.initializeAndRun(QuorumPeerMain.java:111)
+        at org.apache.zookeeper.server.quorum.QuorumPeerMain.main(QuorumPeerMain.java:78)
+[myid:1] - ERROR [main:QuorumPeerMain@89] - Unexpected exception, exiting abnormally
+java.lang.RuntimeException: Unable to run quorum server
+        at org.apache.zookeeper.server.quorum.QuorumPeer.loadDataBase(QuorumPeer.java:558)
+        at org.apache.zookeeper.server.quorum.QuorumPeer.start(QuorumPeer.java:500)
+        at org.apache.zookeeper.server.quorum.QuorumPeerMain.runFromConfig(QuorumPeerMain.java:153)
+        at org.apache.zookeeper.server.quorum.QuorumPeerMain.initializeAndRun(QuorumPeerMain.java:111)
+        at org.apache.zookeeper.server.quorum.QuorumPeerMain.main(QuorumPeerMain.java:78)
+Caused by: java.io.IOException: Unreasonable length = -295704495
+        at org.apache.jute.BinaryInputArchive.checkLength(BinaryInputArchive.java:127)
+        at org.apache.jute.BinaryInputArchive.readBuffer(BinaryInputArchive.java:92)
+        at org.apache.zookeeper.server.persistence.Util.readTxnBytes(Util.java:233)
+        at org.apache.zookeeper.server.persistence.FileTxnLog$FileTxnIterator.next(FileTxnLog.java:625)
+        at org.apache.zookeeper.server.persistence.FileTxnLog$FileTxnIterator.next(FileTxnLog.java:652)
+        at org.apache.zookeeper.server.persistence.FileTxnLog$FileTxnIterator.init(FileTxnLog.java:552)
+        at org.apache.zookeeper.server.persistence.FileTxnLog$FileTxnIterator.<init>(FileTxnLog.java:527)
+        at org.apache.zookeeper.server.persistence.FileTxnLog.read(FileTxnLog.java:354)
+        at org.apache.zookeeper.server.persistence.FileTxnSnapLog.restore(FileTxnSnapLog.java:132)
+        at org.apache.zookeeper.server.ZKDatabase.loadDataBase(ZKDatabase.java:223)
+        at org.apache.zookeeper.server.quorum.QuorumPeer.loadDataBase(QuorumPeer.java:510)
+        ... 4 more
+
+
+Next, it is possible for two nodes of a 3-node  ZooKeeper cluster to reach the same state. In that case, they both will fail to startup, rendering the entire cluster unavailable. 

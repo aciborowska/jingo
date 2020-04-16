@@ -1,0 +1,88 @@
+We are using a custom main class whose main method reacts on a single argument: "start" or "stop". Actually we are feeding that argument through Procrun (https://commons.apache.org/proper/commons-daemon/procrun.html). Inside that main class we hold a field
+
+
+
+
+
+
+    private static org.wildfly.swarm.Swarm container
+
+
+
+
+
+
+
+which we handle as following during startup:
+
+
+
+
+
+
+    container = new Swarm(); // fractions being added here also
+
+
+
+
+    container.start();
+
+
+
+
+    container.deploy(...);
+
+
+
+
+
+
+
+The reaction on the "stop" signal is as easy as following:
+
+
+
+
+
+
+    container.stop();
+
+
+
+
+
+
+
+We now have the problem that stopping such a Swarm service in version 2016.11.0 does not properly shutdown the Swarm container (or better the underlying `Server`). I did a debug session and found out that there remains one non-daemon thread blocking the JVM shutdown. With version 2016.10.0 everything works fine. The shutdown is clean and fast.
+An example project can be found at https://github.com/seelenvirtuose/de.mwa.testing.wfs. But I also have attached it as a zip.  de.mwa.testing.wfs-master.zip 
+Procrun can be downloaded at http://mirror.serversupportforum.de/apache//commons/daemon/binaries/windows/commons-daemon-1.0.15-bin-windows.zip
+Steps to reproduce:
+1) Clone the github project and start a "mvn package" to produce the uber-jar, which is located in the "swarm" sub-module of that project.
+2) Copy that uber-jar and both procrun executables ("prunsrv.exe" and "prunmgr.exe") into a test directory. For 64-bit OS's use the file "amd64/prunsrv.exe" (inside that procrun zip file). Rename the file "prunsrv.exe" to "testing-wfs.exe" and the file "prunmgr.exe" to "testing-wfsw.exe".
+3) Install a Windows service by running the command "testing-wfs.exe //IS". Now this service can be configured by running the "testing-wfsw.exe" (a Windows GUI Tool for that purpose).
+4) Configure the service as following:
+Tab Logging
+Log path: <path-to-the-service-directory>\logs
+Redirect Stdout: auto
+Redirect Stderror: auto
+Tab Java
+Java Virtual Machine: Path to the "jvm.dll" of a JRE 8 (usually <path-to-jdk>\jre\bin\server\jvm.dll).
+Java Classpath: Full path to the uber-jar.
+Java Options: -agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=7777 (to enable remote debugging).
+Tab Startup
+Class: org.wildfly.swarm.bootstrap.Main
+Method: main
+Arguments: start
+Mode: jvm
+Tab Shutdown
+Class: org.wildfly.swarm.bootstrap.Main
+Method: main
+Arguments: stop
+Mode:jvm
+5) Now start the service. After a succesful start you can "GET http://localhost:8080/hello", which should result in a "Hello World" response.
+6) The service has many threads running. See first attached screenshot.  
+7) Now stop the service. Windows will hang in that stopping attempt and spit out a failure message after some time. The process is still running afterwards. The log file shows some output that indeed a shutdown is initalized. The GET does not work anymore.
+8) The service still has many threads (especially non-daemon threads). See second attached screenshot.  
+Note, that I have other services, which show only two non-deamon threads after a shutdown attempt.
+9) Killing the task "testing-wfs.exe" is the only way to stop the process completely.
+Switching the Wildfly Swarm version to 2016.10.0 (in the POM of "swarm" module) makes it work great. Starting and stopping run both smoothly.

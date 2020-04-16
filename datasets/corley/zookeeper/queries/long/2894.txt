@@ -1,0 +1,47 @@
+ZooKeeper C Client single thread build
+
+First of all, ZooKeeper C Client design allows calling zookeeper_close() in two ways:
+a) from a ZooKeeper callback handler (completion or watcher) which in turn is called through zookeeper_process()
+b) and from other places – i.e., when the call-stack does not pass through any of zookeeper mechanics prior to enter into mentioned zookeeper_close()
+
+The issue described here below is specific only to the case (b). So, it's Ok with the case (a).
+
+When zookeeper_close() is called in the (b) way, the following happens:
+1. If there are requests waiting for responses in zh.sent_requests queue, they all are removed from this queue and each of them is "completed" with personal fake response having status ZCLOSING. Such fake responses are put into zh.completions_to_process queue. It's Ok
+2. But then, zh.completions_to_process queue is left unhandled. Neither completion callbacks are called, nor dynamic memory allocated for fake responses is freed
+3. Different structures within zh are dismissed and finally zh is freed
+
+This is illustrated on the screenshot attached to this ticket: you may see that the next instruction to execute will be free(zh) while zh.completions_to_process queue is not empty (see the "Variables" tab to the right).
+
+Alternatively, the same situation but in the case (a) is handled properly – i.e., all completion callback handlers are truly called with ZCLOSING and the memory is freed, both for subcases (a.1) when there is a failure like connection-timeout, connection-closed, etc., or (a.2) there is not failure. The reason is that any callback handler (completion or watcher) in the case (a) is called from the process_completions() function which runs in the loop until zh.completions_to_process queue gets empty. So, this function guarantees this queue to be completely processed even if new completions occur during reaction on previously queued completions.
+
+Consequently:
+1. At least there is definitely the memory leak in the case (b) – all the fake responses put into zh.completions_to_process queue are lost after free(zh)
+2. And it looks like a great misbehavior not to call completions on sent requests in the case (b) while they are called with ZCLOSING in the case (a) – so, I think it's not "by design" but a completions leak
+
+To reproduce the case (b) do the following:
+
+	open ZooKeeper session, connect to a server, receive and process connected-watch, etc.
+	then somewhere from the main events loop call for example zoo_acreate() with valid arguments – it shall return ZOK
+	then, immediately after it returned, call zookeeper_close()
+	note that completion callback handler for zoo_acreate() will not be called
+
+
+
+To reproduce the case (a) do the following:
+
+	the same as above, open ZooKeeper session, connect to a server, receive and process connected-watch, etc.
+	the same as above, somewhere from the main events loop call for example zoo_acreate() with valid arguments – it shall return ZOK
+	but now don't call zookeeper_close() immediately – wait for completion callback on the commenced request
+	when zoo_acreate() completes, from within its completion callback handler, call another zoo_acreate() and immediately after it returned call zookeeper_close()
+	note that completion callback handler for the second zoo_acreate() will be called with ZCLOSING, unlike the case (b) described above
+
+
+
+To fix this I propose calling to process_completions() from destroy(zhandle_t *zh) as it is done in handle_error(zhandle_t *zh,int rc).
+
+This is a proposed fix: https://github.com/apache/zookeeper/pull/363
+
+[upd]
+There are another tickets with about the same problem: ZOOKEEPER-1493, ZOOKEEPER-2073 (the "same" just according to their titles).
+However, as I can see, the corresponding patches were applied on the branch 3.4.10, but the effect still persists – so, this ticket does not duplicate the mentioned two.

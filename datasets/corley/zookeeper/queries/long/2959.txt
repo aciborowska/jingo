@@ -1,0 +1,51 @@
+Once the ZooKeeper cluster finishes the election for new leader, all learners report their accepted epoch to the leader for the computation of new cluster epoch.
+
+org.apache.zookeeper.server.quorum.Leader#getEpochToPropose
+
+
+    private final HashSet<Long> connectingFollowers = new HashSet<Long>();
+    public long getEpochToPropose(long sid, long lastAcceptedEpoch) throws InterruptedException, IOException {
+        synchronized(connectingFollowers) {
+            if (!waitingForNewEpoch) {
+                return epoch;
+            }
+            if (lastAcceptedEpoch >= epoch) {
+                epoch = lastAcceptedEpoch+1;
+            }
+            connectingFollowers.add(sid);
+            QuorumVerifier verifier = self.getQuorumVerifier();
+            if (connectingFollowers.contains(self.getId()) &&
+                                            verifier.containsQuorum(connectingFollowers)) {
+                waitingForNewEpoch = false;
+                self.setAcceptedEpoch(epoch);
+                connectingFollowers.notifyAll();
+            } else {
+                long start = Time.currentElapsedTime();
+                long cur = start;
+                long end = start + self.getInitLimit()*self.getTickTime();
+                while(waitingForNewEpoch && cur < end) {
+                    connectingFollowers.wait(end - cur);
+                    cur = Time.currentElapsedTime();
+                }
+                if (waitingForNewEpoch) {
+                    throw new InterruptedException("Timeout while waiting for epoch from quorum");
+                }
+            }
+            return epoch;
+        }
+    }
+
+
+
+The computation will get an outcome once :
+
+	The leader has call method "getEpochToPropose"
+	The number of all reporters is greater than half of participants.
+
+
+
+The problem is, an observer server will also send its accepted epoch to the leader, while this procedure treat observers as participants.
+
+Supposed that the cluster consists of 1 leader, 2 followers and 1 observer, and now the leader and the observer have reported their accepted epochs while neither of the followers has. Thus, the connectingFollowers set consists of two elements, resulting in a size of 2, which is greater than half quorum, namely, 2. Then QuorumVerifier#containsQuorum will return true, because it does not check whether the elements of the parameter are participants.
+
+The same flaw exists in org.apache.zookeeper.server.quorum.Leader#waitForEpochAck

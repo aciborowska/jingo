@@ -1,0 +1,58 @@
+I have a script which uses Map data, and runs a UDF, which creates random numbers and then orders the data by these random numbers.
+
+
+REGISTER myloader.jar;
+--jar produced from the source code listed below
+REGISTER math.jar;
+
+DEFINE generator math.Random();
+
+inputdata = LOAD '/user/viraj/mymapdata'   USING MyMapLoader()    AS (s:map[], m:map[], l:map[]);
+
+queries = FILTER inputdata   BY m#'key'#'query' IS NOT null;
+
+queries_rand = FOREACH queries  GENERATE generator('') AS rand_num, (CHARARRAY) m#'key'#'query' AS query_string;
+
+queries_sorted = ORDER queries_rand  BY rand_num  PARALLEL 10;
+
+queries_limit = LIMIT queries_sorted 1000;
+
+rand_queries = FOREACH queries_limit  GENERATE query_string;
+
+STORE rand_queries INTO 'finalresult';
+
+
+
+
+UDF source for Random.java
+
+package math;
+
+import java.io.IOException;
+
+/*
+* Implements a random float [0,1) generator.
+*/
+
+public class Random extends EvalFunc<Float>
+{
+        private final Random m_rand = new Random();
+
+       public Float exec(Tuple input) throws IOException
+        {
+               return new Float(m_rand.nextFloat());
+        }
+
+        public Schema outputSchema(Schema input)
+        {
+               final String name = getSchemaName(getClass().getName(), input);
+               return new Schema(new Schema.FieldSchema(name, DataType.FLOAT));
+        }
+}
+
+
+
+Running this script returns the following error in the Mapper
+=============================================
+java.io.IOException: Type mismatch in key from map: expected org.apache.pig.impl.io.NullableFloatWritable, recieved org.apache.pig.impl.io.NullableText at org.apache.hadoop.mapred.MapTask$MapOutputBuffer.collect(MapTask.java:845) at org.apache.hadoop.mapred.MapTask$OldOutputCollector.collect(MapTask.java:466) at org.apache.pig.backend.hadoop.executionengine.mapReduceLayer.PigMapReduce$Map.collect(PigMapReduce.java:109) at org.apache.pig.backend.hadoop.executionengine.mapReduceLayer.PigMapBase.runPipeline(PigMapBase.java:255) at org.apache.pig.backend.hadoop.executionengine.mapReduceLayer.PigMapBase.map(PigMapBase.java:244) at org.apache.pig.backend.hadoop.executionengine.mapReduceLayer.PigMapReduce$Map.map(PigMapReduce.java:94) at org.apache.hadoop.mapred.MapRunner.run(MapRunner.java:50) at org.apache.hadoop.mapred.MapTask.runOldMapper(MapTask.java:358) at org.apache.hadoop.mapred.MapTask.run(MapTask.java:307) at org.apache.hadoop.mapred.Child.main(Child.java:159) 
+=============================================

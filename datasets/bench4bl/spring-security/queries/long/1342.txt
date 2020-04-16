@@ -1,0 +1,44 @@
+	<security:http use-expressions="true">
+		<security:access-denied-handler error-page="/authfail.html" />
+		<!-- XXX requires-channel="https" -->
+		<security:intercept-url pattern="/app/**" access="hasAnyRole('ROLE_A','ROLE_B','ROLE_C','ROLE_D')" />
+		<security:intercept-url pattern="/css/**" access="isAuthenticated()" />
+		<security:intercept-url pattern="/images/logo.png" access="permitAll" />
+		<security:intercept-url pattern="/images/**" access="isAuthenticated()" />
+		<security:intercept-url pattern="/xmlhttp/**" access="isAuthenticated()" />
+		<security:intercept-url pattern="/authfail.html" access="permitAll" />
+		<security:intercept-url pattern="/login.jsp" access="permitAll" />
+		<security:intercept-url pattern="/**" access="denyAll" />
+		<security:form-login always-use-default-target="true" default-target-url="/app/index.jspx" login-page="/" />
+		<security:logout invalidate-session="true" logout-success-url="/" />
+		<security:anonymous />
+		<security:session-management>
+			<security:concurrency-control max-sessions="1" />
+		</security:session-management>
+	</security:http>
+When the context loads, this happens:
+Caused by: java.lang.IllegalArgumentException: Expected a single expression attribute for [<url>]
+	at org.springframework.util.Assert.isTrue(Assert.java:65)
+	at org.springframework.security.web.access.expression.ExpressionBasedFilterInvocationSecurityMetadataSource.processMap(ExpressionBasedFilterInvocationSecurityMetadataSource.java:43)
+	at org.springframework.security.web.access.expression.ExpressionBasedFilterInvocationSecurityMetadataSource.<init>(ExpressionBasedFilterInvocationSecurityMetadataSource.java:30)
+	at sun.reflect.NativeConstructorAccessorImpl.newInstance0(Native Method)
+	at sun.reflect.NativeConstructorAccessorImpl.newInstance(NativeConstructorAccessorImpl.java:39)
+	at sun.reflect.DelegatingConstructorAccessorImpl.newInstance(DelegatingConstructorAccessorImpl.java:27)
+	at java.lang.reflect.Constructor.newInstance(Constructor.java:513)
+	at org.springframework.beans.BeanUtils.instantiateClass(BeanUtils.java:126)
+	... 37 more
+That bit of code in o.s.s.web.access.expression.ExpressionBasedFilterInvocationSecurityMetadataSource looks like this:
+    public ExpressionBasedFilterInvocationSecurityMetadataSource(UrlMatcher urlMatcher,
+            LinkedHashMap<RequestKey, Collection<ConfigAttribute>> requestMap, WebSecurityExpressionHandler expressionHandler) 
+{
+        super(urlMatcher, processMap(requestMap, expressionHandler.getExpressionParser()));
+        Assert.notNull(expressionHandler, "A non-null SecurityExpressionHandler is required");
+    }
+
+    private static LinkedHashMap<RequestKey, Collection<ConfigAttribute>> processMap(
+            LinkedHashMap<RequestKey,Collection<ConfigAttribute>> requestMap, ExpressionParser parser) {
+[...]
+        for (Map.Entry<RequestKey, Collection<ConfigAttribute>> entry : requestMap.entrySet()) {
+            RequestKey request = entry.getKey();
+            Assert.isTrue(entry.getValue().size() == 1, "Expected a single expression attribute for " + request);
+The Assert is line 43, where the failure happens. In the debugger, entry.getValue() has 4 entries. It is basically the expression hasAnyRole('ROLE_A','ROLE_B','ROLE_C','ROLE_D') tokenized on the commas.

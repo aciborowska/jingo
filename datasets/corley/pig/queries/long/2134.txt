@@ -1,0 +1,44 @@
+(Bug filed on 0.8. I do not have 0.9 to test.)
+
+This applies to org.apache.pig.impl.builtin.ReadScalars.java:83
+
+http://search-hadoop.com/c/Pig:/src/org/apache/pig/impl/builtin/ReadScalars.java
+
+I have bitten myself with the same programming error several times, and each time I spent too long diagnosing my error.
+The error message "scalar has more than one row in the output" is a bit misleading, considering the underlying programming mistake.
+
+
+Consider this Pig script:
+
+A = LOAD 'a' as (key, a1, a_junk);
+B = LOAD 'b' as (key, b1, b_junk);
+C = join A by key, B by key;
+
+– Now, we want to project (key, a1, b1)
+– CORRECT:
+D_GOOD = foreach C generate A::key, a1, b1;  – Disambiguate 'key' correctly.
+
+– Now, consider some common programmer errors:
+– INCORRECT:
+
+– This fails, because 'key' is ambiguous. The error message is clear enough.
+D_BAD_1 = foreach C generate key, a1, b1;  
+
+– This fails whenever A has multiple rows.
+D_BAD_2 = foreach C generate A.key, a1, b1
+– Error: "Scalar has more than one row in the output 1st : t1, 2nd : t2"
+
+That's non-illuminating, for the following reason:
+
+The error message is assuming that the programmer is making a semantic error, trying to use a value from the original A, which is impossible if A has more than one row. 
+
+In actuality, the programmer wants A::key, but he made a syntax error by typing "A.key", and it resulted in "scalar has more than one row" message that has nothing to do with what he intended. 
+Since he has confused "." and "::", he has no context for interpreting the message properly.
+
+Ideally, the error message would say something like this:
+ "A.key cannot be used as scalar here, because A has more than one row. Did you mean A::key?"
+
+If the identifiers are not available at error-logging time, something like this would be helpful:
+ "Relation cannot be used as scalar here, because A has more than one row. Did you mean to use '::' instead of '.'? "
+
+

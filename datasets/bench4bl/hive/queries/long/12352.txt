@@ -1,0 +1,22 @@
+   Worker will start with DB in state X (wrt this partition).
+   while it's working more txns will happen, against partition it's compacting.
+   then this will delete state up to X and since then.  There may be new delta files created
+   between compaction starting and cleaning.  These will not be compacted until more
+   transactions happen.  So this ideally should only delete
+   up to TXN_ID that was compacted (i.e. HWM in Worker?)  Then this can also run
+   at READ_COMMITTED.  So this means we'd want to store HWM in COMPACTION_QUEUE when
+   Worker picks up the job.
+Actually the problem is even worse (but also solved using HWM as above):
+Suppose some transactions (against same partition) have started and aborted since the time Worker ran compaction job.
+That means there are never-compacted delta files with data that belongs to these aborted txns.
+Following will pick up these aborted txns.
+s = "select txn_id from TXNS, TXN_COMPONENTS where txn_id = tc_txnid and txn_state = '" +
+          TXN_ABORTED + "' and tc_database = '" + info.dbname + "' and tc_table = '" +
+          info.tableName + "'";
+        if (info.partName != null) s += " and tc_partition = '" + info.partName + "'";
+The logic after that will delete relevant data from TXN_COMPONENTS and if one of these txns becomes empty, it will be picked up by cleanEmptyAbortedTxns().  At that point any metadata about an Aborted txn is gone and the system will think it's committed.
+HWM in this case would be (in ValidCompactorTxnList)
+if(minOpenTxn > 0)
+min(highWaterMark, minOpenTxn) 
+else 
+highWaterMark

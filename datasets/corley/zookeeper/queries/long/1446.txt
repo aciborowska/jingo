@@ -1,0 +1,47 @@
+When using the C API, one might feel inclined to create a zookeeper_wait_until_connected method which waits for some amount for a connected state event to occur. The code might look like the following (didn't actually compile this):
+
+//------
+static pthread_mutex_t kConnectedMutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t kConnectedCondvar = PTHREAD_COND_INITIALIZER;
+
+int zookeeper_wait_until_connected(zhandle_t* zk, const struct timespec* timeout)
+{
+  struct timespec abstime;
+  clock_gettime(TIMER_ABSTIME, &abstime);
+  abstime->tv_sec += timeout->tv_sec;
+  abstime->tv_nsec += timeout->tv_nsec;
+
+  pthread_mutex_lock(&kConnectedMutex);
+  if (zoo_state(zk) == ZOO_CONNECTED_STATE) 
+{
+    return 1;
+  }
+
+  pthread_cond_timedwait(&kConnectedCondvar, &kConnectedMutex, &abstime);
+  int state = zoo_state(zk);
+  return (state == ZOO_CONNECTED_STATE);
+}
+
+void zookeeper_session_callback(zhandle_t* zh, int type, int state, const char* path, void* arg)
+{
+  pthread_mutex_lock(&kConnectedMutex);
+  if (type == ZOO_SESSION_EVENT && state == ZOO_CONNECTED_STATE) 
+{
+    pthread_cond_broadcast(&kConnectedCondvar);
+  }
+}
+//-----
+
+That would work fine (assuming I didn't screw anything up), except that pthread_cond_timedwait can spuriously wakeup, making you not actually wait the desired timeout. The solution to this is to loop until the condition is met, which might look like the following:
+
+//---
+  int state = zoo_state(zk);
+  int result = 0;
+  while ((state == ZOO_CONNECTING_STATE || state == ZOO_ASSOCIATING_STATE) && result != ETIMEDOUT) 
+{
+    result = pthread_cond_timedwait(&kConnectedCondvar, &kConnectedMutex, &abstime);
+    state = zoo_state(zk);
+  }
+//---
+
+That would work fine, except the state might be valid and connecting, yet not ZOO_CONNECTING_STATE or ZOO_ASSOCIATING_STATE, it might be 0 or, as implemented recently courtesy of zookeeper-1108, 999. Checking for those states causes your code to rely upon an implementation detail of zookeeper, a problem highlighted by that implementation detail changing recently. Is there any way this behavior can become documented (via a ZOO_INITIALIZED_STATE or something like that), or is there any way this behavior can be supported by the library itself?

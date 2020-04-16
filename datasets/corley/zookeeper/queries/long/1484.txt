@@ -1,0 +1,20 @@
+We noticed that one of the follower fail to restart due to missing parent node
+
+
+2012-05-29 15:44:41,037 [myid:9] - INFO [main:FileSnap@83] - Reading snapshot /var/facebook/zeus-server/data/global-ropt.0/version-2/snapshot.3d001f19c9
+2012-05-29 15:44:43,300 [myid:9] - ERROR [main:FileTxnSnapLog@220] - Parent /phpunittest/1862297546 missing for /phpunittest/1862297546/dir1
+2012-05-29 15:44:43,302 [myid:9] - ERROR [main:QuorumPeer@488] - Unable to load database on disk
+java.io.IOException: Failed to process transaction type: 1 error: KeeperErrorCode = NoNode for /phpunittest/1862297546
+
+
+
+We believed that the root cause is due to bugs in follower sync-up logic. Due to race condition, the follower may miss some proposals. The log below show that the follower see the commit message but it haven't seen this proposal before
+
+2012-05-15 15:11:27,449 [myid:13] - WARN [QuorumPeer[myid=13]/0.0.0.0:2182:Learner@378] - Got zxid 0x3c00282dc9 expected 0x3c00282dca
+
+
+
+I can reproduce this by keep running FollowerResyncConcurrencyTest until failure occurs. I suspected that the root caused is due to how we handle toBeApplied and outstandingProposals in the leader. 
+
+1. In-flight proposals is removed from outstandingProposal before it is added to toBeApplied. Most of the problem I seen so far seem to caused by this gap.
+2. startForwarding() iterate through outstandingProposal without locking PrepRequestProcessor properly, so there is possibility of missing in-flight proposal. 

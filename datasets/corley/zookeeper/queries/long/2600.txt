@@ -1,0 +1,26 @@
+we had the following strange production bug:
+
+there was an ephemeral znode for a session that was no longer active.  it happened even in the absence of failures.
+
+we are running with local sessions enabled and slightly different logic than the open source zookeeper, but code inspection shows that the problem is also in open source.
+
+the triggering condition was server overload. we had a traffic burst and it we were having commit latencies of over 30 seconds.
+
+after digging through logs/code we realized from the logs that the create session txn for the ephemeral node started (in the PrepRequestProcessor) at 11:23:04 and committed at 11:23:38 (the "Adding global session" is output in the commit processor). it took 34 seconds to commit the createSession, during that time the session expired. due to delays it appears that the interleave was as follows:
+
+1) create session hits prep request processor and create session txn generated 11:23:04
+2) time passes as the create session is going through zab
+3) the session expires, close session is generated, and close session txn generated 11:23:23
+4) the create session gets committed and the session gets re-added to the sessionTracker 11:23:38
+5) the create ephemeral node hits prep request processor and a create txn generated 11:23:40
+6) the close session gets committed (all ephemeral nodes for the session are deleted) and the session is deleted from sessionTracker
+7) the create ephemeral node gets committed
+
+the root cause seems to be that the gobal sessions are managed by both the PrepRequestProcessor and the CommitProcessor. also with the local session upgrading we can have changes in flight before our sessions commits. i think there are probably two places to fix:
+
+1) changes to session tracker should not happen in prep request processor.
+2) we should not have requests in flight while create session is in process. there are two options to prevent this:
+a) when a create session is generated in makeUpgradeRequest, we need to start queuing the requests from the clients and only submit them once the create session is committed
+b) the client should explicitly detect that it needs to change from local session to global session and explicitly open a global session and get the commit before it sends an ephemeral create request
+
+option 2a) is a more transparent fix, but architecturally and in the long term i think 2b) might be better.

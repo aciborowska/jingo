@@ -1,0 +1,17 @@
+Problem:
+1. ZooKeeper need to load the entire dataset into its memory. So the total data size and number of znode are limited by the amount of available memory.
+2. We want to minimize ZooKeeper down time, but found that it is bound by snapshot loading and writing time. The bigger the database, the longer it take for the system to recover. The worst case is that if the data size grow too large and initLimit wasn't update accordingly, the quorum won't form after failure.  
+
+Implementation: (still work in progress)
+
+1. Create a new type of DataTree that supported key-value storage as backing store. Our current candidate backing store is Oracle's Berkeley DB Java Edition
+
+2. There is no need to use snapshot facility for this type of DataTree. Since doing a sync write of lastProcessedZxid into the backing store is the same as taking a snapshot. However, the system still use txnlog as before. The system can be considered as having only a single snapshot. It has to rely on backing store to detect data corruption and recovery.  
+
+3. There is no need to do any per-node locking. CommitProcessor (ZOOKEEPER-1505) prevents concurrent read and write to reach the DataTree. The DataTree is also accessed by PrepRequestProcessor (to create ChangeRecord), but I believe that read and write to the same znode cannot happens concurrently.
+
+4. There are 3 types of data which is required to be persisted in backing store: ACLs, znodes and sessions. However, we also store other data reduce oDataTree initialization time or serialization cost such as list of node's children and list of ephemeral node. 
+
+5. Each Zookeeper's txn may translate into multiple actions on the DataTree. For example, creating a node may result in  AddingZNODE, AddingChildren and AddingEphemeralNode. However, as a long as these operations are idempotent, there is no need to group them into a transaction. So txns can be replayed on DataTree without corrupting the data. This also means that the system don't need key-value store that support transaction semantic. Currently, only operations related to quota break this assumption because it use increment operation.    
+
+6. SNAP protocol is supported so the ensemble can be upgraded online. In the future we may add extend SNAP protocol to send raw data file in order to save CPU cost when sending large database.

@@ -1,0 +1,42 @@
+Environment:
+ I deploy ZooKeeper in a cluster of three nodes. Each node has three network interfaces(eth0, eth1, eth2).
+
+Hostname is used instead of IP address in zoo.cfg, and quorumListenOnAllIPs=true
+
+Probleam:
+ I start three ZooKeeper servers( node A, node B, and node C) one by one, 
+ when the leader election finishes, node B is the leader. 
+ Then I shutdown one network interface of node A by command "ifdown eth0". The ZooKeeper server on node A will lost connection to node B and node C. In my test, I will take about 20 minites that the ZooKeepr server of node A realizes the event and try to call the QuorumServer.recreateSocketAddress the resolve the hostname.
+
+I try to read the source code, and I find the code in
+QuorumCnxManager.java:
+
+    class RecvWorker extends ZooKeeperThread {
+        Long sid;
+        Socket sock;
+        volatile boolean running = true;
+        final DataInputStream din;
+        final SendWorker sw;
+
+        RecvWorker(Socket sock, DataInputStream din, Long sid, SendWorker sw) {
+            super("RecvWorker:" + sid);
+            this.sid = sid;
+            this.sock = sock;
+            this.sw = sw;
+            this.din = din;
+            try {
+                // OK to wait until socket disconnects while reading.
+                sock.setSoTimeout(0);
+            } catch (IOException e) {
+                LOG.error("Error while accessing socket for " + sid, e);
+                closeSocket(sock);
+                running = false;
+            }
+        }
+       ...
+     }
+
+
+I notice that the soTime is set to 0 in RecvWorker constructor. I think this is reasonable when the IP address of a ZooKeeper server never change, but considering that the IP address of each ZooKeeper server may change, maybe we should better set a timeout here.
+
+I think this is a problem.

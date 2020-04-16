@@ -1,0 +1,170 @@
+Since the camel DSL is invoked prior to `.addRoutesToCamelContext(CamelContext)` being invoked there is no camel context set on the delegate java RouteBuilder which causes it to create a new context when the first dsl method is invoked.
+With the implementation of CAMEL-7327 introduced in 2.13.1 which stores created camel contexts in a set in `Container.Instance#CONTEXT`; this causes instances of DefaultCamelContext to be leaked, they are never removed from the static set. This is especially aparrent during unit testing.
+The following test shows that an additional context is registered for the scala route builder as opposed to java. Verification of the leak can be requires profiler and capturing of heap after termination of the test case (in ParentRunner.java).
+
+
+
+package org.apache.camel.scala.dsl.builder;
+
+
+
+import com.google.common.collect.Sets;
+
+
+
+import org.apache.camel.CamelContext;
+
+import org.apache.camel.ProducerTemplate;
+
+import org.apache.camel.builder.RouteBuilder;
+
+import org.apache.camel.impl.DefaultCamelContext;
+
+import org.apache.camel.spi.Container;
+
+import org.junit.After;
+
+import org.junit.Before;
+
+import org.junit.Test;
+
+
+
+import java.lang.ref.WeakReference;
+
+import java.util.Set;
+
+
+
+import static org.junit.Assert.assertEquals;
+
+
+
+public class BuggyScalaTest implements Container {
+
+
+
+  Set<CamelContext> managed = Sets.newHashSet();
+
+
+
+  @Before
+
+  public void setUp() throws Exception {
+
+    Container.Instance.set(this);
+
+  }
+
+
+
+  @After
+
+  public void tearDown() throws Exception {
+
+    Container.Instance.set(null);
+
+  }
+
+
+
+  @Test
+
+  public void testNameJava() throws Exception {
+
+    DefaultCamelContext defaultCamelContext = new DefaultCamelContext();
+
+    defaultCamelContext.addRoutes(new RouteBuilder() {
+
+      @Override
+
+      public void configure() throws Exception {
+
+        from("direct:start").log("a message");
+
+      }
+
+    });
+
+    defaultCamelContext.start();
+
+
+
+    ProducerTemplate producerTemplate = defaultCamelContext.createProducerTemplate();
+
+    producerTemplate.start();
+
+    producerTemplate.sendBody("direct:start", "");
+
+    producerTemplate.stop();
+
+    defaultCamelContext.stop();
+
+
+
+    assertEquals(1, managed.size());
+
+  }
+
+
+
+  @Test
+
+  public void testNameScala() throws Exception {
+
+    DefaultCamelContext defaultCamelContext = new DefaultCamelContext();
+
+    defaultCamelContext.addRoutes(new SimpleRouteBuilder());
+
+    defaultCamelContext.start();
+
+
+
+    ProducerTemplate producerTemplate = defaultCamelContext.createProducerTemplate();
+
+    producerTemplate.start();
+
+    producerTemplate.sendBody("direct:start", "");
+
+    producerTemplate.stop();
+
+    defaultCamelContext.stop();
+
+
+
+    assertEquals(1, managed.size()); // will equal 2
+
+  }
+
+
+
+  @Override
+
+  public void manage(CamelContext camelContext) {
+
+    managed.add(camelContext);
+
+  }
+
+}
+
+
+
+
+
+
+  package org.apache.camel.scala.dsl.builder
+
+
+
+  import org.apache.camel.scala.dsl.builder.RouteBuilder
+
+
+
+  class SimpleRouteBuilder extends RouteBuilder {
+
+    from("direct:start").log("a message")
+
+  }
+
+

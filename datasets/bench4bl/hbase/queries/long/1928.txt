@@ -1,0 +1,30 @@
+During a ROOT or META table re-assignment if the designated regionServer dies before the assignment is complete then the whole cluster becomes unavailble since the ROOT or META tables cannot be accessed (and never recover since they are kept in a transition state).
+These are the 4 steps to replicate this issue (this is the easiest way to replicate. You can imagine that the following can occur in any real system).
+Pre condition
+============
+1. a cluster of 3 nodes (cache01, cache02, search01).
+2. start the system (start-hbase)
+3. cache02 has META, search01 has ROOT, cache01 has regionServer and Master.
+Case 1:
+=======
+1. kill cache01
+2. kill cache02
+3. now search01 has both ROOT and META.
+4. re-start RegionServers on cache01 and cache02
+5. Tail the master logs and grep for "Assigning region ROOT" and also "Assigning region .META." (need to windows for easiness)
+6. kill search01
+7. wait to see to which server the ROOT will be assigned (from the tail)
+8. quickly kill that server
+9. you should notice that the ROOT server never gets re-assigned (because it is stuck in the regionsInTransitions)
+The termination occurs through the ServerManager::removeServerInfo since the regionServer sends back to the master in a report that it is shutting down.
+Case 2:
+========
+Repeat Case1 and in step 7 and 8 kill the server that has the META region assigned to it. Again the cluster becomes unavailble because the META region stays in the regionsInTransitions.
+The termination occurs through the ServerManager::removeServerInfo since the regionServer sends back to the master in a report that it is shutting down.
+Case 3:
+========
+Repeat Case1 and in step 7 and 8 kill the server with kill -9 instead of kill. This will not give the opportunity to the regionServer to send back the master in the report that it is terminating. The master will realize this because the znode will expire (but it is a different code path from before - it goes to the ProcessServerShutdown).
+Case 4:
+========
+Repeat Case3 and in step 7 and 8 kill the server with kill -9 instead of kill. This will not give the opportunity to the regionServer to send back the master in the report that it is terminating. The master will realize this because the znode will expire (but it is a different code path from before - it goes to the ProcessServerShutdown).
+The solution would be to check the in the ServerManager:removeServerInfo and in  ProcessServerShutdown::closeMetaRegions whether the server that has been terminated has been assigned either the ROOT or META table. And if they have make sure we make those table ready to be re-assigned again.

@@ -1,0 +1,145 @@
+Following the advice in the reference manual to override the default @Transactional settings defined in SimpleJpaRepository does not work for me.  
+The observed behavior is that when a method from SimpleJpaRepository is re-declared in a repository interface that extends SimpleJpaRepository it is advised with 2 TransactionInterceptors instead of 1.  The outer one is the regular one created when not using Spring Data, the inner one is the custom one created by TransactionalRepositoryFactoryBeanSupport by Spring Data to prefer interfaces over classes as the source of @Transactional annotations.
+The end result is that the non Spring Data TransactionInterceptor starts a transaction with the transaction attributes from the method in SimpleJpaRepository instead of my custom Repository.  When the inner TransactionInterceptor runs it simply joins the existing transaction and any overriding settings for the transaction are ignored (unless you change the propagation to REQUIRES_NEW).
+This can be reproduced using the spring-data-examples examples.springdata.jpa.simple example.
+Add 
+
+
+
+
+
+
+@Transactional(isolation = Isolation.READ_UNCOMMITTED, readOnly = true)
+
+
+
+
+public <S extends User> S save(S arg0);
+
+
+
+
+
+
+to SimpleUserRepository and then findSavedUserByLastname unit test with the following logging turned on:
+
+
+
+
+
+
+   <logger name="org.springframework.transaction.interceptor.TransactionInterceptor" level="trace" />
+
+
+
+
+   <logger name="org.springframework.orm.jpa.JpaTransactionManager" level="debug" />
+
+
+
+
+   <logger name="org.springframework.jdbc.datasource.DataSourceUtils" level="debug" />
+
+
+
+
+   <logger name="org.springframework.transaction.annotation.AnnotationTransactionAttributeSource" level="debug" />
+
+
+
+
+   <logger name="org.springframework.data.repository.core.support.TransactionalRepositoryProxyPostProcessor.CustomAnnotationTransactionAttributeSource" level="debug" />
+
+
+
+
+
+
+The log output shows the 2 transactions:
+
+
+
+
+
+
+2015-07-01 22:26:18,806 DEBUG gframework.orm.jpa.JpaTransactionManager: 367 - Creating new transaction with name [example.springdata.jpa.simple.SimpleUserRepositoryTests.findSavedUserByLastname]: PROPAGATION_REQUIRED,ISOLATION_DEFAULT; ''
+
+
+
+
+2015-07-01 22:26:18,807 DEBUG gframework.orm.jpa.JpaTransactionManager: 371 - Opened new EntityManager [org.hibernate.jpa.internal.EntityManagerImpl@12eedfee] for JPA transaction
+
+
+
+
+2015-07-01 22:26:18,810 DEBUG gframework.orm.jpa.JpaTransactionManager: 403 - Exposing JPA transaction as JDBC transaction [org.springframework.orm.jpa.vendor.HibernateJpaDialect$HibernateConnectionHandle@52f57666]
+
+
+
+
+2015-07-01 22:26:18,814 DEBUG ion.AnnotationTransactionAttributeSource: 108 - Adding transactional method 'SimpleJpaRepository.save' with attribute: PROPAGATION_REQUIRED,ISOLATION_READ_UNCOMMITTED,readOnly; ''
+
+
+
+
+2015-07-01 22:26:18,815 DEBUG gframework.orm.jpa.JpaTransactionManager: 334 - Found thread-bound EntityManager [org.hibernate.jpa.internal.EntityManagerImpl@12eedfee] for JPA transaction
+
+
+
+
+2015-07-01 22:26:18,815 DEBUG gframework.orm.jpa.JpaTransactionManager: 476 - Participating in existing transaction
+
+
+
+
+2015-07-01 22:26:18,815 TRACE ction.interceptor.TransactionInterceptor: 454 - Getting transaction for [org.springframework.data.jpa.repository.support.SimpleJpaRepository.save]
+
+
+
+
+2015-07-01 22:26:18,818 DEBUG gframework.orm.jpa.JpaTransactionManager: 334 - Found thread-bound EntityManager [org.hibernate.jpa.internal.EntityManagerImpl@12eedfee] for JPA transaction
+
+
+
+
+2015-07-01 22:26:18,819 DEBUG gframework.orm.jpa.JpaTransactionManager: 476 - Participating in existing transaction
+
+
+
+
+2015-07-01 22:26:18,819 TRACE ction.interceptor.TransactionInterceptor: 454 - Getting transaction for [org.springframework.data.jpa.repository.support.SimpleJpaRepository.save]
+
+
+
+
+2015-07-01 22:26:18,844 TRACE ction.interceptor.TransactionInterceptor: 483 - Completing transaction for [org.springframework.data.jpa.repository.support.SimpleJpaRepository.save]
+
+
+
+
+2015-07-01 22:26:18,844 TRACE ction.interceptor.TransactionInterceptor: 483 - Completing transaction for [org.springframework.data.jpa.repository.support.SimpleJpaRepository.save]
+
+
+
+
+2015-07-01 22:26:18,845 TRACE ction.interceptor.TransactionInterceptor: 464 - Don't need to create transaction for [org.springframework.data.jpa.repository.support.SimpleJpaRepository.findByLastname]: This method isn't transactional.
+
+
+
+
+2015-07-01 22:26:18,883 DEBUG gframework.orm.jpa.JpaTransactionManager: 851 - Initiating transaction rollback
+
+
+
+
+2015-07-01 22:26:18,883 DEBUG gframework.orm.jpa.JpaTransactionManager: 538 - Rolling back JPA transaction on EntityManager [org.hibernate.jpa.internal.EntityManagerImpl@12eedfee]
+
+
+
+
+2015-07-01 22:26:18,884 DEBUG gframework.orm.jpa.JpaTransactionManager: 600 - Closing JPA EntityManager [org.hibernate.jpa.internal.EntityManagerImpl@12eedfee] after transaction
+
+
+
+
+

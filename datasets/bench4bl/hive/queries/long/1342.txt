@@ -1,0 +1,100 @@
+Query is over-optimized by PPD when sub-queries have the same alias name, see the query:
+-------------------------------
+create table if not exists dm_fact_buyer_prd_info_d (
+		category_id string
+		,gmv_trade_num  int
+		,user_id    int
+		)
+PARTITIONED BY (ds int);
+set hive.optimize.ppd=true;
+set hive.map.aggr=true;
+explain select category_id1,category_id2,assoc_idx
+from (
+		select 
+			category_id1
+			, category_id2
+			, count(distinct user_id) as assoc_idx
+		from (
+			select 
+				t1.category_id as category_id1
+				, t2.category_id as category_id2
+				, t1.user_id
+			from (
+				select category_id, user_id
+				from dm_fact_buyer_prd_info_d
+				group by category_id, user_id ) t1
+			join (
+				select category_id, user_id
+				from dm_fact_buyer_prd_info_d
+				group by category_id, user_id ) t2 on t1.user_id=t2.user_id 
+			) t1
+			group by category_id1, category_id2 ) t_o
+			where category_id1 <> category_id2
+			and assoc_idx > 2;
+-----------------------------
+The query above will fail when execute, throwing exception: "can not cast UDFOpNotEqual(Text, IntWritable) to UDFOpNotEqual(Text, Text)". 
+I explained the query and the execute plan looks really wired ( only Stage-1, see the highlighted predicate):
+-------------------------------
+Stage: Stage-1
+    Map Reduce
+      Alias -> Map Operator Tree:
+        t_o:t1:t1:dm_fact_buyer_prd_info_d 
+          TableScan
+            alias: dm_fact_buyer_prd_info_d
+            Filter Operator
+              predicate:
+                  expr: (category_id <> user_id)
+                  type: boolean
+              Select Operator
+                expressions:
+                      expr: category_id
+                      type: string
+                      expr: user_id
+                      type: bigint
+                outputColumnNames: category_id, user_id
+                Group By Operator
+                  keys:
+                        expr: category_id
+                        type: string
+                        expr: user_id
+                        type: bigint
+                  mode: hash
+                  outputColumnNames: _col0, _col1
+                  Reduce Output Operator
+                    key expressions:
+                          expr: _col0
+                          type: string
+                          expr: _col1
+                          type: bigint
+                    sort order: ++
+                    Map-reduce partition columns:
+                          expr: _col0
+                          type: string
+                          expr: _col1
+                          type: bigint
+                    tag: -1
+      Reduce Operator Tree:
+        Group By Operator
+          keys:
+                expr: KEY._col0
+                type: string
+                expr: KEY._col1
+                type: bigint
+          mode: mergepartial
+          outputColumnNames: _col0, _col1
+          Select Operator
+            expressions:
+                  expr: _col0
+                  type: string
+                  expr: _col1
+                  type: bigint
+            outputColumnNames: _col0, _col1
+            File Output Operator
+              compressed: true
+              GlobalTableId: 0
+              table:
+                  input format: org.apache.hadoop.mapred.SequenceFileInputFormat
+                  output format: org.apache.hadoop.hive.ql.io.HiveSequenceFileOutputFormat
+ ----------------------------------
+If disabling predicate push down (set hive.optimize.ppd=true), the error is gone; I tried disabling map side aggregate, the error is gone,too. 
+Changing the alias of subquery 't1' (either the inner one or the join result), the bug disappears, too.

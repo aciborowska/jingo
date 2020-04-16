@@ -1,0 +1,443 @@
+Updated
+I was fooled by this java doc in WebSecurityConfigurerAdapter#registerAuthentication:
+"The resulting
+{@link AuthenticationManager}
+will be exposed as a Bean as will the last populated 
+{@link UserDetailsService}
+that is created with the
+{@link AuthenticationManagerBuilder}
+
+Original
+This issue links to SEC-2205, I have simple @Configuration like this:
+
+
+
+
+
+
+SecurityConfig.java
+
+
+
+
+
+
+ 
+
+
+
+
+@Configuration
+
+
+
+
+@EnableWebSecurity
+
+
+
+
+@EnableGlobalMethodSecurity(prePostEnabled = true)
+
+
+
+
+public class SecurityConfig extends WebSecurityConfigurerAdapter {
+
+
+
+
+ 
+
+
+
+
+    @Override
+
+
+
+
+    public void configure(WebSecurity web) throws Exception {
+
+
+
+
+        web
+
+
+
+
+                .ignoring()
+
+
+
+
+                .antMatchers("/resources/**", "/favicon.ico");
+
+
+
+
+    }
+
+
+
+
+ 
+
+
+
+
+    @Override
+
+
+
+
+    protected void registerAuthentication(AuthenticationManagerBuilder auth) throws Exception {
+
+
+
+
+        auth
+
+
+
+
+                .inMemoryAuthentication()
+
+
+
+
+                .withUser("user").password("password").roles("USER").and()
+
+
+
+
+                .withUser("admin").password("password").roles("USER", "ADMIN");
+
+
+
+
+ 
+
+
+
+
+    }
+
+
+
+
+ 
+
+
+
+
+    @Bean
+
+
+
+
+    @Override
+
+
+
+
+    public AuthenticationManager authenticationManagerBean()
+
+
+
+
+            throws Exception {
+
+
+
+
+        return super.authenticationManagerBean();
+
+
+
+
+    }
+
+
+
+
+ 
+
+
+
+
+    @Override
+
+
+
+
+    protected void configure(HttpSecurity http) throws Exception {
+
+
+
+
+        http
+
+
+
+
+                .authorizeRequests()
+
+
+
+
+                .antMatchers("/admin**").hasRole("ADMIN")
+
+
+
+
+                .anyRequest().authenticated()
+
+
+
+
+                .and()
+
+
+
+
+                .formLogin()
+
+
+
+
+                .loginPage("/signin")
+
+
+
+
+                .permitAll()
+
+
+
+
+                .and()
+
+
+
+
+                .logout()
+
+
+
+
+                .logoutUrl("/signout");
+
+
+
+
+    }
+
+
+
+
+ 
+
+
+
+
+}
+
+
+
+
+
+
+And then simple Junit test, which actually uses SecurityRequestPostProcessors approach from (SEC-2015), but here for demonstration puroposes I have only autowired UserDetailsService:
+
+
+
+
+
+
+SecurityFilterTest.java
+
+
+
+
+
+
+@RunWith(SpringJUnit4ClassRunner.class)
+
+
+
+
+@WebAppConfiguration
+
+
+
+
+@ContextConfiguration(classes = SecurityConfig.class)
+
+
+
+
+public class SecurityFilterTest {
+
+
+
+
+ 
+
+
+
+
+    @Autowired
+
+
+
+
+    private FilterChainProxy springSecurityFilterChain;
+
+
+
+
+ 
+
+
+
+
+    @Autowired
+
+
+
+
+    private WebApplicationContext wac;
+
+
+
+
+ 
+
+
+
+
+    private MockMvc mockMvc;
+
+
+
+
+ 
+
+
+
+
+    @Autowired
+
+
+
+
+    private UserDetailsService userDetailsService;
+
+
+
+
+ 
+
+
+
+
+    @Before
+
+
+
+
+    public void setup() {
+
+
+
+
+        this.mockMvc = MockMvcBuilders.webAppContextSetup(this.wac)
+
+
+
+
+                .addFilters(this.springSecurityFilterChain).build();
+
+
+
+
+    }
+
+
+
+
+ 
+
+
+
+
+    @Test
+
+
+
+
+    public void requiresAuthentication() throws Exception {
+
+
+
+
+        mockMvc.perform(get("/hello"))
+
+
+
+
+                .andExpect(status().isMovedTemporarily())
+
+
+
+
+                .andExpect(redirectedUrl("http://localhost/signin"));
+
+
+
+
+    }
+
+
+
+
+}
+
+
+
+
+
+
+This results:
+
+
+
+
+
+
+stacktrace
+
+
+
+
+
+
+Caused by: org.springframework.beans.factory.BeanCreationException: Could not autowire field: private org.springframework.security.core.userdetails.UserDetailsService
+
+
+
+
+....
+
+
+
+
+SecurityFilterTest.userDetailsService; nested exception is org.springframework.beans.factory.NoSuchBeanDefinitionException: No qualifying bean of type [org.springframework.security.core.userdetails.UserDetailsService] found for dependency: expected at least 1 bean which qualifies as autowire candidate for this dependency. Dependency annotations: {@org.springframework.beans.factory.annotation.Autowired(required=true)}
+
+
+
+
+
+

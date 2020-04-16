@@ -1,0 +1,20 @@
+https://builds.apache.org/view/All/job/HBase-Trunk_matrix/jdk=latest1.8,label=yahoo-not-h2/1100/ 
+the TestCloneSnapshotProcedure is written in a way that relies on the execution order and does not tolerate failure of a previous test.
+getSnapshot() has a cached snapshot. if we haven't created yet we will create it.
+(from how the code is written is a bit unclear that where we are taking the snapshot, so in the patch I moved out the call to make it more readable)
+In this case we started with testCloneSnapshotToSameTable and it failed because the table was waiting for flushes and compaction and it took a long time.
+
+org.apache.hadoop.hbase.snapshot.SnapshotTestingUtils.waitForTableToBeOnline(SnapshotTestingUtils.java:737)
+
+  at org.apache.hadoop.hbase.snapshot.SnapshotTestingUtils.loadData(SnapshotTestingUtils.java:799)
+
+  at org.apache.hadoop.hbase.snapshot.SnapshotTestingUtils.loadData(SnapshotTestingUtils.java:770)
+
+  at org.apache.hadoop.hbase.master.procedure.TestCloneSnapshotProcedure.getSnapshot(TestCloneSnapshotProcedure.java:114)
+
+  at org.apache.hadoop.hbase.master.procedure.TestCloneSnapshotProcedure.testCloneSnapshotToSameTable(TestCloneSnapshotProcedure.java:176)
+
+
+
+when we got to testRollbackAndDoubleExecution which stop and start the executor to simulate crashes the snapshot. we ask the executor to stop and then we asked to take a snapshot, but of course the executor is not running so we are stuck there. 
+Similarly if we run TestCloneSnapshotProcedure#testRollbackAndDoubleExecution alone, this will always fail because of the above. the snapshot cannot be taken because we stopped the executor. the test here was written relying on the execution order. easy fix is to take the snapshot before stopping the executor for the clone failure simulation as it is supposed to be.

@@ -1,0 +1,39 @@
+ZOOKEEPER-2139 added support for connecting to multiple ZK services, but this also introduced a bug that causes a cryptic NPE. The client sees the below sort of error messages:
+
+
+Exception while trying to create SASL client: java.lang.NullPointerException
+SASL authentication with Zookeeper Quorum member failed: javax.security.sasl.SaslException: saslClient failed to initialize properly: it's null.
+Error while calling watcher
+java.lang.NullPointerException
+        at org.apache.hadoop.hbase.zookeeper.ZooKeeperWatcher.connectionEvent(ZooKeeperWatcher.java:581)
+        at org.apache.hadoop.hbase.zookeeper.ZooKeeperWatcher.process(ZooKeeperWatcher.java:532)
+        at org.apache.hadoop.hbase.zookeeper.PendingWatcher.process(PendingWatcher.java:40)
+        at org.apache.zookeeper.ClientCnxn$EventThread.processEvent(ClientCnxn.java:579)
+        at org.apache.zookeeper.ClientCnxn$EventThread.run(ClientCnxn.java:554)
+
+
+
+The line at ZooKeeperWatcher.connectionEvent(ZooKeeperWatcher.java:581) points to the middle line below, where event.getState() is null:
+
+
+private void connectionEvent(WatchedEvent event) {
+    switch(event.getState()) {
+       case SyncConnected:
+
+
+
+However, the event's state is null because of a couple of other bugs, particularly an NPE that gets a mention in the log without a stacktrace. This first NPE causes an incorrect initialization of the event and results in the second NPE with the stacktrace.
+
+The reason for the first NPE comes from this code in ZookeeperSaslClient:
+
+
+            if (!initializedLogin) {
+                ...
+            }
+            Subject subject = login.getSubject();
+
+
+
+Before the patch for ZOOKEEPER-2139, both the login and initializedLogin were static fields of ZookeeperSaslClient. To support multiple ZK clients, the login field was changed from static to instance field, however the initializedLogin field was left as static field. Because of this, the subsequent attempts to connect to ZK think that the login doesn't need to be done and go ahead and blindly use the login variable which causes the NPE.
+
+At the core, the fix is simply to change initializedLogin to instance variable, but we have made a few additional changes to improve the logging and handle state. I will attach a patch soon. 

@@ -1,0 +1,152 @@
+Hi,
+
+I need some help understanding a recurring problem we're seeing with our zookeeper cluster.  It's a five node cluster that ordinarily runs fine.  Occasionally we see an error from which the cluster recovers, but it causes a lot of grief and I'm sure is representative of an unhealthy situation.
+
+To my eye it looks like an invalid bit of data getting into the system and not being handled gracefully; I'm the first to say my eye is not expert though, so I humbly submit an annotated log exert in the hope some who knows more than me can provide some illumination.
+
+
+The cluster seems to be ticking along fine, until we get errors on 2 of the 5 nodes like so:
+2016-01-19 13:12:49,698 - WARN  [QuorumPeer[myid=1]/0.0.0.0:2181:Follower@89] - Exception when following the leader
+java.io.EOFException
+        at java.io.DataInputStream.readInt(DataInputStream.java:392)
+        at org.apache.jute.BinaryInputArchive.readInt(BinaryInputArchive.java:63)
+        at org.apache.zookeeper.server.quorum.QuorumPacket.deserialize(QuorumPacket.java:83)
+        at org.apache.jute.BinaryInputArchive.readRecord(BinaryInputArchive.java:103)
+        at org.apache.zookeeper.server.quorum.Learner.readPacket(Learner.java:153)
+        at org.apache.zookeeper.server.quorum.Follower.followLeader(Follower.java:85)
+        at org.apache.zookeeper.server.quorum.QuorumPeer.run(QuorumPeer.java:786)
+2016-01-19 13:12:49,698 - INFO  [QuorumPeer[myid=1]/0.0.0.0:2181:Follower@166] - shutdown called
+java.lang.Exception: shutdown Follower
+        at org.apache.zookeeper.server.quorum.Follower.shutdown(Follower.java:166)
+        at org.apache.zookeeper.server.quorum.QuorumPeer.run(QuorumPeer.java:790)
+
+This is immediately followed by 380 occurences of:
+2016-01-19 13:12:49,699 - INFO  [QuorumPeer[myid=1]/0.0.0.0:2181:NIOServerCnxn@1007] - Closed socket connection for client /X.Y.Z.56:59028 which had sessionid 0x151b01ee8330234
+
+and a:
+2016-01-19 13:12:49,766 - INFO  [QuorumPeer[myid=1]/0.0.0.0:2181:FollowerZooKeeperServer@139] - Shutting down
+2016-01-19 13:12:49,766 - INFO  [QuorumPeer[myid=1]/0.0.0.0:2181:ZooKeeperServer@441] - shutting down
+2016-01-19 13:12:49,766 - INFO  [QuorumPeer[myid=1]/0.0.0.0:2181:FollowerRequestProcessor@105] - Shutting down
+2016-01-19 13:12:49,766 - INFO  [QuorumPeer[myid=1]/0.0.0.0:2181:CommitProcessor@181] - Shutting down
+2016-01-19 13:12:49,766 - INFO  [QuorumPeer[myid=1]/0.0.0.0:2181:FinalRequestProcessor@415] - shutdown of request processor complete
+2016-01-19 13:12:49,767 - INFO  [QuorumPeer[myid=1]/0.0.0.0:2181:SyncRequestProcessor@209] - Shutting down
+2016-01-19 13:12:49,767 - INFO  [CommitProcessor:1:CommitProcessor@150] - CommitProcessor exited loop!
+2016-01-19 13:12:49,767 - INFO  [FollowerRequestProcessor:1:FollowerRequestProcessor@95] - FollowerRequestProcessor exited loop!
+2016-01-19 13:13:09,418 - WARN  [SyncThread:1:FileTxnLog@334] - fsync-ing the write ahead log in SyncThread:1 took 30334ms which will adversely effect operation latency. See the ZooKeeper troubleshooting guide
+2016-01-19 13:13:09,427 - WARN  [SyncThread:1:SendAckRequestProcessor@64] - Closing connection to leader, exception during packet send
+java.net.SocketException: Socket closed
+        at java.net.SocketOutputStream.socketWrite(SocketOutputStream.java:121)
+        at java.net.SocketOutputStream.write(SocketOutputStream.java:159)
+        at java.io.BufferedOutputStream.flushBuffer(BufferedOutputStream.java:82)
+        at java.io.BufferedOutputStream.flush(BufferedOutputStream.java:140)
+        at org.apache.zookeeper.server.quorum.Learner.writePacket(Learner.java:139)
+        at org.apache.zookeeper.server.quorum.SendAckRequestProcessor.flush(SendAckRequestProcessor.java:62)
+        at org.apache.zookeeper.server.SyncRequestProcessor.flush(SyncRequestProcessor.java:204)
+        at org.apache.zookeeper.server.SyncRequestProcessor.run(SyncRequestProcessor.java:131)
+2016-01-19 13:13:09,428 - INFO  [SyncThread:1:SyncRequestProcessor@187] - SyncRequestProcessor exited!
+
+
+As a small aside, the fsync log errors for the first two servers to be hit are:
+2016-01-19 13:13:09,418 - WARN  [SyncThread:1:FileTxnLog@334] - fsync-ing the write ahead log in SyncThread:1
+took 30334ms which will adversely effect operation latency.
+2016-01-19 13:13:09,539 - WARN  [SyncThread:2:FileTxnLog@334] - fsync-ing the write ahead log in SyncThread:2
+took 30456ms which will adversely effect operation latency.
+
+If rewind from date of the entry the milliseconds given, you arrive within one millisecond of the same time on each server.
+But I digress.
+
+For the next 12 minutes or so, the logs are full of the below sort of exceptions, in seemingly no consistent order or frequency:
+2016-01-19 13:13:09,440 - WARN  [NIOServerCxn.Factory:0.0.0.0/0.0.0.0:2181:NIOServerCnxn@362] - Exception causing close of session 0x0 due to java.io.IOException: ZooKeeperServer not running
+2016-01-19 13:13:09,441 - INFO  [NIOServerCxn.Factory:0.0.0.0/0.0.0.0:2181:NIOServerCnxn@1007] - Closed socket connection for client /X.Y.Z.181:51381 (no session established for client)
+2016-01-19 13:13:09,443 - WARN  [QuorumPeer[myid=1]/0.0.0.0:2181:SendAckRequestProcessor@64] - Closing connection to leader, exception during packet send
+java.net.SocketException: Socket closed
+        at java.net.SocketOutputStream.socketWrite(SocketOutputStream.java:121)
+        at java.net.SocketOutputStream.write(SocketOutputStream.java:159)
+        at java.io.BufferedOutputStream.flushBuffer(BufferedOutputStream.java:82)
+        at java.io.BufferedOutputStream.flush(BufferedOutputStream.java:140)
+        at org.apache.zookeeper.server.quorum.Learner.writePacket(Learner.java:139)
+        at org.apache.zookeeper.server.quorum.SendAckRequestProcessor.flush(SendAckRequestProcessor.java:62)
+        at org.apache.zookeeper.server.SyncRequestProcessor.flush(SyncRequestProcessor.java:204)
+        at org.apache.zookeeper.server.SyncRequestProcessor.shutdown(SyncRequestProcessor.java:216)
+        at org.apache.zookeeper.server.quorum.FollowerZooKeeperServer.shutdown(FollowerZooKeeperServer.java:147)
+        at org.apache.zookeeper.server.quorum.Learner.shutdown(Learner.java:546)
+        at org.apache.zookeeper.server.quorum.Follower.shutdown(Follower.java:167)
+        at org.apache.zookeeper.server.quorum.QuorumPeer.run(QuorumPeer.java:790)
+2016-01-19 13:13:09,443 - INFO  [QuorumPeer[myid=1]/0.0.0.0:2181:QuorumPeer@714] - LOOKING
+2016-01-19 13:13:11,782 - WARN  [NIOServerCxn.Factory:0.0.0.0/0.0.0.0:2181:NIOServerCnxn@357] - caught end of stream exception
+EndOfStreamException: Unable to read additional data from client sessionid 0x1525a047dc20005, likely client has closed socket
+        at org.apache.zookeeper.server.NIOServerCnxn.doIO(NIOServerCnxn.java:228)
+        at org.apache.zookeeper.server.NIOServerCnxnFactory.run(NIOServerCnxnFactory.java:208)
+        at java.lang.Thread.run(Thread.java:744)
+2016-01-19 13:13:11,783 - INFO  [NIOServerCxn.Factory:0.0.0.0/0.0.0.0:2181:NIOServerCnxn@1007] - Closed socket connection for client /X.Y.Z.1:59576 which had sessionid 0x1525a047dc20005
+2016-01-19 13:13:11,784 - ERROR [CommitProcessor:1:NIOServerCnxn@178] - Unexpected Exception:
+java.nio.channels.CancelledKeyException
+        at sun.nio.ch.SelectionKeyImpl.ensureValid(SelectionKeyImpl.java:73)
+        at sun.nio.ch.SelectionKeyImpl.interestOps(SelectionKeyImpl.java:77)
+        at org.apache.zookeeper.server.NIOServerCnxn.sendBuffer(NIOServerCnxn.java:151)
+        at org.apache.zookeeper.server.NIOServerCnxn.sendResponse(NIOServerCnxn.java:1081)
+        at org.apache.zookeeper.server.FinalRequestProcessor.processRequest(FinalRequestProcessor.java:404)
+        at org.apache.zookeeper.server.quorum.CommitProcessor.run(CommitProcessor.java:74)
+2016-01-19 13:25:43,898 - INFO  [WorkerReceiver[myid=1]:FastLeaderElection@597] - Notification: 1 (message format version), 2 (n.leader), 0x2a001d352d (n.zxid), 0xb (n.round), LOOKING (n.state), 2 (n.sid), 0x2a (n.peerEpoch) FOLLOWING (my state)
+2016-01-19 13:25:43,901 - WARN  [QuorumPeer[myid=1]/0.0.0.0:2181:Follower@89] - Exception when following the leader
+java.net.SocketTimeoutException: Read timed out
+        at java.net.SocketInputStream.socketRead0(Native Method)
+        at java.net.SocketInputStream.read(SocketInputStream.java:152)
+        at java.net.SocketInputStream.read(SocketInputStream.java:122)
+        at java.io.BufferedInputStream.fill(BufferedInputStream.java:235)
+        at java.io.BufferedInputStream.read(BufferedInputStream.java:254)
+        at java.io.DataInputStream.readInt(DataInputStream.java:387)
+        at org.apache.jute.BinaryInputArchive.readInt(BinaryInputArchive.java:63)
+        at org.apache.zookeeper.server.quorum.QuorumPacket.deserialize(QuorumPacket.java:83)
+        at org.apache.jute.BinaryInputArchive.readRecord(BinaryInputArchive.java:103)
+        at org.apache.zookeeper.server.quorum.Learner.readPacket(Learner.java:153)
+        at org.apache.zookeeper.server.quorum.Follower.followLeader(Follower.java:85)
+        at org.apache.zookeeper.server.quorum.QuorumPeer.run(QuorumPeer.java:786)
+2016-01-19 13:25:43,901 - INFO  [QuorumPeer[myid=1]/0.0.0.0:2181:Follower@166] - shutdown called
+java.lang.Exception: shutdown Follower
+        at org.apache.zookeeper.server.quorum.Follower.shutdown(Follower.java:166)
+        at org.apache.zookeeper.server.quorum.QuorumPeer.run(QuorumPeer.java:790)
+
+
+
+Until eventually we get to:
+
+2016-01-19 13:26:05,099 - INFO  [QuorumPeer[myid=1]/0.0.0.0:2181:QuorumPeer@784] - FOLLOWING
+2016-01-19 13:26:05,099 - INFO  [QuorumPeer[myid=1]/0.0.0.0:2181:ZooKeeperServer@162] - Created server with tickTime 2000 minSessionTimeout 4000
+maxSessionTimeout 40000 datadir /var/lib/zookeeper_1/data/version-2 snapdir /var/lib/zookeeper_1/data/version-2
+2016-01-19 13:26:05,099 - INFO  [QuorumPeer[myid=1]/0.0.0.0:2181:Follower@63] - FOLLOWING - LEADER ELECTION TOOK - 21179
+2016-01-19 13:26:05,100 - WARN  [QuorumPeer[myid=1]/0.0.0.0:2181:Learner@233] - Unexpected exception, tries=0, connecting to zoo005/X.Y.Z.71:2888
+java.net.ConnectException: Connection refused
+        at java.net.PlainSocketImpl.socketConnect(Native Method)
+        at java.net.AbstractPlainSocketImpl.doConnect(AbstractPlainSocketImpl.java:339)
+        at java.net.AbstractPlainSocketImpl.connectToAddress(AbstractPlainSocketImpl.java:200)
+        at java.net.AbstractPlainSocketImpl.connect(AbstractPlainSocketImpl.java:182)
+        at java.net.SocksSocketImpl.connect(SocksSocketImpl.java:392)
+        at java.net.Socket.connect(Socket.java:579)
+        at org.apache.zookeeper.server.quorum.Learner.connectToLeader(Learner.java:225)
+        at org.apache.zookeeper.server.quorum.Follower.followLeader(Follower.java:71)
+        at org.apache.zookeeper.server.quorum.QuorumPeer.run(QuorumPeer.java:786)
+
+
+
+And things start to come right.  Right about now, the three member which had so far escaped begin to exhibit the same behaviour.
+
+Again, if we look at the fsync messages:
+2016-01-19 13:26:06,192 - WARN  [SyncThread:3:FileTxnLog@334] - fsync-ing the write ahead log in SyncThread:3
+took 51394ms which will adversely effect operation latency.
+2016-01-19 13:26:05,960 - WARN  [SyncThread:4:FileTxnLog@334] - fsync-ing the write ahead log in SyncThread:4
+took 51162ms which will adversely effect operation latency.
+2016-01-19 13:26:04,524 - WARN  [SyncThread:5:FileTxnLog@334] - fsync-ing the write ahead log in SyncThread:5
+took 49726ms which will adversely effect operation latency.
+
+And we rewind the number of milliseconds from the log entry timestamp, we arrive at exactly 13:25:14,798 for all three events.
+
+
+So, it looks for all the world like something entered the system at 13:12:39,084, caused havoc on two nodes for 12.5 minutes, then at 13:25:14,798 it got off those and made to the other three, where it again caused havoc, before things eventually recovered and the world kept on ticking, only a medium sized log explosion worse for it.
+
+There is nothing in any of the logs within a second of either of those times.
+
+
+I'm hoping someone familiar with the code can look at those stack traces and understand what might cause such an incident.
+
+I'm to help anyway I can.  I have more complete logs, and we see this every couple of weeks or so, so can setup some additional logging if it would be of value.  Let me know.

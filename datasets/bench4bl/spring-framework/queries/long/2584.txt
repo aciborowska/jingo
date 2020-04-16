@@ -1,0 +1,77 @@
+Description of the scenario:
+I've created a test case to investigate a strange behaviour I had with an exception handler around advice, which is in front of the Spring TransactionInterceptor. 
+The idea is to implement a retry functionality, which reruns the same service method again, if a retryable exception has been raised by the service. In that scenario, I wanted the exception handler aspect to be the first in the interceptor chain, so the transaction gets rolled back by the retryable exception and a new one is started when retrying the service.
+Test aspect:
+so I have tried to implement the scenario in a small test case, this is the aspect, the first advice is the retry handler and the second one simulates the transaction management.
+----------------------------------------------------------------------------------------------------------------------
+@Aspect
+public class RetryAspect {
+	@Pointcut("execution(public * Main.*(..))")
+	public void execOfPublicMethod() {
+	}
+	/**
+
+Retry Advice
+	 */
+	@Around("execOfPublicMethod()")
+	public Object retry(ProceedingJoinPoint jp) throws Throwable {
+		boolean retry = true;
+		Object o = null;
+
+		while (retry) {
+			try 
+{
+				retry = false;
+				o = jp.proceed();
+			}
+ catch (RetryableException re) 
+{
+				retry = true;
+			}
+		}
+		return o;
+	}
+	/**
+
+Just simulating TransactionInterceptor, could be anything else
+	 */
+	@Around("execOfPublicMethod()")
+	public Object transaction(ProceedingJoinPoint jp) throws Throwable {
+		Object o = null;
+
+		System.out.println("starting transaction .....");
+		try 
+{
+			o = jp.proceed();
+		}
+ catch (RetryableException e) 
+{
+			System.out.println("rolback transaction .... ");
+			throw e;
+		}
+
+		System.out.println("committing transaction .....");
+		return o;
+	}
+}
+----------------------------------------------------------------------------------------------------------------------
+When I use this with SpringAOP and the service method throws an RetryableException once and the second time it finishes successfully, then I get this on the console:
+------------------------------------------------------
+starting transaction .....
+I'm in the service now ....
+.... about to throw a RetryableException ...
+rolback transaction ....
+I'm in the service now ....
+------------------------------------------------------
+If I switch to AspectJ and weave the aspect at at compile-time, then I get the expected behavior:
+------------------------------------------------------
+starting transaction .....
+I'm in the service now ....
+.... about to throw a RetryableException ...
+rolback transaction ....
+starting transaction .....
+I'm in the service now ....
+committing transaction .....
+------------------------------------------------------
+Tested with Spring RC3 and a 1 week-old RC4.
+There is also an active thread on the AOP Spring Forum: http://forum.springframework.org/showthread.php?t=29120

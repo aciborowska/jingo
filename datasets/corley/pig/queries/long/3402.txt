@@ -1,0 +1,77 @@
+Here is a part of script:
+
+lastEndPoints24h = LOAD '$lastEndPoints24h' USING org.apache.pig.piggybank.storage.avro.AvroStorage();
+describe lastEndPoints24h;
+dump lastEndPoints24h;
+
+lastEndPoints24hProj = FOREACH lastEndPoints24h GENERATE msisdn, toLong((chararray)ts) as ts:long,
+                                                               center_lon, center_lat,
+                                                               lac, cid, lon, lat, cell_type, is_active, azimuth, hpbw, max_dist,
+                                                               tile_id, zone_col, zone_row,
+                                                               is_end_point, end_point_type;
+describe lastEndPoints24hProj;
+dump lastEndPoints24hProj;
+
+unionOfPivotsAndLastEndPoints = UNION ONSCHEMA validPivotsProj, lastEndPoints24hProj;
+describe unionOfPivotsAndLastEndPoints;
+dump unionOfPivotsAndLastEndPoints;
+
+
+groupedValidPivots = GROUP unionOfPivotsAndLastEndPoints BY msisdn;
+
+pivotsWithEndPoints = FOREACH groupedValidPivots {
+                ordered = ORDER unionOfPivotsAndLastEndPoints BY ts;
+
+
+
+The problem is that unionOfPivotsAndLastEndPoints are not correctly sorted. Looks like PIg assumes that ts field is chararray.
+
+Here are dumps and schemas of relations:
+
+lastEndPoints24h: {msisdn: long,ts: long,center_lon: double,center_lat: double,lac: int,cid: int,lon: double,lat: double,cell_type: chararray,is_active: boolean,azimuth: int,hpbw: int,max_dist: int,tile_id: int,zone_col: int,zone_row: int,is_end_point: boolean,end_point_type: chararray}
+--dump
+(79263332100,1374521131,37.553441893272755,55.880436657140294,7712,24316,37.5473,55.8792,OUTDOOR,true,75,60,1102,49646,469,410,true,JITTER_START)
+
+
+
+
+lastEndPoints24hProj: {msisdn: long,ts: long,center_lon: double,center_lat: double,lac: int,cid: int,lon: double,lat: double,cell_type: chararray,is_active: boolean,azimuth: int,hpbw: int,max_dist: int,tile_id: int,zone_col: int,zone_row: int,is_end_point: boolean,end_point_type: chararray}
+(79263332100,1374521131,37.553441893272755,55.880436657140294,7712,24316,37.5473,55.8792,OUTDOOR,true,75,60,1102,49646,469,410,true,JITTER_START)
+
+
+
+
+unionOfPivotsAndLastEndPoints: {msisdn: long,ts: long,lac: int,cid: int,lon: double,lat: double,azimuth: int,hpbw: int,max_dist: int,cell_type: chararray,branch_id: int,center_lon: double,center_lat: double,tile_id: int,zone_col: int,zone_row: int,is_active: boolean,is_end_point: boolean,end_point_type: chararray}
+--union dump:
+(79263332100,1374529463,7712,5258,37.5564,55.8845,210,60,765,OUTDOOR,5145,37.55330379777028,55.881137048806984,49646,469,410,true,,)
+(79263332100,1374550275,7712,24316,37.5473,55.8792,75,60,1102,OUTDOOR,5145,37.55614891372749,55.88052982685867,49646,471,410,true,,)
+--more lines here...
+--the last one came from projection lastEndPoints24hProj
+(79263332100,1374521131,7712,24316,37.5473,55.8792,75,60,1102,OUTDOOR,,37.553441893272755,55.880436657140294,49646,469,410,true,true,JITTER_START)
+
+
+
+Looks like everything is OK, but it's not true!
+Here is input for UDF after ORDER BY:
+
+--a part of code
+groupedValidPivots = GROUP unionOfPivotsAndLastEndPoints BY msisdn;
+
+pivotsWithEndPoints = FOREACH groupedValidPivots {
+                ordered = ORDER unionOfPivotsAndLastEndPoints BY ts;
+                GENERATE FLATTEN(udf.mark_end_points(ordered, 'ts:1, lac:2, cid:3, is_end_point:17, lon:4, lat:5, azimuth:6, hpbw:7, max_dist:8'))
+
+
+
+ordered projection print from UDF:
+
+ITERATE PIVOTS: 0 ) (79263332100L, 1374529463, 7712, 5258, 37.5564, 55.8845, 210, 60, 765, u'OUTDOOR', 5145, 37.55330379777028, 55.881137048806984, 49646, 469, 410, True, None, None)
+--more lines here...
+ITERATE PIVOTS: 22 ) (79263332100L, 1374521131L, 7712, 24316, 37.5473, 55.8792, 75, 60, 1102, u'OUTDOOR', None, 37.553441893272755, 55.880436657140294, 49646, 469, 410, True, True, u'JITTER_START')
+
+
+
+See that 1374521131L has "L" and 1374529463 doesn't have (it's ts atom value)
+See that 1374529463 > 1374521131, but tuple with ts=1374521131L is at the end of list. Looks like sorting was applied to ts:hararray, not to ts:long.
+
+It's weird. 

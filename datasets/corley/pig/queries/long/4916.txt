@@ -1,0 +1,54 @@
+We saw the following stack trace when running Pig on S3:
+
+2016-06-01 22:04:22,714 [Thread-19] INFO  org.apache.hadoop.service.AbstractService - Service org.apache.hadoop.yarn.client.api.impl.TimelineClientImpl failed in state STOPPED; cause: java.io.IOException: Filesystem closed
+java.io.IOException: Filesystem closed
+	at org.apache.hadoop.hdfs.DFSClient.checkOpen(DFSClient.java:808)
+	at org.apache.hadoop.hdfs.DFSOutputStream.flushOrSync(DFSOutputStream.java:2034)
+	at org.apache.hadoop.hdfs.DFSOutputStream.hflush(DFSOutputStream.java:1980)
+	at org.apache.hadoop.fs.FSDataOutputStream.hflush(FSDataOutputStream.java:130)
+	at org.apache.hadoop.yarn.client.api.impl.FileSystemTimelineWriter$LogFD.flush(FileSystemTimelineWriter.java:370)
+	at org.apache.hadoop.yarn.client.api.impl.FileSystemTimelineWriter$LogFDsCache.flush(FileSystemTimelineWriter.java:485)
+	at org.apache.hadoop.yarn.client.api.impl.FileSystemTimelineWriter.close(FileSystemTimelineWriter.java:271)
+	at org.apache.hadoop.yarn.client.api.impl.TimelineClientImpl.serviceStop(TimelineClientImpl.java:326)
+	at org.apache.hadoop.service.AbstractService.stop(AbstractService.java:221)
+	at org.apache.tez.dag.history.ats.acls.ATSV15HistoryACLPolicyManager.close(ATSV15HistoryACLPolicyManager.java:259)
+	at org.apache.tez.client.TezClient.stop(TezClient.java:582)
+	at org.apache.pig.backend.hadoop.executionengine.tez.TezSessionManager.shutdown(TezSessionManager.java:308)
+	at org.apache.pig.backend.hadoop.executionengine.tez.TezSessionManager$1.run(TezSessionManager.java:53)
+2016-06-01 22:04:22,718 [Thread-19] ERROR org.apache.pig.backend.hadoop.executionengine.tez.TezSessionManager - Error shutting down Tez session org.apache.tez.client.TezClient@48bf833a
+org.apache.hadoop.service.ServiceStateException: java.io.IOException: Filesystem closed
+	at org.apache.hadoop.service.ServiceStateException.convert(ServiceStateException.java:59)
+	at org.apache.hadoop.service.AbstractService.stop(AbstractService.java:225)
+	at org.apache.tez.dag.history.ats.acls.ATSV15HistoryACLPolicyManager.close(ATSV15HistoryACLPolicyManager.java:259)
+	at org.apache.tez.client.TezClient.stop(TezClient.java:582)
+	at org.apache.pig.backend.hadoop.executionengine.tez.TezSessionManager.shutdown(TezSessionManager.java:308)
+	at org.apache.pig.backend.hadoop.executionengine.tez.TezSessionManager$1.run(TezSessionManager.java:53)
+Caused by: java.io.IOException: Filesystem closed
+	at org.apache.hadoop.hdfs.DFSClient.checkOpen(DFSClient.java:808)
+	at org.apache.hadoop.hdfs.DFSOutputStream.flushOrSync(DFSOutputStream.java:2034)
+	at org.apache.hadoop.hdfs.DFSOutputStream.hflush(DFSOutputStream.java:1980)
+	at org.apache.hadoop.fs.FSDataOutputStream.hflush(FSDataOutputStream.java:130)
+	at org.apache.hadoop.yarn.client.api.impl.FileSystemTimelineWriter$LogFD.flush(FileSystemTimelineWriter.java:370)
+	at org.apache.hadoop.yarn.client.api.impl.FileSystemTimelineWriter$LogFDsCache.flush(FileSystemTimelineWriter.java:485)
+	at org.apache.hadoop.yarn.client.api.impl.FileSystemTimelineWriter.close(FileSystemTimelineWriter.java:271)
+	at org.apache.hadoop.yarn.client.api.impl.TimelineClientImpl.serviceStop(TimelineClientImpl.java:326)
+	at org.apache.hadoop.service.AbstractService.stop(AbstractService.java:221)
+	... 4 more
+
+
+The job run successfully, but the temporary hdfs files are not removed.
+
+Chris Nauroth points out FileSystem also use shutdown hook to close FileSystem instances and it might run before Pig's shutdown hook in Main. By switching to Hadoop's ShutdownHookManager, we can put an order on shutdown hook.
+
+This has been verified by testing the following code in Main:
+
+        ShutdownHookManager.get().addShutdownHook(new Runnable() {
+            @Override
+            public void run() {
+                FileLocalizer.deleteTempResourceFiles();
+            }
+        }, priority);
+
+
+
+Notice FileSystem.SHUTDOWN_HOOK_PRIORITY=10. When priority=9, Pig fail. When priority=11, Pig success.

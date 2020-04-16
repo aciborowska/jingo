@@ -1,0 +1,103 @@
+i'm sure i'm just missing something, but i've looked and looked and can't figure out what it is. we are using mutiple BeanNameAutoProxyCreators - for transaction management, caching, and method logging. i upgraded to 2.0.1 then noticed that when a given bean was listed for more that one of the auto proxy creators, only one picked it up. i tried each auto proxy creator in turn and verified that it was working, confirming that the problem was just when more than one was in effect (i think). here is the related configuration from our SpringBeans.xml (slightly simplified to list only one bean for each auto proxy creator):
+<bean id="transactionInterceptor" class="org.springframework.transaction.interceptor.TransactionInterceptor">
+	<property name="transactionManager">
+		<ref bean="transactionManager" />
+	</property>
+	<property name="transactionAttributeSource">
+		<bean id="transactionAttributeSource" class="org.kuali.core.util.spring.DefaultingNameMatchTransactionAttributeSource">
+			<property name="properties">
+				<props>
+					<prop key="get*">PROPAGATION_SUPPORTS</prop>
+					<prop key="is*">PROPAGATION_SUPPORTS</prop>
+					<prop key="forceLookup*">PROPAGATION_SUPPORTS</prop>
+					<prop key="noLookup*">PROPAGATION_SUPPORTS</prop>
+					<prop key="performLookup*">PROPAGATION_SUPPORTS</prop>
+					<prop key="find*">PROPAGATION_SUPPORTS</prop>
+					<prop key="search*">PROPAGATION_SUPPORTS</prop>
+					<prop key="retrieve*">PROPAGATION_SUPPORTS</prop>
+					<prop key="count*">PROPAGATION_SUPPORTS</prop>
+				</props>
+			</property>
+			<property name="nontransactionalMethods">
+				<list>
+					<value>getAllProperties</value>
+					<value>getPropertyString</value>
+				</list>
+			</property>
+			<property name="defaultTransactionAttribute">
+				<value>PROPAGATION_REQUIRED</value>
+			</property>
+		</bean>
+	</property>
+</bean>
+<bean id="transactionAutoProxyCreator" class="org.springframework.aop.framework.autoproxy.BeanNameAutoProxyCreator">
+	<property name="interceptorNames">
+		<list>
+			<idref local="transactionInterceptor" />
+		</list>
+	</property>
+	<property name="beanNames">
+		<list>
+			<idref bean="persistenceStructureService" />
+		</list>
+	</property>
+</bean>
+<bean id="methodResultsCacheAdministrator" class="com.opensymphony.oscache.general.GeneralCacheAdministrator" destroy-method="destroy">
+	<constructor-arg index="0">
+		<props>
+			<prop key="cache.memory">true</prop>
+			<prop key="cache.key">__oscache_mrcache</prop>
+			<prop key="cache.persistence.overflow.only">false</prop>
+			<prop key="cache.capacity">1000</prop>
+			<prop key="cache.event.listeners">org.kuali.core.util.cache.MethodResultsCacheMonitor</prop>
+		</props>
+	</constructor-arg>
+</bean>
+<bean id="methodCache" factory-bean="methodResultsCacheAdministrator" factory-method="getCache" />
+<bean id="methodCacheInterceptor" class="org.kuali.core.util.cache.MethodCacheInterceptor">
+	<property name="cache">
+		<ref local="methodCache" />
+	</property>
+	<property name="expirationTimeInSeconds">
+		<value>10</value>
+	</property>
+</bean>
+<bean id="methodCachePointCut" class="org.springframework.aop.support.RegexpMethodPointcutAdvisor">
+	<property name="advice">
+		<ref local="methodCacheInterceptor" />
+	</property>
+	<property name="patterns">
+		<list>
+			<value>org.kuali.\.PersistenceStructureService.\..*</value>
+		</list>
+	</property>
+</bean>
+<bean id="resultsCachingProxyCreator" class="org.springframework.aop.framework.autoproxy.BeanNameAutoProxyCreator">
+	<property name="interceptorNames">
+		<list>
+			<idref local="methodCachePointCut" />
+		</list>
+	</property>
+	<property name="beanNames">
+		<list>
+			<idref bean="persistenceStructureService" />
+		</list>
+	</property>
+</bean>
+<bean id="methodLoggingPointCut" class="org.springframework.aop.support.DefaultPointcutAdvisor">
+	<property name="advice">
+		<bean id="methodLoggingInterceptor" class="org.kuali.core.util.spring.MethodLoggingInterceptor" />
+	</property>
+</bean>
+<bean id="methodLoggingProxyCreator" class="org.springframework.aop.framework.autoproxy.BeanNameAutoProxyCreator">
+	<property name="interceptorNames">
+		<list>
+			<idref local="methodLoggingPointCut" />
+		</list>
+	</property>
+	<property name="beanNames">
+		<list>
+			<idref bean="persistenceStructureService" />
+		</list>
+	</property>
+</bean>

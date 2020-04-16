@@ -1,0 +1,42 @@
+ClassPathXmlApplicationContext and other classes use the thread context classloader for resource loading and other operations. This is a good default in itself, however, I think they should get that classloader exactly once and remember it. Surprising behaviour can occur otherwise if you have a different tccl later.
+Example: The existence of a Resource obtained from a CPXAC depends on the thread context class loader:
+/*
+
+Copyright (c) 2004 CoreMedia AG, Hamburg. All rights reserved.
+ */
+
+package org.mernst.subsystems.crosscontext.test;
+import org.springframework.context.support.ClassPathXmlApplicationContext;
+import org.springframework.core.io.Resource;
+import java.net.URLClassLoader;
+import java.net.URL;
+import java.net.MalformedURLException;
+public class WhichClassLoader {
+  public static void main(String[] args) throws MalformedURLException {
+    URLClassLoader cl = new URLClassLoader(new URL[] 
+{
+      new URL("http://www.springframework.org/")
+    }
+);
+    ClassLoader current = Thread.currentThread().getContextClassLoader();
+    ClassPathXmlApplicationContext context;
+    Resource resource;
+    Thread.currentThread().setContextClassLoader(cl);
+    try 
+{
+      context = new ClassPathXmlApplicationContext(new String[0]);
+      resource = context.getResource("/files/xdev-spring_logo.jpg");
+      System.out.println(""+resource+" exists: "+resource.exists());
+    }
+ finally 
+{
+      Thread.currentThread().setContextClassLoader(current);
+    }
+
+    System.out.println(""resource" exists: "+resource.exists());
+  }
+}
+This code prints "true" and "false" for the same resource.
+This can happen, for example, when using JMX remote. Take such a context and export beans via a JMX remote connector. The connector will call into your context using the application classloader as context.
+I think it would be more intuitive if DefaultResourceLoader (from which this behaviour is inherited) would remember the context class loader in a field and always use that one.
+As a side effect, #getClassLoader on an ApplicationContext would return something meaningful.

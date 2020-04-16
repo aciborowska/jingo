@@ -1,0 +1,27 @@
+Traditionally Pig handles hadoop configuration using PigContext.properties, the flow is:
+1. Instantiate Hadoop Configuration, read all entries and save into PigContext.properties
+2. adding system properties, pig.properties and "set" command in script into PigContext.properties
+3. Every time we need to instantiate a Hadoop Configuration, we iterate PigContext.properties and add to Hadoop Configuration
+
+This approach does not deal with hadoop 23 deprecated config option. Eg, in hadoop 23, "mapred.output.compression.codec" is replaced with "mapreduce.output.fileoutputformat.compression.codec". mapred-default.xml contains "mapreduce.output.fileoutputformat.compression.codec=org.apache.hadoop.io.compress.DefaultCodec". In Pig script, user may override it with "set mapred.output.compression.codec 'org.apache.hadoop.io.compress.BZip2Codec'". This is what happen:
+1. Pig instantiate Hadoop Configuration, and put mapreduce.output.fileoutputformat.compression.codec=org.apache.hadoop.io.compress.DefaultCodec into PigContext.properties
+2. Adding "mapred.output.compression.codec=org.apache.hadoop.io.compress.BZip2Codec" to PigContext.properties
+3. When creating Hadoop Configuration to submit Hadoop job, Pig iterate PigContext.properties, it first see "mapred.output.compression.codec=org.apache.hadoop.io.compress.BZip2Codec", Hadoop Configuration translate it into the new property "mapreduce.output.fileoutputformat.compression.codec=org.apache.hadoop.io.compress.BZip2Codec", which is right until this point. Then Pig see "mapreduce.output.fileoutputformat.compression.codec=org.apache.hadoop.io.compress.DefaultCodec", and overwrite the previous right entry. 
+
+In PIG-2508, we address the issue by using a Configuration to handle system properties, pig.properties and "set" command, the flow is:
+1. Instantiate Hadoop Configuration, adding system properties, pig.properties, then read all entries and save into PigContext.properties
+2. For every set command, instantiate Hadoop Configuration with PigContext.properties, set the property to Configuration (Configuration translate the old option into new option), then read all entries back into PigContext.properies
+
+This works but is cumbersome when doing "set".
+
+In trunk, I want to use the following approach:
+1. Write a subclass PigProperties extends Properties, and use it as PigContext.properties. The interface for PigContext remains the same
+2. In PigProperties, we maintain a set of hadoop properties, a set of system properties, a set of pig.properties and a set of "set" command properties
+3. Upon invoking PigContext.getProperties(), we instantiate hadoop configuration, put all properties in a sequence, then flatten it into a combined properties
+4. We can do optimization to avoid recreating combined properties every time we call PigContext.getProperties()
+
+The benefit for this approach:
+1. Solve deprecate Hadoop config in a more clear way
+2. Separate different layer of properties to ease the debugging, also provide potential to show properties to the user at different level
+3. Potential to add job level properties in the future
+4. No backward incompatibility introduced

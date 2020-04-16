@@ -1,0 +1,264 @@
+【Phenomenon】
+The query results are not the same as when hive.groupby.skewindata was setted to true and false.
+【my question】
+I want to calculate the count and count(distinct) simultaneously ,otherwise it will cost 2 MR job to calculate. But when i set the hive.groupby.skewindata to be true, the count result shoud not be same as the count(distinct) , but the real result is same, so it's wrong. And I find the difference of its query plan which the "Reduce Operator Tree->Group By Operator->mode"  is mergepartial when skew is set to false and 
+"Reduce Operator Tree->Group By Operator->mode"  is complete when skew is set to true. So i'm confused the root cause of the error.
+【sql】
+select ds,appid,eventname,active,count(distinct(guid)), count from eventinfo_tmp where ds='20140612' and length(eventname)<1000 and eventname like '%alibaba%' group by ds,appid,eventname,active;
+【the others hive configaration exclude hive.groupby.skewindata】
+hive.exec.compress.output=true
+hive.exec.compress.intermediate=true
+io.seqfile.compression.type=BLOCK
+mapred.output.compression.codec=org.apache.hadoop.io.compress.GzipCodec
+hive.map.aggr=true
+hive.stats.autogather=false
+hive.exec.scratchdir=/user/complat/tmp
+mapred.job.queue.name=complat
+hive.exec.mode.local.auto=false
+hive.exec.mode.local.auto.inputbytes.max=500
+hive.exec.mode.local.auto.tasks.max=10
+hive.exec.mode.local.auto.input.files.max=1000
+hive.exec.dynamic.partition=true
+hive.exec.dynamic.partition.mode=nonstrict
+hive.input.format=org.apache.hadoop.hive.ql.io.CombineHiveInputFormat
+mapred.max.split.size=100000000
+mapred.min.split.size.per.node=100000000
+mapred.min.split.size.per.rack=100000000
+【result】
+when hive.groupby.skewindata=true  the result is :
+20140612	8	alibaba	1	87	147
+when it=false the result is : 
+20140612	8	alibaba	1	87	87
+【query plan】
+ABSTRACT SYNTAX TREE:
+  (TOK_QUERY (TOK_FROM (TOK_TABREF (TOK_TABNAME eventinfo_tmp))) (TOK_INSERT (TOK_DESTINATION (TOK_DIR TOK_TMP_FILE)) (TOK_SELECT (TOK_SELEXPR (TOK_TABLE_OR_COL ds)) (TOK_SELEXPR (TOK_TABLE_OR_COL appid)) (TOK_SELEXPR (TOK_TABLE_OR_COL eventname)) (TOK_SELEXPR (TOK_TABLE_OR_COL active)) (TOK_SELEXPR (TOK_FUNCTIONDI count (TOK_TABLE_OR_COL guid))) (TOK_SELEXPR (TOK_FUNCTIONSTAR count))) (TOK_WHERE (and (and (= (TOK_TABLE_OR_COL ds) '20140612') (< (TOK_FUNCTION length (TOK_TABLE_OR_COL eventname)) 1000)) (like (TOK_TABLE_OR_COL eventname) '%tvvideo_setting%'))) (TOK_GROUPBY (TOK_TABLE_OR_COL ds) (TOK_TABLE_OR_COL appid) (TOK_TABLE_OR_COL eventname) (TOK_TABLE_OR_COL active))))
+STAGE DEPENDENCIES:
+  Stage-1 is a root stage
+  Stage-0 is a root stage
+STAGE PLANS:
+  Stage: Stage-1
+    Map Reduce
+      Alias -> Map Operator Tree:
+        eventinfo_tmp 
+          TableScan
+            alias: eventinfo_tmp
+            Filter Operator
+              predicate:
+                  expr: ((length(eventname) < 1000) and (eventname like '%tvvideo_setting%'))
+                  type: boolean
+              Select Operator
+                expressions:
+                      expr: ds
+                      type: string
+                      expr: appid
+                      type: string
+                      expr: eventname
+                      type: string
+                      expr: active
+                      type: int
+                      expr: guid
+                      type: string
+                outputColumnNames: ds, appid, eventname, active, guid
+                Group By Operator
+                  aggregations:
+                        expr: count(DISTINCT guid)
+                        expr: count()
+                  bucketGroup: false
+                  keys:
+                        expr: ds
+                        type: string
+                        expr: appid
+                        type: string
+                        expr: eventname
+                        type: string
+                        expr: active
+                        type: int
+                        expr: guid
+                        type: string
+                  mode: hash
+                  outputColumnNames: _col0, _col1, _col2, _col3, _col4, _col5, _col6
+                  Reduce Output Operator
+                    key expressions:
+                          expr: _col0
+                          type: string
+                          expr: _col1
+                          type: string
+                          expr: _col2
+                          type: string
+                          expr: _col3
+                          type: int
+                          expr: _col4
+                          type: string
+                    sort order: +++++
+                    Map-reduce partition columns:
+                          expr: _col0
+                          type: string
+                          expr: _col1
+                          type: string
+                          expr: _col2
+                          type: string
+                          expr: _col3
+                          type: int
+                    tag: -1
+                    value expressions:
+                          expr: _col5
+                          type: bigint
+                          expr: _col6
+                          type: bigint
+      Reduce Operator Tree:
+        Group By Operator
+          aggregations:
+                expr: count(DISTINCT KEY._col4:0._col0)
+                expr: count(VALUE._col1)
+          bucketGroup: false
+          keys:
+                expr: KEY._col0
+                type: string
+                expr: KEY._col1
+                type: string
+                expr: KEY._col2
+                type: string
+                expr: KEY._col3
+                type: int
+          mode: mergepartial
+          outputColumnNames: _col0, _col1, _col2, _col3, _col4, _col5
+          Select Operator
+            expressions:
+                  expr: _col0
+                  type: string
+                  expr: _col1
+                  type: string
+                  expr: _col2
+                  type: string
+                  expr: _col3
+                  type: int
+                  expr: _col4
+                  type: bigint
+                  expr: _col5
+                  type: bigint
+            outputColumnNames: _col0, _col1, _col2, _col3, _col4, _col5
+            File Output Operator
+              compressed: true
+              GlobalTableId: 0
+              table:
+                  input format: org.apache.hadoop.mapred.TextInputFormat
+                  output format: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
+  Stage: Stage-0
+    Fetch Operator
+      limit: -1
+ABSTRACT SYNTAX TREE:
+  (TOK_QUERY (TOK_FROM (TOK_TABREF (TOK_TABNAME eventinfo_tmp))) (TOK_INSERT (TOK_DESTINATION (TOK_DIR TOK_TMP_FILE)) (TOK_SELECT (TOK_SELEXPR (TOK_TABLE_OR_COL ds)) (TOK_SELEXPR (TOK_TABLE_OR_COL appid)) (TOK_SELEXPR (TOK_TABLE_OR_COL eventname)) (TOK_SELEXPR (TOK_TABLE_OR_COL active)) (TOK_SELEXPR (TOK_FUNCTIONDI count (TOK_TABLE_OR_COL guid))) (TOK_SELEXPR (TOK_FUNCTIONSTAR count))) (TOK_WHERE (and (and (= (TOK_TABLE_OR_COL ds) '20140612') (< (TOK_FUNCTION length (TOK_TABLE_OR_COL eventname)) 1000)) (like (TOK_TABLE_OR_COL eventname) '%tvvideo_setting%'))) (TOK_GROUPBY (TOK_TABLE_OR_COL ds) (TOK_TABLE_OR_COL appid) (TOK_TABLE_OR_COL eventname) (TOK_TABLE_OR_COL active))))
+STAGE DEPENDENCIES:
+  Stage-1 is a root stage
+  Stage-0 is a root stage
+STAGE PLANS:
+  Stage: Stage-1
+    Map Reduce
+      Alias -> Map Operator Tree:
+        eventinfo_tmp 
+          TableScan
+            alias: eventinfo_tmp
+            Filter Operator
+              predicate:
+                  expr: ((length(eventname) < 1000) and (eventname like '%tvvideo_setting%'))
+                  type: boolean
+              Select Operator
+                expressions:
+                      expr: ds
+                      type: string
+                      expr: appid
+                      type: string
+                      expr: eventname
+                      type: string
+                      expr: active
+                      type: int
+                      expr: guid
+                      type: string
+                outputColumnNames: ds, appid, eventname, active, guid
+                Group By Operator
+                  aggregations:
+                        expr: count(DISTINCT guid)
+                        expr: count()
+                  bucketGroup: false
+                  keys:
+                        expr: ds
+                        type: string
+                        expr: appid
+                        type: string
+                        expr: eventname
+                        type: string
+                        expr: active
+                        type: int
+                        expr: guid
+                        type: string
+                  mode: hash
+                  outputColumnNames: _col0, _col1, _col2, _col3, _col4, _col5, _col6
+                  Reduce Output Operator
+                    key expressions:
+                          expr: _col0
+                          type: string
+                          expr: _col1
+                          type: string
+                          expr: _col2
+                          type: string
+                          expr: _col3
+                          type: int
+                          expr: _col4
+                          type: string
+                    sort order: +++++
+                    Map-reduce partition columns:
+                          expr: _col0
+                          type: string
+                          expr: _col1
+                          type: string
+                          expr: _col2
+                          type: string
+                          expr: _col3
+                          type: int
+                    tag: -1
+                    value expressions:
+                          expr: _col5
+                          type: bigint
+                          expr: _col6
+                          type: bigint
+      Reduce Operator Tree:
+        Group By Operator
+          aggregations:
+                expr: count(DISTINCT KEY._col4:0._col0)
+                expr: count(VALUE._col1)
+          bucketGroup: false
+          keys:
+                expr: KEY._col0
+                type: string
+                expr: KEY._col1
+                type: string
+                expr: KEY._col2
+                type: string
+                expr: KEY._col3
+                type: int
+          mode: complete
+          outputColumnNames: _col0, _col1, _col2, _col3, _col4, _col5
+          Select Operator
+            expressions:
+                  expr: _col0
+                  type: string
+                  expr: _col1
+                  type: string
+                  expr: _col2
+                  type: string
+                  expr: _col3
+                  type: int
+                  expr: _col4
+                  type: bigint
+                  expr: _col5
+                  type: bigint
+            outputColumnNames: _col0, _col1, _col2, _col3, _col4, _col5
+            File Output Operator
+              compressed: true
+              GlobalTableId: 0
+              table:
+                  input format: org.apache.hadoop.mapred.TextInputFormat
+                  output format: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
+  Stage: Stage-0
+    Fetch Operator
+      limit: -1

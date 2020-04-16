@@ -1,0 +1,38 @@
+Switching the field order within an array of structs causes the query to fail or return the wrong data for the fields, but switching the field order within just a struct works.
+How to reproduce:
+Case1 if the two fields have the same type, query will return wrong data for the fields
+drop table if exists schema_test;
+create table schema_test (msg array<struct<f1: string, f2: string>>) stored as parquet;
+insert into table schema_test select stack(2, array(named_struct('f1', 'abc', 'f2', 'abc2')), array(named_struct('f1', 'efg', 'f2', 'efg2'))) from one limit 2;
+select * from schema_test;
+--returns
+--[
+{"f1":"efg","f2":"efg2"}
+]
+--[
+{"f1":"abc","f2":"abc2"}
+]
+alter table schema_test change msg msg array<struct<f2: string, f1: string>>;
+select * from schema_test;
+--returns
+--[
+{"f2":"efg","f1":"efg2"}
+]
+--[
+{"f2":"abc","f1":"abc2"}
+]
+Case2: if the two fields have different type, the query will fail
+drop table if exists schema_test;
+create table schema_test (msg array<struct<f1: string, f2: int>>) stored as parquet;
+insert into table schema_test select stack(2, array(named_struct('f1', 'abc', 'f2', 1)), array(named_struct('f1', 'efg', 'f2', 2))) from one limit 2;
+select * from schema_test;
+--returns
+--[
+{"f1":"efg","f2":2}
+]
+--[
+{"f1":"abc","f2":1}
+]
+alter table schema_test change msg msg array<struct<f2: int, f1: string>>;
+select * from schema_test;
+Failed with exception java.io.IOException:org.apache.hadoop.hive.ql.metadata.HiveException: java.lang.ClassCastException: org.apache.hadoop.io.Text cannot be cast to org.apache.hadoop.io.IntWritable

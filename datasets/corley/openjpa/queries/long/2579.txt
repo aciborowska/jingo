@@ -1,0 +1,65 @@
+Hello OpenJPA community
+
+I submit this issue, because I ran into a rather weird behavior while using @Strategy on an abstract Entity having two subclasses that map to the actual tables.
+I encounter the problem on both 2.3.0 and 2.4.0 version of openjpa.
+
+The problem is that I received the exception
+
+...
+Caused by: <openjpa-2.4.0-r422266:1674604 fatal user error> org.apache.openjpa.persistence.ArgumentException: Attempt to map "gaia.cu7.om.input.TimeSeries.fObsTimes" failed: the owning entity is not mapped.
+	at org.apache.openjpa.jdbc.meta.MappingInfo.assertTable(MappingInfo.java:628)
+	at org.apache.openjpa.jdbc.meta.MappingInfo.createColumns(MappingInfo.java:558)
+	at org.apache.openjpa.jdbc.meta.ValueMappingInfo.getColumns(ValueMappingInfo.java:178)
+	at org.apache.openjpa.jdbc.meta.strats.HandlerStrategies.map(HandlerStrategies.java:65)
+	at org.apache.openjpa.jdbc.meta.strats.HandlerFieldStrategy.map(HandlerFieldStrategy.java:82)
+	at org.apache.openjpa.jdbc.meta.FieldMapping.setStrategy(FieldMapping.java:148)
+	at org.apache.openjpa.jdbc.meta.RuntimeStrategyInstaller.installStrategy(RuntimeStrategyInstaller.java:81)
+	at org.apache.openjpa.jdbc.meta.FieldMapping.resolveMapping(FieldMapping.java:498)
+	at org.apache.openjpa.jdbc.meta.FieldMapping.resolve(FieldMapping.java:463)
+	at org.apache.openjpa.jdbc.meta.ClassMapping.resolveNonRelationMappings(ClassMapping.java:895)
+	at org.apache.openjpa.jdbc.meta.MappingRepository.prepareMapping(MappingRepository.java:416)
+	at org.apache.openjpa.meta.MetaDataRepository.preMapping(MetaDataRepository.java:769)
+	at org.apache.openjpa.meta.MetaDataRepository.resolve(MetaDataRepository.java:658)
+	... 38 more
+
+
+
+
+I'am not sure of the root cause of the problem but after debugging, I found that in the RunTimeStrategyInstaller, in the installStrategy method a handlerField strategy is installed even is the class is abstract. 
+
+
+public void installStrategy(FieldMapping field) {
+        FieldStrategy strategy = null;
+        ClassMapping owner = getOutermostDefiningMapping(field); 
+        if (owner != null && !owner.isEmbeddable() && !owner.isAbstract())
+            strategy = repos.namedStrategy(field, true);
+...
+
+
+
+And this strategy is installed because owner.isAbstract() is false, which I don't understand since the class is abstract and not mapped to any table. In my case only subclasses are mapped, I use TABLE_PER_CLASS strategy.
+
+Obviously, when I do not use any strategy, the installed strategy is NoneFieldStrategy, but the ownser.isAbstract() is still false.
+
+So Maybe the problem is elsewhere. Here is my mapping:
+
+@Entity
+@IdClass(TimeSeries.TimeSeriesId.class)
+@Inheritance(strategy = InheritanceType.TABLE_PER_CLASS)
+@Access(AccessType.FIELD)
+@Immutable
+public abstract class TimeSeries .... extends other abstract class not jpa mapped
+
+
+@NotNull(message = "Observation times cannot be empty or null.")
+@PersistentCollection(fetch = FetchType.EAGER)
+@Strategy("gaia.cu7.om.dal.dictionary.PostgresArrayHandler2")
+@Column(name = "obstimes", updatable = false)
+protected double[] fObsTimes;
+
+
+
+
+Thanks for any help
+Gregory
+

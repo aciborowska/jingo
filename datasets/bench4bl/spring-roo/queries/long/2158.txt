@@ -1,0 +1,47 @@
+I created an enum "Timezone" using roo shell and added lots of constants (more than 600) to it. This enum is used as a property in one of my roo generated entities.
+Whenever I try to update/create/delete entities of this type with the scaffolded controller, the data base is updated correctly, but once the controller tries to redirect to a view, I get the following exception:
+java.lang.ArrayIndexOutOfBoundsException: 8192
+	at org.apache.coyote.http11.InternalOutputBuffer.write(InternalOutputBuffer.java:715)
+	at org.apache.coyote.http11.InternalOutputBuffer.write(InternalOutputBuffer.java:622)
+	at org.apache.coyote.http11.InternalOutputBuffer.sendHeader(InternalOutputBuffer.java:495)
+	at org.apache.coyote.http11.Http11Processor.prepareResponse(Http11Processor.java:1617)
+	at org.apache.coyote.http11.Http11Processor.action(Http11Processor.java:952)
+	at org.apache.coyote.Response.action(Response.java:183)
+	at org.apache.coyote.Response.sendHeaders(Response.java:379)
+	at org.apache.catalina.connector.OutputBuffer.doFlush(OutputBuffer.java:305)
+	at org.apache.catalina.connector.OutputBuffer.close(OutputBuffer.java:273)
+	at org.apache.catalina.connector.Response.finishResponse(Response.java:493)
+	at org.apache.catalina.connector.CoyoteAdapter.service(CoyoteAdapter.java:322)
+	at org.apache.coyote.http11.Http11Processor.process(Http11Processor.java:857)
+	at org.apache.coyote.http11.Http11Protocol$Http11ConnectionHandler.process(Http11Protocol.java:588)
+	at org.apache.tomcat.util.net.JIoEndpoint$SocketProcessor.run(JIoEndpoint.java:409)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.runTask(ThreadPoolExecutor.java:886)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:908)
+	at java.lang.Thread.run(Thread.java:662)
+23.02.2011 10:53:12 org.apache.coyote.http11.Http11Processor process
+SCHWERWIEGEND: Error finishing response
+java.lang.ArrayIndexOutOfBoundsException
+	at java.lang.System.arraycopy(Native Method)
+	at org.apache.coyote.http11.InternalOutputBuffer.write(InternalOutputBuffer.java:684)
+	at org.apache.coyote.http11.InternalOutputBuffer.sendStatus(InternalOutputBuffer.java:419)
+	at org.apache.coyote.http11.Http11Processor.prepareResponse(Http11Processor.java:1604)
+	at org.apache.coyote.http11.Http11Processor.action(Http11Processor.java:952)
+	at org.apache.coyote.Response.action(Response.java:181)
+	at org.apache.coyote.http11.InternalOutputBuffer.endRequest(InternalOutputBuffer.java:379)
+	at org.apache.coyote.http11.Http11Processor.process(Http11Processor.java:897)
+	at org.apache.coyote.http11.Http11Protocol$Http11ConnectionHandler.process(Http11Protocol.java:588)
+	at org.apache.tomcat.util.net.JIoEndpoint$SocketProcessor.run(JIoEndpoint.java:409)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.runTask(ThreadPoolExecutor.java:886)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:908)
+	at java.lang.Thread.run(Thread.java:662)
+After this exception occurs, TomCat retries the operation which leads to a Hibernate exception in case of update (stale record), unique constraint exception in case of create and entity not found exception in case of delete.
+Debugging the application, the last break point that is hit before the index out of bound exception is the sendRedirect method in Spring's RedirectView class. Examining the targetUrl attribute in this method, I figured that all possible values of my enum type had been encoded as request parameters which forms a very long string which probably caused the index out of bound exception.
+Looking at the generated scaffolding code, all possible values of the enum property are added to the Model in a generated method called "populateTimezones" to present all possible selections in drop down boxes in the view.
+When doing the redirect after a create/update/delete operation, all model attributes are added to the targetUrl which leads to the array index out of bound exception.
+I worked around the problem by pushing some generated advices into my controller classes and add a
+model.addAttribute("timezones", null);
+before doing the redirect. I do not think that these attributes are ever needed after a redirect, so I suggest modifying the scaffolded code generator accordingly.
+Since this problem could not only happpen in case of huge enums but also in case of many candidates for relationships with other entities (so whenever a generated populate... method adds lots of entries to the model), I think this is not just an exotic problem.
+Another aspect of this problem seems to be the array index out of bound exception in TomCat. Even in case of ridiculously long target URLs, this should not cause exceptions like this which cause retries of operations with a side effect.
+I attached my enum class so that you can better reproduce the problem.
+Best, Johannes

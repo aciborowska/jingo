@@ -1,0 +1,517 @@
+I have a Spring Batch process which takes a set of rows in the database and creates a number of flat files from those rows, 10 rows per file. To do this, I've created a Spring Batch process, similar to this:
+
+
+
+
+
+
+<batch:job id="springTest" job-repository="jobRepository" restartable="true">
+
+
+
+
+    <batch:step id="test">
+
+
+
+
+        <batch:tasklet>
+
+
+
+
+            <batch:chunk reader="itemReader" writer="multipleItemWriter" commit-interval="2" />
+
+
+
+
+        </batch:tasklet>
+
+
+
+
+    </batch:step>
+
+
+
+
+</batch:job>
+
+
+
+
+ 
+
+
+
+
+<bean id="itemReader" class="org.springframework.batch.item.file.FlatFileItemReader">
+
+
+
+
+    <property name="resource" value="file:/temp/temp-input.txt" />
+
+
+
+
+    <property name="lineMapper">
+
+
+
+
+        <bean class="org.springframework.batch.item.file.mapping.PassThroughLineMapper" />
+
+
+
+
+    </property>
+
+
+
+
+</bean>
+
+
+
+
+ 
+
+
+
+
+<bean id="multipleItemWriter" class="org.springframework.batch.item.file.MultiResourceItemWriter">
+
+
+
+
+    <property name="resource" value="file:/temp/temp-out" />
+
+
+
+
+    <property name="itemCountLimitPerResource" value="2" />
+
+
+
+
+    <property name="delegate">
+
+
+
+
+            <bean id="itemWriter" class="org.springframework.batch.item.file.FlatFileItemWriter">
+
+
+
+
+                <property name="lineAggregator">
+
+
+
+
+                  <bean class="org.springframework.batch.item.file.transform.PassThroughLineAggregator" />
+
+
+
+
+                </property>
+
+
+
+
+                <property name="encoding" value="utf-8" />
+
+
+
+
+                <property name="headerCallback" ref="headerFooter" />
+
+
+
+
+                <property name="footerCallback" ref="headerFooter" />
+
+
+
+
+            </bean>
+
+
+
+
+   </property>
+
+
+
+
+</bean>
+
+
+
+
+ 
+
+
+
+
+<bean id="headerFooter" class="uk.co.farwell.spring.HeaderFooterCallback" />
+
+
+
+
+
+
+The above example reads from a flat file and outputs to a flat file (to show the problem). Note the commit-interval=2 in the chunk, and the itemCountLimitPerResource=2 in the MultiResourceItemWriter.
+The HeaderFooterCallback does the following:
+
+
+
+
+
+
+public void writeHeader(Writer writer) throws IOException {
+
+
+
+
+    writer.write("file header\n");
+
+
+
+
+}
+
+
+
+
+ 
+
+
+
+
+public void writeFooter(Writer writer) throws IOException {
+
+
+
+
+    writer.write("file footer\n");
+
+
+
+
+}
+
+
+
+
+
+
+I need to be able to specify exactly the number of lines which appear in the file.
+For the following input file:
+
+
+
+
+
+
+foo1
+
+
+
+
+foo2
+
+
+
+
+foo3
+
+
+
+
+
+
+I would expect two files on output,
+out.1:
+
+
+
+
+
+
+file header
+
+
+
+
+foo1
+
+
+
+
+foo2
+
+
+
+
+file footer
+
+
+
+
+
+
+out.2:
+
+
+
+
+
+
+file header
+
+
+
+
+foo3
+
+
+
+
+file footer
+
+
+
+
+
+
+When I run with commit-interval=2, I get an exception:
+
+
+
+
+
+
+2009-11-26 15:32:46,734 ERROR .support.TransactionSynchronizationUtils - TransactionSynchronization.afterCompletion threw exception
+
+
+
+
+org.springframework.batch.support.transaction.FlushFailedException: Could not write to output buffer
+
+
+
+
+	at org.springframework.batch.support.transaction.TransactionAwareBufferedWriter$1.afterCompletion(TransactionAwareBufferedWriter.java:71)
+
+
+
+
+	at org.springframework.transaction.support.TransactionSynchronizationUtils.invokeAfterCompletion(TransactionSynchronizationUtils.java:157)
+
+
+
+
+	at org.springframework.transaction.support.AbstractPlatformTransactionManager.invokeAfterCompletion(AbstractPlatformTransactionManager.java:974)
+
+
+
+
+	at org.springframework.transaction.support.AbstractPlatformTransactionManager.triggerAfterCompletion(AbstractPlatformTransactionManager.java:949)
+
+
+
+
+	at org.springframework.transaction.support.AbstractPlatformTransactionManager.processCommit(AbstractPlatformTransactionManager.java:777)
+
+
+
+
+	at org.springframework.transaction.support.AbstractPlatformTransactionManager.commit(AbstractPlatformTransactionManager.java:701)
+
+
+
+
+	at org.springframework.batch.core.step.tasklet.TaskletStep$2.doInChunkContext(TaskletStep.java:304)
+
+
+
+
+	at org.springframework.batch.core.scope.context.StepContextRepeatCallback.doInIteration(StepContextRepeatCallback.java:76)
+
+
+
+
+	at org.springframework.batch.repeat.support.RepeatTemplate.getNextResult(RepeatTemplate.java:367)
+
+
+
+
+	at org.springframework.batch.repeat.support.RepeatTemplate.executeInternal(RepeatTemplate.java:215)
+
+
+
+
+	at org.springframework.batch.repeat.support.RepeatTemplate.iterate(RepeatTemplate.java:143)
+
+
+
+
+	at org.springframework.batch.core.step.tasklet.TaskletStep.doExecute(TaskletStep.java:242)
+
+
+
+
+	at org.springframework.batch.core.step.AbstractStep.execute(AbstractStep.java:198)
+
+
+
+
+	at org.springframework.batch.core.job.AbstractJob.handleStep(AbstractJob.java:348)
+
+
+
+
+	at org.springframework.batch.core.job.flow.FlowJob.access$100(FlowJob.java:43)
+
+
+
+
+	at org.springframework.batch.core.job.flow.FlowJob$JobFlowExecutor.executeStep(FlowJob.java:135)
+
+
+
+
+	at org.springframework.batch.core.job.flow.support.state.StepState.handle(StepState.java:60)
+
+
+
+
+	at org.springframework.batch.core.job.flow.support.SimpleFlow.resume(SimpleFlow.java:144)
+
+
+
+
+	at org.springframework.batch.core.job.flow.support.SimpleFlow.start(SimpleFlow.java:124)
+
+
+
+
+	at org.springframework.batch.core.job.flow.FlowJob.doExecute(FlowJob.java:103)
+
+
+
+
+	at org.springframework.batch.core.job.AbstractJob.execute(AbstractJob.java:250)
+
+
+
+
+	at org.springframework.batch.core.launch.support.SimpleJobLauncher$1.run(SimpleJobLauncher.java:110)
+
+
+
+
+	at org.springframework.core.task.SyncTaskExecutor.execute(SyncTaskExecutor.java:49)
+
+
+
+
+	at org.springframework.batch.core.launch.support.SimpleJobLauncher.run(SimpleJobLauncher.java:105)
+
+
+
+
+	at ch.vd.dse.sesa.adse.batch.common.util.AdseJobRunner.run(AdseJobRunner.java:69)
+
+
+
+
+	at ch.vd.dse.sesa.adse.batch.common.util.AdseJobRunner.run(AdseJobRunner.java:100)
+
+
+
+
+	at ch.vd.dse.sesa.adse.batch.procofiev.export.Main.main(Main.java:33)
+
+
+
+
+Caused by: java.io.IOException: Stream closed
+
+
+
+
+	at sun.nio.cs.StreamEncoder.ensureOpen(Unknown Source)
+
+
+
+
+	at sun.nio.cs.StreamEncoder.write(Unknown Source)
+
+
+
+
+	at sun.nio.cs.StreamEncoder.write(Unknown Source)
+
+
+
+
+	at java.io.Writer.write(Unknown Source)
+
+
+
+
+	at org.springframework.batch.support.transaction.TransactionAwareBufferedWriter$1.afterCompletion(TransactionAwareBufferedWriter.java:67)
+
+
+
+
+	... 26 more
+
+
+
+
+
+
+I think this is a bug. Wierdly, the files are as follows:
+out.1:
+
+
+
+
+
+
+file header
+
+
+
+
+foo1
+
+
+
+
+foo2
+
+
+
+
+
+
+out.2:
+
+
+
+
+
+
+file footer
+
+
+
+
+
+
+If I have two lines in the input file, everything works correctly, but more than two does not work. If I change the commit-interval to 200, then I get three lines in one file, which is not the behaviour wanted.

@@ -1,0 +1,141 @@
+The issue described here does NOT exist in 2.15.2 and only manifests in 2.15.3.
+With the following definition of a Bean:
+
+
+
+    public interface MyBaseInterface {
+
+        @Handler
+
+        String hello(@Body String hi);
+
+    }
+
+
+
+    public abstract static class MyAbstractBean implements MyBaseInterface {
+
+        public String hello(@Body String hi) {
+
+            return "Hello " + hi;
+
+        }
+
+        public String doCompute(String input) {
+
+            fail("Should not invoke me");
+
+            return null;
+
+        }
+
+    }
+
+
+
+    public static class MyConcreteBean extends MyAbstractBean {
+
+    }
+
+
+
+
+
+The following test case will fail to invoke the proper method:
+
+
+
+public class BeanHandlerMethodTest extends ContextTestSupport {
+
+
+
+    public void testInterfaceBeanMethod() throws Exception {
+
+        BeanInfo info = new BeanInfo(context, MyConcreteBean.class);
+
+
+
+        Exchange exchange = new DefaultExchange(context);
+
+        MyConcreteBean pojo = new MyConcreteBean();
+
+        MethodInvocation mi = info.createInvocation(pojo, exchange);
+
+        assertNotNull(mi);
+
+        assertEquals("hello", mi.getMethod().getName());
+
+    }
+
+
+
+The issue is how BeanInfo.introspect determines which methods are available to be invoked.
+At line 344, if the class is public, the interface methods are added to the list:
+
+
+
+        if (Modifier.isPublic(clazz.getModifiers())) {
+
+            // add additional interface methods
+
+            List<Method> extraMethods = getInterfaceMethods(clazz);
+
+            for (Method target : extraMethods) {
+
+                for (Method source : methods) {
+
+                    if (ObjectHelper.isOverridingMethod(source, target, false)) {
+
+                        overrides.add(target);
+
+                    }
+
+                }
+
+            }
+
+            // remove all the overrides methods
+
+            extraMethods.removeAll(overrides);
+
+            methods.addAll(extraMethods);
+
+        }
+
+
+
+However, all the methods from the interface are "abstract".  Later, when the real implementation is encountered as the code crawls up the tree, the abstract method is not replaced:
+Line 390:
+
+
+
+        MethodInfo existingMethodInfo = overridesExistingMethod(methodInfo);
+
+        if (existingMethodInfo != null) {
+
+            LOG.trace("This method is already overridden in a subclass, so the method from the sub class is preferred: {}", existingMethodInfo);
+
+            return existingMethodInfo;
+
+        }
+
+
+
+Finally, during the invocation, the following was added as part of 2.15.3 release:
+Line 561:
+
+
+
+        removeAllAbstractMethods(localOperationsWithBody);
+
+        removeAllAbstractMethods(localOperationsWithNoBody);
+
+        removeAllAbstractMethods(localOperationsWithCustomAnnotation);
+
+        removeAllAbstractMethods(localOperationsWithHandlerAnnotation);
+
+
+
+As a result, the abstract method is removed and not invoked.
+I think the fix should be to see if the existingMethodInfo references an "abstract' method and if it does and methodInfo does not, replace the existingMethodInfo with methodInfo in the collection.
+This would preserve the preferences implied with the rest of the code while properly replacing the abstract method with their proper implementations.

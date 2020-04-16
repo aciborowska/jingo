@@ -1,0 +1,74 @@
+Hi,
+
+We stumbled upon the following issue. I am wondering if anyone can help us with it. I am available for any follow up questions. Unfortunately, I am not a Java programmer, so I cannot supply a fix if this actually is a bug.
+
+It seems that the following issue is specific to the HbaseLoader, but I am not sure. When using any other loaders (two times PigStorage), the problem doesn't exist. 
+
+It seems that even when we specifiy 'content:map [ chararray ] ' when loading data from HBase, and Pig is saying the schema contains chararrays, still maybe in the background those fields are bytearrays that seem to be not convertable.
+
+First create 2 Hbase tables:
+
+--hbase shell
+--
+--hbase(main):001:0> create 'test_table1','f'
+--0 row(s) in 20.0530 seconds
+--
+--hbase(main):002:0> create 'test_table2', 'f'
+--0 row(s) in 1.4420 seconds
+--
+--hbase(main):008:0> put 'test_table1','1-1386066912072','f:date_created','2012-01-04T11:33:59:05321'
+--0 row(s) in 5.3380 seconds
+--
+--hbase(main):002:0> put 'test_table2','2-1386066912074','f:date_created','2012-01-04T11:33:59:05321'
+--0 row(s) in 0.0540 seconds
+--
+--
+--hbase(main):003:0> quit
+
+
+
+– Then run the following Pig script:
+
+hbs1 = LOAD 'hbase://test_table1'
+        USING org.apache.pig.backend.hadoop.hbase.HBaseStorage(
+               'f:*','-loadKey true')
+               AS ( id:bytearray, content:map[chararray]);
+               
+hbs2 = LOAD 'hbase://test_table2'
+        USING org.apache.pig.backend.hadoop.hbase.HBaseStorage(
+               'f:*','-loadKey true')
+               AS ( id:bytearray, content:map[chararray]);
+
+hbs3 = UNION hbs1, hbs2;
+
+
+hbs4 = FOREACH hbs3
+GENERATE        id as hbase_id               
+               , flatten(content#'date_created') as date_created                   
+               ;   
+
+hbs5 = FOREACH hbs4
+GENERATE        hbase_id   
+              , date_created  --without (chararray)           
+              ,  SUBSTRING( date_created,1,10) as date_created_trunc              
+            ;
+              
+DUMP hbs5;
+
+
+
+Result
+
+(2-1386066912074,2012-01-04T11:33:59:05321,)
+(1-1386066912072,2012-01-04T11:33:59:05321,)
+
+
+
+Expected result
+
+(2-1386066912074,2012-01-04T11:33:59:05321,2012-01-04)
+(1-1386066912072,2012-01-04T11:33:59:05321,2012-01-04)
+
+
+
+The Substring function in combination with the date_created is just for example purposes. There are several String functions that we want to be able to use.

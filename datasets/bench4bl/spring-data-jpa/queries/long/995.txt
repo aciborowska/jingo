@@ -1,0 +1,225 @@
+Since 1.10.3.RELEASE there was a support added for Nested Id classes in JpaMetamodelEntityInformation - quoting from line 344 to line 353:
+
+
+
+
+
+
+// We have an IdClass property, we need to inspect the current value in order to map potentially multiple id
+
+
+
+
+// properties correctly.
+
+
+
+
+ 
+
+
+
+
+BeanWrapper sourceIdValueWrapper = new DirectFieldAccessFallbackBeanWrapper(value);
+
+
+
+
+BeanWrapper targetIdClassTypeWrapper = new BeanWrapperImpl(nestedEntityInformation.getIdType());
+
+
+
+
+ 
+
+
+
+
+for (String idAttributeName : (Iterable<String>) nestedEntityInformation.getIdAttributeNames()) {
+
+
+
+
+	targetIdClassTypeWrapper.setPropertyValue(idAttributeName,
+
+
+
+
+		extractActualIdPropertyValue(sourceIdValueWrapper, idAttributeName));
+
+
+
+
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+private Object extractActualIdPropertyValue(BeanWrapper sourceIdValueWrapper, String idAttributeName) {
+
+
+
+
+ 
+
+
+
+
+	Object idPropertyValue = sourceIdValueWrapper.getPropertyValue(idAttributeName);
+
+
+
+
+ 
+
+
+
+
+	if (idPropertyValue != null) {
+
+
+
+
+ 
+
+
+
+
+		Class<? extends Object> idPropertyValueType = idPropertyValue.getClass();
+
+
+
+
+ 
+
+
+
+
+		if (ClassUtils.isPrimitiveOrWrapper(idPropertyValueType)) {
+
+
+
+
+			return idPropertyValue;
+
+
+
+
+		}
+
+
+
+
+ 
+
+
+
+
+		return new DirectFieldAccessFallbackBeanWrapper(idPropertyValue)
+
+
+
+
+				.getPropertyValue(tryFindSingularIdAttributeNameOrUseFallback(idPropertyValueType, idAttributeName));
+
+
+
+
+	}
+
+
+
+
+ 
+
+
+
+
+	return null;
+
+
+
+
+}
+
+
+
+
+
+
+
+The problem is that the ClassUtils.isPrimitiveOrWrapper(…) doesn't take into account String type, but only primitive and wrapper types. And then the String type is passed to the MetaModel.managedType(…) and the persistence provider throws an exception that String is not a managed type, because it expects a mapped entity there.
+This problem will appear in every non-primitive or wrapper class which is not an entity and it is used as an id field in nested @IdClass situations (for example String class, but the problem should not be limited to String only).
+I have attached two projects - one is using a String type and fails, the other uses Integer type and succeeds. I got this project from DATAJPA-413 issue and just added an additional field. If the additional field is of String type, then an error occurs. If it is of Integer type, then it succeeds. Use the datajpa_string_fail.zip to reproduce the error. I just ran - mvn clean install. Sample stack trace with using Hibernate (it is a similar one with OpenJPA):
+
+
+
+
+
+
+Caused by: java.lang.IllegalArgumentException: Not a managed type: class java.lang.String
+
+
+
+
+	at org.hibernate.metamodel.internal.MetamodelImpl.managedType(MetamodelImpl.java:472)
+
+
+
+
+	at org.springframework.data.jpa.repository.support.JpaMetamodelEntityInformation$IdentifierDerivingDirectFieldAccessFallbackBeanWrapper.tryFindSingularIdAttributeNameOrUseFallback(JpaMetamodelEntityInformation.java:380)
+
+
+
+
+	at org.springframework.data.jpa.repository.support.JpaMetamodelEntityInformation$IdentifierDerivingDirectFieldAccessFallbackBeanWrapper.extractActualIdPropertyValue(JpaMetamodelEntityInformation.java:371)
+
+
+
+
+	at org.springframework.data.jpa.repository.support.JpaMetamodelEntityInformation$IdentifierDerivingDirectFieldAccessFallbackBeanWrapper.setPropertyValue(JpaMetamodelEntityInformation.java:352)
+
+
+
+
+	at org.springframework.data.jpa.repository.support.JpaMetamodelEntityInformation.getId(JpaMetamodelEntityInformation.java:162)
+
+
+
+
+	at org.springframework.data.repository.core.support.AbstractEntityInformation.isNew(AbstractEntityInformation.java:51)
+
+
+
+
+	at org.springframework.data.jpa.repository.support.JpaMetamodelEntityInformation.isNew(JpaMetamodelEntityInformation.java:225)
+
+
+
+
+	at org.springframework.data.jpa.repository.support.SimpleJpaRepository.save(SimpleJpaRepository.java:505)
+
+
+
+
+	at org.springframework.data.jpa.repository.support.SimpleJpaRepository.save(SimpleJpaRepository.java:540)
+
+
+
+
+	at org.springframework.data.jpa.repository.support.SimpleJpaRepository.save(SimpleJpaRepository.java:72)
+
+
+
+
+
+

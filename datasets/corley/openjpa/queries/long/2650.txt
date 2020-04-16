@@ -1,0 +1,29 @@
+When "openjpa.jdbc.SchemaFactory=native(ForeignKeys=true)" is set, this tells OpenJPA to do up-front schema validation, and allows OpenJPA to be able to learn about any schemas it can "see".  When this happens, OpenJPA will use the schema when generating SQL statements.  For example, if OpenJPA finds table A under schema Y, when generating SQL on table A, schema Y will be appended to the generated SQL (e.g. SELECT a.id from Y.A a....).  Without this property, OpenJPA doesn't otherwise use a schema name if it is not specified (i.e. as per the number of ways defined by the JPA spec, or the OpenJPA  proprietary options, e.g. openjpa.jdbc.Schema).  OpenJPA offers a way to tell it to not use a schema name by using this property:  
+
+"openjpa.jdbc.DBDictionary=useSchemaName=false"
+
+When this property is set, OpenJPA will not append the schema to generated SQL (e.g. SELECT a.id from A a....).  However, I have found a case where OpenJPA incorrectly applies the schema name.  To explain, take this Entity, note the TableGenerator:
+
+@Entity
+public class MyEntityTable implements Serializable {
+
+    @Id
+    @TableGenerator(name = "TABLE_GENERATOR", table = "MY_ID_TABLE", 
+        pkColumnName = "MY_PK_COLUMN",
+        pkColumnValue="MY_PK_NAME",
+        valueColumnName = "MY_VALUE_COLUMN")
+    @GeneratedValue(strategy = GenerationType.TABLE, generator = "TABLE_GENERATOR")
+......
+
+
+With this Entity and TableGenerator, the SQL to select and update the generated value should be:
+
+SELECT MY_VALUE_COLUMN FROM MY_ID_TABLE WHERE MY_PK_COLUMN = ?
+
+UPDATE MY_ID_TABLE SET MY_VALUE_COLUMN = ? WHERE MY_PK_COLUMN = ? AND MY_VALUE_COLUMN = ?
+
+However, with the above SchemaFactory, and 'useSchemaName=false' settings, the table 'MY_ID_TABLE' would have the schema name appended to it (e.g. if the schema name is Y, the SQL would contain "Y.MY_ID_TABLE").  For SQL statements on 'MyEntityTable' itself, the schema name is not added to the SQL.  The issue is limited to SQL statements against the table 'MY_ID_TABLE'.  This is do to a hole in the OpenJPA code that generates SQL for the 'MY_ID_TABLE'.  That is, the particular area of code does not take into consideration the value of 'useSchemaName'. 
+
+Thanks,
+
+Heath Thomann

@@ -1,0 +1,182 @@
+Suppose we have following stuff:
+
+Foo.java:
+------------
+package entity;
+
+import javax.persistence.Column;
+import javax.persistence.Entity;
+import javax.persistence.Id;
+import javax.persistence.IdClass;
+import javax.persistence.ManyToOne;
+import javax.persistence.Table;
+
+@Entity
+@Table(name="FOO")
+@IdClass(BinaryId.class)
+public class Foo
+{
+    @Id
+    @Column(name="ID", length=16, nullable=false)
+    private byte[] id;
+    @ManyToOne
+    private Bar bar;
+
+    public void setId(byte[] id)
+    {
+        this.id = id;
+    }
+    public byte[] getId()
+    {
+        return id;
+    }
+    
+    public void setBar(Bar bar)
+    {
+        this.bar = bar;
+    }
+    public Bar getBar()
+    {
+        return bar;
+    }
+}
+
+
+Bar.java
+-----------
+package entity;
+
+import javax.persistence.Column;
+import javax.persistence.Entity;
+import javax.persistence.Id;
+import javax.persistence.IdClass;
+import javax.persistence.Table;
+
+@Entity
+@Table(name="FOO")
+@IdClass(BinaryId.class)
+public class Bar
+{
+    @Id
+    @Column(name="ID", length=16, nullable=false)
+    private byte[] id;
+    @Column(length=32)
+    private String name;
+
+    public void setId(byte[] id)
+    {        this.id = id;    }
+    public byte[] getId()
+    {
+        return id;
+    }
+
+    public void setName(String name)
+    {
+        this.name = name;
+    }
+    public String getName()
+    {
+        return name;
+    }
+}
+
+
+BinaryId.java (Identity class for byte[] identity):
+--------------------------------------------
+package entity;
+
+public class BinaryId
+{
+    private byte[] id;
+
+    public boolean equals(Object other)
+    {
+        if (other == this)
+            return true;
+        if (!(other instanceof BinaryId))
+            return false;
+        BinaryId bi = (BinaryId)other;
+        if (id == bi.id)
+            return true;
+        if (id == null)
+            return false;
+        if (id.length != bi.id.length)
+            return false;
+        for (int i = 0; i < id.length; i++)
+        {
+            if (id[i] != bi.id[i])
+                return false;
+        }
+        return true;
+    }
+
+    public int hashCode()
+    {
+        if (id == null)
+            return 0;
+        int hash = 0;
+        for (int i = 0; i < id.length; i++)
+            hash += id[i];
+        return hash;
+    }
+}
+
+
+persistence.xml
+----------------------
+<persistence xmlns="http://java.sun.com/xml/ns/persistence"
+	xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xsi:schemaLocation="http://java.sun.com/xml/ns/persistence http://java.sun.com/xml/ns/persistence/persistence_1_0.xsd"
+	version="1.0">
+	<persistence-unit name="openjpa">
+        <provider>org.apache.openjpa.persistence.PersistenceProviderImpl</provider>
+        <class>entity.Foo</class>
+        <class>entity.Bar</class>
+        <properties>
+            <property name="openjpa.ConnectionURL" value="jdbc:derby:c:/derbydb/ojpa-bug"/>
+            <property name="openjpa.ConnectionDriverName" value="org.apache.derby.jdbc.EmbeddedDriver"/>
+            <property name="openjpa.Log" value="DefaultLevel=WARN, Tool=INFO"/>
+        </properties>
+    </persistence-unit>
+</persistence>
+
+create.sql
+-------------
+CREATE TABLE APP.foo (
+  id CHAR(16) FOR BIT DATA NOT NULL, 
+  bar_id CHAR(16) FOR BIT DATA,
+  PRIMARY KEY(id) );
+
+CREATE TABLE APP.bar (
+  id CHAR(16) FOR BIT DATA NOT NULL, 
+  name VARCHAR(32),
+  PRIMARY KEY(id) );
+
+
+With all this stuff following portion of code causes exception:
+
+        EntityManagerFactory emf = Persistence.createEntityManagerFactory("openjpa");
+        EntityManager entityManager = emf.createEntityManager();
+
+        Foo foo = new Foo();
+        byte[] id = new byte[16];
+        for (int i = 0; i < 16; i++)
+            id[i] = (byte)(i + 16);
+        foo.setId(id);
+
+        EntityTransaction txn = entityManager.getTransaction();
+        try
+        {
+            txn.begin();
+            entityManager.persist(foo);
+            txn.commit();
+        }
+        catch (Exception e)
+        {
+            e.printStackTrace();
+        }
+
+
+If run the same code with  MS SQL Server 2000 in place of Derby everything is working. Seems to me this problem is caused by typed nature of NULL in Apache Derby. If so the same problem should be with IBM DB2.
+
+I couldn't attach full packaged sample (don't know how). But I can send it if needed.

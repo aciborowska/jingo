@@ -1,0 +1,20 @@
+The way inline_op saves and restores the statement state is brittle and can lead to bugs.
+To work around the issue one needs to be careful when writing rules not to include operations that can include inline_op in the evaluation of syntactic predicates for disambiguation of LL rules.
+
+The interaction between inline_op, the statement scope and the syntactic predicates that get executed to choose between alternative op versions can null the statement::alias without restoring it.
+
+inline_op stores the statement::alias locally and sets it to null in @init, and later in @after restores it to the previous value.
+When inline_op gets executed inside a syntactic predicate, @init always gets executed, @after does not instead.
+So the statement::alias doesn't get back its value and it can lead to an NPE.
+
+This behavior is dangerous, because it messes with global structures.
+@init and @after are used to mimic a stack behavior.
+What inline_op needs is a local statement scope, so that inline_op could just push another initialized scope on the stack, and get it popped when the syntactic predicate exits the rule, restoring the old state automatically.
+
+This will also help in the long run to support arbitrarily nested statements.
+Unfortunately this also requires to rewrite the whole grammar.
+Every rule that accesses statement::alias (or any attribute in statement:: scope) should be rewritten to get a reference to the local scope of the statement.
+
+The implementation can make use of dynamic shared scope between inline_op and statement (very much like GScope).
+ANTLR will automatically push and pop a stack frame when the rule is invoked and when it gets out of the rule.
+The @init will get executed to initialize members in the scope. Even though the @after doesn't get executed because we are in a syntactic predicate, the frame is popped from the stack nonetheless.

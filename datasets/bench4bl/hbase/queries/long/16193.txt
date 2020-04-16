@@ -1,0 +1,36 @@
+Recently we suffered from a weird problem that RS heap size could not reduce much even after FullGC, and it kept FullGC and could hardly serve any request. After debugging for days, we found the root cause: we won't count in the allocated memory in MSLAB chunk when adding duplicated cells (including put and delete). We have below codes in AbstractMemStore#add (or DefaultMemStore#add for branch-1):
+
+
+
+  public long add(Cell cell) {
+
+    Cell toAdd = maybeCloneWithAllocator(cell);
+
+    return internalAdd(toAdd);
+
+  }
+
+
+
+where we will allocate memory in MSLAB (if using) chunk for the cell first, and then call internalAdd, where we could see below codes in Segment#internalAdd (or DefaultMemStore#internalAdd for branch-1):
+
+
+
+  protected long internalAdd(Cell cell) {
+
+    boolean succ = getCellSet().add(cell);
+
+    long s = AbstractMemStore.heapSizeChange(cell, succ);
+
+    updateMetaInfo(cell, s);
+
+    return s;
+
+  }
+
+
+
+So if we are writing a duplicated cell, we assume there's no heap size change, while actually the chunk size is taken (referenced).
+Let's assume this scenario, that there're huge amount of writing on the same cell (same key, different values), which is not that special in MachineLearning use case, and there're also few normal writes, and after some long time, it's possible that we have many chunks with kvs like: cellA, cellB, cellA, cellA, .... cellA, that we only counts 2 cells for each chunk, but actually the chunk is full. So the devil comes, that we think it's still not hitting flush size, while there's already GBs heapsize taken.
+There's also a more extreme case, that we only writes a single cell over and over again and fills one chunk quickly. Ideally the chunk should be cleared by GC, but unfortunately we have kept a redundant reference in HeapMemStore#chunkQueue, which is useless when we're not using chunkPool by default.
+This is the umbrella to describe the problem, and I'll open two sub-JIRAs to resolve the above two issues separately.

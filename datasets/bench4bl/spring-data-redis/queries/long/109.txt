@@ -1,0 +1,29 @@
+We are experiencing connection leaks coming from RedisTemplate. One reason this happens is that if you make a connection to a server that is hung or is in a state of network partitioning, the first call to redis that is made is a `select` DB call by `RedisConnectionUtils.getConnection(factory)` below. This results is a possible Socket Exception, and because the finally block does not wrap it, the exception does not return the erroneous connection back to the pool. Currently, the only way to fix this is to turn on `testOnBorrow`, which is a poor workaround since it is not very performant. 
+public <T> T execute(RedisCallback<T> action, boolean exposeConnection, boolean pipeline) {
+                Assert.notNull(action, "Callback object must not be null");
+                RedisConnectionFactory factory = getConnectionFactory();
+                RedisConnection conn = RedisConnectionUtils.getConnection(factory);
+                boolean existingConnection = TransactionSynchronizationManager.hasResource(factory);
+                preProcessConnection(conn, existingConnection);
+                boolean pipelineStatus = conn.isPipelined();
+                if (pipeline && !pipelineStatus) 
+{
+                        conn.openPipeline();
+                }
+
+                try {
+                        RedisConnection connToExpose = (exposeConnection ? conn : createRedisConnectionProxy(conn));
+                        T result = action.doInRedis(connToExpose);
+                        // close pipeline
+                        if (pipeline && !pipelineStatus) 
+{
+                                conn.closePipeline();
+                        }
+
+                        // TODO: any other connection processing?
+                        return postProcessResult(result, conn, existingConnection);
+                } finally 
+{
+                        RedisConnectionUtils.releaseConnection(conn, factory);
+                }
+        }

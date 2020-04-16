@@ -1,0 +1,20 @@
+Consider this scenario:
+
+	Ensemble of nodes A, B, C, D, E with A as the leader
+	Nodes A, B get partitioned from C, D, E
+	Leader A receives a write before it detects that it has lost its quorum so it logs the write
+	Nodes C, D, E elect node C as the leader
+	Partition resolves, and nodes A, B rejoin the C, D, E ensemble with C continuing to lead
+
+
+
+Depending on whether any updates have occurred in the C, D, E ensemble between steps 4 and 5, the re-joining nodes A,B will either receive a TRUNC or a SNAP. 
+
+The problems:
+
+	If updates have occurred in the C,D,E ensemble, SNAP is sent to the re-joining nodes. This occurs because the code in LearnerHandler.queueCommittedProposals() notices that truncation would cross epochs and bails out, leading to a SNAP being sent. A comment in the code says "We cannot send TRUNC that cross epoch boundary. The learner will crash if it is asked to do so. We will send snapshot this those cases." LearnerHandler.syncFollower() then logs an ERROR saying "Unhandled scenario for peer sid: # fall back to use snapshot" and a comment with this code says "This should never happen, but we should fall back to sending snapshot just in case." Presumably since queueCommittedProposals() is intentionally triggering the snapshot logic, this is not an "unhandled scenario" that warrants logging an ERROR nor is it a case that "should never happen". This inconsistency should be cleaned up. It might also be the case that a TRUNC would work fine in this scenario - see #2 below.
+	If no updates have occurred in the C,D,E ensemble, when nodes A,B rejoin LearnerHandler.syncFollower() goes into the "Newer than commitedLog, send trunc and done" clause and sends them a TRUNC. This seems to work fine. However, this would also seem to be a cross-epoch TRUNC, which per the comment discussed above in #1, is expected to cause a crash in the learner. I haven't found anything special about a TRUNC that crosses epochs that would cause a crash in the learner, and I believe that at the time of the TRUNC (or SNAP), the learner is in the same state in both scenarios. It is certainly the case (pending resolution of ZOOKEEPER-1549) that TRUNC is not able to remove data that has been snapshotted, so perhaps detecting “cross-epoch” is a shortcut for trying to detect that scenario? If the resolution of ZOOKEEPER-1549 does not allow TRUNC through a snapshot (or alternately does not allow a benign TRUNC through a snapshot that may not contain uncommitted data), then this case should probably also be a SNAP. If TRUNC is allowed in this case, then perhaps it should also be allowed for case #1, which would be more performant.
+
+
+
+While I certainly could have missed something, it would seem that either both cases should be SNAP or both should be a TRUNC given that the learner is in the same state in both cases.

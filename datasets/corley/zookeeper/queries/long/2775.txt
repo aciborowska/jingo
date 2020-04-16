@@ -1,0 +1,33 @@
+During Network unreachable scenario in one of the cluster, we observed Xid out of order and Nothing in the queue error continously. And ZK client it finally not able to connect successully to ZK server. 
+
+Logs:
+
+unexpected error, closing socket connection and attempting reconnect | org.apache.zookeeper.ClientCnxn (ClientCnxn.java:1447) 
+java.io.IOException: Xid out of order. Got Xid 52 with err 0 expected Xid 53 for a packet with details: clientPath:null serverPath:null finished:false header:: 53,101  replyHeader:: 0,0,-4  request:: 12885502275,v
+{'/app1/controller,'/app1/config/changes}
+,v{},v
+{'/app1/config/changes}
+  response:: null
+	at org.apache.zookeeper.ClientCnxn$SendThread.readResponse(ClientCnxn.java:996)
+	at org.apache.zookeeper.ClientCnxnSocketNIO.doIO(ClientCnxnSocketNIO.java:101)
+	at org.apache.zookeeper.ClientCnxnSocketNIO.doTransport(ClientCnxnSocketNIO.java:370)
+	at org.apache.zookeeper.ClientCnxn$SendThread.run(ClientCnxn.java:1426)
+
+unexpected error, closing socket connection and attempting reconnect 
+java.io.IOException: Nothing in the queue, but got 1
+	at org.apache.zookeeper.ClientCnxn$SendThread.readResponse(ClientCnxn.java:983)
+	at org.apache.zookeeper.ClientCnxnSocketNIO.doIO(ClientCnxnSocketNIO.java:101)
+	at org.apache.zookeeper.ClientCnxnSocketNIO.doTransport(ClientCnxnSocketNIO.java:370)
+	at org.apache.zookeeper.ClientCnxn$SendThread.run(ClientCnxn.java:1426)
+
+Analysis: 
+1) First time Client fails to do SASL login due to network unreachable problem.
+2017-03-29 10:03:59,377 | WARN  | [main-SendThread(192.168.130.8:24002)] | SASL configuration failed: javax.security.auth.login.LoginException: Network is unreachable (sendto failed) Will continue connection to Zookeeper server without SASL authentication, if Zookeeper server allows it. | org.apache.zookeeper.ClientCnxn (ClientCnxn.java:1307) 
+	Here the boolean saslLoginFailed becomes true.
+
+2) After some time network connection is recovered and client is successully able to login but still the boolean saslLoginFailed is not reset to false. 
+
+3) Now SASL negotiation between client and server start happening and during this time no user request will be sent. ( As the socket channel will be closed for write till sasl negotiation complets)
+4) Now response from server for SASL packet will be processed by the client and client assumes that tunnelAuthInProgress() is finished ( method checks for saslLoginFailed boolean Since the boolean is true it assumes its done.) and tries to process the packet as a other packet and will result in above errors. 
+
+Solution:  Reset the saslLoginFailed boolean every time before client login

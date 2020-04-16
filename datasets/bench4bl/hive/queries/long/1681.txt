@@ -1,0 +1,72 @@
+Here's the code for ObjectStore.commitTransaction() and ObjectStore.rollbackTransaction():
+
+
+
+  public boolean commitTransaction() {
+
+    assert (openTrasactionCalls >= 1);
+
+    if (!currentTransaction.isActive()) {
+
+      throw new RuntimeException(
+
+          "Commit is called, but transaction is not active. Either there are"
+
+              + " mismatching open and close calls or rollback was called in the same trasaction");
+
+    }
+
+    openTrasactionCalls--;
+
+    if ((openTrasactionCalls == 0) && currentTransaction.isActive()) {
+
+      transactionStatus = TXN_STATUS.COMMITED;
+
+      currentTransaction.commit();
+
+    }
+
+    return true;
+
+  }
+
+
+
+  public void rollbackTransaction() {
+
+    if (openTrasactionCalls < 1) {
+
+      return;
+
+    }
+
+    openTrasactionCalls = 0;
+
+    if (currentTransaction.isActive()
+
+        && transactionStatus != TXN_STATUS.ROLLBACK) {
+
+      transactionStatus = TXN_STATUS.ROLLBACK;
+
+      // could already be rolled back
+
+      currentTransaction.rollback();
+
+    }
+
+  }
+
+
+
+
+
+Now suppose a nested transaction throws an exception which results
+in the nested pseudo-transaction calling rollbackTransaction(). This causes
+rollbackTransaction() to rollback the actual transaction, as well as to set 
+openTransactionCalls=0 and transactionStatus = TXN_STATUS.ROLLBACK.
+Suppose also that this nested transaction squelches the original exception.
+In this case the stack will unwind and the caller will eventually try to commit the
+transaction by calling commitTransaction() which will see that currentTransaction.isActive() returns
+FALSE and will throw a RuntimeException. The fix for this problem is
+that commitTransaction() needs to first check transactionStatus and return immediately
+if transactionStatus==TXN_STATUS.ROLLBACK.

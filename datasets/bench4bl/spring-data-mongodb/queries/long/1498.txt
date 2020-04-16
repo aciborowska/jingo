@@ -1,0 +1,98 @@
+(not sure if this issue should be opened for Spring Data REST or Spring Data Mongo, since the problem manifests itself in the contents rendered by SDR but the fix might probably go to the SD MongoDB)
+As described in this SO thread, in Spring Boot 1.3.6, Spring Data 1.8.4, Spring Data REST 2.4.4 the Spring Data MongoDB entities that have a property of Joda DateTime type:
+
+
+
+
+
+
+    @JsonProperty("myDate")
+
+
+
+
+    private DateTime myDate;
+
+
+
+
+
+
+
+gets rendered into in the REST representation of my Spring Data entity as 
+
+
+
+
+
+
+    "myDate": "2016-09-25T15:58:37.486Z"
+
+
+
+
+
+
+
+With Spring Boot 1.4.1, Spring Data MongoDB 1.9.3, Spring Data REST 2.5.3 same properties suddenly get represented as  
+
+
+
+
+
+
+    "myDate": {
+
+
+
+
+        "content": "2016-09-25T15:58:37.486Z"
+
+
+
+
+    },
+
+
+
+
+
+
+
+It looks like Joda's DateTime started to get treated as data entity again:
+https://jira.spring.io/browse/DATAMONGO-624
+Adding Jackson2 @JsonUnwrapped annotation to the property helps to get representation back:
+
+
+
+
+
+
+    @JsonProperty("myDate")
+
+
+
+
+    @JsonUnwrapped
+
+
+
+
+    private DateTime myDate;
+
+
+
+
+
+
+
+But this cannot be a solution since in case of auto-generated properties, e.g. from JSON schema. there is only limited options to control generated annotations, especially since the @JsonUnwrapped must be set on all child/empbedded objects.
+The Javadoc for the CustomConversions class states that 
+
+These types will be considered simple ones (which means they neither
+need deeper inspection nor nested conversion. Thus the
+CustomConversions also act as factory for SimpleTypeHolder
+Which is in fact not true for Spring Data REST [any more], from what I can tell debugging my code.
+The types that are added via default CustomConversions are not treated as simple ones when rendering JSON and properties of those types get serialised as embedded entity objects.
+Here is the place in the Spring Data REST PersistentEntityJackson2Module that calls to Spring Data MongoDB PersistentEntity implementation to check whether the property type is simple or not. And since the simpleTypeHolder in the Spring Data Commons AbstractMappingContext does not contain the types for which Spring Boot auto-configuration adds Joda DateTime converters, the DateTime field is treated as complex object.
+This one presents a major problem upgrading from Spring Boot 1.3 to 1.4, since it breaks REST APIs by default with no generic solution known so far for all Joda DateTime properties in the project.

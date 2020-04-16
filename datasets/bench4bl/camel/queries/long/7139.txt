@@ -1,0 +1,192 @@
+http://camel.465427.n5.nabble.com/Problem-with-camel-routes-running-in-apache-karaf-2-3-3-td5745929.html
+I am having problems with with class visibility between osgi bundles when using camel 2.12 and 2.13-SNAPSHOT. I have created a showcase to reproduce the problem based on camel example projects. I have tested the created solution in camel 2.10 and problem does not exist.
+I have created a sample application which is able to reproduce the problem. Please pick it up from my forked repo:
+https://github.com/andrzej-majewski/camel/tree/MvelExpression-class-visibility
+The problem occurs when
+
+camel-example-osgi-domain - project containing only domain classes required by different osgi projects ex.( org.apache.camel.example.osgi.domain.MyPojo )
+camel-example-osgi-mvel -  example project which has dependency on camel-example-osgi-domain
+
+Now camel-example-osgi-mvel has following camel context.
+
+
+
+<?xml version="1.0" encoding="UTF-8"?>   
+
+<beans xmlns="http://www.springframework.org/schema/beans"  
+
+       xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"  
+
+       xmlns:camel="http://camel.apache.org/schema/spring"  
+
+       xsi:schemaLocation="   
+
+         http://www.springframework.org/schema/beans http://www.springframework.org/schema/beans/spring-beans.xsd  
+
+         http://camel.apache.org/schema/spring http://camel.apache.org/schema/spring/camel-spring.xsd">  
+
+  
+
+    
+
+  <camelContext xmlns="http://camel.apache.org/schema/spring">  
+
+  
+
+    <route>  
+
+      <from uri="timer://mytestTrigger?fixedRate=true&amp;period=10000"/>  
+
+      <to uri="myTestFactory"/>  
+
+    </route>  
+
+    <route id="mvelTest">  
+
+      <from uri="seda://myMvelTest?concurrentConsumers=2"/>  
+
+      <choice>  
+
+      <when>  
+
+        <mvel>request.body instanceof org.apache.camel.example.osgi.MyPojo</mvel>  
+
+      <to uri="log:MvelRouter"/>  
+
+      </when>            
+
+      </choice>  
+
+    </route>  
+
+          
+
+  </camelContext>  
+
+  
+
+  <bean id="myTestFactory" class="org.apache.camel.example.osgi.MyTestFactory">  
+
+    <property name="numberOfMessages" value="2"/>  
+
+  </bean>  
+
+  
+
+</beans>
+
+
+
+When I deploy both feature to karaf and place a message on seda://myMvelTest queue I get following exception in karaf.
+
+
+
+ERROR | eda://myMvelTest | DefaultErrorHandler              | rg.apache.camel.util.CamelLogger  215 | 73 - org.apache.camel.camel-core - 2.13.0.SNAPSHOT | Failed delivery for (MessageId: ID-localhost-51000-1389691121739-1-56 on ExchangeId: ID-localhost-51000-1389691121739-1-85). Exhausted after delivery attempt: 1 caught: org.apache.camel.ExpressionEvaluationException: [Error: could not access: org; in class: org.apache.camel.language.mvel.RootObject]
+
+[Near : {... est.body instanceof org.apache.camel.example.osgi. ....}]
+
+                                 ^
+
+[Line: 1, Column: 25]
+
+ 
+
+Message History
+
+---------------------------------------------------------------------------------------------------------------------------------------
+
+RouteId              ProcessorId          Processor                                                                        Elapsed (ms)
+
+[mvelTest          ] [mvelTest          ] [seda://myMvelTest?concurrentConsumers=2                                       ] [        14]
+
+[mvelTest          ] [choice2           ] [when[mvel{Mvel[request.body instanceof org.apache.camel.example.osgi.MyPojo]}]] [         0]
+
+ 
+
+Exchange
+
+---------------------------------------------------------------------------------------------------------------------------------------
+
+Exchange[
+
+        Id                  ID-localhost-51000-1389691121739-1-85
+
+        ExchangePattern     InOut
+
+        Headers             {breadcrumbId=ID-localhost-51000-1389691121739-1-56, CamelRedelivered=false, CamelRedeliveryCounter=0}
+
+        BodyType            org.apache.camel.example.osgi.MyPojo
+
+        Body                org.apache.camel.example.osgi.MyPojo@21093d9e
+
+]
+
+ 
+
+Stacktrace
+
+---------------------------------------------------------------------------------------------------------------------------------------
+
+org.apache.camel.ExpressionEvaluationException: [Error: could not access: org; in class: org.apache.camel.language.mvel.RootObject]
+
+[Near : {... est.body instanceof org.apache.camel.example.osgi. ....}]
+
+                                 ^
+
+[Line: 1, Column: 25]
+
+        at org.apache.camel.language.mvel.MvelExpression.evaluate(MvelExpression.java:60)[103:org.apache.camel.camel-mvel:2.13.0.SNAPSHOT]
+
+        at org.apache.camel.support.ExpressionSupport.matches(ExpressionSupport.java:32)[73:org.apache.camel.camel-core:2.13.0.SNAPSHOT]
+
+        at org.apache.camel.processor.ChoiceProcessor.process(ChoiceProcessor.java:90)[73:org.apache.camel.camel-core:2.13.0.SNAPSHOT]
+
+        at org.apache.camel.management.InstrumentationProcessor.process(InstrumentationProcessor.java:72)[73:org.apache.camel.camel-core:2.13.0.SNAPSHOT]
+
+        at org.apache.camel.processor.RedeliveryErrorHandler.process(RedeliveryErrorHandler.java:398)[73:org.apache.camel.camel-core:2.13.0.SNAPSHOT]
+
+        at org.apache.camel.processor.CamelInternalProcessor.process(CamelInternalProcessor.java:191)[73:org.apache.camel.camel-core:2.13.0.SNAPSHOT]
+
+        at org.apache.camel.processor.CamelInternalProcessor.process(CamelInternalProcessor.java:191)[73:org.apache.camel.camel-core:2.13.0.SNAPSHOT]
+
+        at org.apache.camel.component.seda.SedaConsumer.sendToConsumers(SedaConsumer.java:291)[73:org.apache.camel.camel-core:2.13.0.SNAPSHOT]
+
+        at org.apache.camel.component.seda.SedaConsumer.doRun(SedaConsumer.java:200)[73:org.apache.camel.camel-core:2.13.0.SNAPSHOT]
+
+        at org.apache.camel.component.seda.SedaConsumer.run(SedaConsumer.java:147)[73:org.apache.camel.camel-core:2.13.0.SNAPSHOT]
+
+        at java.util.concurrent.ThreadPoolExecutor$Worker.runTask(ThreadPoolExecutor.java:895)[:1.6.0_65]
+
+        at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:918)[:1.6.0_65]
+
+        at java.lang.Thread.run(Thread.java:695)[:1.6.0_65]
+
+Caused by: [Error: could not access: org; in class: org.apache.camel.language.mvel.RootObject]
+
+[Near : {... est.body instanceof org.apache.camel.example.osgi. ....}]
+
+                                 ^
+
+[Line: 1, Column: 25]
+
+        at org.mvel2.optimizers.impl.refl.ReflectiveAccessorOptimizer.getBeanProperty(ReflectiveAccessorOptimizer.java:683)[102:org.mvel2:2.1.7.Final]
+
+        at org.mvel2.optimizers.impl.refl.ReflectiveAccessorOptimizer.compileGetChain(ReflectiveAccessorOptimizer.java:337)[102:org.mvel2:2.1.7.Final]
+
+        at org.mvel2.optimizers.impl.refl.ReflectiveAccessorOptimizer.optimizeAccessor(ReflectiveAccessorOptimizer.java:140)[102:org.mvel2:2.1.7.Final]
+
+        at org.mvel2.optimizers.dynamic.DynamicOptimizer.optimizeAccessor(DynamicOptimizer.java:67)[102:org.mvel2:2.1.7.Final]
+
+        at org.mvel2.ast.ASTNode.optimize(ASTNode.java:159)[102:org.mvel2:2.1.7.Final]
+
+        at org.mvel2.ast.ASTNode.getReducedValueAccelerated(ASTNode.java:115)[102:org.mvel2:2.1.7.Final]
+
+        at org.mvel2.ast.Instance.getReducedValueAccelerated(Instance.java:21)[102:org.mvel2:2.1.7.Final]
+
+        at org.mvel2.compiler.ExecutableAccessor.getValue(ExecutableAccessor.java:42)[102:org.mvel2:2.1.7.Final]
+
+        at org.mvel2.MVEL.executeExpression(MVEL.java:954)[102:org.mvel2:2.1.7.Final]
+
+        at org.apache.camel.language.mvel.MvelExpression.evaluate(MvelExpression.java:57)[103:org.apache.camel.camel-mvel:2.13.0.SNAPSHOT]
+
+

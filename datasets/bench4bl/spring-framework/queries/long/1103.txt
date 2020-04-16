@@ -1,0 +1,141 @@
+I get an exception when trying to initialize this context:
+Code:
+    <!-- ========================= GENERAL DEFINITIONS ========================= -->
+    <!-- Configurer that replaces $
+{...}
+ placeholders with values from a properties file -->
+    <bean id="propertyConfigurer" class="org.springframework.beans.factory.config.PropertyPlaceholderConfigurer">
+        <property name="order"><value>1</value></property>
+        <property name="location"><value>/WEB-INF/ecos.properties</value></property>
+    </bean>
+    <!-- Message source for this context, loaded from localized "messages_xx" files -->
+    <bean id="messageSource" class="org.springframework.context.support.ReloadableResourceBundleMessageSource">
+        <property name="basename"><value>WEB-INF/messages</value></property>
+        <property name="defaultEncoding"><value>Windows-1250</value></property>
+    </bean>
+    <!-- ========================= RESOURCE DEFINITIONS ========================= -->
+    <!-- Local DataSource that works in any environment -->
+    <bean id="dataSourceImpl" class="com.generalynx.ecos.db.datasource.InfoBasicDataSource" destroy-method="close">
+        <property name="driverClassName"><value>$
+{jdbc.driverClassName}</value></property>
+        <property name="url"><value>${jdbc.url}</value></property>
+        <property name="username"><value>${jdbc.username}</value></property>
+        <property name="password"><value>${jdbc.password}</value></property>
+        <property name="validationQuery"><value>${jdbc.validationQuery}</value></property>
+    </bean>
+
+    <bean id="dataSource" class="org.springframework.jdbc.datasource.LazyConnectionDataSourceProxy">
+        <constructor-arg><ref local="dataSourceImpl"/></constructor-arg>
+    </bean>
+
+    <!-- Hibernate SessionFactory -->
+    <bean id="sessionFactory" class="org.springframework.orm.hibernate3.LocalSessionFactoryBean" depends-on="resources">
+        <property name="useTransactionAwareDataSource"><value>false</value></property>
+        <property name="dataSource"><ref local="dataSource"/></property>
+        <property name="mappingJarLocations">
+           <list>
+              <value>${sms.jar}</value>
+           </list>
+       </property>
+        <property name="mappingDirectoryLocations">
+           <list>
+              <value>classpath:/com/generalynx</value>
+           </list>
+       </property>
+        <property name="hibernateProperties">
+            <props>
+                <prop key="hibernate.show_sql">${hibernate.show_sql}</prop>
+                <prop key="hibernate.dialect">${hibernate.dialect}</prop>
+                <prop key="hibernate.connection.release_mode">${hibernate.connection.release_mode}</prop>
+                <prop key="hibernate.cache.provider_class">${hibernate.cache.provider_class}</prop>
+                <prop key="hibernate.cache.use_query_cache">${hibernate.cache.use_query_cache}</prop>
+                <prop key="hibernate.query.substitutions">${hibernate.query.substitutions}</prop>
+                <prop key="hibernate.jdbc.use_scrollable_resultset">${hibernate.jdbc.use_scrollable_resultset}</prop>
+                <prop key="hibernate.jdbc.batch_size">${hibernate.jdbc.batch_size}</prop>
+                <prop key="hibernate.jdbc.batch_versioned_data">${hibernate.jdbc.batch_versioned_data}</prop>
+                <prop key="hibernate.generate_statistics">${hibernate.generate_statistics}</prop>
+            </props>
+        </property>
+        <property name="eventListeners">
+            <map>
+                <entry key="delete">
+                    <bean id="deleteEvent" class="com.generalynx.ecos.beans.orm.BasicDeleteEventListener" />
+                </entry>
+            </map>
+        </property>
+    </bean>
+
+    <bean id="configuration" factory-bean="&sessionFactory" factory-method="getConfiguration"/>
+
+
+It breaks since DefaultListableBeanFactory.getBeanNamesForType() calls isBeanTypeMatch() and this eventually calls this line
+
+Code:
+
+            if (mergedBeanDefinition.getFactoryMethodName() != null && mergedBeanDefinition.isSingleton()) {
+               return getBean(name).getClass();
+            }
+
+in AbstractBeanFactory.getType(String name) method. Since 'configuration' bean is method made it is picked up. And this tries to initialize DataSource bean before PropertyPlaceholderConfigurer bean.
+
+This worked in previous version 1.2.1.
+
+Rgds, Ales
+
+------
+exception stack trace:
+Code:
+
+org.apache.commons.dbcp.SQLNestedException: Cannot load JDBC driver class '${jdbc.driverClassName}
+'
+   at org.apache.commons.dbcp.BasicDataSource.createDataSource(BasicDataSource.java:766)
+   at org.apache.commons.dbcp.BasicDataSource.getConnection(BasicDataSource.java:540)
+   at org.springframework.jdbc.datasource.LazyConnectionDataSourceProxy.afterPropertiesSet(LazyConnectionDataSourceProxy.java:137)
+   at org.springframework.jdbc.datasource.LazyConnectionDataSourceProxy.<init>(LazyConnectionDataSourceProxy.java:103)
+   at sun.reflect.NativeConstructorAccessorImpl.newInstance0(Native Method)
+   at sun.reflect.NativeConstructorAccessorImpl.newInstance(NativeConstructorAccessorImpl.java:39)
+   at sun.reflect.DelegatingConstructorAccessorImpl.newInstance(DelegatingConstructorAccessorImpl.java:27)
+   at java.lang.reflect.Constructor.newInstance(Constructor.java:274)
+   at org.springframework.beans.BeanUtils.instantiateClass(BeanUtils.java:100)
+   at org.springframework.beans.factory.support.SimpleInstantiationStrategy.instantiate(SimpleInstantiationStrategy.java:75)
+   at org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory.autowireConstructor(AbstractAutowireCapableBeanFactory.java:579)
+   at org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory.createBean(AbstractAutowireCapableBeanFactory.java:322)
+   at org.springframework.beans.factory.support.AbstractBeanFactory.getBean(AbstractBeanFactory.java:226)
+   at org.springframework.beans.factory.support.AbstractBeanFactory.getBean(AbstractBeanFactory.java:147)
+   at org.springframework.beans.factory.support.BeanDefinitionValueResolver.resolveReference(BeanDefinitionValueResolver.java:176)
+   at org.springframework.beans.factory.support.BeanDefinitionValueResolver.resolveValueIfNecessary(BeanDefinitionValueResolver.java:105)
+   at org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory.applyPropertyValues(AbstractAutowireCapableBeanFactory.java:920)
+   at org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory.populateBean(AbstractAutowireCapableBeanFactory.java:731)
+   at org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory.createBean(AbstractAutowireCapableBeanFactory.java:340)
+   at org.springframework.beans.factory.support.AbstractBeanFactory.getBean(AbstractBeanFactory.java:226)
+   at org.springframework.beans.factory.support.AbstractBeanFactory.getBean(AbstractBeanFactory.java:147)
+   at org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory.instantiateUsingFactoryMethod(AbstractAutowireCapableBeanFactory.java:414)
+   at org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory.createBean(AbstractAutowireCapableBeanFactory.java:318)
+   at org.springframework.beans.factory.support.AbstractBeanFactory.getBean(AbstractBeanFactory.java:226)
+   at org.springframework.beans.factory.support.AbstractBeanFactory.getBean(AbstractBeanFactory.java:147)
+   at org.springframework.beans.factory.support.AbstractBeanFactory.getType(AbstractBeanFactory.java:329)
+   at org.springframework.beans.factory.support.DefaultListableBeanFactory.isBeanTypeMatch(DefaultListableBeanFactory.java:250)
+   at org.springframework.beans.factory.support.DefaultListableBeanFactory.getBeanNamesForType(DefaultListableBeanFactory.java:156)
+   at org.springframework.context.support.AbstractApplicationContext.getBeanNamesForType(AbstractApplicationContext.java:585)
+   at org.springframework.context.support.AbstractApplicationContext.invokeBeanFactoryPostProcessors(AbstractApplicationContext.java:353)
+   at org.springframework.context.support.AbstractApplicationContext.refresh(AbstractApplicationContext.java:294)
+   at org.springframework.web.context.support.AbstractRefreshableWebApplicationContext.refresh(AbstractRefreshableWebApplicationContext.java:134)
+   at org.springframework.web.context.ContextLoader.createWebApplicationContext(ContextLoader.java:230)
+   at org.springframework.web.context.ContextLoader.initWebApplicationContext(ContextLoader.java:156)
+   at org.springframework.web.context.ContextLoaderListener.contextInitialized(ContextLoaderListener.java:48)
+   at org.apache.catalina.core.StandardContext.listenerStart(StandardContext.java:3212)
+   at org.apache.catalina.core.StandardContext.start(StandardContext.java:3554)
+   at org.apache.catalina.core.ContainerBase.start(ContainerBase.java:1141)
+   at org.apache.catalina.core.StandardHost.start(StandardHost.java:707)
+   at org.apache.catalina.core.ContainerBase.start(ContainerBase.java:1141)
+   at org.apache.catalina.core.StandardEngine.start(StandardEngine.java:316)
+   at org.apache.catalina.core.StandardService.start(StandardService.java:450)
+   at org.apache.catalina.core.StandardServer.start(StandardServer.java:2143)
+   at org.apache.catalina.startup.Catalina.start(Catalina.java:463)
+   at org.apache.catalina.startup.Catalina.execute(Catalina.java:350)
+   at org.apache.catalina.startup.Catalina.process(Catalina.java:129)
+   at sun.reflect.NativeMethodAccessorImpl.invoke0(Native Method)
+   at sun.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:39)
+   at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:25)
+   at java.lang.reflect.Method.invoke(Method.java:324)
+   at org.apache.catalina.startup.Bootstrap.main(Bootstrap.java:156) 

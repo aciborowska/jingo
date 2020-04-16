@@ -1,0 +1,67 @@
+Consider the create table function (parts removed for simplicity):
+
+
+
+
+
+    private void create_table_core(final RawStore ms, final Table tbl)
+
+        throws AlreadyExistsException, MetaException, InvalidObjectException {
+
+
+
+      Path tblPath = null;
+
+      boolean success = false, madeDir = false;
+
+      try {
+
+        ms.openTransaction();
+
+
+
+        // get_table checks whether database exists, it should be moved here
+
+        if (is_table_exists(tbl.getDbName(), tbl.getTableName())) {
+
+          throw new AlreadyExistsException("Table " + tbl.getTableName()
+
+              + " already exists");
+
+        }
+
+
+
+        ms.createTable(tbl);
+
+        success = ms.commitTransaction();
+
+
+
+      } finally {
+
+        if (!success) {
+
+          ms.rollbackTransaction();
+
+          if (madeDir) {
+
+            wh.deleteDir(tblPath, true);
+
+          }
+
+        }
+
+      }
+
+    }
+
+
+
+
+
+A potential openTransaction() / commitTransaction() mismatch can occur if the is_table_exits() method call experiences a connection failure. 
+Since get_table() in is_table_exists() uses executeWithRetry(),  the transaction will be rolled back and get_table() will be called again if the is a connection problem. However, this rollback and retry will reset the global openTransactionCalls counter back to 0, effectively canceling out the openTransaction() call. 
+Then later in the method when commitTransaction() is called, Hive will throw an error similar to the following:
+Caused by: java.lang.RuntimeException: commitTransaction was called but openTransactionCalls = 0. This probably indicates that there are unbalanced calls to openTransaction/commitTransaction
+A similar problem exists with create_type_core()

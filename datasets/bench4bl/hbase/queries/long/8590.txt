@@ -1,0 +1,7 @@
+This was discovered after HBASE-8505 went in, which introduces a test sporadically triggering this bug. 
+From comments at HBASE-8505: 
+From the logs at https://builds.apache.org/job/HBase-0.94-security/ws/trunk/target/surefire-reports/org.apache.hadoop.hbase.client.TestMetaScanner-output.txt, I think I understand what is going on: 
+BlockingMetaScannerVisitor blocks and wait for the split daughter to appear when it sees a parent region (HBASE-5986). CatalogJanitor on the other hand will order the regions in a (kind-of) topological sort (based on parent child relation) so that it will guarantee parents are not GC'd before daughters.
+What is happening in this issue is not related to the patch in this jira, but the test triggers this extremely rare case by running concurrent catalogjanitor, splits and metascanners. We have parent, splita and splitb regions, and catalogjanitor decides to delete parent first and splitb in one run. While there is a concurrent metascanner which will go over the parent, and sees that it is split, but before being able to read the split daughter, catalog janitor will delete both the parent and the child, which will lead to metascanner blocking until timeout and failing the test.
+On solution might be to also check whether the parent is still there in BlockingMetaScannerVisitor while we are blocking for the daughter.
+Good thing is that with HBASE-7721, we don't need any of this in trunk.

@@ -1,0 +1,20 @@
+There was a Learner that had two connections to the Leader after that Learner hit an unexpected exception during flush txn to disk, which will shutdown previous follower instance and restart a new one.
+ 
+2018-10-26 02:31:35,568 ERROR [SyncThread:3:ZooKeeperCriticalThread@48] - Severe unrecoverable error, from thread : SyncThread:3
+java.io.IOException: Input/output error
+        at java.base/sun.nio.ch.FileDispatcherImpl.force0(Native Method)
+        at java.base/sun.nio.ch.FileDispatcherImpl.force(FileDispatcherImpl.java:72)
+        at java.base/sun.nio.ch.FileChannelImpl.force(FileChannelImpl.java:395)
+        at org.apache.zookeeper.server.persistence.FileTxnLog.commit(FileTxnLog.java:457)
+        at org.apache.zookeeper.server.persistence.FileTxnSnapLog.commit(FileTxnSnapLog.java:548)
+        at org.apache.zookeeper.server.ZKDatabase.commit(ZKDatabase.java:769)
+        at org.apache.zookeeper.server.SyncRequestProcessor.flush(SyncRequestProcessor.java:246)
+        at org.apache.zookeeper.server.SyncRequestProcessor.run(SyncRequestProcessor.java:172)
+2018-10-26 02:31:35,568 INFO  [SyncThread:3:ZooKeeperServerListenerImpl@42] - Thread SyncThread:3 exits, error code 1
+2018-10-26 02:31:35,568 INFO [SyncThread:3:SyncRequestProcessor@234] - SyncRequestProcessor exited!
+ 
+It is supposed to close the previous socket, but it doesn't seem to be done anywhere in the code. This leaves the socket open with no one reading from it, and caused the queue full and blocked on sender.
+ 
+Since the LearnerHandler didn't shutdown gracefully, the learner queue size keeps growing, the JVM heap size on leader keeps growing and added pressure to the GC, and cause high GC time and latency in the quorum.
+ 
+The simple fix is to gracefully shutdown the socket.

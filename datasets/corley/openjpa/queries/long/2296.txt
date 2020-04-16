@@ -1,0 +1,47 @@
+EDIT: 
+
+	an N+1 select problem also always occurs when eagerly fetching a ManyToOne field that is bidirectional (see TestManyOneEagerSQL)
+	The patch of "RelationFieldStrategy.selectEagerJoin" I suggested works for the unit tests but does not work in my real application so that may be a different N+1 select issue. (Somehow my fields are in the list of eager relations in OpenJPA's trace, but OpenJPA still uses a "load field" for them.)
+
+
+
+We have very serious performance problems in fetching our JPA entities caused by N+1 select problems. I suspect that these are caused by a small bug in OpenJPA's eager fetching implementation that should not be too hard to fix. This is especially bad in our relatively complex reservation entity where we need to eagerly fetch customer, contacts, orderlines, products etc. It takes over 3 seconds to fetch a single reservation from a local db. The problem seems to occur at multiple places in this object graph. The cause of the problem is probably the following issue where eager fetching of relations of toOne relations use neither a parallel or join select strategy but uses separate "load field"s of EACH field of EACH toOne relation in the object graph. I am not the only one having this issue, see also mailing list http://openjpa.208410.n2.nabble.com/Fetchgroups-recursion-problem-td3874382.html#a7581598
+
+Suppose we have entities Company 1..* Employee 1..* Project
+According to Chapter 8. Eager Fetching of the manual: "Continuing our example, if the Employee class had a list of Projects in one of the fetch groups being loaded, OpenJPA would execute a single additional select in parallel to load the projects of all employees of the matching companies."
+
+This is indeed what happens when both relations are eager (or are marked lazy but are in the fetchplan). The number of queries needed to fetch a Company does not depend on the number of employees or projects:
+
+8913  testPU  TRACE  [main] openjpa.Query - Executing query: SELECT z FROM Company z
+19885  testPU  TRACE  [main] openjpa.jdbc.SQLDiag - Eager relations: [entities.Employee.projects, entities.Company.employees]
+19889  testPU  TRACE  [main] openjpa.jdbc.SQL - <t 12833564, conn 5535786> executing prepstmnt 20965449 SELECT t0.id, t0.name FROM Company t0
+19891  testPU  TRACE  [main] openjpa.jdbc.SQL - <t 12833564, conn 5535786> [2 ms] spent
+20237  testPU  TRACE  [main] openjpa.jdbc.SQLDiag - Eager relations: [entities.Employee.projects, entities.Company.employees]
+20237  testPU  TRACE  [main] openjpa.jdbc.SQL - <t 12833564, conn 5535786> executing prepstmnt 21924553 SELECT t0.id, t1.id, t1.name FROM Company t0 INNER JOIN Employee t1 ON t0.id = t1.COMPANY_ID ORDER BY t0.id ASC
+20248  testPU  TRACE  [main] openjpa.jdbc.SQL - <t 12833564, conn 5535786> [10 ms] spent
+21308  testPU  TRACE  [main] openjpa.jdbc.SQLDiag - Eager relations: [entities.Employee.projects, entities.Company.employees]
+21309  testPU  TRACE  [main] openjpa.jdbc.SQL - <t 12833564, conn 5535786> executing prepstmnt 13123665 SELECT DISTINCT t1.id, t2.id, t2.name FROM Company t0 INNER JOIN Employee t1 ON t0.id = t1.COMPANY_ID INNER JOIN Project t2 ON t1.id = t2.EMPLOYEE_ID ORDER BY t1.id ASC
+21376  testPU  TRACE  [main] openjpa.jdbc.SQL - <t 12833564, conn 5535786> [67 ms] spent
+22247  testPU  TRACE  [main] openjpa.jdbc.JDBC - <t 12833564, conn 0> [0 ms] close
+
+However when the relation between Company and Employee is replaced with a OneToOne or ManyToOne relation, this efficient eager fetching fails and OpenJPA resorts to single object loads for the projects field of each Employee:
+
+.... 
+41580  testPU  TRACE  [main] openjpa.Query - Executing query: SELECT z FROM Company z
+49121  testPU  TRACE  [main] openjpa.jdbc.SQLDiag - Eager relations: [entities.Company.employee]
+49121  testPU  TRACE  [main] openjpa.jdbc.SQL - <t 22418487, conn 10229202> executing prepstmnt 17563180 SELECT t0.id, t1.id, t1.name, t0.name FROM Company t0 LEFT OUTER JOIN Employee t1 ON t0.id = t1.COMPANY_ID
+49142  testPU  TRACE  [main] openjpa.jdbc.SQL - <t 22418487, conn 10229202> [21 ms] spent
+61282  testPU  TRACE  [main] openjpa.jdbc.SQLDiag - load field: 'projects' for oid=51 class entities.Employee
+62593  testPU  TRACE  [main] openjpa.jdbc.SQL - <t 22418487, conn 10229202> executing prepstmnt 27638389 SELECT t0.id, t0.name FROM Project t0 WHERE t0.EMPLOYEE_ID = ? [params=?]
+62594  testPU  TRACE  [main] openjpa.jdbc.SQL - <t 22418487, conn 10229202> [1 ms] spent
+64554  testPU  TRACE  [main] openjpa.jdbc.SQLDiag - load field: 'projects' for oid=52 class entities.Employee
+67645  testPU  TRACE  [main] openjpa.jdbc.SQL - <t 22418487, conn 10229202> executing prepstmnt 18914646 SELECT t0.id, t0.name FROM Project t0 WHERE t0.EMPLOYEE_ID = ? [params=?]
+.... 
+
+In the first (efficient) case OpenJPA logs
+  openjpa.jdbc.SQLDiag - Eager relations: [entities.Employee.projects, entities.Company.employees]
+
+In the second (inefficient) case OpenJPA logs
+  openjpa.jdbc.SQLDiag - Eager relations: [entities.Company.employee]
+
+This issue may be related to https://issues.apache.org/jira/browse/OPENJPA-1920 which also uses single "load field"s.

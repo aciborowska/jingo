@@ -1,0 +1,72 @@
+We observed frequent fullGC of RS in our production environment, and after analyzing the heapdump, we found large memory occupancy by HStore#changedReaderObservers, the map is surprisingly containing 7500w objects...
+After some debugging, I located some possible memory leak in StoreScanner constructor:
+
+
+
+  public StoreScanner(Store store, ScanInfo scanInfo, Scan scan, final NavigableSet<byte[]> columns,
+
+      long readPt)
+
+  throws IOException {
+
+    this(store, scan, scanInfo, columns, readPt, scan.getCacheBlocks());
+
+    if (columns != null && scan.isRaw()) {
+
+      throw new DoNotRetryIOException("Cannot specify any column for a raw scan");
+
+    }
+
+    matcher = new ScanQueryMatcher(scan, scanInfo, columns,
+
+        ScanType.USER_SCAN, Long.MAX_VALUE, HConstants.LATEST_TIMESTAMP,
+
+        oldestUnexpiredTS, now, store.getCoprocessorHost());
+
+
+
+    this.store.addChangedReaderObserver(this);
+
+
+
+    // Pass columns to try to filter out unnecessary StoreFiles.
+
+    List<KeyValueScanner> scanners = getScannersNoCompaction();
+
+    ...
+
+    seekScanners(scanners, matcher.getStartKey(), explicitColumnQuery
+
+        && lazySeekEnabledGlobally, parallelSeekEnabled);
+
+    ...
+
+    resetKVHeap(scanners, store.getComparator());
+
+  }
+
+
+
+If there's any Exception thrown after this.store.addChangedReaderObserver(this), the returned scanner might be null and there's no chance to remove the scanner from changedReaderObservers, like in HRegion#get
+
+
+
+    RegionScanner scanner = null;
+
+    try {
+
+      scanner = getScanner(scan);
+
+      scanner.next(results);
+
+    } finally {
+
+      if (scanner != null)
+
+        scanner.close();
+
+    }
+
+
+
+What's more, all exception thrown in the HRegion#getScanner path will cause scanner==null then memory leak, so we also need to handle this part.

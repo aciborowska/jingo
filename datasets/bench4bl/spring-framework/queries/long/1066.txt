@@ -1,0 +1,14 @@
+org.springframework.orm.hibernate3.SessionFactoryUtils has an inner class, "SpringSessionSynchronization", that is instantiated and registered against the current transaction when using Spring for session management.  During transaction suspend and resume, this implementation will always call TransactionSynchronizationManager.unbindResource(this.sessionFactory) and TransactionSynchronizationManager.bindResource(this.sessionFactory, this.sessionHolder), respectively.  When Spring performs a commit, it calls synchronization methods in this order:
+  1. beforeCommit
+  2. beforeCompletion
+  3. afterCompletion
+In beforeCompletion, SpringSessionSynchronization will unbindResource(this.sessionFactory), and sometimes close the Hibernate 
+Session.  However, SpringSessionSynchronization will not reflect this in its internal state in any way.  Now imagine that a TransactionSynchronization implementation suspends the transaction in afterCompletion.  SessionFactoryUtils.SpringSessionSynchronization will have its suspend method called, which will attempt to unbindResource(this.sessionFactory), causing an exception since it has already been unbound.  Moreover, even if it performed a check and did not unbind the resource, resume() would still attempt to rebind the resource (whose Hibernate Session was most likely closed in beforeCompletion), leaving that closed resource bound to the current thread even after the main transaction has been committed.
+Basically, SpringSessionSynchronization needs to be modified to handle this call sequence:
+  1. beforeCommit
+  2. beforeCompletion
+  3. suspend
+  4. resume
+  5. afterCompletion
+Which it does not now support (though this was working in older versions of Spring).
+Much more detail can be found in the related developer list thread: http://news.gmane.org/find-root.php?message_id=%3c200506201528.08175.andy%40marathon%2dman.com%3e

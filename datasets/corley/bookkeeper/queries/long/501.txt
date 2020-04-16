@@ -1,0 +1,52 @@
+We find lots of read entry error logs caused by fencing periodically.
+
+We set hedwig server "retention_secs" to 2 days, so topics may be released after 2 days:
+
+AbstractTopicManager#notifyListenersAndAddToOwnedTopics
+
+scheduler.schedule(new Runnable() {
+                        @Override
+                        public void run() {
+                            // Enqueue a release operation. (Recall that release
+                            // doesn't "fail" even if the topic is missing.)
+                            releaseTopic(topic, new Callback<Void>() {
+
+                                @Override
+                                public void operationFailed(Object ctx, PubSubException exception) {
+                                    logger.error("failure that should never happen when periodically releasing topic "
+                                                 + topic, exception);
+                                }
+
+                                @Override
+                                public void operationFinished(Object ctx, Void resultOfOperation) {
+                                    if (logger.isDebugEnabled()) {
+                                        logger.debug("successful periodic release of topic "
+                                            + topic.toStringUtf8());
+                                    }
+                                }
+
+                            }, null);
+                        }
+                    }, cfg.getRetentionSecs(), TimeUnit.SECONDS);
+
+
+
+And once topic is released, BookkeeperPersistenceManager#ReleaseOp will run and close all ledgers, but the BookkeeperPersistenceManager#closeLedger() do nothing (actually the close ledger code is commented):
+
+BookkeeperPersistenceManager#closeLedger
+
+    public void closeLedger(LedgerHandle lh) {
+        // try {
+        // lh.asyncClose(noOpCloseCallback, null);
+        // } catch (InterruptedException e) {
+        // logger.error(e);
+        // Thread.currentThread().interrupt();
+        // }
+    }
+
+
+So it will trigger fence operation when topic is acquired, which cause periodical unnecessary read entry error for recovery.
+
+I think there are two improvement for this issue:
+1. Close ledger when release topic.
+2. read entry failed caused by fence should not be taken as an error.

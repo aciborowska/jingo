@@ -1,0 +1,51 @@
+I have a region that is stuck in a close that was ordained by a split.  Here is what I have from the log pertaining to the stuck region:
+
+4    6416 2008-05-29 22:29:03,433 INFO org.apache.hadoop.hbase.HRegion: checking compaction completed on region enwiki,IK9sWdHJe6ffGZgFPsqIvk==,1212092907061 in 12sec
+5    6417 2008-05-29 22:29:03,439 INFO org.apache.hadoop.hbase.HRegion: Splitting enwiki,IK9sWdHJe6ffGZgFPsqIvk==,1212092907061 because largest aggregate size is 288.3m and desired size is 256.0m                                                                    
+6    6418 2008-05-29 22:29:03,443 DEBUG org.apache.hadoop.hbase.HRegion: compactions and cache flushes disabled for region enwiki,IK9sWdHJe6ffGZgFPsqIvk==,1212092907061
+7    6419 2008-05-29 22:29:03,443 DEBUG org.apache.hadoop.hbase.HRegion: new updates and scanners for region enwiki,IK9sWdHJe6ffGZgFPsqIvk==,1212092907061 disabled                                                                                                    
+8    6420 2008-05-29 22:29:03,443 DEBUG org.apache.hadoop.hbase.HRegion: no more active scanners for region enwiki,IK9sWdHJe6ffGZgFPsqIvk==,1212092907061
+9    6421 2008-05-29 22:29:03,443 DEBUG org.apache.hadoop.hbase.HRegion: no more row locks outstanding on region enwiki,IK9sWdHJe6ffGZgFPsqIvk==,1212092907061                                                                                                        
+10   6422 2008-05-29 22:29:03,443 DEBUG org.apache.hadoop.hbase.HRegionServer: enwiki,IK9sWdHJe6ffGZgFPsqIvk==,1212092907061 closing (Adding to retiringRegions)
+11   6423 2008-05-29 22:29:03,443 DEBUG org.apache.hadoop.hbase.HRegion: Started memcache flush for region enwiki,IK9sWdHJe6ffGZgFPsqIvk==,1212092907061. Current region memcache size 2.1m                                                                           
+12    6424 2008-05-29 22:29:03,561 INFO org.apache.hadoop.ipc.Server: IPC Server handler 0 on 60020, call batchUpdate(enwiki,IK9sWdHJe6ffGZgFPsqIvk==,1212092907061, 1171081390000, org.apache.hadoop.hbase.io.BatchUpdate@2eeb0275) from 208.76.44.139:49358: err        or: org.        apache.hadoop.hbase.NotServingRegionException: enwiki,IK9sWdHJe6ffGZgFPsqIvk==,1212092907061                                                                                                                                                        
+13   6425 org.apache.hadoop.hbase.NotServingRegionException: enwiki,IK9sWdHJe6ffGZgFPsqIvk==,1212092907061
+14   6434 2008-05-29 22:29:03,982 INFO org.apache.hadoop.ipc.Server: IPC Server handler 9 on 60020, call batchUpdate(enwiki,IK9sWdHJe6ffGZgFPsqIvk==,1212092907061, 1202595259000, org.apache.hadoop.hbase.io.BatchUpdate@46ee6763) from 208.76.44.139:49358: err        or: org.        apache.hadoop.hbase.NotServingRegionException: enwiki,IK9sWdHJe6ffGZgFPsqIvk==,1212092907061
+15   6435 org.apache.hadoop.hbase.NotServingRegionException: enwiki,IK9sWdHJe6ffGZgFPsqIvk==,1212092907061
+
+
+Then in thread dump, I have two threads blocked on the HLog#cacheFlushLock but looking in code, there is no obvious code path that would get a situation where a lock is held and then not released.
+
+"regionserver/0:0:0:0:0:0:0:0:60020.compactor" daemon prio=1 tid=0x00002aab381e5fd0 nid=0x6195 waiting on condition [0x0000000041c6c000..0x0000000041c6ce00]
+        at sun.misc.Unsafe.park(Native Method)
+        at java.util.concurrent.locks.LockSupport.park(Unknown Source)
+        at java.util.concurrent.locks.AbstractQueuedSynchronizer.parkAndCheckInterrupt(Unknown Source)
+        at java.util.concurrent.locks.AbstractQueuedSynchronizer.acquireQueued(Unknown Source)
+        at java.util.concurrent.locks.AbstractQueuedSynchronizer.acquire(Unknown Source)
+        at java.util.concurrent.locks.ReentrantLock$NonfairSync.lock(Unknown Source)
+        at java.util.concurrent.locks.ReentrantLock.lock(Unknown Source)
+        at org.apache.hadoop.hbase.HLog.startCacheFlush(HLog.java:459)
+        at org.apache.hadoop.hbase.HRegion.internalFlushcache(HRegion.java:1089)
+        at org.apache.hadoop.hbase.HRegion.close(HRegion.java:594)
+        - locked <0x00002aaab70bf3a0> (a java.lang.Integer)
+        at org.apache.hadoop.hbase.HRegion.splitRegion(HRegion.java:759)
+        - locked <0x00002aaab70bf3a0> (a java.lang.Integer)
+        at org.apache.hadoop.hbase.HRegionServer$CompactSplitThread.split(HRegionServer.java:248)
+        at org.apache.hadoop.hbase.HRegionServer$CompactSplitThread.run(HRegionServer.java:204)
+
+...
+
+
+"regionserver/0:0:0:0:0:0:0:0:60020.logRoller" daemon prio=1 tid=0x00002aab38181d70 nid=0x6193 waiting on condition [0x0000000041a6a000..0x0000000041a6ab00]
+        at sun.misc.Unsafe.park(Native Method)
+        at java.util.concurrent.locks.LockSupport.park(Unknown Source)
+        at java.util.concurrent.locks.AbstractQueuedSynchronizer.parkAndCheckInterrupt(Unknown Source)
+        at java.util.concurrent.locks.AbstractQueuedSynchronizer.acquireQueued(Unknown Source)
+        at java.util.concurrent.locks.AbstractQueuedSynchronizer.acquire(Unknown Source)
+        at java.util.concurrent.locks.ReentrantLock$NonfairSync.lock(Unknown Source)
+        at java.util.concurrent.locks.ReentrantLock.lock(Unknown Source)
+        at org.apache.hadoop.hbase.HLog.rollWriter(HLog.java:219)
+        at org.apache.hadoop.hbase.HRegionServer$LogRoller.run(HRegionServer.java:615)
+        - locked <0x00002aaab69ccf00> (a java.lang.Integer)
+...
+

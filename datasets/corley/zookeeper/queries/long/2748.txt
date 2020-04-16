@@ -1,0 +1,69 @@
+In certain circumstances, it would be useful to be able to move clients from one server to another.
+
+One example: a quorum that consists of 3 servers (A,B,C) with 1000 active client session, where 900 clients are connected to server A, and the remaining 100 are split over B and C (see example below for an example of how this can happen).
+A will do a lot more work than B, C. 
+Overall throughput will benefit by having the clients more evenly divided.
+In case of A failure, all its client will create an avalanche by migrating en masse to a different server.
+
+There are other possible use cases for a mechanism to move clients: 
+
+	Migrate away all clients before a server restart
+	Migrate away part of clients in response to runtime metrics (CPU/Memory usage, ...)
+	Shuffle clients after adding more server capacity (i.e. adding Observer nodes)
+
+
+
+The simplest form of rebalancing which does not require major changes of protocol or client code consists of requesting a server to voluntarily drop some number of connections.
+Clients should be able to transparently move to a different server.
+
+Patch introducing 4-letter commands to shed clients:
+https://github.com/apache/zookeeper/pull/215
+
+
+– -- –
+
+
+How client imbalance happens in the first place, an example.
+
+Imagine servers A, B, C and 1000 clients connected.
+Initially clients are spread evenly (i.e. 333 clients per server).
+A: 333 (restarts: 0)
+B: 333 (restarts: 0)
+C: 334 (restarts: 0)
+
+Now restart servers a few times, always in A, B, C order (e.g. to pick up a software upgrades or configuration changes).
+
+Restart A:
+A: 0 (restarts: 1)
+B: 499 (restarts: 0)
+C: 500 (restarts: 0)
+
+Restart B:
+A: 250 (restarts: 1)
+B: 0 (restarts: 1)
+C: 750 (restarts: 0)
+
+Restart C:
+A: 625 (restarts: 1)
+B: 375 (restarts: 1)
+C: 0 (restarts: 1)
+
+The imbalance is pretty bad already. C is idle while A has a lot of work.
+A second round of restarts makes the situation even worse:
+
+Restart A:
+A: 0 (restarts: 2)
+B: 688 (restarts: 1)
+C: 313 (restarts: 1)
+
+Restart B:
+A: 344 (restarts: 2)
+B: 657 (restarts: 1)
+C: 0 (restarts: 1)
+
+Restart C:
+A: 673 (restarts: 2)
+B: 328 (restarts: 1)
+C: 0 (restarts: 1)
+
+Large cluster (5, 7, 9 servers) make the imbalance even more evident.

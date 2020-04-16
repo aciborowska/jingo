@@ -1,0 +1,356 @@
+I am struggling to make a hot publisher push values into a event stream. In the referenced stackoverflow question there's a detailed explanation of how I'm trying to achieve it and the errors produced.
+To sum up, I have this EmitterProcessor:
+
+
+
+
+
+
+@Component
+
+
+
+
+public class AlertEmitterProcessor {
+
+
+
+
+ 
+
+
+
+
+    private Logger logger = LoggerFactory.getLogger(getClass());
+
+
+
+
+ 
+
+
+
+
+    private EmitterProcessor<Alert> processor;
+
+
+
+
+ 
+
+
+
+
+    public AlertEmitterProcessor(){
+
+
+
+
+        processor = EmitterProcessor.<Alert>create();
+
+
+
+
+        processor.connect();
+
+
+
+
+    }
+
+
+
+
+ 
+
+
+
+
+    public EmitterProcessor<Alert> getProcessor() {
+
+
+
+
+        return processor;
+
+
+
+
+    }
+
+
+
+
+ 
+
+
+
+
+    public void onNext(Alert alert){
+
+
+
+
+        logger.info("onNext [{}]", alert);
+
+
+
+
+        processor.onNext(alert);
+
+
+
+
+    }
+
+
+
+
+ 
+
+
+
+
+    public void onComplete(){
+
+
+
+
+        logger.info("onComplete");
+
+
+
+
+        processor.onComplete();
+
+
+
+
+    }
+
+
+
+
+ 
+
+
+
+
+    public void onError(Throwable t){
+
+
+
+
+        logger.error("onError", t);
+
+
+
+
+        processor.onError(t);
+
+
+
+
+    }
+
+
+
+
+}
+
+
+
+
+
+
+
+And this RestController:
+
+
+
+
+
+
+@Autowired
+
+
+
+
+private AlertEmitterProcessor alertTopicProcessor;
+
+
+
+
+ 
+
+
+
+
+@GetMapping(value="/accounts/{id}/alerts/live2", produces="text/event-stream")
+
+
+
+
+public Flux<Alert> getAccountAlertsStreaming2(@PathVariable Integer id) {
+
+
+
+
+    return alertTopicProcessor.getProcessor()
+
+
+
+
+        .log().filter( a -> a.getAccountId().equals(id) );
+
+
+
+
+}
+
+
+
+
+
+
+
+Either the client doesn't get any data and ends with a 500 error:
+
+
+
+
+
+
+2016-10-03 13:43:43.063 DEBUG 12800 --- [nio-8080-exec-2] o.s.web.reactive.DispatcherHandler       : Processing GET request for [http://localhost:8080/mock/accounts/1/alerts/put]
+
+
+
+
+2016-10-03 13:43:43.063 DEBUG 12800 --- [nio-8080-exec-2] s.w.r.r.m.a.RequestMappingHandlerMapping : Looking up handler method for path /mock/accounts/1/alerts/put
+
+
+
+
+2016-10-03 13:43:43.068 DEBUG 12800 --- [nio-8080-exec-2] s.w.r.r.m.a.RequestMappingHandlerMapping : Returning handler method [public void com.codependent.spring5.playground.reactive.web.AccountsRestController.putAlert(java.lang.Integer) throws com.fasterxml.jackson.core.JsonProcessingException]
+
+
+
+
+2016-10-03 13:43:43.069 DEBUG 12800 --- [nio-8080-exec-2] o.s.b.f.s.DefaultListableBeanFactory     : Returning cached instance of singleton bean 'accountsRestController'
+
+
+
+
+2016-10-03 13:43:43.071  INFO 12800 --- [nio-8080-exec-2] reactor.unresolved                       : onSubscribe(reactor.core.publisher.FluxPeek$PeekSubscriber@2ba7d09c)
+
+
+
+
+2016-10-03 13:43:43.071  INFO 12800 --- [nio-8080-exec-2] reactor.unresolved                       : request(unbounded)
+
+
+
+
+2016-10-03 13:43:43.072  INFO 12800 --- [nio-8080-exec-2] reactor.unresolved                       : onNext(1)
+
+
+
+
+2016-10-03 13:43:43.112  INFO 12800 --- [nio-8080-exec-2] c.c.s.p.r.message.AlertMessageListener   : Message received: [com.codependent.spring5.playground.reactive.message.MockTextMessage@37262c9e]
+
+
+
+
+2016-10-03 13:43:43.145  INFO 12800 --- [nio-8080-exec-2] c.c.s.p.r.message.AlertEmitterProcessor  : onNext [Alert [alertId=3, message=Message, accountId=1]]
+
+
+
+
+2016-10-03 13:43:43.146  INFO 12800 --- [nio-8080-exec-2] reactor.Flux.EmitterProcessor.2          : onNext(Alert [alertId=3, message=Message, accountId=1])
+
+
+
+
+2016-10-03 13:43:43.177  INFO 12800 --- [nio-8080-exec-2] reactor.unresolved                       : onComplete()
+
+
+
+
+2016-10-03 13:43:43.177 DEBUG 12800 --- [nio-8080-exec-2] o.s.h.s.r.ServletHttpHandlerAdapter      : Successfully completed request
+
+
+
+
+
+
+
+...or it some rare occasions gets data:
+
+
+
+
+
+
+2016-10-03 13:45:07.726 DEBUG 12800 --- [nio-8080-exec-8] s.w.r.r.m.a.RequestMappingHandlerMapping : Returning handler method [public reactor.core.publisher.Flux<com.codependent.spring5.playground.reactive.dto.Alert> com.codependent.spring5.playground.reactive.web.AccountsRestController.getAccountAlertsStreaming2(java.lang.Integer)]
+
+
+
+
+2016-10-03 13:45:07.726 DEBUG 12800 --- [nio-8080-exec-8] o.s.b.f.s.DefaultListableBeanFactory     : Returning cached instance of singleton bean 'accountsRestController'
+
+
+
+
+2016-10-03 13:45:07.727  INFO 12800 --- [nio-8080-exec-8] reactor.unresolved                       : onSubscribe(reactor.core.publisher.FluxPeek$PeekSubscriber@909f06f)
+
+
+
+
+2016-10-03 13:45:07.727  INFO 12800 --- [nio-8080-exec-8] reactor.unresolved                       : request(unbounded)
+
+
+
+
+2016-10-03 13:45:07.727  INFO 12800 --- [nio-8080-exec-8] reactor.unresolved                       : onNext(1)
+
+
+
+
+2016-10-03 13:45:07.729  INFO 12800 --- [nio-8080-exec-8] reactor.Flux.EmitterProcessor.9          : onSubscribe(reactor.core.publisher.EmitterProcessor$EmitterSubscriber@7ce1f3e)
+
+
+
+
+2016-10-03 13:45:07.729  INFO 12800 --- [nio-8080-exec-8] reactor.Flux.EmitterProcessor.9          : request(1)
+
+
+
+
+2016-10-03 13:45:07.729  INFO 12800 --- [nio-8080-exec-8] reactor.Flux.EmitterProcessor.9          : onNext(Alert [alertId=4, message=Message, accountId=1])
+
+
+
+
+2016-10-03 13:45:07.730  INFO 12800 --- [nio-8080-exec-8] reactor.unresolved                       : onComplete()
+
+
+
+
+2016-10-03 13:45:07.747  INFO 12800 --- [nio-8080-exec-8] reactor.Flux.EmitterProcessor.9          : request(1)
+
+
+
+
+2016-10-03 13:45:07.747  INFO 12800 --- [nio-8080-exec-8] reactor.Flux.EmitterProcessor.9          : onNext(Alert [alertId=0, message=Message, accountId=1])
+
+
+
+
+2016-10-03 13:45:07.748  INFO 12800 --- [nio-8080-exec-8] reactor.Flux.EmitterProcessor.9          : request(1)
+
+
+
+
+
+
+

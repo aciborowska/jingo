@@ -1,0 +1,47 @@
+When evaluating a JPQL query, the kernel eventually finds it's way to QueryImpl.toClass(string) to provide a Class for a given name. This delegates to Serp, which calls Class.forName(string) (I'm leaving out the class loaders here).
+
+The problem is that under heavy load, with lots of threads, the calls to Class.forName() BLOCK as that method has to get the class loader lock before finding/loading the named class. In my perf tests, which executes 500 threads against JPA and takes a thread dump every 10 seconds, I find about 2400 BLOCKED threads at exactly the same place:
+
+"http-bio-8080-exec-16" daemon prio=10 tid=0x00007fc95c503000 nid=0x2eb waiting for monitor entry [0x00007fc98034d000]
+   java.lang.Thread.State: BLOCKED (on object monitor)
+	at java.lang.Class.forName0(Native Method)
+	at java.lang.Class.forName(Class.java:270)
+	at serp.util.Strings.toClass(Strings.java:162)
+	at serp.util.Strings.toClass(Strings.java:108)
+	at org.apache.openjpa.kernel.QueryImpl.toClass(QueryImpl.java:1698)
+	at org.apache.openjpa.kernel.QueryImpl.classForName(QueryImpl.java:1653)
+	at org.apache.openjpa.kernel.ExpressionStoreQuery$1.classForName(ExpressionStoreQuery.java:113)
+	at org.apache.openjpa.kernel.jpql.JPQLExpressionBuilder.getPathOrConstant(JPQLExpressionBuilder.java:1883)
+	at org.apache.openjpa.kernel.jpql.JPQLExpressionBuilder.eval(JPQLExpressionBuilder.java:1189)
+	at org.apache.openjpa.kernel.jpql.JPQLExpressionBuilder.getValue(JPQLExpressionBuilder.java:2095)
+	at org.apache.openjpa.kernel.jpql.JPQLExpressionBuilder.getValue(JPQLExpressionBuilder.java:2081)
+	at org.apache.openjpa.kernel.jpql.JPQLExpressionBuilder.eval(JPQLExpressionBuilder.java:1137)
+	at org.apache.openjpa.kernel.jpql.JPQLExpressionBuilder.getExpression(JPQLExpressionBuilder.java:2011)
+	at org.apache.openjpa.kernel.jpql.JPQLExpressionBuilder.eval(JPQLExpressionBuilder.java:1059)
+	at org.apache.openjpa.kernel.jpql.JPQLExpressionBuilder.getExpression(JPQLExpressionBuilder.java:2011)
+	at org.apache.openjpa.kernel.jpql.JPQLExpressionBuilder.eval(JPQLExpressionBuilder.java:1001)
+	at org.apache.openjpa.kernel.jpql.JPQLExpressionBuilder.evalWhereClause(JPQLExpressionBuilder.java:672)
+	at org.apache.openjpa.kernel.jpql.JPQLExpressionBuilder.getQueryExpressions(JPQLExpressionBuilder.java:297)
+	at org.apache.openjpa.kernel.jpql.JPQLParser.eval(JPQLParser.java:67)
+	at org.apache.openjpa.kernel.ExpressionStoreQuery$DataStoreExecutor.<init>(ExpressionStoreQuery.java:763)
+	at org.apache.openjpa.kernel.ExpressionStoreQuery.newDataStoreExecutor(ExpressionStoreQuery.java:179)
+	at org.apache.openjpa.datacache.QueryCacheStoreQuery.newDataStoreExecutor(QueryCacheStoreQuery.java:288)
+	at org.apache.openjpa.kernel.QueryImpl.createExecutor(QueryImpl.java:752)
+	at org.apache.openjpa.kernel.QueryImpl.compileForDataStore(QueryImpl.java:710)
+	at org.apache.openjpa.kernel.QueryImpl.compileForExecutor(QueryImpl.java:692)
+	at org.apache.openjpa.kernel.QueryImpl.compile(QueryImpl.java:592)
+	at org.apache.openjpa.persistence.EntityManagerImpl.createQuery(EntityManagerImpl.java:997)
+	at org.apache.openjpa.persistence.EntityManagerImpl.createQuery(EntityManagerImpl.java:979)
+
+
+My suggestion is to keep a map at QueryImpl from name to Class and avoid Class.forName() when the class has already been found once.
+
+Three issues to consider:
+
+1. Classloader. Class caches usually are a bad idea because one can get a different Class instance from a different class loader. In QueryImpl, only one ClassLoader (_loader) is ever used.
+
+2. Concurrency. The class cache needs to be thread-safe, so I used a ConcurrentHashMap (JDK version) to store results. I'm ok with multiple threads reloading the same class occasionally as they will simply replace the stored class with the same class. That is preferable to locking the thread so only one mapping can be created ever.
+
+3. Class unload. The Class itself may be unloaded, but cannot be garbage-collected because the map will retain a reference. I don't think this is a real problem given the nature of the Query; the same JQPL tends to be executed repeatedly, so it is unlikely that the class will be unloaded. I'm sure someone has a different opinion on this.
+
+The provided patch, which stores found classes in a map, has reduced the amount of BLOCKED state threads in my test down to 100.

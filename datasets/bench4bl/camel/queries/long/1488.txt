@@ -1,0 +1,61 @@
+Camel can fail to determine the appropriate method to call on a bean that has overloaded (vs. overridden) methods. It will always call the first overloaded method, even if the parameter is not the same type as that of the message being processed.
+The bug is in BeanInfo.overridesExistingMethod. Here's the offending code:
+            for (int i = 0; i < info.getMethod().getParameterTypes().length; i++) {
+                Class type1 = info.getMethod().getParameterTypes()[i];
+                Class type2 = methodInfo.getMethod().getParameterTypes()[i];
+                if (!type1.equals(type2)) 
+{
+                    continue;
+                }
+            }
+            // same name, same parameters, then its overrides an existing class
+            return info;
+If the parameter types don't match, the continue statement is not going to do what you'd want. The author obviously intended the "continue" to continue with the next methodInfo. Instead, it checks the next parameter and will always return the current methodInfo  if it reaches this point.
+Here's a unit test that exemplifies the issue:
+----------------------------------
+package biz.firethorn.hostinterface.camel;
+import java.lang.reflect.Method;
+import junit.framework.Assert;
+import junit.framework.TestCase;
+import org.apache.camel.CamelContext;
+import org.apache.camel.Exchange;
+import org.apache.camel.Message;
+import org.apache.camel.RuntimeCamelException;
+import org.apache.camel.component.bean.AmbiguousMethodCallException;
+import org.apache.camel.component.bean.BeanInfo;
+import org.apache.camel.component.bean.MethodInvocation;
+import org.apache.camel.impl.DefaultCamelContext;
+import org.apache.camel.impl.DefaultExchange;
+import org.apache.camel.impl.DefaultMessage;
+public class BeanInfoTest extends TestCase {
+	public void test() throws Exception 
+{
+		
+		CamelContext camelContext = new DefaultCamelContext();
+		BeanInfo beanInfo = new BeanInfo(camelContext, Bean.class);
+		
+		Message message = new DefaultMessage();
+		message.setBody(new RequestB());
+		Exchange exchange = new DefaultExchange(camelContext);
+		exchange.setIn(message);
+		
+		MethodInvocation methodInvocation = beanInfo.createInvocation(new Bean(), exchange);
+		Method method = methodInvocation.getMethod();
+		
+		Assert.assertEquals("doSomething", method.getName());
+		
+		Assert.assertEquals(RequestB.class, method.getGenericParameterTypes()[0]);
+	}
+}
+class Bean {
+	public void doSomething(RequestA request) {	
+	}
+	public void doSomething(RequestB request) {
+	}
+}
+class RequestA {
+	public int i;
+}
+class RequestB {
+	public String s;
+}

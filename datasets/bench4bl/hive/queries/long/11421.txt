@@ -1,0 +1,71 @@
+Currently schema evolution is not supported for ACID tables.
+Whatever limitations ORC based tables have in general wrt to schema evolution applies to ACID tables.  Generally, it's possible to have ORC based table in Hive where different partitions have different schemas as long as all data files in each partition have the same schema (and matches metastore partition information)
+With ACID tables the above "as long as ..." part can easily be violated.
+
+CREATE TABLE acid_partitioned2(a INT, b STRING) PARTITIONED BY(bkt INT) CLUSTERED BY(a) INTO 2 BUCKETS STORED AS ORC;
+
+insert into table acid_partitioned2 partition(bkt=1) values(1, 'part one'),(2, 'part one'), (3, 'part two'),(4, 'part three');
+
+alter table acid_partitioned2 add columns(c int, d string);
+
+insert into table acid_partitioned2 partition(bkt=2) values(1, 'part one', 10, 'str10'),(2, 'part one', 20, 'str20'), (3, 'part two', 30, 'str30'),(4, 'part three', 40, 'str40');
+
+insert into table acid_partitioned2 partition(bkt=1) values(5, 'part one', 1, 'blah'),(6, 'part one', 2, 'doh!');
+
+
+
+Now partition bkt=1 will have delta files with different schemas which have to be merged on read, which leads to 
+
+Error: java.io.IOException: java.lang.ArrayIndexOutOfBoundsException: 9
+
+        at org.apache.hadoop.hive.io.HiveIOExceptionHandlerChain.handleRecordReaderCreationException(HiveIOExceptionHandlerChain.java:97)
+
+        at org.apache.hadoop.hive.io.HiveIOExceptionHandlerUtil.handleRecordReaderCreationException(HiveIOExceptionHandlerUtil.java:57)
+
+        at org.apache.hadoop.hive.ql.io.HiveInputFormat.getRecordReader(HiveInputFormat.java:247)
+
+        at org.apache.hadoop.mapred.MapTask$TrackedRecordReader.<init>(MapTask.java:169)
+
+        at org.apache.hadoop.mapred.MapTask.runOldMapper(MapTask.java:429)
+
+        at org.apache.hadoop.mapred.MapTask.run(MapTask.java:343)
+
+        at org.apache.hadoop.mapred.YarnChild$2.run(YarnChild.java:168)
+
+        at java.security.AccessController.doPrivileged(Native Method)
+
+        at javax.security.auth.Subject.doAs(Subject.java:415)
+
+        at org.apache.hadoop.security.UserGroupInformation.doAs(UserGroupInformation.java:1614)
+
+        at org.apache.hadoop.mapred.YarnChild.main(YarnChild.java:163)
+
+Caused by: java.lang.ArrayIndexOutOfBoundsException: 9
+
+        at org.apache.hadoop.hive.ql.io.orc.RecordReaderImpl$StructTreeReader.<init>(RecordReaderImpl.java:1864)
+
+        at org.apache.hadoop.hive.ql.io.orc.RecordReaderImpl.createTreeReader(RecordReaderImpl.java:2263)
+
+        at org.apache.hadoop.hive.ql.io.orc.RecordReaderImpl.access$000(RecordReaderImpl.java:77)
+
+        at org.apache.hadoop.hive.ql.io.orc.RecordReaderImpl$StructTreeReader.<init>(RecordReaderImpl.java:1865)
+
+        at org.apache.hadoop.hive.ql.io.orc.RecordReaderImpl.createTreeReader(RecordReaderImpl.java:2263)
+
+        at org.apache.hadoop.hive.ql.io.orc.RecordReaderImpl.<init>(RecordReaderImpl.java:283)
+
+        at org.apache.hadoop.hive.ql.io.orc.ReaderImpl.rowsOptions(ReaderImpl.java:492)
+
+        at org.apache.hadoop.hive.ql.io.orc.OrcRawRecordMerger$ReaderPair.<init>(OrcRawRecordMerger.java:181)
+
+        at org.apache.hadoop.hive.ql.io.orc.OrcRawRecordMerger.<init>(OrcRawRecordMerger.java:460)
+
+        at org.apache.hadoop.hive.ql.io.orc.OrcInputFormat.getReader(OrcInputFormat.java:1109)
+
+        at org.apache.hadoop.hive.ql.io.orc.OrcInputFormat.getRecordReader(OrcInputFormat.java:1007)
+
+        at org.apache.hadoop.hive.ql.io.HiveInputFormat.getRecordReader(HiveInputFormat.java:245)
+
+        ... 8 more
+
+

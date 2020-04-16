@@ -1,0 +1,45 @@
+Delete is incomplete in hbase.  Whats there is inconsistent.  Deleted records currently persist and are never cleaned up.  This issue is about making delete behavior coherent across gets, scans and compaction.
+Below is from a bit of back and forth between Jim and myself where Jim takes a stab at outlining a model for delete taking inspiration from how Digital's versioned file system used work:
+
+Let's say you have 5 versions with timestamps T1, T2, ..., T5 where
+timestamps are increasing from T1 to T5 (so T5 is the newest).
+
+Before any deletes occur, if you don't specify a timestamp and request N
+versions, you should get T5 first, then T4, T3, ... until you have
+reached N or you run out of versions.
+
+Now add deletes:
+
+(In the following, timestamp refers to the timestamp associated with
+the delete operation)
+
+1. If no timestamp is specified we are deleting the latest version.
+   If a get or scanner specifies that it wants N versions, then it 
+   should get T4, T3, ..., until we have N versions or we run out of
+   older versions. After compaction, the deletion record and T5 should
+   be elided from the HStore.
+
+2. If a timestamp is specified and it exactly matches a version (say
+   T4) and a get or scanner requests N versions, then the client
+   receives T5, T3, T2, ... until we satisfy N or run out of versions.
+   After a compaction, the deletion record and T4 should be elided
+   from the HStore.
+
+3. If a timestamp is specified and does not exactly match a version,
+   it means delete every version older than this timestamp. If the
+   timestamp is greater than T5 all versions are considered to be
+   deleted and a get or a scanner will return no results even if 
+   the get or scanner specify an older time. This is consistent
+   with the concept of delete all versions older than timestamp.
+   After a compaction, the delete record and all the values should
+   be elided.
+
+   If the specified timestamp falls between two older versions (say
+   T4 and T3) then T3, T2 and T1 are considered to be deleted (again
+   this is all versions older than timestamp). A get or scanner
+   that specifies no time but requests N versions can only get T5
+   and T4. A get or scanner that requests a time of T3 or earlier
+   will get no results because those versions are deleted. After
+   a compaction, the deletion record and the deleted versions
+   are elided from the HStore.
+

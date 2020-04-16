@@ -1,0 +1,33 @@
+Currently PigStorage uses org.apache.hadoop.mapreduce.lib.input.LineRecordReader to read lines, LineRecordReader thinks "\r", "\n", "\r\n" all are end of line,  if unluckily some record contains these special strings,  PigStorage will read less fields,  this produces IndexOutOfBoundsException when "-schema" option is given under PIG <= 0.12.0:
+
+https://svn.apache.org/repos/asf/pig/tags/release-0.12.0/src/org/apache/pig/builtin/PigStorage.java
+
+
+private Tuple applySchema(Tuple tup) throws IOException {
+  ....
+for (int i = 0; i < Math.min(fieldSchemas.length, tup.size()); i++) {
+                if (mRequiredColumns == null || (mRequiredColumns.length>i && mRequiredColumns[i])) {
+                    Object val = null;
+                    if(tup.get(tupleIdx) != null){     <--- !!! IndexOutOfBoundsException
+
+In PIG-trunk,  null values are silently filled:
+
+
+https://svn.apache.org/repos/asf/pig/trunk/src/org/apache/pig/builtin/PigStorage.java
+
+for (int i = 0; i < fieldSchemas.length; i++) {
+                if (mRequiredColumns == null || (mRequiredColumns.length>i && mRequiredColumns[i])) {
+                    if (tupleIdx >= tup.size()) 
+Unknown macro: {                        tup.append(null);                     <--- !!! silently fill null                    } 
+
+                    Object val = null;
+                    if(tup.get(tupleIdx) != null){
+
+The behaviour of PIG-trunk is still error-prone:
+
+	null is silently filled for current record,  the user's PIG script may not realize that field can be null thus get NullPointerException
+	the next record is totally garbled because it starts from the middle of previous record,  the data types of each fields in this record are totally wrong, so this probably breaks user's PIG script.
+
+
+
+Before PigStorage supports customized record separator,  this may be a not-so-bad workaround for this nasty issue:  usually there is very small chance the first record containing record separator,  PigStorage can save maxFieldsNumber in PigStorage.getNext(),  if PigStorage.getNext() parses a record and find it has less fields, it just throws current record,  the next half of current record will be thrown too because it must also have less fields.  By this way,  PigStorage can throw bad records at best effort.

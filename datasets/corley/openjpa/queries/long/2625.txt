@@ -1,0 +1,67 @@
+Take the following SQL definition from Informix:
+
+CREATE TABLE MYENTITY (ID INTEGER NOT NULL PRIMARY KEY, COMMENTS VARCHAR(255));                         
+
+CREATE UNIQUE INDEX MYINDEX ON MYENTITY (COMMENTS);                           
+
+As you can see a unique index is created on the 'comments' column.  Take the corresponding entity:
+
+@Entity
+public class MyEntity implements Serializable {
+
+    @Id
+    private int id;
+    private String comments; 
+
+Now, assume we have the following data in the Informix database table 'MYENTITY':
+
+ID                 COMMENTS
+--------------|-----------------
+98                 test
+2                   abc
+
+
+With this, take this simple JPA operation:
+
+// begin Tx
+MyEntity me = em.find(MyEntity.class, 2);
+me.setComments("test");
+// commit Tx
+
+
+Given the 'unique index', and the fact that an index with 'test' already exists, this will result in the following root exception:
+
+Caused by: org.apache.openjpa.lib.jdbc.ReportingSQLException: Could not update a row in the table. 
+{prepstmnt 25971327 UPDATE MyEntity SET comments = ? WHERE id = ? [params=(String) test, (int) 2]}
+ [code=-346, state=IX000]
+
+The message and codes are exactly from Informix.  This exception is as expected and allows the user to get at the message and failure codes (i.e. -346/IX000).  However, if we look at the entire exception stack we see this:
+
+org.apache.openjpa.persistence.RollbackException: The transaction has
+been rolled back.  See the nested exceptions for details on the errors
+that occurred.
+......
+Caused by: <openjpa-2.2.3-SNAPSHOT-r422266:1713742M fatal general
+error> org.apache.openjpa.persistence.PersistenceException: The
+transaction has been rolled back.  See the nested exceptions for
+details on the errors that occurred.
+.....
+Caused by: <openjpa-2.2.3-SNAPSHOT-r422266:1713742M fatal general
+error> org.apache.openjpa.persistence.PersistenceException: A query
+statement timeout has occurred.
+......
+Caused by: org.apache.openjpa.lib.jdbc.ReportingSQLException: Could not
+update a row in the table. 
+{prepstmnt 19306178 UPDATE MyEntity SET
+comments = ? WHERE id = ? [params=(String) test, (int) 2]}
+ [code=-346,
+state=IX000]
+
+
+Note that the second to last exception is "A query statement timeout has occurred."  This is misleading, the query never timed out.  Note that this misleading exception only occurs in the UPDATE case, not for an INSERT which violations a unique index. 
+
+This JIRA will be used to remove the misleading query timeout exception from the above exception stack.  
+
+Thanks,
+
+Heath Thomann

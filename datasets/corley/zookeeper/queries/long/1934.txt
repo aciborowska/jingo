@@ -1,0 +1,15 @@
+In our regression testing we encountered an error wherein we were caching a value we read from zookeeper and then experienced session loss. We subsequently got reconnected to a different zookeeper server. When we tried to read the same path from this new zookeeper server we are getting a stale value.
+
+Specifically, we are reading "/binchanges" and originally got back a value of "3" from the first server. After we lost connection and reconnected before the session timeout, we then read "/binchanges" from the new server and got back a value of "2". In our code path we never set this value from 3 to 2. We throw an assertion if the value ever goes backwards. Which is how we caught this error. 
+
+It's my understanding of the single system image guarantee that this should never be allowed. I realize that the single system image guarantee is still quorum based and it's certainly possible that a minority of the ensemble may have stale data. However, I also believe that each client has to send the highest zxid it's seen as part of its connection request to the server. And if the server it's connecting to has a smaller zxid than the value the client sends, then the connection request should be refused.
+
+Assuming I have all of that correct, then I'm at a loss for how this happened. 
+
+The failure happened around Jun  4 08:13:44. Just before that, at June  4 08:13:30 there was a round of leader election. During that round of leader election we voted server with id=4 and zxid=0x300001c4c. This then led to a new zxid=0x400000001. The new leader sends a diff to all the servers including the one we will soon read the stale data from (id=2). Server with ID=2's log files also reflect that as of 08:13:43 it was up to date and current with an UPTODATE message.
+
+I'm going to attach log files from all 5 ensemble nodes. I also used zktreeutil to dump the database out for the 5 ensemble nodes. I diff'd those, and compared them all for correctness. 1 of the nodes (id=2) has a massively divergent zktreeutil dump than the other 4 nodes even though it received the diff from the new leader.
+
+In the attachments there are 5 nodes. I will number each log file by it's zookeeper id, e.g. node4.log.
+
+

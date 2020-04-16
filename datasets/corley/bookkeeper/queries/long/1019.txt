@@ -1,0 +1,35 @@
+Currently we check in  asyncReadEntries that the range of entries is within the range 0....LastAddConfirmed.
+
+This is because the LAC guarantees that the client can read only entries that have been acked from the writer.
+The LAC protocol is very useful when there is not direct communication between "writers" and "readers".
+
+I have an use case in which the "writer" blocks until the write is acked (like addEntry) and then it takes the returned id (ledgerId + entryid) and passes it to a "reader" which in turn tries to read the entry.
+
+This communication is done out-of-band in respect to BookKeeper and we can assume that the entries has been stored in a durable way (the write as been acked by a quorum of bookies).
+As the 'reader' as received a confirmation the the writer as successifully written the entry it can read it without waiting for the piggyback of the LAC of the standard bookkeeper protocol.
+This is the normal way of working with transactional databases or with filesystems.
+
+This is kind of "causal consistency".
+
+The idea is to add a configuration option to relax the check in asyncreadEntries
+
+this is 4.4 version:
+
+        if (lastEntry > lastAddConfirmed) {
+            LOG.error("ReadException on ledgerId:{} firstEntry:{} lastEntry:{}",
+                    new Object[] { ledgerId, firstEntry, lastEntry });
+            cb.readComplete(BKException.Code.ReadException, this, null, ctx);
+            return;
+        }
+
+
+
+this is my proposal:
+
+        if (lastEntry > lastAddConfirmed && !allowReadingAfterLastAddConfirmed) {
+            LOG.error("ReadException on ledgerId:{} firstEntry:{} lastEntry:{}",
+                    new Object[] { ledgerId, firstEntry, lastEntry });
+            cb.readComplete(BKException.Code.ReadException, this, null, ctx);
+            return;
+        }
+

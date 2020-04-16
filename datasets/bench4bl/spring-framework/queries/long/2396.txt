@@ -1,0 +1,45 @@
+In onSetup() the condition used to detect that a transaction should not be started is:
+if (this.transactionManager == null) {
+else if (this.transactionDefinition == null) {
+But in onTearDown() there is not such guard. onTearDown always invokes endTransaction(). endTransaction will check if there is a null transactionStatus, but this value can be set if a transaction was started by the test itself via startNewTransaction.
+This causes problems with test of the form:
+public class TransactionsTest extends AbstractAspectjJpaTests { 
+    ...
+    @Override
+    public void runBare() throws Throwable 
+{
+        preventTransaction();
+        super.runBare();
+    }
+
+    public void testRollback() {
+        TransactionEntityForTest entity;
+        {
+            startNewTransaction();
+            entity = new TransactionEntityForTest();
+            sharedEntityManager.persist(entity);
+            endTransaction();
+        }
+
+        try 
+{
+            startNewTransaction();
+            sharedEntityManager.persist(entity);
+            fail("expected exception");
+            endTransaction();
+        }
+ catch (Exception e) 
+{
+            System.err.println("***" + e);
+            transactionManager.rollback(transactionStatus);
+        }
+    }
+} 
+At the end of the test methods, spring will still try to commit the transaction because of what I described above. This results in an exception:
+		if (defStatus.isCompleted()) 
+{
+			throw new IllegalTransactionStateException(
+					"Transaction is already completed - do not call commit or rollback more than once per transaction");
+		}
+
+If the onTearDown() used the same guard as the onSetupUp, then AbstractTransactionalSpringContextTests.commit() would never have been called.

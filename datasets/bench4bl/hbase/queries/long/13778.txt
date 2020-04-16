@@ -1,0 +1,124 @@
+I was testing HBASE-13158 and noticed this. In BoundedByteBufferPool, we are having an intial value for 'runningAverage' which defaults to 16K. So the pool will make initial buffers of this size. This buffer may grow while used in ByteBufferOuputStream as the data has to be written is getting more. On return back the BB to the pool, we try to adjust this 'runningAverage' size by considering the capacity of the returned BB. We lack proper synchronization here and this makes this runningAverage to grow till its max (1 MB)
+I am testing with PE tool with randomRead and having 20 client threads. So each get op returns one cell with almost like 1KB data. The default size of the BB created by Pool is 16K and ideally there is no room for getting this resized.
+
+
+
+2015-05-26 20:12:21,965 INFO  [PriorityRpcServer.handler=5,queue=1,port=16020] io.BoundedByteBufferPool: Allocated new BB runningAverage=16384, totalCapacity=0, count=0, alloctions=2
+
+2015-05-26 20:12:21,966 INFO  [PriorityRpcServer.handler=2,queue=0,port=16020] io.BoundedByteBufferPool: Allocated new BB runningAverage=16384, totalCapacity=0, count=0, alloctions=4
+
+2015-05-26 20:12:21,966 INFO  [PriorityRpcServer.handler=8,queue=0,port=16020] io.BoundedByteBufferPool: Allocated new BB runningAverage=16384, totalCapacity=0, count=0, alloctions=6
+
+2015-05-26 20:12:21,966 INFO  [PriorityRpcServer.handler=12,queue=0,port=16020] io.BoundedByteBufferPool: Allocated new BB runningAverage=16384, totalCapacity=0, count=0, alloctions=9
+
+2015-05-26 20:12:21,966 INFO  [PriorityRpcServer.handler=13,queue=1,port=16020] io.BoundedByteBufferPool: Allocated new BB runningAverage=16384, totalCapacity=0, count=0, alloctions=10
+
+2015-05-26 20:12:21,966 INFO  [PriorityRpcServer.handler=18,queue=0,port=16020] io.BoundedByteBufferPool: Allocated new BB runningAverage=16384, totalCapacity=0, count=0, alloctions=12
+
+2015-05-26 20:12:21,966 INFO  [PriorityRpcServer.handler=16,queue=0,port=16020] io.BoundedByteBufferPool: Allocated new BB runningAverage=16384, totalCapacity=0, count=0, alloctions=14
+
+2015-05-26 20:12:21,966 INFO  [PriorityRpcServer.handler=7,queue=1,port=16020] io.BoundedByteBufferPool: Allocated new BB runningAverage=16384, totalCapacity=0, count=0, alloctions=5
+
+2015-05-26 20:12:21,966 INFO  [PriorityRpcServer.handler=19,queue=1,port=16020] io.BoundedByteBufferPool: Allocated new BB runningAverage=16384, totalCapacity=0, count=0, alloctions=15
+
+2015-05-26 20:12:21,966 INFO  [PriorityRpcServer.handler=1,queue=1,port=16020] io.BoundedByteBufferPool: Allocated new BB runningAverage=16384, totalCapacity=0, count=0, alloctions=4
+
+2015-05-26 20:12:21,965 INFO  [PriorityRpcServer.handler=11,queue=1,port=16020] io.BoundedByteBufferPool: Allocated new BB runningAverage=16384, totalCapacity=0, count=0, alloctions=2
+
+2015-05-26 20:12:21,966 INFO  [PriorityRpcServer.handler=3,queue=1,port=16020] io.BoundedByteBufferPool: Allocated new BB runningAverage=16384, totalCapacity=0, count=0, alloctions=13
+
+2015-05-26 20:12:21,966 INFO  [PriorityRpcServer.handler=9,queue=1,port=16020] io.BoundedByteBufferPool: Allocated new BB runningAverage=16384, totalCapacity=0, count=0, alloctions=11
+
+2015-05-26 20:12:21,966 INFO  [PriorityRpcServer.handler=6,queue=0,port=16020] io.BoundedByteBufferPool: Allocated new BB runningAverage=16384, totalCapacity=0, count=0, alloctions=8
+
+2015-05-26 20:12:21,966 INFO  [PriorityRpcServer.handler=15,queue=1,port=16020] io.BoundedByteBufferPool: Allocated new BB runningAverage=16384, totalCapacity=0, count=0, alloctions=7
+
+2015-05-26 20:12:21,966 INFO  [PriorityRpcServer.handler=4,queue=0,port=16020] io.BoundedByteBufferPool: Allocated new BB runningAverage=16384, totalCapacity=0, count=0, alloctions=16
+
+2015-05-26 20:12:21,967 INFO  [PriorityRpcServer.handler=10,queue=0,port=16020] io.BoundedByteBufferPool: Allocated new BB runningAverage=16384, totalCapacity=0, count=0, alloctions=17
+
+2015-05-26 20:12:21,967 INFO  [PriorityRpcServer.handler=14,queue=0,port=16020] io.BoundedByteBufferPool: Allocated new BB runningAverage=16384, totalCapacity=0, count=0, alloctions=19
+
+2015-05-26 20:12:21,967 INFO  [PriorityRpcServer.handler=17,queue=1,port=16020] io.BoundedByteBufferPool: Allocated new BB runningAverage=16384, totalCapacity=0, count=0, alloctions=18
+
+2015-05-26 20:12:22,146 INFO  [PriorityRpcServer.handler=18,queue=0,port=16020] io.BoundedByteBufferPool: Allocated new BB runningAverage=16384, totalCapacity=-16384, count=2, alloctions=20
+
+2015-05-26 20:12:22,707 INFO  [PriorityRpcServer.handler=9,queue=1,port=16020] io.BoundedByteBufferPool: Allocated new BB runningAverage=212992, totalCapacity=-32768, count=4, alloctions=21
+
+2015-05-26 20:12:23,208 INFO  [PriorityRpcServer.handler=3,queue=1,port=16020] io.BoundedByteBufferPool: Allocated new BB runningAverage=212992, totalCapacity=-81920, count=1, alloctions=22
+
+2015-05-26 20:12:29,567 INFO  [PriorityRpcServer.handler=0,queue=0,port=16020] io.BoundedByteBufferPool: Allocated new BB runningAverage=234837, totalCapacity=-49152, count=6, alloctions=23
+
+2015-05-26 20:12:29,974 INFO  [PriorityRpcServer.handler=0,queue=0,port=16020] io.BoundedByteBufferPool: Allocated new BB runningAverage=311296, totalCapacity=442368, count=6, alloctions=24
+
+2015-05-26 20:12:31,356 INFO  [PriorityRpcServer.handler=7,queue=1,port=16020] io.BoundedByteBufferPool: Allocated new BB runningAverage=606208, totalCapacity=1054037, count=9, alloctions=25
+
+2015-05-26 20:12:31,894 INFO  [PriorityRpcServer.handler=3,queue=1,port=16020] io.BoundedByteBufferPool: Allocated new BB runningAverage=901120, totalCapacity=742741, count=1, alloctions=26
+
+2015-05-26 20:12:32,961 INFO  [PriorityRpcServer.handler=11,queue=1,port=16020] io.BoundedByteBufferPool: Allocated new BB runningAverage=920234, totalCapacity=2479445, count=12, alloctions=27
+
+2015-05-26 20:12:36,965 INFO  [PriorityRpcServer.handler=2,queue=0,port=16020] io.BoundedByteBufferPool: Allocated new BB runningAverage=1037653, totalCapacity=3836586, count=18, alloctions=28
+
+2015-05-26 20:12:42,212 INFO  [PriorityRpcServer.handler=6,queue=0,port=16020] io.BoundedByteBufferPool: Allocated new BB runningAverage=1048120, totalCapacity=11203921, count=12, alloctions=29
+
+2015-05-26 20:12:45,387 INFO  [PriorityRpcServer.handler=13,queue=1,port=16020] io.BoundedByteBufferPool: Allocated new BB runningAverage=1048302, totalCapacity=10174915, count=1, alloctions=30
+
+2015-05-26 20:12:46,171 INFO  [PriorityRpcServer.handler=1,queue=1,port=16020] io.BoundedByteBufferPool: Allocated new BB runningAverage=1048302, totalCapacity=14177342, count=7, alloctions=31
+
+2015-05-26 20:12:52,401 INFO  [PriorityRpcServer.handler=13,queue=1,port=16020] io.BoundedByteBufferPool: Allocated new BB runningAverage=1048495, totalCapacity=19454171, count=8, alloctions=32
+
+2015-05-26 20:12:52,541 INFO  [PriorityRpcServer.handler=2,queue=0,port=16020] io.BoundedByteBufferPool: Allocated new BB runningAverage=1048495, totalCapacity=16778574, count=1, alloctions=33
+
+2015-05-26 20:12:56,631 INFO  [PriorityRpcServer.handler=5,queue=1,port=16020] io.BoundedByteBufferPool: Allocated new BB runningAverage=1048495, totalCapacity=28925990, count=2, alloctions=34
+
+...
+
+..
+
+
+
+getBuffer()  on 1st line removes the BB from the Queue. putBuffer() put it back 1st and then in next line checks the size of the buffer. During this time period many other threads might have taken buffers. 
+putBuffer(ByteBuffer bb)
+
+
+
+	int size = this.buffers.size(); // This size may be inexact.
+
+	this.totalReservoirCapacity += bb.capacity();
+
+	int average = 0;
+
+	if (size != 0) {
+
+	  average = this.totalReservoirCapacity / size;
+
+	}
+
+	if (average > this.runningAverage && average < this.maxByteBufferSizeToCache) {
+
+	  this.runningAverage = average;
+
+	}
+
+
+
+getBuffer() 
+
+
+
+	ByteBuffer bb = this.buffers.poll();
+
+    if (bb != null) {
+
+      // Clear sets limit == capacity.  Postion == 0.
+
+      bb.clear();
+
+      this.totalReservoirCapacity -= bb.capacity();
+
+    } 
+
+
+
+totalReservoirCapacity might not have reduced while do above division for calc avg.  From above log lines it is clear.
+As a result we will create much bigger sized buffers and we will not allow GC it as we keep them in pool.

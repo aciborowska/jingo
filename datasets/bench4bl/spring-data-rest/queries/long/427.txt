@@ -1,0 +1,280 @@
+My setup is completely based on Java Configuration files. I configured my my application as follows:
+
+
+
+
+
+
+@Override
+
+
+
+
+	protected Class<?>[] getRootConfigClasses() {
+
+
+
+
+		return new Class<?>[] { CustomMongoDBRepositoryConfig.class, CustomJPARepositoryConfig.class, CustomSecurityConfiguration.class };
+
+
+
+
+	}
+
+
+
+
+..
+
+
+
+
+ 
+
+
+
+
+@Override
+
+
+
+
+	public void onStartup(ServletContext servletContext) throws ServletException {		
+
+
+
+
+        AnnotationConfigWebApplicationContext webCtx = new AnnotationConfigWebApplicationContext();
+
+
+
+
+        webCtx.register(CustomRepositoryRestMvcConfiguration.class);
+
+
+
+
+     
+
+
+
+
+        DispatcherServlet dispatcherServlet = new DispatcherServlet(webCtx);
+
+
+
+
+        ServletRegistration.Dynamic appServlet = servletContext.addServlet("exporter", dispatcherServlet);
+
+
+
+
+        appServlet.setAsyncSupported(true);
+
+
+
+
+        appServlet.setLoadOnStartup(1);
+
+
+
+
+        appServlet.addMapping("/*");
+
+
+
+
+        
+
+
+
+
+        FilterRegistration.Dynamic corsFilter = servletContext.addFilter("corsFilter", CORSFilter.class);
+
+
+
+
+        corsFilter.addMappingForUrlPatterns(null, false, "/*");
+
+
+
+
+        
+
+
+
+
+        FilterRegistration.Dynamic filter = servletContext.addFilter("openSessionInViewFilter", OpenEntityManagerInViewFilter.class);
+
+
+
+
+        filter.setInitParameter("singleSession", "true");
+
+
+
+
+        filter.addMappingForServletNames(null, true, "exporter");
+
+
+
+
+        
+
+
+
+
+        FilterRegistration.Dynamic securityFilter = servletContext.addFilter("springSecurityFilterChain", 
+
+
+
+
+        		new DelegatingFilterProxy("springSecurityFilterChain"));
+
+
+
+
+        securityFilter.addMappingForUrlPatterns(null, false, "/*");
+
+
+
+
+        
+
+
+
+
+        
+
+
+
+
+	    super.onStartup(servletContext);
+
+
+
+
+	}
+
+
+
+
+
+
+The interesting thing is, everything is working fine. MVC URLs are mapped, controllers are working, Spring Security is working, SD REST URLs are mapped and working, but one thing is not working:
+POST/PUT of entities with rels. Having the following payload posted to /roles 
+
+
+
+
+
+
+{
+
+
+
+
+  "name": "Developer",
+
+
+
+
+  "description": "Standard role for a agent developer in the system",
+
+
+
+
+  "rights": [
+
+
+
+
+    "http://localhost:8080/web/rights/186",
+
+
+
+
+    "http://localhost:8080/web/rights/189",
+
+
+
+
+    "http://localhost:8080/web/rights/185",
+
+
+
+
+    "http://localhost:8080/web/rights/46"
+
+
+
+
+  ]
+
+
+
+
+}
+
+
+
+
+
+
+leads to the following exception:
+
+
+
+
+
+
+LOGBACK:16:54:09.765 [tomcat-http--2] ERROR o.s.d.r.w.RepositoryRestExceptionHandler - Could not read JSON: (was java.lang.NullPointerException) (through reference chain: de.cloudscale.model.user.Role["rights"]); nested exception is com.fasterxml.jackson.databind.JsonMappingException: (was java.lang.NullPointerException) (through reference chain: de.cloudscale.model.user.Role["rights"])
+
+
+
+
+org.springframework.http.converter.HttpMessageNotReadableException: Could not read JSON: (was java.lang.NullPointerException) (through reference chain: de.cloudscale.model.user.Role["rights"]); nested exception is com.fasterxml.jackson.databind.JsonMappingException: (was java.lang.NullPointerException) (through reference chain: de.cloudscale.model.user.Role["rights"])
+
+
+
+
+	at org.springframework.http.converter.json.AbstractJackson2HttpMessageConverter.readJavaType(AbstractJackson2HttpMessageConverter.java:208) ~[AbstractJackson2HttpMessageConverter.class:4.1.1.RELEASE]
+
+
+
+
+	at org.springframework.http.converter.json.AbstractJackson2HttpMessageConverter.readInternal(AbstractJackson2HttpMessageConverter.java:192) ~[AbstractJackson2HttpMessageConverter.class:4.1.1.RELEASE]
+
+
+
+
+	at org.springframework.http.converter.AbstractHttpMessageConverter.read(AbstractHttpMessageConverter.java:159) ~[AbstractHttpMessageConverter.class:4.1.1.RELEASE]
+
+
+
+
+	at org.springframework.data.rest.webmvc.config.PersistentEntityResourceHandlerMethodArgumentResolver.read(PersistentEntityResourceHandlerMethodArgumentResolver.java:185) ~[PersistentEntityResourceHandlerMethodArgumentResolver.class:na]
+
+
+
+
+	at org.springframework.data.rest.webmvc.config.PersistentEntityResourceHandlerMethodArgumentResolver.read(PersistentEntityResourceHandlerMethodArgumentResolver.java:168) ~[PersistentEntityResourceHandlerMethodArgumentResolver.class:na]
+
+
+
+
+	at org.springframework.data.rest.webmvc.config.PersistentEntityResourceHandlerMethodArgumentResolver.resolveArgument(PersistentEntityResourceHandlerMethodArgumentResolver.java:123) ~[PersistentEntityResourceHandlerMethodArgumentResolver.class:na]
+
+
+
+
+	at org.springframework.web.method.support.HandlerMethodArgumentResolverComposite.resolveArgument(HandlerMethodArgumentResolverComposite.java:77) ~[HandlerMethodArgumentResolverComposite.class:4.1.1.RELEASE]
+
+
+
+
+
+
+Which in turn is a result of fact that in DomainClassConverter the variable repositories is empty during the POST/PUT call. Following that the RepositoryInformations are empty and the NPE is thrown. 
+I guess this is happening due to some context splitup during startup time. The interesting thing is, that POST/PUT a plain object without any rels works properly, I am not able to see any stuff in the debug logs showing me the second context

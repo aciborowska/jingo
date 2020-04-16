@@ -1,0 +1,46 @@
+Problem
+CPU usage of a region server in our CDH 5.4.5 cluster, at some point, starts to gradually get higher up to nearly 90-100% when using G1GC.  We've also run into this problem on CDH 5.7.3 and CDH 5.8.2.
+In our production cluster, it normally takes a few weeks for this to happen after restarting a RS.  We reproduced this on our test cluster and attached the results.  Please note that, to make it easy to reproduce, we did some "anti-tuning" on a table when running tests.
+In metrics.png, soon after we started running some workloads against a test cluster (CDH 5.8.2) at about 7 p.m. CPU usage of the two RSs started to rise.  Flame Graphs (slave1.svg to slave4.svg) are generated from jstack dumps of each RS process around 10:30 a.m. the next day.
+After investigating heapdumps from another occurrence on a test cluster running CDH 5.7.3, we found that the ThreadLocalMap contain a lot of contiguous entries of HFileBlock$PrefetchedHeader probably due to primary clustering.  This caused more loops in ThreadLocalMap#expungeStaleEntries(), consuming a certain amount of CPU time.  What is worse is that the method is called from RPC metrics code, which means even a small amount of per-RPC time soon adds up to a huge amount of CPU time.
+This is very similar to the issue in HBASE-16616, but we have many HFileBlock$PrefetchedHeader not only Counter$IndexHolder instances.  Here are some OQL counts from Eclipse Memory Analyzer (MAT).  This shows a number of ThreadLocal instances in the ThreadLocalMap of a single handler thread.
+
+
+
+SELECT *
+
+FROM OBJECTS (SELECT AS RETAINED SET OBJECTS value
+
+			  FROM OBJECTS 0x4ee380430) obj
+
+WHERE obj.@clazz.@name = "org.apache.hadoop.hbase.io.hfile.HFileBlock$PrefetchedHeader"
+
+
+
+#=> 10980 instances
+
+
+
+
+
+
+SELECT *
+
+FROM OBJECTS (SELECT AS RETAINED SET OBJECTS value
+
+			  FROM OBJECTS 0x4ee380430) obj
+
+WHERE obj.@clazz.@name = "org.apache.hadoop.hbase.util.Counter$IndexHolder"
+
+
+
+#=> 2052 instances
+
+
+
+Although as described in HBASE-16616 this somewhat seems to be an issue in G1GC side regarding weakly-reachable objects, we should keep ThreadLocal usage minimal and avoid creating an indefinite number (in this case, a number of HFiles) of ThreadLocal instances.
+HBASE-16146 removes ThreadLocals from the RPC metrics code.  That may solve the issue (I just saw the patch, never tested it at all), but the HFileBlock$PrefetchedHeader are still there in the ThreadLocalMap, which may cause issues in the future again.
+Our Solution
+We simply removed the whole HFileBlock$PrefetchedHeader caching and fortunately we didn't notice any performance degradation for our production workloads.
+Because the PrefetchedHeader caching uses ThreadLocal and because RPCs are handled randomly in any of the handlers, small Get or small Scan RPCs do not benefit from the caching (See HBASE-10676 and HBASE-11402 for the details).  Probably, we need to see how well reads are saved by the caching for large Scan or Get RPCs and especially for compactions if we really remove the caching. It's probably better if we can remove ThreadLocals without breaking the current caching behavior.
+FWIW, I'm attaching the patch we applied. It's for CDH 5.4.5.

@@ -1,0 +1,60 @@
+We have got 2 items needs to be processed by the job. Their keys are 3000000001659 and 3000000001661.
+Page size was set to 20 and commit-interval was set to 1 in the job configuration. At the first run, job failed but processed one of the items and second item rolledback due to RuntimeException. Again when we restarted the job, job reported as completed. We later realized the second item was not picked up by the job when we restarted it. We could see it in the batch tables.
+Below are the entries from the batch_step_execution table for the both the failed and successful executions
+STEP_EXECUTION_ID STATUS COMMIT_COUNT READ_COUNT WRITE_COUNT ROLLBACK_COUNT
+752510 FAILED 1 2 1 1
+752511 COMPLETED 1 0 0 0
+Below are the entries from the batch_step_execution_context table for the both the failed and successful executions
+STEP_EXECUTION_ID short_context
+752510 {"map":{"entry":[
+{"string":"JdbcPagingItemReader.read.count","int": 1}
+,
+{"string":"JdbcPagingItemReader.start.after","l ong":3000000001661}
+]}}
+752511 {"map":{"entry":[
+{"string":"JdbcPagingItemReader.read.count","int": 2}
+,
+{"string":"JdbcPagingItemReader.start.after","l ong":3000000001661}
+]}}
+I suspect the value for JdbcPagingItemReader.start.after should be 3000000001659 and not 3000000001661. But I am not sure.
+But it works well if the size of commit-interval and page-size matches. I don't remember reading in doc that they should match.
+Following is the Job configuration but not a complete one
+<batch:job id="corporateActionEODJob" parent="simpleJob">
+<batch:step id="processCorporateActions" parent="simpleStep">
+<batch:tasklet>
+<batch:chunk reader ="corporateActionEODItemReader"
+writer ="corporateActionEODItemWriter"
+commit-interval="1" />
+</batch:tasklet>
+</batch:step>
+</batch:job>
+<bean id="corporateActionEODItemReader" class="org.springframework.batch.item.database.Jdb cPagingItemReader">
+<property name="saveState" value="true"/>
+<property name="dataSource" ref="dataSource"/>
+<property name="pageSize" value="20"/>
+<property name="rowMapper">
+<bean class="org.springframework.jdbc.core.simple.Parame terizedSingleColumnRowMapper" factory-method="newInstance">
+<constructor-arg>
+<null/>
+</constructor-arg>
+</bean>
+</property>
+<property name="queryProvider">
+<bean class="org.springframework.batch.item.database.sup port.SqlPagingQueryProviderFactoryBean">
+<property name="fromClause" value="ca_corp_action ca"/>
+<property name="selectClause" value="ca.corp_action_id"/>
+<property name="sortKey" value="ca.corp_action_id"/>
+<property name="whereClause" value="ca.action_status = 'SCHEDULED' and ca.effective_date = :businessDay"/>
+</bean>
+</property>
+<property name="parameterValues">
+<map>
+<entry key="businessDay" value="2012-04-09"/>
+</map>
+</property>
+</bean>
+<bean id="corporateActionEODItemWriter" class="com.om.dh.batch.item.adapter.DelegatingItem WriterAdapterFactoryBean">
+<property name="targetObject" ref ="com.dh.ca.services.BatchAdapterService"/>
+<property name="targetMethod" value="processAction" />
+</bean>
+We use SB version 2.1.6.

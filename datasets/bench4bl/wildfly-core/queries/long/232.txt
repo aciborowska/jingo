@@ -1,0 +1,112 @@
+I happened to see this in a testsuite log file:
+
+
+
+
+
+
+2014-11-07 02:59:41,808 ERROR [org.jboss.as.server.deployment.scanner] (DeploymentScanner-threads - 1) WFLYDS0012: Scan of /opt/buildAgent/work/8feb0abb503148fe/testsuite/manualmode/target/deployment-test-bc636b67-df54-462d-9a13-3618a1755d3f threw Exception: java.util.concurrent.RejectedExecutionException: Task java.util.concurrent.ScheduledThreadPoolExecutor$ScheduledFutureTask@146a4b2 rejected from java.util.concurrent.ScheduledThreadPoolExecutor@e6cbcd[Shutting down, pool size = 1, active threads = 1, queued tasks = 0, completed tasks = 3]
+
+
+
+
+	at java.util.concurrent.ThreadPoolExecutor$AbortPolicy.rejectedExecution(ThreadPoolExecutor.java:2048)
+
+
+
+
+	at java.util.concurrent.ThreadPoolExecutor.reject(ThreadPoolExecutor.java:821)
+
+
+
+
+	at java.util.concurrent.ScheduledThreadPoolExecutor.delayedExecute(ScheduledThreadPoolExecutor.java:325)
+
+
+
+
+	at java.util.concurrent.ScheduledThreadPoolExecutor.schedule(ScheduledThreadPoolExecutor.java:530)
+
+
+
+
+	at java.util.concurrent.ScheduledThreadPoolExecutor.execute(ScheduledThreadPoolExecutor.java:619)
+
+
+
+
+	at org.jboss.as.controller.ModelControllerImpl$3.executeAsync(ModelControllerImpl.java:669)
+
+
+
+
+	at org.jboss.as.controller.ModelControllerImpl$3.executeAsync(ModelControllerImpl.java:605)
+
+
+
+
+	at org.jboss.as.server.deployment.scanner.DefaultDeploymentOperations.deploy(DefaultDeploymentOperations.java:61)
+
+
+
+
+	at org.jboss.as.server.deployment.scanner.FileSystemDeploymentService.scan(FileSystemDeploymentService.java:449)
+
+
+
+
+	at org.jboss.as.server.deployment.scanner.FileSystemDeploymentService$UndeployScanRunnable.run(FileSystemDeploymentService.java:538)
+
+
+
+
+	at java.util.concurrent.Executors$RunnableAdapter.call(Executors.java:471)
+
+
+
+
+	at java.util.concurrent.FutureTask.run(FutureTask.java:262)
+
+
+
+
+	at java.util.concurrent.ScheduledThreadPoolExecutor$ScheduledFutureTask.access$201(ScheduledThreadPoolExecutor.java:178)
+
+
+
+
+	at java.util.concurrent.ScheduledThreadPoolExecutor$ScheduledFutureTask.run(ScheduledThreadPoolExecutor.java:292)
+
+
+
+
+	at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1145)
+
+
+
+
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:615)
+
+
+
+
+	at java.lang.Thread.run(Thread.java:744)
+
+
+
+
+	at org.jboss.threads.JBossThread.run(JBossThread.java:320)
+
+
+
+
+
+
+
+DeploymentScannerService is calling stopScanner() on the scanner and then is shutting down the executor. But stopScanner does not wait for in progress tasks to complete, nor do the in-progress tasks recognize that shutdown is occurring and handle any problems differently (e.g. don't toss the above in the log.)
+Waiting for tasks to complete could be tricky, e.g. imagine this race:
+1) Admin submits op to shutdown/reload, which has the controller lock and is now stopping services.
+2) Scan job kicks off, finds changes and wants to modify the model, so the task is blocking waiting for the controller lock.
+Deadlock.
+Now, this may not be a problem, as server reload tells MSC to remove the root service on the way out (i.e. after the bit where it blocks for stability) and then MSC threads take over, allowing the op thread to continue and release the lock. The shutdown handler spawns a thread to call System.exit.
+But ^^^ is just a quick look, so be cautious! 

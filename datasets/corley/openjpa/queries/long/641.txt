@@ -1,0 +1,104 @@
+Sometimes while fetching an instance of an entity-class with a self-reference (ManyToOne, for creating a hierarchy), I get a ConcurrentModificationException. This only seems to happen when the enhancer hasn't been loaded. Also it seems there has to be multiple levels in the hierarchy for this to occur.
+
+I have created an example which reproduces the Exception.
+
+The code:
+
+@Entity
+public class A {
+        @Id
+        @GeneratedValue(strategy = GenerationType.IDENTITY)
+        private int id;
+
+        private String name;
+
+        @ManyToOne
+        @Column(name = "parent")
+        private A parent;
+
+        public A() 
+{
+                name = "";
+        }
+
+        public A(String name) 
+{
+                this.name = name;
+        }
+
+        public static void main(String[] args) 
+{
+                EntityManagerFactory emf = Persistence
+                                .createEntityManagerFactory("system");
+
+                EntityManager em = emf.createEntityManager();
+
+                em.getTransaction().begin();
+
+                // a
+                A a = new A("a");
+                em.persist(a);
+
+                // b
+                A b = new A("b");
+                b.setParent(a);
+                em.persist(b);
+
+                // c
+                A c = new A("c");
+                c.setParent(b);
+                em.persist(c);
+
+                em.getTransaction().commit();
+                em.close();
+
+
+                // getting c's data
+                int cId = c.getId();
+                String cName = c.getName();
+
+
+                em = emf.createEntityManager();
+                em.getTransaction().begin();
+
+                //both methods of getting entity results in same error
+                // A newC = em.find(A.class, cId);
+                Query q = em.createQuery("SELECT a FROM A a WHERE a.name=:cName")
+                                .setParameter(1, cName);
+
+                A newC = (A)q.getSingleResult();
+
+                em.getTransaction().commit();
+                em.close();
+
+                System.out.println(newC);
+
+                emf.close();
+        }
+
+        //getters and setters
+
+}
+
+persistence.xml:
+
+<?xml version="1.0" encoding="UTF-8"?>
+<persistence xmlns="http://java.sun.com/xml/ns/persistence"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    version="1.0">
+
+    <persistence-unit name="system" transaction-type="RESOURCE_LOCAL">
+                <class>no.tecwel.A</class>
+       <properties>
+                <!-- this has no effect
+                        <property name="openjpa.Multithreaded" value="true"/> -->
+
+            <property name="openjpa.ConnectionURL" value="jdbc:mysql://db.home.local/system "/>
+            <property name="openjpa.ConnectionDriverName" value="com.mysql.jdbc.Driver"/>
+            <property name="openjpa.ConnectionUserName" value="username"/>
+            <property name="openjpa.ConnectionPassword" value="password"/>
+           <property name="openjpa.jdbc.SynchronizeMappings" value="buildSchema(SchemaAction='add,deleteTableContents',ForeignKeys='true')"/>
+            <property name="openjpa.Log" value="DefaultLevel=TRACE"/>
+        </properties>
+    </persistence-unit>
+</persistence>

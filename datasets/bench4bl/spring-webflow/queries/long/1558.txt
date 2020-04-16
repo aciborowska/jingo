@@ -1,0 +1,151 @@
+I use some JSF managed bean and have enable-managed-beans set like so:
+
+
+
+
+
+
+<faces:flow-builder-services id="facesFlowBuilderServices" enable-managed-beans="true" />
+
+
+
+
+
+
+Since upgrading to Webflow 2.3.1 I noticed lots of sporadic NullPointerExceptions when certain flows are accessed. I found the reason to be the fact that org.springframework.faces.webflow.JsfManagedBeanPropertyAccessor simply releases the FacesContext when it is done. The method comment even states that it assumes that no FacesContext exists.
+This is an extremely poor assumption and can be fixed by checking whether a FacesContext already exists or not.
+Sorry, I couldn't create a patch, but here is the amended code with highlighted changes:
+
+
+
+
+
+
+private Object getJsfManagedBean(String name) {
+
+
+
+
+		RequestContext requestContext = RequestContextHolder.getRequestContext();
+
+
+
+
+		Assert.notNull(requestContext, "RequestContext cannot be null. "
+
+
+
+
+				+ "This PropertyAccessor is only intended to be invoked from an active Flow Execution.");
+
+
+
+
+		FacesContext facesContext = 
+
+
+
+
+/* ADDED */		FacesContext.getCurrentInstance();
+
+
+
+
+/* ADDED */	boolean temporaryFCRequired = facesContext==null;
+
+
+
+
+/* ADDED */	if(temporaryFCRequired) {
+
+
+
+
+/* ADDED */		//only create temporary FacesContext if none already exists
+
+
+
+
+/* ADDED */		facesContext = 
+
+
+
+
+				FlowFacesContext.newInstance(requestContext, FlowLifecycle.newInstance());
+
+
+
+
+		}
+
+
+
+
+		try {
+
+
+
+
+			ExpressionFactory factory = facesContext.getApplication().getExpressionFactory();
+
+
+
+
+			ELContext elContext = facesContext.getELContext();
+
+
+
+
+			ValueExpression expression = factory.createValueExpression(elContext, "#{" + name + "}", Object.class);
+
+
+
+
+			return expression.getValue(facesContext.getELContext());
+
+
+
+
+		} finally {
+
+
+
+
+/* ADDED */		if(temporaryFCRequired) {
+
+
+
+
+/* ADDED */			//only release FacesContext if using temporary one
+
+
+
+
+/* ADDED */
+
+
+
+
+				facesContext.release();
+
+
+
+
+/* ADDED */		}
+
+
+
+
+		}
+
+
+
+
+	}
+
+
+
+
+
+
+As a workaround I've placed this in my own jar to override the Webflow provided class.

@@ -1,0 +1,93 @@
+While working on an issue related to spring-boot I found out that if a data format is registered in camel registry with the same name as the one camel looks-up with the help of DefaultDataFormatResolver, this object is then re-configured for each data format definition so one definition may override previous configuration with an undefined behavior.
+So assume you have an xml route definitions as:
+
+
+
+<routes xmlns="http://camel.apache.org/schema/spring">
+
+  <route>
+
+    <from uri="direct:unmarshal"/>
+
+    <unmarshal>
+
+      <csv delimiter=";" headerDisabled="true"/>
+
+    </unmarshal>
+
+  </route>
+
+  <route>
+
+    <from uri="direct:marshal"/>
+
+    <marshal>
+
+      <csv headerDisabled="true" quoteDisabled="true"/>
+
+    </marshal>
+
+  </route>
+
+</routes>
+
+
+
+And some code like:
+
+
+
+InputStream is = getClass().getResourceAsStream("...");
+
+
+
+SimpleRegistry reg = new SimpleRegistry();
+
+reg.put("csv-dataformat", new CsvDataFormat());
+
+
+
+DefaultCamelContext ctx = new DefaultCamelContext(reg);
+
+ctx.addRouteDefinitions(ctx.loadRoutesDefinition(is).getRoutes());
+
+ctx.start();
+
+
+
+ProducerTemplate template = ctx.createProducerTemplate();
+
+String result = template.requestBody(
+
+    "direct:marshal",
+
+    Arrays.asList(Arrays.asList( "A1", "B1", "C1" )),
+
+    String.class);
+
+
+
+assertEquals("A1,B1,C1", result);
+
+
+
+ctx.stop
+
+
+
+Then this test fails with:
+
+
+
+Expected :A1,B1,C1
+
+Actual   :A1;B1;C1
+
+
+
+It fails because the object added to the SimpleRegistry is shared among the two csv dataformats  so it is configured to have delimiter = ';' 
+For spring-boot this causes some issues as it registers data formats beans as part of its auto-configuration magic thus if you do not set your own instance of data format, any data format operation like marshal/unmarshal may not work as expected. 
+
+for spring-boot a solution would be to annotate auto configured data format beans with prototype scope.
+a more generic solution would be to make DataFormat Cloneable and clone the bean found in the registry
+

@@ -1,0 +1,130 @@
+Server side: zookeeper 3.4.3 with patch ZOOKEEPER-1437.patch 22/Jun/12 00:24
+Client side: java, Curator 1.1.15, zookeeper 3.4.3 with patch ZOOKEEPER-1437.patch 22/Jun/12 00:24
+
+Environment configured to use Sasl authentication.
+While the authenticatiion is successful, everything works fine.
+In case of authentication failue, it seems that the zk server catch the SaslException and close the socket without sending any additional notification to the client, so despite the client has an implementation to handle Sasl authentication failure, it is never used…
+
+Details:
+=========
+
+
+zk server log:
+
+2012-08-10 11:00:46,730 [myid:] - INFO  [NIOServerCxn.Factory:0.0.0.0/0.0.0.0:2181:NIOServerCnxnFactory@213] - Accepted socket connection from /127.0.0.1:50208
+2012-08-10 11:00:46,731 [myid:] - DEBUG [NIOServerCxn.Factory:0.0.0.0/0.0.0.0:2181:ZooKeeperServer@780] - Session establishment request from client /127.0.0.1:50208 client's lastZxid is 0x0
+2012-08-10 11:00:46,731 [myid:] - INFO  [NIOServerCxn.Factory:0.0.0.0/0.0.0.0:2181:ZooKeeperServer@838] - Client attempting to establish new session at /127.0.0.1:50208
+2012-08-10 11:00:46,733 [myid:] - DEBUG [SyncThread:0:FinalRequestProcessor@88] - Processing request:: sessionid:0x1390fd2ee630004 type:createSession cxid:0x0 zxid:0x26b txntype:-10 reqpath:n/a
+2012-08-10 11:00:46,733 [myid:] - DEBUG [SyncThread:0:FinalRequestProcessor@160] - sessionid:0x1390fd2ee630004 type:createSession cxid:0x0 zxid:0x26b txntype:-10 reqpath:n/a
+2012-08-10 11:00:46,734 [myid:] - INFO  [SyncThread:0:ZooKeeperServer@604] - Established session 0x1390fd2ee630004 with negotiated timeout 40000 for client /127.0.0.1:50208
+2012-08-10 11:00:46,736 [myid:] - DEBUG [NIOServerCxn.Factory:0.0.0.0/0.0.0.0:2181:ZooKeeperServer@919] - Responding to client SASL token.
+2012-08-10 11:00:46,736 [myid:] - DEBUG [NIOServerCxn.Factory:0.0.0.0/0.0.0.0:2181:ZooKeeperServer@923] - Size of client SASL token: 0
+2012-08-10 11:00:46,736 [myid:] - DEBUG [NIOServerCxn.Factory:0.0.0.0/0.0.0.0:2181:ZooKeeperServer@954] - Size of server SASL response: 101
+2012-08-10 11:00:46,740 [myid:] - DEBUG [NIOServerCxn.Factory:0.0.0.0/0.0.0.0:2181:ZooKeeperServer@919] - Responding to client SASL token.
+2012-08-10 11:00:46,741 [myid:] - DEBUG [NIOServerCxn.Factory:0.0.0.0/0.0.0.0:2181:ZooKeeperServer@923] - Size of client SASL token: 272
+2012-08-10 11:00:46,741 [myid:] - DEBUG [NIOServerCxn.Factory:0.0.0.0/0.0.0.0:2181:SaslServerCallbackHandler@106] - client supplied realm: zk-sasl-md5
+2012-08-10 11:00:46,741 [myid:] - WARN  [NIOServerCxn.Factory:0.0.0.0/0.0.0.0:2181:ZooKeeperServer@939] - Client failed to SASL authenticate: javax.security.sasl.SaslException: DIGEST-MD5: digest response format violation. Mismatched response.
+2012-08-10 11:00:46,742 [myid:] - WARN  [NIOServerCxn.Factory:0.0.0.0/0.0.0.0:2181:ZooKeeperServer@945] - Closing client connection due to SASL authentication failure.
+2012-08-10 11:00:46,742 [myid:] - INFO  [NIOServerCxn.Factory:0.0.0.0/0.0.0.0:2181:NIOServerCnxn@1000] - Closed socket connection for client /127.0.0.1:50208 which had sessionid 0x1390fd2ee630004
+2012-08-10 11:00:46,743 [myid:] - ERROR [NIOServerCxn.Factory:0.0.0.0/0.0.0.0:2181:NIOServerCnxn@180] - Unexpected Exception: 
+java.nio.channels.CancelledKeyException
+               at sun.nio.ch.SelectionKeyImpl.ensureValid(SelectionKeyImpl.java:55)
+               at sun.nio.ch.SelectionKeyImpl.interestOps(SelectionKeyImpl.java:59)
+               at org.apache.zookeeper.server.NIOServerCnxn.sendBuffer(NIOServerCnxn.java:153)
+               at org.apache.zookeeper.server.NIOServerCnxn.sendResponse(NIOServerCnxn.java:1075)
+               at org.apache.zookeeper.server.ZooKeeperServer.processPacket(ZooKeeperServer.java:906)
+               at org.apache.zookeeper.server.NIOServerCnxn.readRequest(NIOServerCnxn.java:365)
+               at org.apache.zookeeper.server.NIOServerCnxn.readPayload(NIOServerCnxn.java:202)
+               at org.apache.zookeeper.server.NIOServerCnxn.doIO(NIOServerCnxn.java:236)
+               at org.apache.zookeeper.server.NIOServerCnxnFactory.run(NIOServerCnxnFactory.java:224)
+               at java.lang.Thread.run(Thread.java:662)
+ 
+
+
+At the corresponding source: org.apache.zookeeper.server.ZooKeeperServer
+
+
+private Record processSasl(ByteBuffer incomingBuffer, ServerCnxn cnxn) throws IOException {
+        LOG.debug("Responding to client SASL token.");
+        GetSASLRequest clientTokenRecord = new GetSASLRequest();
+        ByteBufferInputStream.byteBuffer2Record(incomingBuffer,clientTokenRecord);
+        byte[] clientToken = clientTokenRecord.getToken();
+        LOG.debug("Size of client SASL token: " + clientToken.length);
+        byte[] responseToken = null;
+        try {
+            ZooKeeperSaslServer saslServer  = cnxn.zooKeeperSaslServer;
+            try {
+                // note that clientToken might be empty (clientToken.length == 0):
+                // if using the DIGEST-MD5 mechanism, clientToken will be empty at the beginning of the
+                // SASL negotiation process.
+                responseToken = saslServer.evaluateResponse(clientToken);
+                if (saslServer.isComplete() == true) {
+                    String authorizationID = saslServer.getAuthorizationID();
+                    LOG.info("adding SASL authorization for authorizationID: " + authorizationID);
+                    cnxn.addAuthInfo(new Id("sasl",authorizationID));
+                }
+            }
+            catch (SaslException e) {
+                LOG.warn("Client failed to SASL authenticate: " + e);
+                if ((System.getProperty("zookeeper.allowSaslFailedClients") != null)
+                  &&
+                  (System.getProperty("zookeeper.allowSaslFailedClients").equals("true"))) {
+                    LOG.warn("Maintaining client connection despite SASL authentication failure.");
+                } else {
+                    LOG.warn("Closing client connection due to SASL authentication failure.");
+                    cnxn.close();   Tally: at this stage the socket is closed without sending any notification to the client
+                }
+            }
+        }
+        catch (NullPointerException e) {
+            LOG.error("cnxn.saslServer is null: cnxn object did not initialize its saslServer properly.");
+        }
+        if (responseToken != null) {
+            LOG.debug("Size of server SASL response: " + responseToken.length);
+        }
+        // wrap SASL response token to client inside a Response object.
+        return new SetSASLResponse(responseToken);
+    }
+
+
+
+
+The client log shows that the client identified the socket closer and just retry to connect as if the zk server just went down..
+
+[10-Aug-2012 11:00:44.558 IST] INFO <org.apache.zookeeper.ClientCnxn$SendThread> Opening socket connection to server 127.0.0.1/127.0.0.1:2181
+[10-Aug-2012 11:00:44.559 IST] INFO <org.apache.zookeeper.client.ZooKeeperSaslClient> Found Login Context section 'Client': will use it to attempt to SASL-authenticate.
+[10-Aug-2012 11:00:44.560 IST] INFO <org.apache.zookeeper.client.ZooKeeperSaslClient> Client will use DIGEST-MD5 as SASL mechanism.
+[10-Aug-2012 11:00:44.561 IST] INFO <org.apache.zookeeper.ClientCnxn$SendThread> Socket connection established to 127.0.0.1/127.0.0.1:2181, initiating session
+[10-Aug-2012 11:00:44.563 IST] DEBUG <org.apache.zookeeper.ClientCnxn$SendThread> Session establishment request sent on 127.0.0.1/127.0.0.1:2181
+[10-Aug-2012 11:00:44.564 IST] DEBUG <org.apache.zookeeper.ClientCnxnSocketNIO> deferring non-priming packet: clientPath:null serverPath:null finished:false header:: 0,3  replyHeader:: 0,0,0  request:: '/dev,F  response::  until SASL authentication completes.
+[10-Aug-2012 11:00:44.566 IST] DEBUG <org.apache.zookeeper.ClientCnxnSocketNIO> deferring non-priming packet: clientPath:/ serverPath:/ finished:false header:: 0,9  replyHeader:: 0,0,0  request:: '/  response::  until SASL authentication completes.
+[10-Aug-2012 11:00:44.568 IST] INFO <org.apache.zookeeper.ClientCnxn$SendThread> Session establishment complete on server 127.0.0.1/127.0.0.1:2181, sessionid = 0x1390fd2ee630003, negotiated timeout = 40000
+[10-Aug-2012 11:00:44.569 IST] INFO <com.netflix.curator.framework.state.ConnectionStateManager> State change: RECONNECTED
+[10-Aug-2012 11:00:44.569 IST] DEBUG <org.apache.zookeeper.ClientCnxnSocketNIO> deferring non-priming packet: clientPath:null serverPath:null finished:false header:: 0,3  replyHeader:: 0,0,0  request:: '/dev,F  response::  until SASL authentication completes.
+[10-Aug-2012 11:00:44.572 IST] DEBUG <org.apache.zookeeper.ClientCnxnSocketNIO> deferring non-priming packet: clientPath:/ serverPath:/ finished:false header:: 0,9  replyHeader:: 0,0,0  request:: '/  response::  until SASL authentication completes.
+[10-Aug-2012 11:00:44.574 IST] DEBUG <org.apache.zookeeper.ClientCnxnSocketNIO> deferring non-priming packet: clientPath:null serverPath:null finished:false header:: 0,3  replyHeader:: 0,0,0  request:: '/dev,F  response::  until SASL authentication completes.
+[10-Aug-2012 11:00:44.576 IST] DEBUG <org.apache.zookeeper.ClientCnxnSocketNIO> deferring non-priming packet: clientPath:/ serverPath:/ finished:false header:: 0,9  replyHeader:: 0,0,0  request:: '/  response::  until SASL authentication completes.
+[10-Aug-2012 11:00:44.578 IST] DEBUG <org.apache.zookeeper.client.ZooKeeperSaslClient> ClientCnxn:sendSaslPacket:length=0
+[10-Aug-2012 11:00:44.579 IST] DEBUG <org.apache.zookeeper.ClientCnxnSocketNIO> deferring non-priming packet: clientPath:null serverPath:null finished:false header:: 0,3  replyHeader:: 0,0,0  request:: '/dev,F  response::  until SASL authentication completes.
+[10-Aug-2012 11:00:44.581 IST] DEBUG <org.apache.zookeeper.ClientCnxnSocketNIO> deferring non-priming packet: clientPath:/ serverPath:/ finished:false header:: 0,9  replyHeader:: 0,0,0  request:: '/  response::  until SASL authentication completes.
+[10-Aug-2012 11:00:44.583 IST] DEBUG <org.apache.zookeeper.ClientCnxnSocketNIO> deferring non-priming packet: clientPath:/ serverPath:/ finished:false header:: 0,9  replyHeader:: 0,0,0  request:: '/  response::  until SASL authentication completes.
+[10-Aug-2012 11:00:44.585 IST] DEBUG <org.apache.zookeeper.ClientCnxnSocketNIO> deferring non-priming packet: clientPath:null serverPath:null finished:false header:: 0,3  replyHeader:: 0,0,0  request:: '/dev,F  response::  until SASL authentication completes.
+[10-Aug-2012 11:00:44.587 IST] DEBUG <org.apache.zookeeper.ClientCnxnSocketNIO> deferring non-priming packet: clientPath:/ serverPath:/ finished:false header:: 0,9  replyHeader:: 0,0,0  request:: '/  response::  until SASL authentication completes.
+[10-Aug-2012 11:00:44.589 IST] DEBUG <org.apache.zookeeper.ClientCnxnSocketNIO> deferring non-priming packet: clientPath:/ serverPath:/ finished:false header:: 0,9  replyHeader:: 0,0,0  request:: '/  response::  until SASL authentication completes.
+[10-Aug-2012 11:00:44.591 IST] DEBUG <org.apache.zookeeper.client.ZooKeeperSaslClient$2> saslClient.evaluateChallenge(len=101)
+[10-Aug-2012 11:00:44.592 IST] DEBUG <org.apache.zookeeper.client.ZooKeeperSaslClient> ClientCnxn:sendSaslPacket:length=272
+[10-Aug-2012 11:00:44.593 IST] DEBUG <org.apache.zookeeper.ClientCnxnSocketNIO> deferring non-priming packet: clientPath:null serverPath:null finished:false header:: 0,3  replyHeader:: 0,0,0  request:: '/dev,F  response::  until SASL authentication completes.
+[10-Aug-2012 11:00:44.596 IST] DEBUG <org.apache.zookeeper.ClientCnxnSocketNIO> deferring non-priming packet: clientPath:/ serverPath:/ finished:false header:: 0,9  replyHeader:: 0,0,0  request:: '/  response::  until SASL authentication completes.
+[10-Aug-2012 11:00:44.598 IST] DEBUG <org.apache.zookeeper.ClientCnxnSocketNIO> deferring non-priming packet: clientPath:/ serverPath:/ finished:false header:: 0,9  replyHeader:: 0,0,0  request:: '/  response::  until SASL authentication completes.
+[10-Aug-2012 11:00:44.600 IST] INFO <org.apache.zookeeper.ClientCnxn$SendThread> Unable to read additional data from server sessionid 0x1390fd2ee630003, likely server has closed socket, closing socket connection and attempting reconnect
+[10-Aug-2012 11:00:44.701 IST] ERROR <com.netflix.curator.framework.imps.CuratorFrameworkImpl> Background operation retry gave up
+org.apache.zookeeper.KeeperException$ConnectionLossException: KeeperErrorCode = ConnectionLoss
+               at org.apache.zookeeper.KeeperException.create(KeeperException.java:99)
+               at com.netflix.curator.framework.imps.CuratorFrameworkImpl.processBackgroundOperation(CuratorFrameworkImpl.java:438)
+               at com.netflix.curator.framework.imps.BackgroundSyncImpl$1.processResult(BackgroundSyncImpl.java:49)
+               at org.apache.zookeeper.ClientCnxn$EventThread.processEvent(ClientCnxn.java:606)
+               at org.apache.zookeeper.ClientCnxn$EventThread.run(ClientCnxn.java:495)
+[10-Aug-2012 11:00:44.706 IST] INFO <com.netflix.curator.framework.state.ConnectionStateManager> State change: LOST
+[10-Aug-2012 11:00:44.708 IST] WARN <com.netflix.curator.framework.state.ConnectionStateManager> ConnectionStateManager queue full - dropping events to make room
+[10-Aug-2012 11:00:44.710 IST] INFO <com.netflix.curator.framework.state.ConnectionStateManager> State change: SUSPENDED
+

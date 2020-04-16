@@ -1,0 +1,45 @@
+I think this is a bug....
+Given the following conditions:
+1) A Commons Connection pool with max and min connections set to 1
+2) A Sql Call that will throw an error
+A deadlock situation can happen around line 776 of JdbcTemplate.
+try 
+{
+    Connection conToUse = con;
+    if (this.nativeJdbcExtractor != null &&
+    this.nativeJdbcExtractor.isNativeConnectionNecessaryForNativeCallableStatements()) 
+    {
+        conToUse = this.nativeJdbcExtractor.getNativeConnection(con);
+    }
+    cs = csc.createCallableStatement(conToUse);
+    DataSourceUtils.applyTransactionTimeout(cs, getDataSource());
+    CallableStatement csToUse = cs;
+    if (this.nativeJdbcExtractor != null) 
+    {
+        csToUse = this.nativeJdbcExtractor.getNativeCallableStatement(cs);
+    }
+    Object result = action.doInCallableStatement(csToUse);
+    SQLWarning warning = cs.getWarnings();
+    throwExceptionOnWarningIfNotIgnoringWarnings(warning);
+    return result;
+}
+catch (SQLException ex) 
+{
+    throw getExceptionTranslator().translate("executing CallableStatementCallback", getSql(csc), ex);
+}
+finally 
+{
+    if (csc instanceof ParameterDisposer) 
+    {
+        ((ParameterDisposer) csc).cleanupParameters();
+    }
+    JdbcUtils.closeStatement(cs);
+    DataSourceUtils.releaseConnection(con, getDataSource());
+If we assume that
+Connection conToUse = con;
+Use one connection (pool is now empty)
+and the execution of the Callable statement throws a sql exception, 
+throw getExceptionTranslator().translate("executing CallableStatementCallback", getSql(csc), ex);
+Will be called.  This will result in an additional connection being requested from the pool.  
+The first connection should first be closed!!!
+}

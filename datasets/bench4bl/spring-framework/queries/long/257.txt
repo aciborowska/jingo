@@ -1,0 +1,92 @@
+I have a Hibernate-mapped class that uses the ClobStringType class to 
+map Oracle CLOB to String. When a Clob is updated and the Hibernate 
+session completes I get ConcurrentModificationException
+at AbstractPlatformTransactionManager.triggerBeforeCommit().
+IMO this is related to the addition of a Synchronization to 
+the transaction by ClobStringType: 
+When the transaction completes, beforeCompletion() iterates over 
+TransactionSynchronizationManager.getSynchronizations() elements.
+It calls TransactionSynchronizationManager.unbindResource() in
+SessionFactoryUtils.beforeCompletion().
+The second Synchronization (from the Lob Handler) means that the 
+iterator's next() is called after the collection was modified.
+Suggested workaround: flush() the Hibernate session after setting the 
+value of the CLOB.
+Suggested fix: in triggerBeforeCommit(), copy the Synchronization 
+collection before the iteration.
+----------------------------
+2004-08-11 14:54:35,116 DEBUG [net.sf.hibernate.impl.BatcherImpl http-0.0.0.0-8080-Processor21] Executing batch size: 1
+2004-08-11 14:54:35,116 DEBUG [net.sf.hibernate.impl.BatcherImpl http-0.0.0.0-8080-Processor21] success of batch update unknown: 0
+2004-08-11 14:54:35,116 DEBUG [net.sf.hibernate.impl.BatcherImpl http-0.0.0.0-8080-Processor21] done closing: 0 open PreparedStatements, 0 open ResultSets
+2004-08-11 14:54:35,116 DEBUG [net.sf.hibernate.impl.BatcherImpl http-0.0.0.0-8080-Processor21] closing statement
+2004-08-11 14:54:35,116 DEBUG [net.sf.hibernate.impl.SessionImpl http-0.0.0.0-8080-Processor21] post flush
+2004-08-11 14:54:35,116 DEBUG [org.springframework.transaction.jta.JtaTransactionManager http-0.0.0.0-8080-Processor21] Triggering beforeCompletion synchronization
+2004-08-11 14:54:35,116 DEBUG [org.springframework.transaction.support.TransactionSynchronizationManager http-0.0.0.0-8080-Processor21] Removed value [org.springframework.orm.hibernate.SessionHolder@307c44] for key [net.sf.hibernate.impl.SessionFactoryImpl@10704e1] from thread [http-0.0.0.0-8080-Processor21]
+2004-08-11 14:54:35,116 DEBUG [org.springframework.transaction.jta.JtaTransactionManager http-0.0.0.0-8080-Processor21] Initiating transaction rollback on commit exception
+java.util.ConcurrentModificationException
+	at java.util.AbstractList$Itr.checkForComodification(AbstractList.java:448)
+	at java.util.AbstractList$Itr.next(AbstractList.java:419)
+	at java.util.Collections$1.next(Collections.java:996)
+	at org.springframework.transaction.support.AbstractPlatformTransactionManager.triggerBeforeCommit(AbstractPlatformTransactionManager.java:434)
+	at org.springframework.transaction.support.AbstractPlatformTransactionManager.commit(AbstractPlatformTransactionManager.java:311)
+	at org.springframework.transaction.interceptor.TransactionInterceptor.invoke(TransactionInterceptor.java:211)
+	at org.springframework.aop.framework.ReflectiveMethodInvocation.proceed(ReflectiveMethodInvocation.java:138)
+	at org.springframework.aop.framework.JdkDynamicAopProxy.invoke(JdkDynamicAopProxy.java:148)
+	at $Proxy43.setCV(Unknown Source)
+	at sun.reflect.NativeMethodAccessorImpl.invoke0(Native Method)
+	at sun.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:39)
+	at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:25)
+	at java.lang.reflect.Method.invoke(Method.java:324)
+	at org.springframework.aop.framework.AopProxyUtils.invokeJoinpointUsingReflection(AopProxyUtils.java:59)
+	at org.springframework.aop.framework.JdkDynamicAopProxy.invoke(JdkDynamicAopProxy.java:138)
+	at $Proxy43.setCV(Unknown Source)
+	at com.cashu.sample.test.UserDAOTest.testUserCV(UserDAOTest.java:73)
+	at sun.reflect.NativeMethodAccessorImpl.invoke0(Native Method)
+	at sun.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:39)
+	at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:25)
+	at java.lang.reflect.Method.invoke(Method.java:324)
+	at junit.framework.TestCase.runTest(TestCase.java:154)
+	at junit.framework.TestCase.runBare(TestCase.java:127)
+	at org.apache.cactus.internal.AbstractCactusTestCase.runBareServer(AbstractCactusTestCase.java:149)
+	at org.apache.cactus.internal.server.AbstractWebTestCaller.doTest(AbstractWebTestCaller.java:119)
+	at org.apache.cactus.internal.server.AbstractWebTestController.handleRequest_aroundBody0(AbstractWebTestController.java:93)
+	at org.apache.cactus.internal.server.AbstractWebTestController.handleRequest_aroundBody1$advice(AbstractWebTestController.java:124)
+	at org.apache.cactus.internal.server.AbstractWebTestController.handleRequest(AbstractWebTestController.java)
+	at org.apache.cactus.server.ServletTestRedirector.doPost_aroundBody2(ServletTestRedirector.java:101)
+	at org.apache.cactus.server.ServletTestRedirector.doPost_aroundBody3$advice(ServletTestRedirector.java:124)
+	at org.apache.cactus.server.ServletTestRedirector.doPost(ServletTestRedirector.java)
+	at org.apache.cactus.server.ServletTestRedirector.doGet_aroundBody0(ServletTestRedirector.java:72)
+	at org.apache.cactus.server.ServletTestRedirector.doGet_aroundBody1$advice(ServletTestRedirector.java:124)
+	at org.apache.cactus.server.ServletTestRedirector.doGet(ServletTestRedirector.java)
+	at javax.servlet.http.HttpServlet.service(HttpServlet.java:697)
+	at javax.servlet.http.HttpServlet.service(HttpServlet.java:810)
+	at org.apache.catalina.core.ApplicationFilterChain.internalDoFilter(ApplicationFilterChain.java:237)
+	at org.apache.catalina.core.ApplicationFilterChain.doFilter(ApplicationFilterChain.java:157)
+	at org.apache.catalina.core.StandardWrapperValve.invoke(StandardWrapperValve.java:214)
+	at org.apache.catalina.core.StandardValveContext.invokeNext(StandardValveContext.java:104)
+	at org.apache.catalina.core.StandardPipeline.invoke(StandardPipeline.java:520)
+	at org.apache.catalina.core.StandardContextValve.invokeInternal(StandardContextValve.java:198)
+	at org.apache.catalina.core.StandardContextValve.invoke(StandardContextValve.java:152)
+	at org.apache.catalina.core.StandardValveContext.invokeNext(StandardValveContext.java:104)
+	at org.jboss.web.tomcat.security.SecurityAssociationValve.invoke(SecurityAssociationValve.java:72)
+	at org.apache.catalina.core.StandardValveContext.invokeNext(StandardValveContext.java:102)
+	at org.jboss.web.tomcat.security.JBossSecurityMgrRealm.invoke(JBossSecurityMgrRealm.java:275)
+	at org.apache.catalina.core.StandardValveContext.invokeNext(StandardValveContext.java:102)
+	at org.apache.catalina.core.StandardPipeline.invoke(StandardPipeline.java:520)
+	at org.apache.catalina.core.StandardHostValve.invoke(StandardHostValve.java:137)
+	at org.apache.catalina.core.StandardValveContext.invokeNext(StandardValveContext.java:104)
+	at org.apache.catalina.valves.ErrorReportValve.invoke(ErrorReportValve.java:117)
+	at org.apache.catalina.core.StandardValveContext.invokeNext(StandardValveContext.java:102)
+	at org.apache.catalina.core.StandardPipeline.invoke(StandardPipeline.java:520)
+	at org.apache.catalina.core.StandardEngineValve.invoke(StandardEngineValve.java:109)
+	at org.apache.catalina.core.StandardValveContext.invokeNext(StandardValveContext.java:104)
+	at org.apache.catalina.core.StandardPipeline.invoke(StandardPipeline.java:520)
+	at org.apache.catalina.core.ContainerBase.invoke(ContainerBase.java:929)
+	at org.apache.coyote.tomcat5.CoyoteAdapter.service(CoyoteAdapter.java:160)
+	at org.apache.coyote.http11.Http11Processor.process(Http11Processor.java:799)
+	at org.apache.coyote.http11.Http11Protocol$Http11ConnectionHandler.processConnection(Http11Protocol.java:705)
+	at org.apache.tomcat.util.net.TcpWorkerThread.runIt(PoolTcpEndpoint.java:577)
+	at org.apache.tomcat.util.threads.ThreadPool$ControlRunnable.run(ThreadPool.java:683)
+	at java.lang.Thread.run(Thread.java:534)
+2004-08-11 14:54:35,116 DEBUG [org.springframework.transaction.jta.JtaTransactionManager http-0.0.0.0-8080-Processor21] Rolling back JTA transaction [org.jboss.tm.usertx.client.ServerVMClientUserTransaction@779959]
+2004-08-11 14:54:35,116 DEBUG [org.springframework.transaction.jta.JtaTransactionManager http-0.0.0.0-8080-Processor21] Triggering afterCompletion synchronization

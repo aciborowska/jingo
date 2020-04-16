@@ -1,0 +1,61 @@
+I think there is a bug when Follower try to sync data with Leader.
+Assume there are some operations committed during one server had been crashed. When the server restart, it will receive a NEWLEADER packet which include the last zxid of leader and the server will set its own lastProcessZxid to the leader's. 
+Follower.java
+void followLeader() throws InterruptedException {
+    fzk.registerJMX(new FollowerBean(this, zk), self.jmxLocalPeerBean);
+    try {
+        InetSocketAddress addr = findLeader();
+        try {
+            connectToLeader(addr);
+            long newLeaderZxid = registerWithLeader(Leader.FOLLOWERINFO);  // get the last zxid from leader
+            //check to see if the leader zxid is lower than ours                                                                                          
+            //this should never happen but is just a safety check                                                                                         
+            long lastLoggedZxid = self.getLastLoggedZxid();
+            if ((newLeaderZxid >> 32L) < (lastLoggedZxid >> 32L)) {
+                LOG.fatal("Leader epoch " + Long.toHexString(newLeaderZxid >> 32L)
+                        + " is less than our epoch " + Long.toHexString(lastLoggedZxid >> 32L));
+                throw new IOException("Error: Epoch of leader is lower");
+            }
+            syncWithLeader(newLeaderZxid);   // set its own lastProcessZxid to leader's last zxid
+
+
+
+Then, some COMMIT packets will be received by the server in order to sync the data with leader. And then, the leader will send an UPTODATE packet to server to take a snapshot. 
+Follower.java
+protected void processPacket(QuorumPacket qp) throws IOException{
+    switch (qp.getType()) {
+    case Leader.PING:
+        ping(qp);
+        break;
+    case Leader.PROPOSAL:
+        TxnHeader hdr = new TxnHeader();
+        BinaryInputArchive ia = BinaryInputArchive
+        .getArchive(new ByteArrayInputStream(qp.getData()));
+        Record txn = SerializeUtils.deserializeTxn(ia, hdr);
+        if (hdr.getZxid() != lastQueued + 1) {
+            LOG.warn("Got zxid 0x"
+                    + Long.toHexString(hdr.getZxid())
+                    + " expected 0x"
+                    + Long.toHexString(lastQueued + 1));
+        }
+        lastQueued = hdr.getZxid();
+        fzk.logRequest(hdr, txn);
+        break;
+    case Leader.COMMIT:
+        fzk.commit(qp.getZxid());
+        break;
+    case Leader.UPTODATE:
+        fzk.takeSnapshot();
+        self.cnxnFactory.setZooKeeperServer(fzk);
+        break;
+    case Leader.REVALIDATE:
+        revalidate(qp);
+        break;
+    case Leader.SYNC:
+        fzk.sync();
+        break;
+    }
+}
+
+
+Notice the different way the Follower treat the COMMIT and the UPTODATE packets. When receives a COMMIT packet, the follower will give this to a processor to deal with. But if receives a UPTODATE packet, the follower will take a snapshot immediately. So it is possible that the server will take snapshot before it commits all the operations it missed. Then if the server crashed again and recovered， it will recover its data from the snapshot, so the date inconsistent with the leader now, but its last zxid is the same. 

@@ -1,0 +1,41 @@
+When a follower leave the cluster, and the cluster cannot achieve a majority, the leader should get out from Leading stat and get into Looking state, but if the there are some observers, the leader will not get away and the client cannot use the cluster.
+
+eg:
+
+The servers config:
+
+server.1=z1:2888:3888
+server.2=z2:2888:3888
+server.3=z3:2888:3888:observer
+
+At first, 1,2,3 are all started, it's all ok, 2 is the leader, but at this time, if 1 is stopped, 2 will not leave the Leading state, and client cannot connect to cluster.
+
+I think the problem is:
+(Leader.java  method:lead)
+
+Line 388-407
+                syncedSet.add(self.getId());
+                synchronized (learners) {
+                    for (LearnerHandler f : learners) {
+                        if (f.synced()) 
+{
+                            syncedCount++;
+                            syncedSet.add(f.getSid());
+                        }
+                        f.ping();
+                    }
+                }
+              if (!tickSkip && !self.getQuorumVerifier().containsQuorum(syncedSet)) {
+                //if (!tickSkip && syncedCount < self.quorumPeers.size() / 2) 
+{
+                    // Lost quorum, shutdown
+                  // TODO: message is wrong unless majority quorums used
+                    shutdown("Only " + syncedCount + " followers, need "
+                            + (self.getVotingView().size() / 2));
+                    // make sure the order is the same!
+                    // the leader goes to looking
+                    return;
+              }
+ 
+
+The code add all learners' ping to syncedSet, and I think at this place, only followers should be added to syncedSet, so the method 'containsQuorum' can figure out the majority.

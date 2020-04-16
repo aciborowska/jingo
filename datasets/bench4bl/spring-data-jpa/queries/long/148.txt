@@ -1,0 +1,130 @@
+I have defined an @Query annotation on a repository query which is aggregating data, but would like to offer the ability to sort on different aggregates in the data. When adding an aggregate statement as a Sort property, Spring Data JPA is automatically adding on an object alias which will cause a completely incorrect query to generate.
+Example to replicate:
+
+Use the following @Query: select sum(sessionTime),sum(inputSize),sum(outputSize) from RawData where beginDate between ? and ? group by username
+Call: myRepository.customQuery(beginDate,endDate,new Sort("sum(sessionTime"));
+
+Results in following query being generated: select sum(sessionTime),sum(inputSize),sum(outputSize) from RawData where eventDate between ? and ? group by username order by where.sum(sessionTime) asc
+
+
+
+Note that the order by clause generates as: where .sum(sessionTime) asc
+Resolving this may be possible through a simple check to see if the property contains a parenthesis that would seem to indicate it is an aggregate.  If it is detected as an aggregate, the alias addition would be skipped during the order by statement generation.
+Example patch:
+
+
+
+
+
+
+*** QueryUtils.java     2012-01-04 16:10:59.000000000 -0600
+
+
+
+
+--- QueryUtils.java     2012-01-04 16:11:15.000000000 -0600
+
+
+
+
+***************
+
+
+
+
+*** 136,142 ****
+
+
+
+
+                builder.append(" order by");
+
+
+
+
+ 
+
+
+
+
+                for (Order order : sort) {
+
+
+
+
+!                       builder.append(String.format(" %s.%s %s,", alias, order.getProperty(), toJpaDirection(order)));
+
+
+
+
+                }
+
+
+
+
+ 
+
+
+
+
+                builder.deleteCharAt(builder.length() - 1);
+
+
+
+
+--- 136,145 ----
+
+
+
+
+                builder.append(" order by");
+
+
+
+
+ 
+
+
+
+
+                for (Order order : sort) {
+
+
+
+
+!                       if (order.getProperty().contains("("))
+
+
+
+
+!                               builder.append(String.format(" %s %s,", order.getProperty(), toJpaDirection(order)));
+
+
+
+
+!                       else
+
+
+
+
+!                               builder.append(String.format(" %s.%s %s,", alias, order.getProperty(), toJpaDirection(order)));
+
+
+
+
+                }
+
+
+
+
+ 
+
+
+
+
+                builder.deleteCharAt(builder.length() - 1);
+
+
+
+
+

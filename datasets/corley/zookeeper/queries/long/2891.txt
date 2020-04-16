@@ -1,0 +1,18 @@
+ZooKeeper C Client single thread build
+
+Function deserialize_multi() hits assert(entry) when called for the so called "Fake response" which is fabricated by the function free_completions() for example when zookeeper_close() is called while there is a pending multi request.
+
+Such fake response includes only the header but zero bytes for the body. Due to this deserialize_MultiHeader(ia, "multiheader", &mhdr), which is called repeatedly for each completion_list_t *entry = dequeue_completion(clist), does not assign the mhdr and keeps mhdr.done == 0 as it was originally initialized. Consequently the while (!mhdr.done) does not ever end, and finally falls into the assert(entry) with entry == NULL when all sub-requests are "completed". // Normally on my platform assert raises SIGABRT.
+
+I propose to instruct the deserialize_multi() function to break the loop on entry == NULL if it was called for an unsuccessfull overal status of the multi response, and in particular for the fake response having ZCLOSING (-116) status. I have introduced the rc0 parameter for this.
+
+
+Another issue with this function is that even if the while-loop exited properly, this function returns rc == 0, and this return code overrides the true status value with rc = deserialize_multi(xid, cptr, ia, rc) in the deserialize_response() function. So, the multi response callback handler would be called with rc == ZOK instead of rc == ZCLOSING which is strictly wrong.
+
+To fix this I propose initializing rc with the introduced rc0 instead of zero (which is ZOK indeed).
+
+This is a proposed fix: https://github.com/apache/zookeeper/pull/360
+
+[upd]
+It looks like about the same problem is described in ZOOKEEPER-1636
+However, the patch proposed in this ticket also remedies the second linked problem: reporting ZCLOSING status (as required) to the multi-request completion handler.

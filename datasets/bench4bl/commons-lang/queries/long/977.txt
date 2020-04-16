@@ -1,0 +1,43 @@
+NumericEntityEscaper will incorrectly encode supplementary unicode characters depending on the char length of the first code point in the string.
+To reproduce, run:
+
+
+
+String escaped = NumericEntityEscaper.between(0x7f, Integer.MAX_VALUE).translate("a \uD83D\uDC14 \uD83D\uDCA9");
+
+
+
+Expected:
+
+
+
+escaped == "a &#128020; &#128169;"
+
+
+
+Actual:
+
+
+
+escaped == "a &#128020;&#56340; &#128169;&#56489;"
+
+
+
+The issue lies in CharSequenceTranslator.translate() and the way it checks code points to figure out how many characters it needs to consume.  Specifically, the issue is on line 95:
+
+
+
+// contract with translators is that they have to understand codepoints 
+
+// and they just took care of a surrogate pair
+
+for (int pt = 0; pt < consumed; pt++) {
+
+    pos += Character.charCount(Character.codePointAt(input, pt));
+
+}
+
+
+
+The point of this code is to check the charCount of the character that was just translated and move ahead by that many characters in the input string.  The bug is that it's indexing into the string using 'pt', which is always 0 at the beginning of the loop.  It's effetively checking the charCount of first character in the string every time.
+A patch is attached that fixes the issue and includes supporting unit tests.  Fixing this issue in CharSequenceTranslator uncovered an issue in CsvEscaper/CsvUnescaper caused by the fact that it wasn't respecting the "code point contract" described in CharSequenceTranslator.translate.  The fix there was to have the translate methods return the string's code point count rather than character count.

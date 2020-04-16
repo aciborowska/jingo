@@ -1,0 +1,26 @@
+As already reported on the developers mailing-list, the enhancement of classes that use method overloading may corrupt these classes. An example:
+
+public interface GenericEntity<PK extends Serializable> {
+        PK getEntityId();
+        void setEntityId(PK entityId);
+}
+
+public interface LongObjIdEntity extends GenericEntity<Long> {
+        Long getEntityId();
+        void setEntityId(Long entityId);
+}
+
+@Entity
+public class SomeEntity implements LongObjIdEntity {
+        private Long entityId;
+        @Id
+        @GeneratedValue
+        public Long getEntityId() 
+{ return entityId; }
+        public void setEntityId(Long entityId) 
+{ this.entityId = entityId; }
+}
+
+After enhancement of the class SomeEntity, calls to SomeEntity.class.getDeclaredFields() may fail with an VerifyError due to a "Wrong return type in function" getEntityId. This is a serious error because getDeclaredFields() is called for example during the deserialization of objects from an ObjectInputStream (which prohibits e.g. usage of such an enhanced entity as argument to an EJB-function) and even in the PCEnhancer class itself, which will fail when analyizing a previously enhanced class.
+
+The cause of this error is in my opinion related to bugs OPENJPA-251 and OPENJPA-329. Reflection on the class returns two versions of the getEntityId()-function: "Serializable getEntityId()" and "Long getEntityId()". The enhancer uses a version of the function getDeclaredMethod() of the serp-library, that does not guarantee which of these methods is returned, if only the name of the function and its parameter-types are specified. If the wrong method is picked, the enhanced class is no longer usable.

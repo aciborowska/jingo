@@ -1,0 +1,27 @@
+The current behavior of zookeeper for ephemeral nodes is that session expiration and ephemeral node deletion is not an atomic operation. 
+
+The side-effect of the above zookeeper behavior in Kafka, for certain corner cases, is that ephemeral nodes can be lost even if the session is not expired. The sequence of events that can lead to lossy ephemeral nodes is as follows - 
+
+1. The session expires on the client, it assumes the ephemeral nodes are deleted, so it establishes a new session with zookeeper and tries to re-create the ephemeral nodes. 
+2. However, when it tries to re-create the ephemeral node,zookeeper throws back a NodeExists error code. Now this is legitimate during a session disconnect event (since zkclient automatically retries the 
+operation and raises a NodeExists error). Also by design, Kafka server doesn't have multiple zookeeper clients create the same ephemeral node, so Kafka server assumes the NodeExists is normal. 
+3. However, after a few seconds zookeeper deletes that ephemeral node. So from the client's perspective, even though the client has a new valid session, its ephemeral node is gone. 
+
+This behavior is triggered due to very long fsync operations on the zookeeper leader. When the leader wakes up from such a long fsync operation, it has several sessions to expire. And the time between the session expiration and the ephemeral node deletion is magnified. Between these 2 operations, a zookeeper client can issue a ephemeral node creation operation, that could've appeared to have succeeded, but the leader later deletes the ephemeral node leading to permanent ephemeral node loss from the client's perspective. 
+
+Thread from zookeeper mailing list: http://zookeeper.markmail.org/search/?q=Zookeeper+3.3.4#query:Zookeeper%203.3.4%20date%3A201307%20+page:1+mid:zma242a2qgp6gxvx+state:results
+
+The way to reproduce this behavior is as follows -
+
+1. Bring up a zookeeper 3.3.4 cluster and create several sessions with ephemeral ndoes on it using zkclient. Make sure the session expiration callback is implemented and it re-registers the ephemeral node.
+2. Run the following script on the zookeeper leader -
+while true
+ do
+   kill -STOP $1
+   sleep 8
+   kill -CONT $1
+   sleep 60
+ done
+3. Run another script to check for existence of ephemeral nodes.
+
+This script shows that zookeeper loses the ephemeral nodes and the clients still have a valid session.

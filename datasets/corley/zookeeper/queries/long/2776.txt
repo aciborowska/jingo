@@ -1,0 +1,27 @@
+We found a bug of zookeeper election when used in our environment. It could be simply reproduced in 3 nodes cluster with default settings.
+
+	Assume zookeeper services down on all nodes and node 3 has bigger zxid than node1. this makes node 3 a potential leader.
+	Make node 2 down (or drop all incoming packages by firewall).
+	Start zookeeper services on node 1 and node 3.
+
+
+
+Zookeeper cluster cannot be successfully established in such a case. The following logs could be found and verified:
+
+	Notifications to node 2 always times out.
+	node 3 is always leading but always failed because (Timeout while waiting for epoch from quorum). It rarely get Follower during the period.
+	node 1 is always following but always failed to connect Leader. it gives up after tried for 5 times and then another round election started again and again.
+	the time node 3 decided to be a leader is 1s after node 1 giving up contacting it.
+	node 3 always receive Notification packages 5s after node 1.
+
+
+
+Then we analyzed source code of zookeeper-3.4.6 and found:
+
+	In election, Zookeeper send leader election message sequentially and has connection timeout 5s by default. This makes a 5s recv delay for nodes after (by id) the down node. Those nodes will get the same election notification 5s after those nodes which have smaller id than the down node.
+
+
+
+In the case mentioned above, node 3 realized the situation and jumped into LEADING status 5s after node 1 decided to follow it. For follower node 1, it tried to connect leader 5 attempts with 1s interval (hard-coded). This means all followers give up connecting leader after 4s. At the time when follower gave up, the node 3 has not even become the leader.
+
+– So, Is there any solution to configure or bypass this problem?

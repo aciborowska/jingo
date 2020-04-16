@@ -1,0 +1,433 @@
+Changing the order of multiple @ModelAttribute annotated methods on a class annotated with @Controller or @ControllerAdvice, OR changing the bean names of multiple classes annotated with @Controller or @ControllerAdvice each with a single @ModelAttribute annotated method can result in incorrect behaviour WHEN one of the @ModelAttribute methods arguments is annotated with a @ModelAttribute annotation that the other method can provide.
+The bean names seem to have an impact on the order of items in the modelAttributeAdviceCache.
+example:
+
+
+
+
+
+
+// Model classes
+
+
+
+
+ 
+
+
+
+
+class ObjectA {
+
+
+
+
+	String value
+
+
+
+
+	
+
+
+
+
+	ObjectA() {
+
+
+
+
+	}
+
+
+
+
+	
+
+
+
+
+	ObjectA(String value) {
+
+
+
+
+		this.value = value
+
+
+
+
+	}
+
+
+
+
+}
+
+
+
+
+ 
+
+
+
+
+class ObjectB {
+
+
+
+
+	String value
+
+
+
+
+ 
+
+
+
+
+	ObjectB() {
+
+
+
+
+	}
+
+
+
+
+	
+
+
+
+
+	ObjectB(String value) {
+
+
+
+
+		this.value = value
+
+
+
+
+	}
+
+
+
+
+}
+
+
+
+
+
+
+
+
+
+
+
+
+// Advice classes
+
+
+
+
+ 
+
+
+
+
+@ControllerAdvice
+
+
+
+
+class AdviceA {
+
+
+
+
+	@ModelAttribute
+
+
+
+
+	public ObjectA addObjectA(HttpServletRequest request) {
+
+
+
+
+		return new ObjectA('valueA')
+
+
+
+
+	}
+
+
+
+
+}
+
+
+
+
+ 
+
+
+
+
+@ControllerAdvice
+
+
+
+
+class AdviceB {
+
+
+
+
+	@ModelAttribute
+
+
+
+
+	public ObjectB addObjectB(HttpServletRequest request, @ModelAttribute ObjectA objectA) {
+
+
+
+
+		return new ObjectB(objectA.value + 'valueB')
+
+
+
+
+	}
+
+
+
+
+}
+
+
+
+
+
+
+OR
+
+
+
+
+
+
+@ControllerAdvice
+
+
+
+
+class Advice {
+
+
+
+
+	@ModelAttribute
+
+
+
+
+	public ObjectA addObjectA(HttpServletRequest request) {
+
+
+
+
+		return new ObjectA('valueA')
+
+
+
+
+	}
+
+
+
+
+ 
+
+
+
+
+	@ModelAttribute
+
+
+
+
+	public ObjectB addObjectB(HttpServletRequest request, @ModelAttribute ObjectA objectA) {
+
+
+
+
+		return new ObjectB(objectA.value + 'valueB')
+
+
+
+
+	}
+
+
+
+
+}
+
+
+
+
+
+
+The above scenarios work, addObjectB requires an instance of objectA.  However changing the class name of AdviceA to ZAdviceA OR moving addObjectB in Advice so it is above addObjectA changes the behavior.
+When called in the correct order the addObjectB method will be passed an instance of objectA created by addObjectA() using the non-default constructor.
+When called in the incorrect order the addObjectB method will be passed an instance of objectA created by Spring using the default constructor which will have a null 'value' property.
+After digging around though the code it appears the problem stems from 'getModelFactory' in org.springframework.web.servlet.mvc.method.annotation.RequestMappingHandlerAdapter.
+The list of attrMethods is built with no regard to dependency of the method arguments and their annotations and the attrMethods is used in the order created later on.
+The code in Spring 4.0.0.RELEASE looks like this:
+
+
+
+
+
+
+	private ModelFactory getModelFactory(HandlerMethod handlerMethod, WebDataBinderFactory binderFactory) {
+
+
+
+
+		SessionAttributesHandler sessionAttrHandler = getSessionAttributesHandler(handlerMethod);
+
+
+
+
+		Class<?> handlerType = handlerMethod.getBeanType();
+
+
+
+
+		Set<Method> methods = this.modelAttributeCache.get(handlerType);
+
+
+
+
+		if (methods == null) {
+
+
+
+
+			methods = HandlerMethodSelector.selectMethods(handlerType, MODEL_ATTRIBUTE_METHODS);
+
+
+
+
+			this.modelAttributeCache.put(handlerType, methods);
+
+
+
+
+		}
+
+
+
+
+		List<InvocableHandlerMethod> attrMethods = new ArrayList<InvocableHandlerMethod>();
+
+
+
+
+		// Global methods first
+
+
+
+
+		for (Entry<ControllerAdviceBean, Set<Method>> entry : this.modelAttributeAdviceCache.entrySet()) {
+
+
+
+
+			if(entry.getKey().isApplicableToBeanType(handlerType)) {
+
+
+
+
+				Object bean = entry.getKey().resolveBean();
+
+
+
+
+				for (Method method : entry.getValue()) {
+
+
+
+
+					attrMethods.add(createModelAttributeMethod(binderFactory, bean, method));
+
+
+
+
+				}
+
+
+
+
+			}
+
+
+
+
+		}
+
+
+
+
+				
+
+
+
+
+		for (Method method : methods) {
+
+
+
+
+			Object bean = handlerMethod.getBean();
+
+
+
+
+			attrMethods.add(createModelAttributeMethod(binderFactory, bean, method));
+
+
+
+
+		}
+
+
+
+
+		return new ModelFactory(attrMethods, binderFactory, sessionAttrHandler);
+
+
+
+
+	}
+
+
+
+
+
+
+Perhaps it is possible to fix this problem by ordering the attrMethods, based on the annotations, before the attrMethods are given to the ModelFactory, or perhaps before they are used in the ModelFactory?
+A possible comparator algorithm for sorting them:
+look at the method being sorted, determine if it has ModelAttribute parameter annotations using something like this:
+attrMethods.get(...).parameters[...].getParameterAnnotations()
+if it has a ModelAttribute parameter annotation that has the same 'name' then look at the entire list of attrMethods and make sure that
+the method that returns a ModelAttribute with the same name is before the method being sorted.			

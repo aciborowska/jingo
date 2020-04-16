@@ -1,0 +1,339 @@
+Hi,
+LockableFileWriter needs to be enhanced so that it can support different
+character encodings. Below is my attempt at introducing this functionality based
+on the existing class:
+(Also, should LockableFileWriter be a decoration class?)
+Cheers,
+Andy
+– START CLASS –
+package com.sita.ats.io;
+import java.io.*;
+import org.apache.commons.lang.StringUtils;
+/**
+
+FileWriter that will create and honor lock files to allow simple
+cross thread file lock handling and allow writing to a given encoding.
+If <code>Writer</code> attributes
+are unspecified, the default behavior is to overwrite (rather than
+to iAppend), and to use the value of the system property
+<code>java.io.tmpdir</code> for the lock file directory.
+ *
+@version $Id: ULockableFileWriter.java,v 1.1 2005/09/27 07:23:33 andyl Exp $
+@author Andy Lehane
+ */
+public class ULockableFileWriter extends Writer {
+
+    /** The extension for the lock file. */
+    private static final String LCK = ".lck";
+    /** The lock file. */
+    private File iLockFile;   // Initialises to null
+    /** The write used to write to the file. */
+    private Writer iWriter;    // Initialises to null
+    /** Should we append to the file or not. */
+    private boolean iAppend; // Initialises to false
+    /** The encoding to use. */
+    private String iEncoding; // Initialises to null 
+    /**
+
+Constructs a LockableFileWriter. If the file exists, it is overwritten.
+@param fileName file to write to
+@throws IOException in case of an I/O error
+     */
+    public ULockableFileWriter(final String fileName) throws IOException 
+{
+        this(fileName, null, false, null);
+    }
+
+    /**
+
+Constructs a LockableFileWriter.
+@param fileName file to write to
+@param append true if content should be appended (default is to overwrite).
+@throws IOException in case of an I/O error
+     */
+    public ULockableFileWriter(final String fileName, final boolean append)
+throws IOException 
+{
+        this(fileName, null, append, null);
+    }
+
+    /**
+
+Constructs a LockableFileWriter.
+@param fileName file to write to
+@param append true if content should be appended (default is to overwrite).
+@param lockDir Specifies the directory in which the lock file should be held.
+@throws IOException in case of an I/O error
+     */
+    public ULockableFileWriter(final String fileName, final boolean append,
+final String lockDir) throws IOException 
+{
+        this(new File(fileName), null, append, lockDir);
+    }
+
+    /**
+
+Constructs a LockableFileWriter. If the file exists, it is overwritten.
+@param file file to write to
+@throws IOException in case of an I/O error
+     */
+    public ULockableFileWriter(final File file) throws IOException 
+{
+        this(file, null, false, null);
+    }
+
+    /**
+
+Constructs a LockableFileWriter.
+@param file file to write to
+@param append true if content should be appended (default is to overwrite).
+@throws IOException in case of an I/O error
+     */
+    public ULockableFileWriter(final File file, final boolean append) throws
+IOException 
+{
+        this(file, null, append, null);
+    }
+
+    /**
+
+Constructs a LockableFileWriter.
+@param file file to write to
+@param append true if content should be appended (default is to overwrite).
+@param lockDir Specifies the directory in which the lock file should be held.
+@throws IOException in case of an I/O error
+     */
+    public ULockableFileWriter(final File file, final boolean append, final
+String lockDir) throws IOException 
+{
+
+        this(file, null, append, lockDir);
+    }
+
+    /**
+
+Constructs a LockableFileWriter. If the file exists, it is overwritten.
+@param fileName file to write to
+@param encoding The encoding to use when writing.
+@throws IOException in case of an I/O error
+     */
+    public ULockableFileWriter(
+            final String fileName,
+            final String encoding) throws IOException 
+{
+        this(fileName, encoding, false, null);
+    }
+
+    /**
+
+Constructs a LockableFileWriter.
+@param fileName file to write to
+@param encoding The encoding to use when writing.
+@param append true if content should be appended (default is to overwrite).
+@throws IOException in case of an I/O error
+     */
+    public ULockableFileWriter(
+            final String fileName, 
+            final String encoding,
+            final boolean append) throws IOException 
+{
+        this(fileName, encoding, append, null);
+    }
+
+    /**
+
+Constructs a LockableFileWriter.
+@param fileName file to write to
+@param encoding The encoding to use when writing.
+@param append true if content should be appended (default is to overwrite).
+@param lockDir Specifies the directory in which the lock file should be held.
+@throws IOException in case of an I/O error
+     */
+    public ULockableFileWriter(
+            final String fileName,
+            final String encoding,
+            final boolean append,
+            final String lockDir) throws IOException 
+{
+        this(new File(fileName), encoding, append, lockDir);
+    }
+
+    /**
+
+Constructs a LockableFileWriter. If the file exists, it is overwritten.
+@param file file to write to
+@param encoding The encoding to use when writing.
+@throws IOException in case of an I/O error
+     */
+    public ULockableFileWriter(final File file, final String encoding) throws
+IOException 
+{
+        this(file, encoding, false, null);
+    }
+
+    /**
+
+Constructs a LockableFileWriter.
+@param file file to write to
+@param encoding The encoding to use when writing.
+@param append true if content should be appended (default is to overwrite).
+@throws IOException in case of an I/O error
+     */
+    public ULockableFileWriter(
+            final File file,
+            final String encoding,
+            final boolean append) throws IOException 
+{
+        this(file, encoding, append, null);
+    }
+
+    /**
+
+Constructs a LockableFileWriter.
+@param file file to write to
+@param encoding The encoding to use when writing.
+@param append true if content should be appended (default is to overwrite).
+@param lockDir Specifies the directory in which the lock file should be held.
+@throws IOException in case of an I/O error
+     */
+    public ULockableFileWriter(
+            final File file,
+            final String encoding,
+            final boolean append,
+            final String lockDir) throws IOException {
+
+        super(file);
+        iAppend = append;
+        iEncoding = encoding;
+        String lDir = lockDir;
+        if (lDir == null) 
+{
+            lDir = System.getProperty("java.io.tmpdir");
+        }
+        testLockDir(new File(lDir));
+        iLockFile = new File(lDir, file.getName() + LCK);
+        createLock();
+        try {
+            if (StringUtils.isEmpty(encoding)) 
+{
+                iWriter = new FileWriter(file.getAbsolutePath(), iAppend);
+            }
+ else {
+                if (file.getParentFile().exists() == false) 
+{
+                    file.getParentFile().mkdirs();
+                }
+
+                if (file.getAbsoluteFile().exists() == false) 
+{
+                    file.getAbsoluteFile().createNewFile();
+                }
+
+                iWriter = new OutputStreamWriter(new
+FileOutputStream(file.getAbsolutePath(), iAppend), iEncoding);
+            }
+        } catch (IOException ioe) 
+{
+            iLockFile.delete();
+            throw ioe;
+        }
+    }
+    //-----------------------------------------------------------------------
+    /**
+
+Tests that we can write to the lock directory.
+
+@param lockDir File representing the lock directory.
+@throws IOException if we cannot write to the lock directory or cannot
+file the lock file.
+     */
+    private void testLockDir(final File lockDir) throws IOException 
+Unknown macro: {        if (!lockDir.exists()) {
+            throw new IOException(
+                    "Could not find lockDir: " + lockDir.getAbsolutePath());
+        }        if (!lockDir.canWrite()) {
+            throw new IOException(
+                    "Could not write to lockDir: " + lockDir.getAbsolutePath());
+        }    } 
+
+    /**
+
+Creates the lock file.
+
+@throws IOException if we cannot create the file.
+     */
+    private void createLock() throws IOException {
+        synchronized (ULockableFileWriter.class) 
+Unknown macro: {            if (!iLockFile.createNewFile()) {
+                throw new IOException("Can't write file, lock " +
+                    iLockFile.getAbsolutePath() + " exists");
+            }            iLockFile.deleteOnExit();        } 
+    }
+
+    //-----------------------------------------------------------------------
+    /**
+
+Close the stream, flushing it first.  Once a stream has been closed,
+further write() or flush() invocations will cause an IOException to be
+thrown.  Closing a previously-closed stream, however, has no effect.
+     *
+@exception  IOException  If an I/O error occurs
+     */
+    public void close() throws IOException 
+Unknown macro: {        try {
+            iWriter.close();
+        } finally {
+            iLockFile.delete();
+        }    } 
+
+    /**
+
+Write a portion of a string.
+     *
+@param  cbuf  The characters to write
+@param  off  Offset from which to start writing characters
+@param  len  Number of characters to write
+     *
+@exception  IOException  If an I/O error occurs
+     */
+    public void write(final char[] cbuf, final int off, final int len) throws
+IOException 
+{
+        iWriter.write(cbuf, off, len);
+    }
+
+    /**
+
+Flush the stream.  If the stream has saved any characters from the
+various write() methods in a buffer, write them immediately to their
+intended destination.  Then, if that destination is another character or
+byte stream, flush it.  Thus one flush() invocation will flush all the
+buffers in a chain of Writers and OutputStreams.
+<p>
+If the intended destination of this stream is an abstraction provided by
+the underlying operating system, for example a file, then flushing the
+stream guarantees only that bytes previously written to the stream are
+passed to the operating system for writing; it does not guarantee that
+they are actually written to a physical device such as a disk drive.
+     *
+@exception  IOException  If an I/O error occurs
+     */
+    public void flush() throws IOException 
+{
+        iWriter.flush();
+    }
+
+    //-----------------------------------------------------------------------
+    /**
+
+Gets the character encoding used when writing to the file.
+
+@return The encoding method.
+     */
+    public String getEncoding() 
+{
+        return iEncoding;
+    }
+}
+
+– END CLASS –

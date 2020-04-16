@@ -1,0 +1,39 @@
+when configuring hbase.rs.cacheblocksonwrite as true on a region server ,or setting  cacheDataOnWrite as true on a column family in a table ,we flush the header bytes,ondisk bytebuffer and checksum bytes to disk,but only store the header and uncompressedBytesWithoutHeader to the block cache .
+so if we read a block from block cache which cached on write ,the method  getBufferWithoutHeaderof org.apache.hadoop.hbase.io.hfile.HFileBlock will cut off the head and checksum bytes,even if the checksum was never written ,and then we get a IllegalArgumentException thrown by ByteBuffer cause there is not enough bytes to read or skip at the end of the ByteBuffer.
+I fixed this problem but I don't know how to commit a patch ,so I paste my code here :
+org.apache.hadoop.hbase.io.hfile.HFileBlock.java
+
+
+public ByteBuffer getBufferWithoutHeader() {
+
+		int length,lengthWithoutHeader=buf.limit()-headerSize(),lengthWithoutHeaderAndCheckSum=lengthWithoutHeader - totalChecksumBytes();
+
+
+
+        if(lengthWithoutHeader==uncompressedSizeWithoutHeader){ // NO check sum tail
+
+            length=lengthWithoutHeader;
+
+        } else if(lengthWithoutHeaderAndCheckSum==uncompressedSizeWithoutHeader){ // has check sum tail
+
+            length=lengthWithoutHeaderAndCheckSum;
+
+        } else {
+
+            throw new IllegalArgumentException(this.toString()+",this block may be crashed");
+
+        }
+
+        ByteBuffer buffer =ByteBuffer.wrap(buf.array(),
+
+                    buf.arrayOffset() + headerSize(),length)//length
+
+                    .slice();
+
+           
+
+        return buffer;
+
+}
+
+

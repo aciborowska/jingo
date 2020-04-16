@@ -1,0 +1,26 @@
+OraclePagingQueryProvider.generateJumpToItemQuery generates a query such as the following:
+SELECT * FROM (
+  SELECT ROWID AS SORT_KEY
+  FROM mytable
+  ORDER BY ROWID ASC
+)
+WHERE ROWNUM = <offset>
+This will only work correctly when <offset> is 1 – which is the one place where AbstractPagingItemReader.generateJumpToItemQuery is not used.
+In my case, the problem shows up where I have partitioned a set of items to process. The partition that starts at offset 0 works correctly. All the rest of the partitions fail when they attempt to find the startAfterValue by executing this query since the query will always return zero rows for offset > 1. Something like the following will be on the stack:
+[6/21/10 10:47:17:201 EDT] 0000306c AbstractStep  E org.springframework.batch.core.step.AbstractStep execute Encountered an error executing the step
+                                 org.springframework.batch.item.ItemStreamException: Could not move to stored position on restart
+	at org.springframework.batch.item.support.AbstractItemCountingItemStreamItemReader.open(AbstractItemCountingItemStreamItemReader.java:155)
+[deletia]
+Caused by: org.springframework.dao.EmptyResultDataAccessException: Incorrect result size: expected 1, actual 0
+	at org.springframework.dao.support.DataAccessUtils.requiredSingleResult(DataAccessUtils.java:71)
+	at org.springframework.jdbc.core.JdbcTemplate.queryForObject(JdbcTemplate.java:717)
+	at org.springframework.batch.item.database.JdbcPagingItemReader.doJumpToPage(JdbcPagingItemReader.java:241)
+	at org.springframework.batch.item.database.AbstractPagingItemReader.jumpToItem(AbstractPagingItemReader.java:157)
+	at org.springframework.batch.item.support.AbstractItemCountingItemStreamItemReader.open(AbstractItemCountingItemStreamItemReader.java:153)
+The fix is very simple. The ROWNUM column in the inner query MUST be aliased:
+SELECT * FROM (
+  SELECT ROWID AS SORT_KEY, ROWNUM AS ROWNUM_
+  FROM mytable
+  ORDER BY ROWID ASC
+)
+WHERE ROWNUM_ = <offset>

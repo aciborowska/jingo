@@ -1,0 +1,490 @@
+Creating upstream issue as the same deadlock can be found in WFLY.
+Descirption as comment 5 in BZ1142538
+
+
+
+
+
+
+The following deadlock still exists.
+
+
+
+
+ 
+
+
+
+
+Steps to Reproduce:
+
+
+
+
+1. Prepare a running EAP instance with secured management port - optionally in VM
+
+
+
+
+2. Execute export JAVA_OPTS="-agentlib:jdwp=transport=dt_socket,address=8787,server=y,suspend=y"
+
+
+
+
+3. In the same terminal, execute "bin/jboss-cli.sh --connect --controller=$EAP_IP --user=admin --password=password ':read-resource'"
+
+
+
+
+4. From yet another terminal, execute "jdb -attach localhost:8787"
+
+
+
+
+5. In JDB: 
+
+
+
+
+5.a. Create breakpoint: "stop in org.xnio.channels.FramedMessageChannel.receive(java.nio.ByteBuffer)"
+
+
+
+
+5.b. Resume all threads: "resume"
+
+
+
+
+5.c. [Execute five times] Wait until breakpoint is hit and execute "resume". Either set timeout or be fast so that timeout does not occur first
+
+
+
+
+6. Execute "kill -9 $EAP_PID" - optionally in VM
+
+
+
+
+7. In JDB:
+
+
+
+
+8.a. Remove breakpoint: "clear org.xnio.channels.FramedMessageChannel.receive(java.nio.ByteBuffer)"
+
+
+
+
+8.b. Resume all threads: "resume"
+
+
+
+
+9. Now dump the stack trace of jboss-cli.sh: "kill -3 $JBOSS_CLI_PID"
+
+
+
+
+ 
+
+
+
+
+ 
+
+
+
+
+ 
+
+
+
+
+ 
+
+
+
+
+Found one Java-level deadlock:
+
+
+
+
+=============================
+
+
+
+
+"Remoting "cli-client" read-1":
+
+
+
+
+  waiting to lock monitor 0x00007ff9c829b558 (object 0x0000000783433408, a java.lang.String),
+
+
+
+
+  which is held by "main"
+
+
+
+
+"main":
+
+
+
+
+  waiting to lock monitor 0x00007ff9c8333c48 (object 0x00000007851ae6e0, a java.util.ArrayDeque),
+
+
+
+
+  which is held by "Remoting "cli-client" read-1"
+
+
+
+
+ 
+
+
+
+
+Java stack information for the threads listed above:
+
+
+
+
+===================================================
+
+
+
+
+"Remoting "cli-client" read-1":
+
+
+
+
+        at org.jboss.as.cli.impl.CLIModelControllerClient$ChannelCloseHandler.handleClose(CLIModelControllerClient.java:286)
+
+
+
+
+        - waiting to lock <0x0000000783433408> (a java.lang.String)
+
+
+
+
+        at org.jboss.as.cli.impl.CLIModelControllerClient$ChannelCloseHandler.handleClose(CLIModelControllerClient.java:269)
+
+
+
+
+        at org.jboss.remoting3.spi.SpiUtils.safeHandleClose(SpiUtils.java:54)
+
+
+
+
+        at org.jboss.remoting3.spi.AbstractHandleableCloseable$CloseHandlerTask.run(AbstractHandleableCloseable.java:501)
+
+
+
+
+        at org.jboss.remoting3.spi.AbstractHandleableCloseable.runCloseTask(AbstractHandleableCloseable.java:406)
+
+
+
+
+        at org.jboss.remoting3.spi.AbstractHandleableCloseable.closeComplete(AbstractHandleableCloseable.java:277)
+
+
+
+
+        at org.jboss.remoting3.remote.RemoteConnectionChannel.closeAction(RemoteConnectionChannel.java:532)
+
+
+
+
+        at org.jboss.remoting3.spi.AbstractHandleableCloseable.closeAsync(AbstractHandleableCloseable.java:359)
+
+
+
+
+        at org.jboss.remoting3.remote.RemoteConnectionHandler.closeAllChannels(RemoteConnectionHandler.java:392)
+
+
+
+
+        - locked <0x00000007851ae6e0> (a java.util.ArrayDeque)
+
+
+
+
+        at org.jboss.remoting3.remote.RemoteConnectionHandler.handleConnectionClose(RemoteConnectionHandler.java:109)
+
+
+
+
+        at org.jboss.remoting3.remote.RemoteReadListener.handleEvent(RemoteReadListener.java:81)
+
+
+
+
+        - locked <0x00000007851ae6e0> (a java.util.ArrayDeque)
+
+
+
+
+        at org.jboss.remoting3.remote.RemoteReadListener.handleEvent(RemoteReadListener.java:45)
+
+
+
+
+        at org.xnio.ChannelListeners.invokeChannelListener(ChannelListeners.java:72)
+
+
+
+
+        at org.xnio.channels.TranslatingSuspendableChannel.handleReadable(TranslatingSuspendableChannel.java:189)
+
+
+
+
+        at org.xnio.channels.TranslatingSuspendableChannel$1.handleEvent(TranslatingSuspendableChannel.java:103)
+
+
+
+
+        at org.xnio.ChannelListeners.invokeChannelListener(ChannelListeners.java:72)
+
+
+
+
+        at org.xnio.channels.TranslatingSuspendableChannel.handleReadable(TranslatingSuspendableChannel.java:189)
+
+
+
+
+        at org.xnio.ssl.JsseConnectedSslStreamChannel.handleReadable(JsseConnectedSslStreamChannel.java:183)
+
+
+
+
+        at org.xnio.channels.TranslatingSuspendableChannel$1.handleEvent(TranslatingSuspendableChannel.java:103)
+
+
+
+
+        at org.xnio.ChannelListeners.invokeChannelListener(ChannelListeners.java:72)
+
+
+
+
+        at org.xnio.nio.NioHandle.run(NioHandle.java:90)
+
+
+
+
+        at org.xnio.nio.WorkerThread.run(WorkerThread.java:198)
+
+
+
+
+"main":
+
+
+
+
+        at org.jboss.remoting3.remote.RemoteConnectionChannel.receiveMessage(RemoteConnectionChannel.java:361)
+
+
+
+
+        - waiting to lock <0x00000007851ae6e0> (a java.util.ArrayDeque)
+
+
+
+
+        at org.jboss.as.protocol.mgmt.FutureManagementChannel$Establishing.connectionOpened(FutureManagementChannel.java:217)
+
+
+
+
+        at org.jboss.as.protocol.ProtocolConnectionManager.connect(ProtocolConnectionManager.java:78)
+
+
+
+
+        - locked <0x0000000784978a00> (a org.jboss.as.protocol.ProtocolConnectionManager)
+
+
+
+
+        at org.jboss.as.protocol.mgmt.FutureManagementChannel$Establishing.getChannel(FutureManagementChannel.java:204)
+
+
+
+
+        at org.jboss.as.cli.impl.CLIModelControllerClient.getOrCreateChannel(CLIModelControllerClient.java:160)
+
+
+
+
+        - locked <0x0000000783433408> (a java.lang.String)
+
+
+
+
+        at org.jboss.as.cli.impl.CLIModelControllerClient$2.getChannel(CLIModelControllerClient.java:120)
+
+
+
+
+        at org.jboss.as.protocol.mgmt.ManagementChannelHandler.executeRequest(ManagementChannelHandler.java:123)
+
+
+
+
+        at org.jboss.as.protocol.mgmt.ManagementChannelHandler.executeRequest(ManagementChannelHandler.java:98)
+
+
+
+
+        at org.jboss.as.controller.client.impl.AbstractModelControllerClient.executeRequest(AbstractModelControllerClient.java:236)
+
+
+
+
+        at org.jboss.as.controller.client.impl.AbstractModelControllerClient.execute(AbstractModelControllerClient.java:141)
+
+
+
+
+        at org.jboss.as.controller.client.impl.AbstractModelControllerClient.executeForResult(AbstractModelControllerClient.java:127)
+
+
+
+
+        at org.jboss.as.controller.client.impl.AbstractModelControllerClient.execute(AbstractModelControllerClient.java:71)
+
+
+
+
+        at org.jboss.as.cli.impl.CommandContextImpl.tryConnection(CommandContextImpl.java:980)
+
+
+
+
+        at org.jboss.as.cli.impl.CommandContextImpl.connectController(CommandContextImpl.java:841)
+
+
+
+
+        at org.jboss.as.cli.impl.CommandContextImpl.connectController(CommandContextImpl.java:817)
+
+
+
+
+        at org.jboss.as.cli.impl.CliLauncher.initCommandContext(CliLauncher.java:282)
+
+
+
+
+        at org.jboss.as.cli.impl.CliLauncher.main(CliLauncher.java:250)
+
+
+
+
+        at org.jboss.as.cli.CommandLineMain.main(CommandLineMain.java:34)
+
+
+
+
+        at sun.reflect.NativeMethodAccessorImpl.invoke0(Native Method)
+
+
+
+
+        at sun.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:62)
+
+
+
+
+        at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)
+
+
+
+
+        at java.lang.reflect.Method.invoke(Method.java:483)
+
+
+
+
+        at org.jboss.modules.Module.run(Module.java:312)
+
+
+
+
+        at org.jboss.modules.Main.main(Main.java:460)
+
+
+
+
+
+
+
+It can be easily reproduce with Eclipse as:
+
+
+
+
+
+
+1 start Wildfly
+
+
+
+
+2 uncomment "JAVA_OPTS="$JAVA_OPTS -agentlib:jdwp=transport=dt_socket,address=8787,server=y,suspend=y" in jboss-cli.sh and connect to server
+
+
+
+
+3 add two break points at
+
+
+
+
+    CLIModelControllerClient$ChannelCloseHandler [line: 285] - handleClose(Channel, IOException)
+
+
+
+
+    RemoteConnectionChannel [line: 360] - receiveMessage(Receiver)
+
+
+
+
+4 connect to 8787 from eclipse debug
+
+
+
+
+5 shutdown Wildfly
+
+
+
+
+ 
+
+
+
+
+A deadlock between "main" and "cli-client" is in Eclipse debug stack.
+
+
+
+
+
+

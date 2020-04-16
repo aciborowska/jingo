@@ -1,0 +1,48 @@
+I've been doing some tests with Pig & Hive, trying to gain some performance using the OrcStorage class and his "Predicate Push Down" loader. I've followed the next steps:
+
+1, Download a dataset
+
+ftp://ita.ee.lbl.gov/traces/NASA_access_log_Aug95.gz
+
+2. Create a new larger file by copying the same original file multiple times.
+
+cat NASA_access_log_Aug95 NASA_access_log_Aug95 ... > NASA
+
+3. Add a new line in the data file
+
+echo 'slppp6.intermind.net - - [01/Aug/1995:00:00:11 -0400] "GET test HTTP/1.0" 200 9202' >> NASA
+
+and split the file into different parts
+
+split -l 1000000 NASA NASA.
+
+4. Create the ORC table in Hive
+
+DROP TABLE nasadata_txt;
+DROP TABLE nasadata_orc;
+
+CREATE TABLE nasadata_txt(ip VARCHAR(50), user_identifier VARCHAR(50), user_id VARCHAR(50),date_time VARCHAR(50),zone VARCHAR(10),method VARCHAR(5),uri VARCHAR(200),version VARCHAR(10),status DECIMAL(3,0),size DECIMAL(10,0)) ROW FORMAT DELIMITED FIELDS TERMINATED BY ' ' STORED AS TEXTFILE;
+CREATE TABLE nasadata_orc(ip VARCHAR(50), user_identifier VARCHAR(50), user_id VARCHAR(50),date_time VARCHAR(50),zone VARCHAR(10),method VARCHAR(5),uri VARCHAR(200),version VARCHAR(10),status DECIMAL(3,0),size DECIMAL(10,0)) STORED AS ORC;
+
+– Load into Text table
+LOAD DATA LOCAL INPATH 'NASA.*' INTO TABLE nasadata_txt;
+
+
+– Copy to ORC table
+INSERT OVERWRITE TABLE nasadata_orc SELECT * FROM nasadata_txt;
+
+5.  Execute this pig script
+
+rmf /tmp/pruebaPPD;
+
+A = LOAD '/apps/hive/warehouse/nasadata_orc' using OrcStorage() as (ip,user_identifier,user_id,date_time,zone,method,uri,version,status,size);
+A = foreach A generate ip,uri,status;
+A = filter A by uri == 'test';
+A = group A by uri;
+A = foreach A generate group,COUNT;
+store A into '/tmp/pruebaPPD' using PigStorage(';');
+
+6. Execute the previous script replacing OrcStorage by org.apache.hive.hcatalog.pig.HCatLoader.
+
+
+I can't see any difference in performance between using OrcStorage and HCatLoader. Is there anything wrong in what I'm doing? Do I have to set any property?

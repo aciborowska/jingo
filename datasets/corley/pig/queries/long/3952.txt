@@ -1,0 +1,37 @@
+If <code>-tagSplit</code> is specified, PigStorage will prepend the full file split information, separated by hash ('#') marks, to each Tuple/row:
+
+
+	File path (directory and filename) of the split
+	Split index (zero-based)
+	Split offset: starting position of the split in bytes.
+	Split length: length of the split in bytes.
+
+
+
+Motivating examples are 
+
+
+	attach a unique ordered ID without a reduce: with the split index and sequentially numbered files (or some other strict ordering of the filenames) you can build a serial ID from say SPRINTF("%05d-%3d-%8d", (int)file_idx, (int)split_idx, rank_vals).
+	do a consistent shuffle; the lines will be well-mixed but remain identically shuffled from run to run. With a seedable hash function you can stabilize the mixing for testing purposes.
+
+
+
+
+-- shuffle according to a hash with good mixing properties. MD5 is OK but  murmur3 from DATAFU-47 even better.
+DEFINE Hasher datafu.pig.hash.MD5('hex');
+
+vals = LOAD '/data/geo/us_city_pops.tsv' USING PigStorage('\t', '-tagSplit')
+  AS (split_info:chararray, city:chararray, state:chararray, pop:int);
+vals_rked = RANK vals;
+vals_ided = FOREACH vals_rked {
+  line_info = CONCAT((chararray)split_info, '#', (chararray)rank_vals);
+  GENERATE Hasher((chararray)line_info) AS rand_id, *; 
+  };
+vals_shuffled = FOREACH (ORDER vals_ided BY rand_id) GENERATE *;
+
+STORE vals_shuffled INTO '/data/out/vals_shuffled';
+-- 7b86bdc8f28edb05025a556c06805753        37      file:/data/geo/census/us_city_pops.tsv#0#0#1541    Kansas City             Missouri         463202
+-- 7c9c93658545d5aba2825699866cb024        13      file:/data/geo/census/us_city_pops.tsv#0#0#1541    Austin                  Texas            820611
+-- 8532dc8d18992a688621950c50b6ca80        14      file:/data/geo/us_city_pops.tsv#0#0#1541    San Francisco           California       812826
+-- 8d8632fecb4895288f1684c451a01a0b        29      file:/data/geo/us_city_pops.tsv#0#0#1541    Portland                Oregon           593820
+

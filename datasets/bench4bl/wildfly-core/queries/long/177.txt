@@ -1,0 +1,213 @@
+Intermittent failure, e.g. 
+http://brontes.lab.eng.brq.redhat.com/viewLog.html?buildTypeId=WildFlyCore_PullRequest&buildId=26382
+Test history shows a couple other failures.
+Looking at the server logs for that failure, I see this in the main-one log:
+
+
+
+
+
+
+18:53:21,273 INFO  [org.jboss.as.server] (ServerService Thread Pool -- 5) WFLYSRV0010: Deployed "web-suspend.jar" (runtime-name : "web-suspend.jar")
+
+
+
+
+18:53:21,297 INFO  [stdout] (XNIO-1 task-1) Attempting 1 HttpServerExchange{ GET /web-suspend}
+
+
+
+
+18:53:22,287 INFO  [org.jboss.as.server] (ServerService Thread Pool -- 5) WFLYSRV0211: Suspending server
+
+
+
+
+18:53:22,338 INFO  [stdout] (XNIO-1 task-2) Attempting 2 HttpServerExchange{ GET /web-suspend}
+
+
+
+
+18:53:22,345 INFO  [stdout] (XNIO-1 I/O-1) Rejected 2 HttpServerExchange{ GET /web-suspend}
+
+
+
+
+18:53:22,351 INFO  [stdout] (XNIO-1 task-4) Skipping request 3 HttpServerExchange{ GET /web-suspend}
+
+
+
+
+18:53:22,391 INFO  [org.jboss.as.server.deployment] (MSC service thread 1-1) WFLYSRV0028: Stopped deployment web-suspend.jar (runtime-name: web-suspend.jar) in 6ms
+
+
+
+
+18:53:22,460 INFO  [org.jboss.as] (MSC service thread 1-1) WFLYSRV0050: WildFly Core 1.0.0.Alpha10-SNAPSHOT "Kenny" stopped in 20ms
+
+
+
+
+
+
+
+Note the "Skipping request 3" line – so that request was received.
+The client side failure though was as if the connection was refused:
+
+
+
+
+
+
+java.io.IOException: java.util.concurrent.ExecutionException: java.net.ConnectException: Connection refused
+
+
+
+
+    at java.util.concurrent.FutureTask.report(FutureTask.java:122)
+
+
+
+
+    at java.util.concurrent.FutureTask.get(FutureTask.java:202)
+
+
+
+
+    at org.jboss.as.test.integration.common.HttpRequest.execute(HttpRequest.java:50)
+
+
+
+
+    at org.jboss.as.test.integration.common.HttpRequest.get(HttpRequest.java:80)
+
+
+
+
+    at org.jboss.as.test.integration.domain.suspendresume.DomainGracefulShutdownTestCase.testGracefulShutdownDomainLevel(DomainGracefulShutdownTestCase.java:129)
+
+
+
+
+Caused by: java.net.ConnectException: Connection refused
+
+
+
+
+    at java.net.PlainSocketImpl.socketConnect(Native Method)
+
+
+
+
+    at java.net.AbstractPlainSocketImpl.doConnect(AbstractPlainSocketImpl.java:339)
+
+
+
+
+    at java.net.AbstractPlainSocketImpl.connectToAddress(AbstractPlainSocketImpl.java:200)
+
+
+
+
+    at java.net.AbstractPlainSocketImpl.connect(AbstractPlainSocketImpl.java:182)
+
+
+
+
+    at java.net.SocksSocketImpl.connect(SocksSocketImpl.java:392)
+
+
+
+
+    at java.net.Socket.connect(Socket.java:579)
+
+
+
+
+    at java.net.Socket.connect(Socket.java:528)
+
+
+
+
+    at sun.net.NetworkClient.doConnect(NetworkClient.java:180)
+
+
+
+
+    at sun.net.www.http.HttpClient.openServer(HttpClient.java:432)
+
+
+
+
+    at sun.net.www.http.HttpClient.openServer(HttpClient.java:527)
+
+
+
+
+    at sun.net.www.http.HttpClient.parseHTTPHeader(HttpClient.java:763)
+
+
+
+
+    at sun.net.www.http.HttpClient.parseHTTP(HttpClient.java:633)
+
+
+
+
+    at sun.net.www.protocol.http.HttpURLConnection.getInputStream(HttpURLConnection.java:1323)
+
+
+
+
+    at java.net.HttpURLConnection.getResponseCode(HttpURLConnection.java:468)
+
+
+
+
+    at org.jboss.as.test.integration.common.HttpRequest.processResponse(HttpRequest.java:150)
+
+
+
+
+    at org.jboss.as.test.integration.common.HttpRequest.access$000(HttpRequest.java:44)
+
+
+
+
+    at org.jboss.as.test.integration.common.HttpRequest$1.call(HttpRequest.java:77)
+
+
+
+
+    at org.jboss.as.test.integration.common.HttpRequest$1.call(HttpRequest.java:72)
+
+
+
+
+    at java.util.concurrent.FutureTask.run(FutureTask.java:262)
+
+
+
+
+    at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1145)
+
+
+
+
+    at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:615)
+
+
+
+
+    at java.lang.Thread.run(Thread.java:744)
+
+
+
+
+
+
+
+So, perhaps:
+1) A race, where unblocking the suspend resulted in the service stopping and the fake undertow going away before the response went out? With the client interpreting that as a connect failure? We've had plenty of those kinds of problems with management ops when we reload/shutdown the server.
+2) The SuspendResumeHandler doesn't actually write any response to request 3, so maybe that's a problem? This seems unlikely, and if it were a problem I'd think it would be consistent.
+3) ???

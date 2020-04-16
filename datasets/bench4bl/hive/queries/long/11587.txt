@@ -1,0 +1,15 @@
+Due to the legacy in in-memory mapjoin and conservative planning, the memory estimation code for mapjoin hashtable is currently not very good. It allocates the probe erring on the side of more memory, not taking data into account because unlike the probe, it's free to resize, so it's better for perf to allocate big probe and hope for the best with regard to future data size. It is not true for hybrid case.
+There's code to cap the initial allocation based on memory available (memUsage argument), but due to some code rot, the memory estimates from planning are not even passed to hashtable anymore (there used to be two config settings, hashjoin size fraction by itself, or hashjoin size fraction for group by case), so it never caps the memory anymore below 1 Gb. 
+Initial capacity is estimated from input key count, and in hybrid join cache can exceed Java memory due to number of segments.
+There needs to be a review and fix of all this code.
+Suggested improvements:
+1) Make sure "initialCapacity" argument from Hybrid case is correct given the number of segments. See how it's calculated from keys for regular case; it needs to be adjusted accordingly for hybrid case if not done already.
+1.5) Note that, knowing the number of rows, the maximum capacity one will ever need for probe size (in longs) is row count (assuming key per row, i.e. maximum possible number of keys) divided by load factor, plus some very small number to round up. That is for flat case. For hybrid case it may be more complex due to skew, but that is still a good upper bound for the total probe capacity of all segments.
+2) Rename memUsage to maxProbeSize, or something, make sure it's passed correctly based on estimates that take into account both probe and data size, esp. in hybrid case.
+3) Make sure that memory estimation for hybrid case also doesn't come up with numbers that are too small, like 1-byte hashtable. I am not very familiar with that code but it has happened in the past.
+Other issues we have seen:
+4) Cap single write buffer size to 8-16Mb. The whole point of WBs is that you should not allocate large array in advance. Even if some estimate passes 500Mb or 40Mb or whatever, it doesn't make sense to allocate that.
+5) For hybrid, don't pre-allocate WBs - only allocate on write.
+6) Change everywhere rounding up to power of two is used to rounding down, at least for hybrid case 
+I wanted to put all of these items in single JIRA so we could keep track of fixing all of them.
+I think there are JIRAs for some of these already, feel free to link them to this one.

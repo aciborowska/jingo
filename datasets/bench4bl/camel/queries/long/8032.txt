@@ -1,0 +1,70 @@
+I have a simple camel route:
+
+
+
+<camelContext xmlns="http://camel.apache.org/schema/spring">
+
+    <route>
+
+        <from uri="file:C:/tmp/data/in?include=.*$&amp;move=C:/tmp/data/done/${file:onlyname}-${exchangeId}" />
+
+        <setHeader headerName="CamelFileName">
+
+            <simple>${file:onlyname}-${exchangeId}</simple>
+
+        </setHeader>
+
+        <to uri="file:C:/tmp/data/out" />
+
+    </route>
+
+</camelContext>
+
+
+
+If the destination folder "C:/tmp/data/done/" for the move operation does not allow writing, then the file dropped to the "C:/tmp/data/in/" folder will be repeatedly polled, processed and rolled back due to "Access is denied" exception.
+Even if we fix the permission issue on the folder "C:/tmp/data/done/" to allow writing, the problem still persists and above endless cycle continues. However the reason for the issue will be a bit different now. It is caused by deletion failure to the file from "C:/tmp/data/in/" folder after successful FileUtil.renameFile() operation due to fact that something is still holding the file handle. 
+The root cause is in the function FileUtil.copyFile():
+
+
+
+public static void copyFile(File from, File to) throws IOException {
+
+        FileChannel in = new FileInputStream(from).getChannel();
+
+        FileChannel out = new FileOutputStream(to).getChannel();
+
+        try {
+
+            if (LOG.isTraceEnabled()) {
+
+                LOG.trace("Using FileChannel to copy from: " + in + " to: " + out);
+
+            }
+
+
+
+            long size = in.size();
+
+            long position = 0;
+
+            while (position < size) {
+
+                position += in.transferTo(position, BUFFER_SIZE, out);
+
+            }
+
+        } finally {
+
+            IOHelper.close(in, from.getName(), LOG);
+
+            IOHelper.close(out, to.getName(), LOG);
+
+        }
+
+    }
+
+
+
+If the destination folder "C:/tmp/data/done/" for move operation is not allowed for writing, the creation of the FileOutputStream will throw an exception straight away. However, because both FileInputStream and FileOutputStream are created outside the try{}...finally{} block, the FileInputStream is never closed. It still holds handle to the file and caused FileSystem unable to delete it. Therefore caused the whole route to fail. 
+The solution is quite simple, we just need to create the Input/Output streams inside try{}...finally{} loop to make sure that the Input/Output streams get closed if something happens during creating of these objects.

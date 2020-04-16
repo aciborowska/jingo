@@ -1,0 +1,22 @@
+EhCacheBasedUserCache (org.acegisecurity.providers.dao.cache) has a dependency of type net.sf.ehcache.Cache.
+In the presence of an proper interface type (net.sf.ehcache.Ehcache) this is bad usage of IoC: it limits users to a concrete type, disallowing alternative implementations or decorators.
+Since acegi is quite often used in a spring IoC context, this inflexibility is very easy to demonstrate:
+------------------
+  <bean id="cacheManager" class="org.springframework.cache.ehcache.EhCacheManagerFactoryBean"/>
+  <bean id="userCacheBackend" class="org.springframework.cache.ehcache.EhCacheFactoryBean">
+    <property name="cacheManager" ref="cacheManager"/>
+    <property name="cacheName" value="userCache"/>
+    <property name="blocking" value="true"/>
+  </bean>
+  <bean id="cache" class="org.acegisecurity.providers.dao.cache.EhCacheBasedUserCache">
+    <property name="cache" ref="userCacheBackend"/>
+  </bean>
+------------------
+Note that the "blocking" property is set on bean "userCacheBackend", triggering the creation of a decorator for the backing cache.
+Instantiating above context (using spring 2.1m3, acegi 1.0.4 and ehcache 1.2.3) will (of course) fail:
+------------------
+Exception in thread "main" org.springframework.beans.factory.BeanCreationException: Error creating bean with name 'cache' defined in class path resource [factories.xml]: Error setting property values; nested exception is org.springframework.beans.PropertyBatchUpdateException; nested PropertyAccessExceptions (1) are:
+PropertyAccessException 1: org.springframework.beans.TypeMismatchException: Failed to convert property value of type [net.sf.ehcache.constructs.blocking.BlockingCache] to required type [net.sf.ehcache.Cache] for property 'cache'; nested exception is java.lang.IllegalArgumentException: Cannot convert value of type [net.sf.ehcache.constructs.blocking.BlockingCache] to required type [net.sf.ehcache.Cache] for property 'cache': no matching editors or conversion strategy found
+------------------
+I'm not familiar with acegi source, but it seems that there's actually no need at all to use the concrete Cache class: no specific implementation details of that type seem to be used.
+Especially considering the endless "interface based dependencies" preaching by Rod (et al), this seems a bit strange for a "spring" project.

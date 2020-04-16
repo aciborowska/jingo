@@ -1,0 +1,22 @@
+The construction semantics for getBeanNamesForType are inconsistent, in that any user in the container may cause an alteration in startup behaviour by issuing a query with the includeFactories = true parameter.
+The relevant code is in DefaultListableBeanFactory - should it fail on the first branch, it will attempt to make a match on bean type based on a query for the factory itself:
+		// In case of FactoryBean, try to match FactoryBean itself next.
+					beanName = FACTORY_BEAN_PREFIX + beanName;
+				}
+				// Match raw bean instance (might be raw FactoryBean).
+				if ((includePrototypes || rbd.isSingleton()) && isBeanTypeMatch(beanName, type)) 
+{
+					result.add(beanName);
+				}
+
+and/or from "AbstractBeanFactory.getType":
+		// Check bean class whether we're dealing with a FactoryBean.
+			if (FactoryBean.class.isAssignableFrom(beanClass) && !isFactoryDereference(name)) 
+{
+				// If it's a FactoryBean, we want to look at what it creates, not the factory class.
+				FactoryBean factoryBean = (FactoryBean) getBean(FACTORY_BEAN_PREFIX + beanName);
+				return factoryBean.getObjectType();
+			}
+
+This will cause the factory bean to be "incompletely constructed" - it will have dependencies delivered, but will not be used to deliver its product. This means that the bean in question will not be constructed properly during startup of the container in general (assuming it has lazy-init="false"), unless it is explicitly demanded as a dependency by another bean. There seem to be a number of ways out of this - either any fetch of a FactoryBean should fully construct both itself and product, or the container should detect such partially constructed factories during the rest of its startup, and continue to fully construct them then.
+Right now I have to make sure that neither myself nor any of my users issue such a query during startup, i.e. this represents an unpleasant race condition. The possibility for construct order perturbation is fine, and any correct bean container should be prepared for this, but construct result perturbation is not.

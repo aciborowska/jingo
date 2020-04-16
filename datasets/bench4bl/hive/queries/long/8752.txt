@@ -1,0 +1,99 @@
+TPC-DS Q89 has the wrong join order.
+Store_sales should be joining with item first then date_dim.
+The issue is that the predicate on item shows a selectivity of 1 
+
+
+
+((i_category in ('Home','Books','Electronics') and
+
+          i_class in ('wallpaper','parenting','musical')
+
+         )
+
+      or (i_category in ('Shoes','Jewelry','Men') and
+
+          i_class in ('womens','birdal','pants') 
+
+        ))
+
+
+
+
+
+
+                HiveProjectRel(i_item_sk=[$0], i_brand=[$8], i_class=[$10], i_category=[$12]): rowcount = 462000.0, cumulative cost = {0.0 rows, 0.0 cpu, 0.0 io}, id = 4052
+
+                      HiveFilterRel(condition=[OR(AND(in($12, 'Home', 'Books', 'Electronics'), in($10, 'wallpaper', 'parenting', 'musical')), AND(in($12, 'Shoes', 'Jewelry', 'Men'), in($10, 'womens', 'birdal', 'pants')))]): rowcount = 462000.0, cumulative cost = {0.0 rows, 0.0 cpu, 0.0 io}, id = 4050
+
+                        HiveTableScanRel(table=[[tpcds_bin_partitioned_orc_30000.item]]): rowcount = 462000.0, cumulative cost = {0}, id = 3818
+
+
+
+Query
+
+
+
+
+
+select  *
+
+from(
+
+select i_category, i_class, i_brand,
+
+       s_store_name, s_company_name,
+
+       d_moy,
+
+       sum(ss_sales_price) sum_sales,
+
+       avg(sum(ss_sales_price)) over
+
+         (partition by i_category, i_brand, s_store_name, s_company_name)
+
+         avg_monthly_sales
+
+from item, store_sales, date_dim, store
+
+where store_sales.ss_item_sk = item.i_item_sk and
+
+      store_sales.ss_sold_date_sk = date_dim.d_date_sk and
+
+      store_sales.ss_store_sk = store.s_store_sk and
+
+      d_year in (2000) and
+
+        ((i_category in ('Home','Books','Electronics') and
+
+          i_class in ('wallpaper','parenting','musical')
+
+         )
+
+      or (i_category in ('Shoes','Jewelry','Men') and
+
+          i_class in ('womens','birdal','pants') 
+
+        ))
+
+group by i_category, i_class, i_brand,
+
+         s_store_name, s_company_name, d_moy) tmp1
+
+where case when (avg_monthly_sales <> 0) then (abs(sum_sales - avg_monthly_sales) / avg_monthly_sales) else null end > 0.1
+
+order by sum_sales - avg_monthly_sales, s_store_name
+
+limit 100
+
+
+
+The result of the wrong join order is that the query runs in 335 seconds compared to 124 seconds with the correct join order.
+Removing the disjunction in the item filter produces the correct plan
+
+
+
+ i_category in ('Home','Books','Electronics') and
+
+          i_class in ('wallpaper','parenting','musical')
+
+

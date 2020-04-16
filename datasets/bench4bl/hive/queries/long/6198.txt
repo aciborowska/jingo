@@ -1,0 +1,152 @@
+HiveQL document states that the "Table names and column names are case insensitive". But the struct behavior for ORC file is different. 
+Consider a sample text file:
+
+
+
+$ cat data.txt
+
+line1|key11:value11,key12:value12,key13:value13|a,b,c|one,two
+
+line2|key21:value21,key22:value22,key23:value23|d,e,f|three,four
+
+line3|key31:value31,key32:value32,key33:value33|g,h,i|five,six
+
+
+
+Creating a table stored as txt and then using this to create a table stored as orc 
+
+
+
+CREATE TABLE orig (
+
+  str STRING,
+
+  mp  MAP<STRING,STRING>,
+
+  lst ARRAY<STRING>,
+
+  strct STRUCT<A:STRING,B:STRING>
+
+) ROW FORMAT DELIMITED
+
+    FIELDS TERMINATED BY '|'
+
+    COLLECTION ITEMS TERMINATED BY ','
+
+    MAP KEYS TERMINATED BY ':';
+
+LOAD DATA LOCAL INPATH 'data.txt' INTO TABLE orig;
+
+
+
+CREATE TABLE tableorc (
+
+  str STRING,
+
+  mp  MAP<STRING,STRING>,
+
+  lst ARRAY<STRING>,
+
+  strct STRUCT<A:STRING,B:STRING>
+
+) STORED AS ORC;
+
+INSERT OVERWRITE TABLE tableorc SELECT * FROM orig;
+
+
+
+Suppose we project columns or read the strct columns for both table types, here are the results. I have also tested the same with RC. The behavior is similar to txt files.
+
+
+
+hive> SELECT * FROM orig;
+
+line1   {"key11":"value11","key12":"value12","key13":"value13"} ["a","b","c"]  
+
+{"a":"one","b":"two"}
+
+line2   {"key21":"value21","key22":"value22","key23":"value23"} ["d","e","f"]  
+
+{"a":"three","b":"four"}
+
+line3   {"key31":"value31","key32":"value32","key33":"value33"} ["g","h","i"]  
+
+{"a":"five","b":"six"}
+
+Time taken: 0.126 seconds, Fetched: 3 row(s)
+
+
+
+hive> SELECT * FROM tableorc;
+
+line1   {"key12":"value12","key11":"value11","key13":"value13"} ["a","b","c"]  
+
+{"A":"one","B":"two"}
+
+line2   {"key21":"value21","key23":"value23","key22":"value22"} ["d","e","f"]  
+
+{"A":"three","B":"four"}
+
+line3   {"key33":"value33","key31":"value31","key32":"value32"} ["g","h","i"]  
+
+{"A":"five","B":"six"}
+
+Time taken: 0.178 seconds, Fetched: 3 row(s)
+
+
+
+hive> SELECT strct FROM tableorc;
+
+{"a":"one","b":"two"}
+
+{"a":"three","b":"four"}
+
+{"a":"five","b":"six"}
+
+
+
+hive>SELECT strct.A FROM orig;
+
+one
+
+three
+
+five
+
+
+
+hive>SELECT strct.a FROM orig;
+
+one
+
+three
+
+five
+
+
+
+hive>SELECT strct.A FROM tableorc;
+
+one
+
+three
+
+five
+
+
+
+hive>SELECT strct.a FROM tableorc;
+
+FAILED: Execution Error, return code 2 from
+
+org.apache.hadoop.hive.ql.exec.mr.MapRedTask
+
+MapReduce Jobs Launched: 
+
+Job 0: Map: 1   HDFS Read: 0 HDFS Write: 0 FAIL
+
+
+
+So it seems that ORC behaves differently for struct columns. Also why are we storing the column names for struct for the other types as CASE SENSITIVE? What is the standard for Hive QL with respect to structs?
+Regards
+Viraj

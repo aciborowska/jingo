@@ -1,0 +1,52 @@
+We have a zookeeper cluster with 3 nodes named s1, s2, s3
+By mistake, we shut down the ethernet interface of s2, and zk follower  shut down(zk process remains there)
+Later, after ethernet up again, s2 failed to reconnect to leader s3 to be a follower
+
+follower s2 keeps printing log like this:
+
+2017-01-19 16:40:58,956 WARN  [QuorumPeer[myid=1]/0:0:0:0:0:0:0:0:7181] o.a.z.s.q.Learner - Got zxid 0x320001019f expected 0x1
+2017-01-19 16:40:58,956 ERROR [SyncThread:1] o.a.z.s.ZooKeeperCriticalThread - Severe unrecoverable error, from thread : SyncThread:1
+java.nio.channels.ClosedChannelException: null
+	at sun.nio.ch.FileChannelImpl.ensureOpen(FileChannelImpl.java:99)
+	at sun.nio.ch.FileChannelImpl.position(FileChannelImpl.java:250)
+	at org.apache.zookeeper.server.persistence.Util.padLogFile(Util.java:215)
+	at org.apache.zookeeper.server.persistence.FileTxnLog.padFile(FileTxnLog.java:241)
+	at org.apache.zookeeper.server.persistence.FileTxnLog.append(FileTxnLog.java:219)
+	at org.apache.zookeeper.server.persistence.FileTxnSnapLog.append(FileTxnSnapLog.java:314)
+	at org.apache.zookeeper.server.ZKDatabase.append(ZKDatabase.java:470)
+	at org.apache.zookeeper.server.SyncRequestProcessor.run(SyncRequestProcessor.java:140)
+2017-01-19 16:40:58,956 INFO  [SyncThread:1] o.a.z.s.ZooKeeperServerListenerImpl - Thread SyncThread:1 exits, error code 1
+2017-01-19 16:40:58,956 INFO  [SyncThread:1] o.a.z.s.SyncRequestProcessor - SyncRequestProcessor exited!
+2017-01-19 16:40:58,957 INFO  [QuorumPeer[myid=1]/0:0:0:0:0:0:0:0:7181] o.a.z.s.q.Learner - shutdown called
+java.lang.Exception: shutdown Follower
+	at org.apache.zookeeper.server.quorum.Follower.shutdown(Follower.java:164)
+	at org.apache.zookeeper.server.quorum.QuorumPeer.run(QuorumPeer.java:850)
+
+And, leader s3 keeps printing log like this:
+
+2017-01-19 16:30:50,452 INFO  [LearnerHandler-/192.168.40.51:35949] o.a.z.s.q.LearnerHandler - Follower sid: 1 : info : org.apache.zookeeper.server.quorum.QuorumPeer$QuorumServer@95258f0
+2017-01-19 16:30:50,452 INFO  [LearnerHandler-/192.168.40.51:35949] o.a.z.s.q.LearnerHandler - Synchronizing with Follower sid: 1 maxCommittedLog=0x320001019e minCommittedLog=0x320000ffaa peerLastZxid=0x2300000000
+2017-01-19 16:30:50,453 WARN  [LearnerHandler-/192.168.40.51:35949] o.a.z.s.q.LearnerHandler - Unhandled proposal scenario
+2017-01-19 16:30:50,453 INFO  [LearnerHandler-/192.168.40.51:35949] o.a.z.s.q.LearnerHandler - Sending SNAP
+2017-01-19 16:30:50,453 INFO  [LearnerHandler-/192.168.40.51:35949] o.a.z.s.q.LearnerHandler - Sending snapshot last zxid of peer is 0x2300000000  zxid of leader is 0x320001019esent zxid of db as 0x320001019e
+2017-01-19 16:30:50,461 INFO  [LearnerHandler-/192.168.40.51:35949] o.a.z.s.q.LearnerHandler - Received NEWLEADER-ACK message from 1
+2017-01-19 16:30:51,738 ERROR [LearnerHandler-/192.168.40.51:35934] o.a.z.s.q.LearnerHandler - Unexpected exception causing shutdown while sock still open
+java.net.SocketTimeoutException: Read timed out
+	at java.net.SocketInputStream.socketRead0(Native Method)
+	at java.net.SocketInputStream.read(SocketInputStream.java:152)
+	at java.net.SocketInputStream.read(SocketInputStream.java:122)
+	at java.io.BufferedInputStream.fill(BufferedInputStream.java:235)
+	at java.io.BufferedInputStream.read(BufferedInputStream.java:254)
+	at java.io.DataInputStream.readInt(DataInputStream.java:387)
+	at org.apache.jute.BinaryInputArchive.readInt(BinaryInputArchive.java:63)
+	at org.apache.zookeeper.server.quorum.QuorumPacket.deserialize(QuorumPacket.java:83)
+	at org.apache.jute.BinaryInputArchive.readRecord(BinaryInputArchive.java:99)
+	at org.apache.zookeeper.server.quorum.LearnerHandler.run(LearnerHandler.java:542)
+
+we execute netstat, found lots of close wait socket in s2,  and never closed.
+
+tcp6   10865      0 192.168.40.51:47181     192.168.40.57:7288      CLOSE_WAIT  2217/java           
+tcp6    2576      0 192.168.40.51:57181     192.168.40.57:7288      CLOSE_WAIT  2217/java           
+seems that s2 has a connection leak.
+
+after restart zk process of s2, it works fine.

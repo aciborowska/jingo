@@ -1,0 +1,30 @@
+If there are thousands of clients, and most of them disconnect with server same time(client restarted or servers partitioned with clients), the server will busy to close those "connections" and become unavailable. The problem is in following:
+  private void closeSessionWithoutWakeup(long sessionId) {
+      HashSet<NIOServerCnxn> cnxns;
+          synchronized (this.cnxns) 
+{
+              cnxns = (HashSet<NIOServerCnxn>)this.cnxns.clone();  // other thread will block because of here
+          }
+      ...
+  }
+
+A real world example that demonstrated this problem (Kudos to Cheney Sun):
+
+The issue is raised while tens thousands of clients try to reconnect ZooKeeper service. 
+Actually, we came across the issue during maintaining our HBase cluster, which used a 5-server ZooKeeper cluster. 
+The HBase cluster was composed of many many regionservers (in thousand order of magnitude), 
+and connected by tens thousands of clients to do massive reads/writes. 
+Because the r/w throughput is very high, ZooKeeper zxid increased quickly as well. 
+Basically, each two or three weeks, Zookeeper would make leader relection triggered by the zxid roll over. 
+The leader relection will cause the clients(HBase regionservers and HBase clients) disconnected 
+and reconnected with Zookeeper servers in the mean time, and try to renew the sessions.
+
+In current implementation of session renew, NIOServerCnxnFactory will clone all the connections at first 
+in order to avoid race condition in multi-threads and go iterate the cloned connection set one by one to 
+find the related session to renew. It's very time consuming. In our case (described above), 
+it caused many region servers can't successfully renew session before session timeout, 
+and eventually the HBase cluster lose these region servers and affect the HBase stability.
+The change is to make refactoring to the close session logic and introduce a ConcurrentHashMap 
+to store session id and connection map relation, which is a thread-safe data structure 
+and eliminate the necessary to clone the connection set at first.
+

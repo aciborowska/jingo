@@ -1,0 +1,53 @@
+When an exception occurs during unmarshalling the reader stops reading even though there are still items / fragments to read. I think I have found the reason as well and I'll try to explain below. I'm very surprised that nobody has come across this before. 
+Spring batch version used: 2.1.7
+Spring version used: 3.0.5
+Java version: 6
+Happy flow:
+1.1. In the StaxEventItemReader.doRead() method, the StaxEventItemReader first tries to move the cursor to the next fragment using the moveCursorToNextFragment(..) method; 
+1.2. If a next fragment is found, a call is made to the marshaller to unmarshall the xml fragment; 
+1.3. If the unmarshalling is ok, the reader calls 'markFragmentProcessed()' on the fragment event reader (DefaultFragmentEventReader). At this stage, the fragment event reader members are 'endFragmentFollows=true' and 'insideFragment=true'. This is important to note, because these flags play a big part in this issue;
+1.4. The markFragmentProcessed() method reads all the unread events using the nextEvent() method until EndDocument is found (which is in fact the end of the fragment). Somewhere down the line, the fragment reader members 'endFragmentFollows' and 'insideFragment' are reset to false (which is good).
+2.1. When the next item is read, the StaxEventItemReader tries to move the cursor to the next fragment. And so on...
+Problem flow:
+1.1. In the doRead() method, the StaxEventItemReader first tries to move the cursor to the next fragment using the moveCursorToNextFragment(..) method; 
+1.2. If a next fragment is found, a call is made to the marshaller to umarshall the xml fragment;
+1.3. Exception occurs during unmarshalling and therefore the call to 'markFragmentProcessed()' is never done. The members of the fragment event reader are therefore NOT reset and keep the values 'endFragmentFollows=true' and 'insideFragment=true'.
+2.1. When the next item is read, the StaxEventItemReader tries to move the cursor to the next fragment. This method will call nextEvent() on the fragment event reader, returning EndDocument because the internal state of the fragment event reader was not reset due to the exception earlier 
+(i.e. 'endFragmentFollows' and 'insidedFragment' are still both true). Therefore, the moveCursorToNextFragment() method will return false indicating NO next fragment was found and stops the reading.
+To prove the analysis above, I have modified the StaxEventItemReader class and ran some tests. I have moved the call to fragmentReader.markFragmentProcessed() into a finally block, making sure it will always get called (whether the unmarshalling fails or not). After this modification, the StaxEventItemReader works as expected, continuing reading and skipping input when unmarshalling fails for an item. 
+See the code modification below. Perhaps this is not the best way to solve this issue, but it proves the problem. 
+protected T doRead() throws Exception {
+    if (noInput) 
+{
+        return null;
+    }
+
+    T item = null;
+    boolean success = false;
+    try 
+{
+        success = moveCursorToNextFragment(fragmentReader);
+    }
+    catch (NonTransientResourceException e) 
+{
+        // Prevent caller from retrying indefinitely since this is fatal
+        noInput = true;
+        throw e;
+    }
+
+    if (success) {
+        fragmentReader.markStartFragment();
+        try 
+{ // Added by Pepijn Opsteegh
+            @SuppressWarnings("unchecked")
+            T mappedFragment = (T) unmarshaller.unmarshal(StaxUtils.getSource(fragmen tReader));
+            item = mappedFragment;
+        }
+ finally 
+{ // Added by Pepijn Opsteegh
+            fragmentReader.markFragmentProcessed();
+        }
+ // Added by Pepijn Opsteegh
+    }
+    return item;
+}

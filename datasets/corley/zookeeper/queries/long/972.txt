@@ -1,0 +1,67 @@
+The issue I'm seeing seems strikingly similar to this: https://issues.apache.org/jira/browse/ZOOKEEPER-772
+
+I have one writer process which adds sequenced children nodes to /queue and a separate reader process which sets a children watcher on /queue, waiting for children to be added or deleted. Long story short, every time a child node is added or deleted by the writer, the reader's watcher is supposed to trigger so the reader can check if it's time to get to work or go back to bed. Bad things seem to happen while the reader is waiting on the watcher and the writer adds or deletes a node.
+
+In versions prior to 3.3.2, my code that sets a watcher on the children of a node using the perl binding would either lock up when trying to retrieve the children or would segfault when a child node was added while waiting on the watch. In 3.3.2, it seems to just do the locking up.
+
+I'm seeing this: assertion botched (free()ed/realloc()ed-away memory was overwritten?): !(MallocCfg[MallocCfg_filldead] && MallocCfg[Mall
+ocCfg_fillcheck]) || !cmp_pat_4bytes((unsigned char*)(p + 1), (((1 << ((bucket) >> 0)) + ((bucket >= 15 * 1) ? 4096 : 0)) - (siz
+eof(union overhead) + sizeof (unsigned int))) + sizeof (unsigned int), fill_deadbeef) (malloc.c:1536)
+
+I managed to get a stack trace
+
+Program received signal SIGABRT, Aborted.
+0xffffe410 in __kernel_vsyscall ()
+(gdb) where
+#0  0xffffe410 in __kernel_vsyscall ()
+#1  0xf7b8ed80 in raise () from /lib/libc.so.6
+#2  0xf7b90691 in abort () from /lib/libc.so.6
+#3  0xf7d6d53f in botch (diag=0xa <Address 0xa out of bounds>, 
+    s=0xf7ef42e8 "!(MallocCfg[MallocCfg_filldead] && MallocCfg[MallocCfg_fillcheck]) || !cmp_pat_4bytes((unsigned char*)(p + 1),
+ (((1 << ((bucket) >> 0)) + ((bucket >= 15 * 1) ? 4096 : 0)) - (sizeof(union overhead) + s"..., file=0xf7ef4119 "malloc.c", line
+=1536) at malloc.c:1327
+#4  0xf7d6d97a in Perl_malloc (nbytes=15530) at malloc.c:1535
+#5  0xf7d6f974 in Perl_calloc (elements=1, size=0) at malloc.c:2314
+#6  0xf7929eca in _zk_create_watch (my_perl=0x0) at ZooKeeper.xs:204
+#7  0xf7929f8f in _zk_acquire_watch (my_perl=0x0) at ZooKeeper.xs:240
+#8  0xf793450b in XS_Net__ZooKeeper_watch (my_perl=0x889c008, cv=0x89db8b4) at ZooKeeper.xs:2035
+#9  0xf7e1dd67 in Perl_pp_entersub (my_perl=0x889c008) at pp_hot.c:2847
+#10 0xf7de47ce in Perl_runops_debug (my_perl=0x889c008) at dump.c:1931
+#11 0xf7e0d856 in perl_run (my_perl=0x889c008) at perl.c:2384
+#12 0x08048ace in main (argc=2, argv=0xffe11814, env=0xffe11820) at perlmain.c:113
+
+The code to reproduce:
+sub bide_time
+{
+  my $root = '/queue';
+  my $timeout = 20*1000;
+  my $zkc = Net::ZooKeeper->new('localhost:2181');
+
+  while (1) {
+    print "Retrieving $root\n";
+    my $child_watch = $zkc->watch('timeout' => $timeout);
+
+    my @children = $zkc->get_children($root, watch=>$child_watch);
+    if (scalar(@children)) 
+{
+      return @children if (rand(1) > 0.75);
+    }
+ else 
+{
+      print " - No Children.\n";
+    }
+    print "Time to wait for the Children.\n";
+    if ($child_watch->wait()) {
+      print "watch triggered on node $root:\n";
+      print "  event: $child_watch->
+{event}
+\n";
+      print "  state: $child_watch->
+{state}
+\n";
+    } else 
+{
+      print "watch timed out\n";
+    }
+  }
+}

@@ -1,0 +1,37 @@
+A dead datanode in the cluster can lead to multiple HRegionServer failures and corrupted data. The HRegionServer failures can be reproduced  consistently on a 7 machines cluster with approx 2000 regions.
+Steps to reproduce
+The easiest and safest way is to reproduce it for the .META. table, however it will work with any table. 
+Locate a datanode that stores the .META. files and kill -9 it. 
+In order to get multiple writes to the .META. table bring up or shut down a region server this will eventually cause a flush on the memstore
+2009-09-25 09:26:17,775 DEBUG org.apache.hadoop.hbase.regionserver.HRegion: Flush requested on .META.,demo__assets,asset_283132172,1252898166036,1253265069920
+2009-09-25 09:26:17,775 DEBUG org.apache.hadoop.hbase.regionserver.HRegion: Started memstore flush for region .META.,demo__assets,asset_283132172,1252898166036,1253265069920. Current region memstore si
+ze 16.3k
+2009-09-25 09:26:17,791 INFO org.apache.hadoop.hdfs.DFSClient: Exception in createBlockOutputStream java.io.IOException: Bad connect ack with firstBadLink 10.72.79.108:50010
+2009-09-25 09:26:17,791 INFO org.apache.hadoop.hdfs.DFSClient: Abandoning block blk_-8767099282771605606_176852
+The DFSClient will retry for 3 times, but there's a high chance it will try on the same failed datanode (it takes around 10 minutes for dead datanode to be removed from cluster)
+2009-09-25 09:26:41,810 WARN org.apache.hadoop.hdfs.DFSClient: DataStreamer Exception: java.io.IOException: Unable to create new block.
+        at org.apache.hadoop.hdfs.DFSClient$DFSOutputStream.nextBlockOutputStream(DFSClient.java:2814)
+        at org.apache.hadoop.hdfs.DFSClient$DFSOutputStream.access$2000(DFSClient.java:2078)
+        at org.apache.hadoop.hdfs.DFSClient$DFSOutputStream$DataStreamer.run(DFSClient.java:2264)
+2009-09-25 09:26:41,810 WARN org.apache.hadoop.hdfs.DFSClient: Error Recovery for block blk_5317304716016587434_176852 bad datanode[2] nodes == null
+2009-09-25 09:26:41,810 WARN org.apache.hadoop.hdfs.DFSClient: Could not get block locations. Source file "/hbase/.META./225980069/info/5573114819456511457" - Aborting...
+2009-09-25 09:26:41,810 FATAL org.apache.hadoop.hbase.regionserver.MemStoreFlusher: Replay of hlog required. Forcing server shutdown
+org.apache.hadoop.hbase.DroppedSnapshotException: region: .META.,demo__assets,asset_283132172,1252898166036,1253265069920
+        at org.apache.hadoop.hbase.regionserver.HRegion.internalFlushcache(HRegion.java:942)
+        at org.apache.hadoop.hbase.regionserver.HRegion.flushcache(HRegion.java:835)
+        at org.apache.hadoop.hbase.regionserver.MemStoreFlusher.flushRegion(MemStoreFlusher.java:241)
+        at org.apache.hadoop.hbase.regionserver.MemStoreFlusher.run(MemStoreFlusher.java:149)
+Caused by: java.io.IOException: Bad connect ack with firstBadLink 10.72.79.108:50010
+        at org.apache.hadoop.hdfs.DFSClient$DFSOutputStream.createBlockOutputStream(DFSClient.java:2872)
+        at org.apache.hadoop.hdfs.DFSClient$DFSOutputStream.nextBlockOutputStream(DFSClient.java:2795)
+        at org.apache.hadoop.hdfs.DFSClient$DFSOutputStream.access$2000(DFSClient.java:2078)
+        at org.apache.hadoop.hdfs.DFSClient$DFSOutputStream$DataStreamer.run(DFSClient.java:2264)
+After the HRegionServer shuts down itself the regions will be reassigned however you might hit this 
+2009-09-26 08:04:23,646 INFO org.apache.hadoop.hbase.regionserver.HRegionServer: Worker: MSG_REGION_OPEN: .META.,demo__assets,asset_283132172,1252898166036,1253265069920
+2009-09-26 08:04:23,684 WARN org.apache.hadoop.hbase.regionserver.Store: Skipping hdfs://b0:9000/hbase/.META./225980069/historian/1432202951743803786 because its empty. HBASE-646 DATA LOSS?
+...
+2009-09-26 08:04:23,776 INFO org.apache.hadoop.hbase.regionserver.HRegion: region .META.,demo__assets,asset_283132172,1252898166036,1253265069920/225980069 available; sequence id is 1331458484
+We ended up with corrupted data in .META. "info:server" after master got confirmation that it was updated from the HRegionServer that got DroppedSnapshotException
+Since after a cluster restart server:info will be correct, .META. is safer to test with. Also to detect data corruption you can just scan .META. get the start key for each region and attempt to retrieve it from the corresponding table. If .META. is corrupted you get a NotServingRegionException. 
+This issue is related to https://issues.apache.org/jira/browse/HDFS-630 
+I attached a patch for HDFS-630 https://issues.apache.org/jira/secure/attachment/12420919/HDFS-630.patch that fixes this problem. 

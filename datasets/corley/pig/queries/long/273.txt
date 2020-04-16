@@ -1,0 +1,25 @@
+Currently, in the new pipeline rework (see PIG-157), splits in the data flow are not handled efficiently.  
+
+In the top level plans splits cause all the output data to be written to hdfs and then reread by each leg of the split.  This forces both a read/write and a new map/reduce pass when it is not always necessary.  For example, consider:
+
+A = load 'myfile';
+split A into B  if $0 < 100, C if $0 >= 100;
+B1 = group B by $0;
+...
+C1 = group B by $1;
+...
+
+In this case A will be loaded, and then immediately stored again.  Then a plan will be executed that handles the B* part of the script, and then another executed that will handle the C* part of the script.
+
+In nested plans, each projection of the generate is computed separately, even if they share common steps in the plan.  For example:
+
+B = group A by $0;
+C= foreach B {
+    C1 = distinct $1;
+    C2 = filter C1 by $1 > 0;
+    generate group, COUNT(C1), COUNT(C2);
+}
+
+That will currently be executed with two nested plans, distinct->COUNT(C1) and distinct->filter->COUNT(C2).  The same distinct will be computed twice.  Ideally we would like to compute the distinct once and then split the output.
+
+I suspect that optimizing the inner plan is more important because there are more situations where this occurs.

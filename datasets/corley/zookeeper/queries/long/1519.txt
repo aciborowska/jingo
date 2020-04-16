@@ -1,0 +1,13 @@
+zoo_acreate() and zoo_aset() take a char * argument for data and prepare a call to zookeeper.  This char * doesn't seem to be duplicated at any point, making it possible that the caller of the asynchronous function might potentially free() the char * argument before the zookeeper library completes its request.  This is unlikely to present a real problem unless the freed memory is re-used before zookeeper consumes it.  I've been unable to reproduce this issue using pure C as a result.
+
+However, ZKPython is a whole different story.  Consider this snippet:
+
+  ok = zookeeper.acreate(handle, path, json.dumps(value), 
+                         acl, flags, callback)
+  assert ok == zookeeper.OK
+
+In this snippet, json.dumps() allocates a string which is passed into the acreate().  When acreate() returns, the zookeeper request has been constructed with a pointer to the string allocated by json.dumps().  Also when acreate() returns, that string is now referenced by 0 things (ZKPython doesn't bump the refcount) and the string is eligible for garbage collection and re-use.  The Zookeeper request now has a pointer to dangerous freed memory.
+
+I've been seeing odd behavior in our development environments for some time now, where it appeared as though two separate JSON payloads had been joined together.  Python has been allocating a new JSON string in the middle of the old string that an incomplete zookeeper async call had not yet processed.
+
+I am not sure if this is a behavior that should be documented, or if the C binding implementation needs to be updated to create copies of the data payload provided for aset and acreate.

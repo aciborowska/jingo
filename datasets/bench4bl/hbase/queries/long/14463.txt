@@ -1,0 +1,25 @@
+We store feature data of online items in HBase, do machine learning on these features, and supply the outputs to our online search engine. In such scenario we will launch hundreds of yarn workers and each worker will read all features of one item(i.e. single rowkey in HBase), so there'll be heavy parallel reading on a single rowkey.
+We were using LruCache but start to try BucketCache recently to resolve gc issue, and just as titled we have observed severe performance downgrade. After some analytics we found the root cause is the lock in BucketCache#getBlock, as shown below
+
+
+
+      try {
+
+        lockEntry = offsetLock.getLockEntry(bucketEntry.offset());
+
+        // ...
+
+        if (bucketEntry.equals(backingMap.get(key))) {
+
+          // ...
+
+          int len = bucketEntry.getLength();
+
+          Cacheable cachedBlock = ioEngine.read(bucketEntry.offset(), len,
+
+              bucketEntry.deserializerReference(this.deserialiserMap));
+
+
+
+Since ioEnging.read involves array copy, it's much more time-costed than the operation in LruCache. And since we're using synchronized in IdLock#getLockEntry, parallel read dropping on the same bucket would be executed in serial, which causes a really bad performance.
+To resolve the problem, we propose to use ReentranceReadWriteLock in BucketCache, and introduce a new class called IdReadWriteLock to implement it.

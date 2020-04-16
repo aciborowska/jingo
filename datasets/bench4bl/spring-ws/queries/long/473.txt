@@ -1,0 +1,257 @@
+When sending a JMS message using a org.springframework.ws.transport.jms.JmsMessageSender with sessionTransacted set to true, the org.springframework.ws.transport.jms.JmsSenderConnection.onSendAfterWrite method doesn't commit the transaction.  This leads to the transaction being rolled back when the connection is closed so the message is never sent.  JMSUtils.commitIfNecessary should be called before closing the message producer.
+An example of how this is done in JmsTemplate:
+
+
+
+
+
+
+JmsTemplate.java
+
+
+
+
+
+
+protected void doSend(Session session, Destination destination, MessageCreator messageCreator)
+
+
+
+
+			throws JMSException {
+
+
+
+
+ 
+
+
+
+
+		Assert.notNull(messageCreator, "MessageCreator must not be null");
+
+
+
+
+		MessageProducer producer = createProducer(session, destination);
+
+
+
+
+		try {
+
+
+
+
+			Message message = messageCreator.createMessage(session);
+
+
+
+
+			if (logger.isDebugEnabled()) {
+
+
+
+
+				logger.debug("Sending created message: " + message);
+
+
+
+
+			}
+
+
+
+
+			doSend(producer, message);
+
+
+
+
+			// Check commit - avoid commit call within a JTA transaction.
+
+
+
+
+			if (session.getTransacted() && isSessionLocallyTransacted(session)) {
+
+
+
+
+				// Transacted session created by this template -> commit.
+
+
+
+
+				JmsUtils.commitIfNecessary(session);
+
+
+
+
+			}
+
+
+
+
+		}
+
+
+
+
+		finally {
+
+
+
+
+			JmsUtils.closeMessageProducer(producer);
+
+
+
+
+		}
+
+
+
+
+	}
+
+
+
+
+
+
+Similarly, the following should be done in JmsSenderConnection:
+
+
+
+
+
+
+JmsSenderConnection.java
+
+
+
+
+
+
+protected void onSendAfterWrite(WebServiceMessage message) throws IOException {
+
+
+
+
+        MessageProducer messageProducer = null;
+
+
+
+
+        try {
+
+
+
+
+            messageProducer = session.createProducer(requestDestination);
+
+
+
+
+            messageProducer.setDeliveryMode(deliveryMode);
+
+
+
+
+            messageProducer.setTimeToLive(timeToLive);
+
+
+
+
+            messageProducer.setPriority(priority);
+
+
+
+
+            if (responseDestination == null) {
+
+
+
+
+                responseDestination = session.createTemporaryQueue();
+
+
+
+
+            }
+
+
+
+
+            requestMessage.setJMSReplyTo(responseDestination);
+
+
+
+
+            connection.start();
+
+
+
+
+            messageProducer.send(requestMessage);
+
+
+
+
+            if (session.getTransacted()) {
+
+
+
+
+               JmsUtils.commitIfNecessary(session);
+
+
+
+
+            }
+
+
+
+
+        }
+
+
+
+
+        catch (JMSException ex) {
+
+
+
+
+            throw new JmsTransportException(ex);
+
+
+
+
+        }
+
+
+
+
+        finally {
+
+
+
+
+            JmsUtils.closeMessageProducer(messageProducer);
+
+
+
+
+        }
+
+
+
+
+    }
+
+
+
+
+

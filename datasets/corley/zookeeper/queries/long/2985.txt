@@ -1,0 +1,7 @@
+We recently observed an inconsistency in our Kafka cluster which we tracked down to ZooKeeper sessions expiring and then re-appearing after a ZooKeeper leadership failover. The Kafka nodes received session "Expired" events, leading to them starting new sessions and attempting to re-create some ephemeral nodes (broker ID nodes in kafka/brokers/ids specifically). However, between receiving the session Expired event and establishing a new session a leadership failover occurred within the ZooKeeper cluster which resulted in the expired session re-appearing. When Kafka attempted to re-create the ephemeral nodes mentioned above it (unexpectedly) received NODEEXISTS errors.
+
+This behavior is a result of how session expiration is handled by the leader. Specifically, the expired session is marked as "closing" immediately upon expiration (in SessionTrackerImpl) and before the corresponding "closeSession" entry is committed. A client can therefore receive a session Expired event before its session is fully closed. A leadership failover which results in the loss of the (uncommitted) closeSession entry thus leads to the sessions' ephemeral nodes "re-appearing" until another expiration of the old session on the new leader takes place.
+
+I'm not certain if this should be considered a bug or an edge case that client are expected to handle. If it is the latter then I think it would be good to include this in the Programmer's Guide in the documentation.
+
+If it's helpful I have code to reproduce this on an in-process cluster running 3.4.11 or 3.5.3-beta.

@@ -1,0 +1,245 @@
+The MongoMappingContext does not properly distribute the application context when set to persistent entities that have already been added.
+Current code:
+
+
+
+
+
+
+MongoMappingContext.java
+
+
+
+
+
+
+	@Override
+
+
+
+
+	protected <T> BasicMongoPersistentEntity<T> createPersistentEntity(TypeInformation<T> typeInformation) {
+
+
+
+
+ 
+
+
+
+
+		BasicMongoPersistentEntity<T> entity = new BasicMongoPersistentEntity<T>(typeInformation);
+
+
+
+
+ 
+
+
+
+
+		if (context != null) {
+
+
+
+
+			entity.setApplicationContext(context);
+
+
+
+
+		}
+
+
+
+
+ 
+
+
+
+
+		return entity;
+
+
+
+
+	}
+
+
+
+
+ 
+
+
+
+
+	
+
+
+
+
+	@Override
+
+
+
+
+	public void setApplicationContext(ApplicationContext applicationContext) throws BeansException {
+
+
+
+
+ 
+
+
+
+
+		this.context = applicationContext;
+
+
+
+
+		super.setApplicationContext(applicationContext);
+
+
+
+
+	}
+
+
+
+
+
+
+Possible fix:
+
+
+
+
+
+
+MongoMappingContext.java
+
+
+
+
+
+
+@Override
+
+
+
+
+	public void setApplicationContext(ApplicationContext applicationContext) throws BeansException {
+
+
+
+
+ 
+
+
+
+
+		this.context = applicationContext;
+
+
+
+
+		super.setApplicationContext(applicationContext);
+
+
+
+
+                // Send the application context to ALL the PersistentEntities, not just ones created after this point
+
+
+
+
+               for (BasicMongoPersistentEntity entity : getPersistentEntities()) {
+
+
+
+
+                   entity.setApplicationContext(applicationContext);
+
+
+
+
+               }
+
+
+
+
+	}
+
+
+
+
+
+
+See referenced URL PoC, no_indexes branch, test: MultiTenantTest::testMultiTenantSave() for example.
+UPDATE:
+AbstractMongoConfiguration is calling initialize() on MongoMappingContext before it returns the object.
+
+
+
+
+
+
+AbstractMongoConfiguration
+
+
+
+
+
+
+        @Bean
+
+
+
+
+	public MongoMappingContext mongoMappingContext() throws ClassNotFoundException {
+
+
+
+
+ 
+
+
+
+
+		MongoMappingContext mappingContext = new MongoMappingContext();
+
+
+
+
+		mappingContext.setInitialEntitySet(getInitialEntitySet());
+
+
+
+
+		mappingContext.setSimpleTypeHolder(customConversions().getSimpleTypeHolder());
+
+
+
+
+		mappingContext.initialize(); // <----
+
+
+
+
+ 
+
+
+
+
+		return mappingContext;
+
+
+
+
+	}
+
+
+
+
+

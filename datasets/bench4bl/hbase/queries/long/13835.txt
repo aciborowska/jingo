@@ -1,0 +1,84 @@
+In a 0.94 hbase cluster, we found a NPE with following stack:
+
+
+
+Exception in thread "regionserver21600.leaseChecker" java.lang.NullPointerException
+
+        at org.apache.hadoop.hbase.KeyValue$KVComparator.compare(KeyValue.java:1530)
+
+        at org.apache.hadoop.hbase.regionserver.KeyValueHeap$KVScannerComparator.compare(KeyValueHeap.java:225)
+
+        at org.apache.hadoop.hbase.regionserver.KeyValueHeap$KVScannerComparator.compare(KeyValueHeap.java:201)
+
+        at org.apache.hadoop.hbase.regionserver.KeyValueHeap$KVScannerComparator.compare(KeyValueHeap.java:191)
+
+        at java.util.PriorityQueue.siftDownUsingComparator(PriorityQueue.java:641)
+
+        at java.util.PriorityQueue.siftDown(PriorityQueue.java:612)
+
+        at java.util.PriorityQueue.poll(PriorityQueue.java:523)
+
+        at org.apache.hadoop.hbase.regionserver.KeyValueHeap.close(KeyValueHeap.java:241)
+
+        at org.apache.hadoop.hbase.regionserver.StoreScanner.close(StoreScanner.java:355)
+
+        at org.apache.hadoop.hbase.regionserver.KeyValueHeap.close(KeyValueHeap.java:237)
+
+        at org.apache.hadoop.hbase.regionserver.HRegion$RegionScannerImpl.close(HRegion.java:4302)
+
+        at org.apache.hadoop.hbase.regionserver.HRegionServer$ScannerListener.leaseExpired(HRegionServer.java:3033)
+
+        at org.apache.hadoop.hbase.regionserver.Leases.run(Leases.java:119)
+
+        at java.lang.Thread.run(Thread.java:662)
+
+
+
+Before this NPE exception, there is an exception happens in pollRealKV, which we think is the culprit of the NPE.
+
+
+
+ERROR org.apache.hadoop.hbase.regionserver.HRegionServer:
+
+java.io.IOException: Could not reseek StoreFileScanner[HFileScanner for reader reader=....
+
+        at org.apache.hadoop.hbase.regionserver.StoreFileScanner.reseek(StoreFileScanner.java:180)
+
+        at org.apache.hadoop.hbase.regionserver.StoreFileScanner.enforceSeek(StoreFileScanner.java:371)
+
+        at org.apache.hadoop.hbase.regionserver.KeyValueHeap.pollRealKV(KeyValueHeap.java:366)
+
+        at org.apache.hadoop.hbase.regionserver.KeyValueHeap.next(KeyValueHeap.java:116)
+
+        at org.apache.hadoop.hbase.regionserver.StoreScanner.next(StoreScanner.java:455)
+
+        at org.apache.hadoop.hbase.regionserver.KeyValueHeap.next(KeyValueHeap.java:154)
+
+        at org.apache.hadoop.hbase.regionserver.HRegion$RegionScannerImpl.populateResult(HRegion.java:4124)
+
+        at org.apache.hadoop.hbase.regionserver.HRegion$RegionScannerImpl.nextInternal(HRegion.java:4196)
+
+        at org.apache.hadoop.hbase.regionserver.HRegion$RegionScannerImpl.nextRaw(HRegion.java:4067)
+
+        at org.apache.hadoop.hbase.regionserver.HRegion$RegionScannerImpl.nextRaw(HRegion.java:4057)
+
+        at org.apache.hadoop.hbase.regionserver.HRegionServer.internalNext(HRegionServer.java:2898)
+
+        at org.apache.hadoop.hbase.regionserver.HRegionServer.next(HRegionServer.java:2833)
+
+        at org.apache.hadoop.hbase.regionserver.HRegionServer.next(HRegionServer.java:2815)
+
+        at sun.reflect.GeneratedMethodAccessor38.invoke(Unknown Source)
+
+        at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:25)
+
+        at java.lang.reflect.Method.invoke(Method.java:597)
+
+        at org.apache.hadoop.hbase.ipc.SecureRpcEngine$Server.call(SecureRpcEngine.java:337)
+
+        at org.apache.hadoop.hbase.ipc.HBaseServer$Handler.run(HBaseServer.java:1583)
+
+
+
+Simply put, if there is an exception happens in pollRealKV( ), the KeyValueHeap.current might be in heap. Later on, when KeyValueHeap.close( ) is called, the current would be closed firstly. However, since it might still be in the heap, it would either be closed again or its peek() (which is null after it is closed) is called by the heap's poll().  Neither case is expected.
+Although it is caught in 0.94, it is still in the trunk from the code. 

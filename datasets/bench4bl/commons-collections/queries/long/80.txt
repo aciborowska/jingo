@@ -1,0 +1,133 @@
+[Patch] [Collections] ExtendedProperties.interpolate does not do recursive
+substitution in commons-collections-2.1, but it probably should, when used with
+getString(...).
+Example:
+firefish.home=/tmp/firefish
+database.dir=$
+{firefish.home}
+/samples/cfengine
+database.file=$
+{database.dir}
+/db.xml
+extendedProps.getString("database.file")
+I found out that this can be fixed with the patch below, which is simply a copy
+and paste from the CVS of org.apache.commons.configuration.AbstractConfiguration.
+	/**
+
+interpolate key names to handle $
+{key} stuff
+	 *
+	 * @param base string to interpolate
+	 *
+	 * @return returns the key name with the ${key}
+ substituted
+	 */
+	protected String interpolate(String base)
+	// copied from org.apache.commons.configuration.AbstractConfiguration
+	{
+		return (interpolateHelper(base, null));
+	}
+
+	/**
+
+Recursive handler for multple levels of interpolation.
+	 *
+When called the first time, priorVariables should be null.
+	 *
+@param base string with the $
+{key}
+ variables
+@param priorVariables serves two purposes: to allow checking for
+loops, and creating a meaningful exception message should a loop
+occur.  It's 0'th element will be set to the value of base from
+the first call.  All subsequent interpolated variables are added
+afterward.
+	 *
+@return the string with the interpolation taken care of
+	 */
+	protected String interpolateHelper(String base, List priorVariables)
+	// copied from org.apache.commons.configuration.AbstractConfiguration
+	{
+		if (base == null)
+		{
+			return null;
+		}
+
+		// on the first call initialize priorVariables
+		// and add base as the first element
+		if (priorVariables == null)
+		{
+			priorVariables = new ArrayList();
+			priorVariables.add(base);
+		}
+
+		int begin = -1;
+		int end = -1;
+		int prec = 0 - END_TOKEN.length();
+		String variable = null;
+		StringBuffer result = new StringBuffer();
+		// FIXME: we should probably allow the escaping of the start token
+		while (((begin = base.indexOf(START_TOKEN, prec + END_TOKEN.length()))
+			> -1)
+			&& ((end = base.indexOf(END_TOKEN, begin)) > -1))
+		{
+			result.append(base.substring(prec + END_TOKEN.length(), begin));
+			variable = base.substring(begin + START_TOKEN.length(), end);
+			// if we've got a loop, create a useful exception message and throw
+			if (priorVariables.contains(variable))
+			{
+				String initialBase = priorVariables.remove(0).toString();
+				priorVariables.add(variable);
+				StringBuffer priorVariableSb = new StringBuffer();
+				// create a nice trace of interpolated variables like so:
+				// var1->var2->var3
+				for (Iterator it = priorVariables.iterator(); it.hasNext()
+				{
+					priorVariableSb.append(it.next());
+					if (it.hasNext())
+					{
+						priorVariableSb.append("->");
+					}
+				}
+				throw new IllegalStateException(
+					"infinite loop in property interpolation of "
+						+ initialBase
+						+ ": "
+						+ priorVariableSb.toString());
+			}
+			// otherwise, add this variable to the interpolation list.
+			else
+			{
+				priorVariables.add(variable);
+			}
+
+			//QUESTION: getProperty or getPropertyDirect
+			Object value = getProperty(variable);
+			if (value != null)
+			{
+				result.append(interpolateHelper(value.toString(),
+					priorVariables));
+				// pop the interpolated variable off the stack
+				// this maintains priorVariables correctness for
+				// properties with multiple interpolations, e.g.
+				// prop.name=$
+{some.other.prop1}
+/blahblah/$
+{some.other.prop2}
+				priorVariables.remove(priorVariables.size() - 1);
+			}
+			else if (defaults != null && defaults.getString(variable,
+				null) != null)
+			{
+				result.append(defaults.getString(variable));
+			}
+			else
+			{
+				//variable not defined - so put it back in the value
+				result.append(START_TOKEN).append(variable).append(END_TOKEN);
+			}
+			prec = end;
+		}
+		result.append(base.substring(prec + END_TOKEN.length(), base.length()));
+		return result.toString();
+	}

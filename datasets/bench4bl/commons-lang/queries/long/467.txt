@@ -1,0 +1,228 @@
+A POJO with a BigDecimal field and equals() and hashCode() methods implemented using EqualsBuilder and HashCodeBuilder breaks the general contract of Object.hashCode();
+EqualsBuilder treats BigDecimal specially by comparing it using BigDecimal.compareTo() == 0 rather than BigDecimal.equals()
+Using BigDecimal.compareTo() ignores the scale of the BigDecimal()
+However the append(Object o) method of HashCodeBuilder uses BigDecimal.hashCode() in the case that o is a BigDecimal, which takes the scale into account when generating the hashCode.
+The following test case shows the problem!
+TestApacheCommonsLangHashCodeBuilder.java
+
+
+// package declaration and imports not shown
+
+public class TestApacheCommonsLangHashCodeBuilder extends TestCase {
+
+    
+
+    public void testHashCode() {
+
+        MyPojo myPojo1 = new MyPojo(new String("foo"), new BigDecimal("10.2"));
+
+        MyPojo myPojo2 = new MyPojo(new String("foo"), new BigDecimal("10.20"));
+
+        
+
+        // equals method ignores the scale of the big decimal
+
+        // so this test passes
+
+        assertTrue(myPojo1.equals(myPojo2));
+
+        
+
+        // however in the case the equals returns true the
+
+        // hashCode must be the same according to the contract
+
+        // TEST FAILS AT THIS LINE
+
+        assertEquals(myPojo1.hashCode(), myPojo2.hashCode());
+
+    }
+
+    
+
+    private class MyPojo {
+
+        private String name;
+
+        private BigDecimal value;
+
+        
+
+        public MyPojo(String name, BigDecimal value) {
+
+            this.name = name;
+
+            this.value = value;
+
+        }
+
+        
+
+        public String getName() {
+
+            return name;
+
+        }
+
+        public BigDecimal getValue() {
+
+            return value;
+
+        }
+
+        /**
+
+         * equals method implemented using EqualsBuilder 
+
+         * as documented by apache commons
+
+         */
+
+        @Override public boolean equals(Object obj) {
+
+            if(this == obj) {
+
+                return true;
+
+            }
+
+            
+
+            if(!(obj instanceof MyPojo)) {
+
+                return false;
+
+            }
+
+            
+
+            MyPojo other = (MyPojo) obj;
+
+            return new EqualsBuilder()
+
+                .append(name, other.getName())
+
+                .append(value, other.getValue())
+
+                .isEquals();
+
+        }
+
+        
+
+        /**
+
+         * hashCode method implemented using HashCodeBuilder
+
+         * as documented by apache commons
+
+         */
+
+        @Override public int hashCode() {
+
+            HashCodeBuilder hcb = new HashCodeBuilder(17, 31);
+
+            return hcb
+
+                .append(name)
+
+                .append(value)
+
+                .toHashCode();
+
+        }
+
+    }
+
+}
+
+
+
+Note that the only reason I haven't provided a patch is because I could not think of one which I thought was reasonable.
+Option 1
+Always set the scale to some value and then get the hashCode()
+Example change in HashCodeBuilder.append(Object) add the following:
+
+
+
+else if (object instanceof BigDecimal) {
+
+	append(((BigDecimal) object).setScale(DEFAULT_BIGDECIMAL_SCALE, RoundingMode.DOWN).hashCode());
+
+}
+
+
+
+However what is a reasonable scale for calculating this hashCode? I cannot see a reasonanble scale to choose, that depends on the circumstance
+Option 2
+stripTrailingZeros() before calculating the hashCode()
+Example change in HashCodeBuilder.append(Object) add the following:
+
+
+
+else if (object instanceof BigDecimal) {
+
+	append(((BigDecimal) object).stripTrailingZeros().hashCode());
+
+}
+
+
+
+The performance of this method under different circumstances is not documented.
+Option 3
+Document the problem and propose that the client solves the problem.
+For example change HashCodeBuilder documentation as follows
+
+
+
+/*
+
+ * ...
+
+ * public class Person {
+
+ *   String name;
+
+ *   int age;
+
+ *   boolean smoker;
+
+ *   BigDecimal netWorth;
+
+ *   ...
+
+ *
+
+ *   public int hashCode() {
+
+ *     // you pick a hard-coded, randomly chosen, non-zero, odd number
+
+ *     // ideally different for each class
+
+ *     return new HashCodeBuilder(17, 37).
+
+ *       append(name).
+
+ *       append(age).
+
+ *       append(smoker).
+
+ *       // take special care when using BigDecimal as scale takes 
+
+ *       // is included in the hashCode calculation breaking hashCode contract
+
+ *       // choose a scale which is reasonable for hashCode calculation
+
+ *       append(netWorth == null ? null : netWorth.setScale(2)).
+
+ *       toHashCode();
+
+ *   }
+
+ * }
+
+ * ...
+
+ */
+
+

@@ -1,0 +1,139 @@
+The ReplicationLogCleaner delegate for the LogCleaner chore can abort due to transient errors reading the replication znodes, leaving the log cleaner chore stopped, but the master still running.  This causes logs to build up in the oldWALs directory, which can even hit storage or file count limits in HDFS, causing problems.
+We've seen this happen in a couple of clusters when a rolling restart was performed on the zk peers (only one restarted at a time).
+The full stack trace when the log cleaner aborts is:
+
+16/02/02 15:22:39 WARN zookeeper.ZKUtil: replicationLogCleaner-0x1522c8b93c2fbae, quorum=XXXXXXXXXXXXXXXXXXXX, baseZNode=/hbase Unable to get data of znode /hbase/replication/rs  
+
+org.apache.zookeeper.KeeperException$ConnectionLossException: KeeperErrorCode = ConnectionLoss for /hbase/replication/rs
+
+        at org.apache.zookeeper.KeeperException.create(KeeperException.java:99)
+
+        at org.apache.zookeeper.KeeperException.create(KeeperException.java:51)
+
+        at org.apache.zookeeper.ZooKeeper.getData(ZooKeeper.java:1155)
+
+        at org.apache.hadoop.hbase.zookeeper.RecoverableZooKeeper.getData(RecoverableZooKeeper.java:359)
+
+        at org.apache.hadoop.hbase.zookeeper.ZKUtil.getDataNoWatch(ZKUtil.java:713)  
+
+        at org.apache.hadoop.hbase.replication.ReplicationQueuesClientZKImpl.getQueuesZNodeCversion(ReplicationQueuesClientZKImpl.java:80)  
+
+        at org.apache.hadoop.hbase.replication.master.ReplicationLogCleaner.loadWALsFromQueues(ReplicationLogCleaner.java:99)  
+
+        at org.apache.hadoop.hbase.replication.master.ReplicationLogCleaner.getDeletableFiles(ReplicationLogCleaner.java:70)
+
+        at org.apache.hadoop.hbase.master.cleaner.CleanerChore.checkAndDeleteFiles(CleanerChore.java:233)
+
+        at org.apache.hadoop.hbase.master.cleaner.CleanerChore.checkAndDeleteEntries(CleanerChore.java:157)
+
+        at org.apache.hadoop.hbase.master.cleaner.CleanerChore.chore(CleanerChore.java:124)
+
+        at org.apache.hadoop.hbase.ScheduledChore.run(ScheduledChore.java:185)
+
+        at java.util.concurrent.Executors$RunnableAdapter.call(Executors.java:511)
+
+        at java.util.concurrent.FutureTask.runAndReset(FutureTask.java:308)  
+
+        at java.util.concurrent.ScheduledThreadPoolExecutor$ScheduledFutureTask.access$301(ScheduledThreadPoolExecutor.java:180)  
+
+        at java.util.concurrent.ScheduledThreadPoolExecutor$ScheduledFutureTask.run(ScheduledThreadPoolExecutor.java:294)  
+
+        at org.apache.hadoop.hbase.JitterScheduledThreadPoolExecutorImpl$JitteredRunnableScheduledFuture.run(JitterScheduledThreadPoolExecutorImpl.java:110)
+
+        at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1142)
+
+        at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:617)
+
+        at java.lang.Thread.run(Thread.java:745)  
+
+16/02/02 15:22:39 ERROR zookeeper.ZooKeeperWatcher: replicationLogCleaner-0x1522c8b93c2fbae, quorum=XXXXXXXXXXXXXXXXXXXX, baseZNode=/hbase Received unexpected KeeperException, re-throwing exception  
+
+org.apache.zookeeper.KeeperException$ConnectionLossException: KeeperErrorCode = ConnectionLoss for /hbase/replication/rs
+
+        at org.apache.zookeeper.KeeperException.create(KeeperException.java:99)
+
+        at org.apache.zookeeper.KeeperException.create(KeeperException.java:51)
+
+        at org.apache.zookeeper.ZooKeeper.getData(ZooKeeper.java:1155)
+
+        at org.apache.hadoop.hbase.zookeeper.RecoverableZooKeeper.getData(RecoverableZooKeeper.java:359)
+
+        at org.apache.hadoop.hbase.zookeeper.ZKUtil.getDataNoWatch(ZKUtil.java:713)  
+
+        at org.apache.hadoop.hbase.replication.ReplicationQueuesClientZKImpl.getQueuesZNodeCversion(ReplicationQueuesClientZKImpl.java:80)  
+
+        at org.apache.hadoop.hbase.replication.master.ReplicationLogCleaner.loadWALsFromQueues(ReplicationLogCleaner.java:99)  
+
+        at org.apache.hadoop.hbase.replication.master.ReplicationLogCleaner.getDeletableFiles(ReplicationLogCleaner.java:70)
+
+        at org.apache.hadoop.hbase.master.cleaner.CleanerChore.checkAndDeleteFiles(CleanerChore.java:233)
+
+        at org.apache.hadoop.hbase.master.cleaner.CleanerChore.checkAndDeleteEntries(CleanerChore.java:157)
+
+        at org.apache.hadoop.hbase.master.cleaner.CleanerChore.chore(CleanerChore.java:124)
+
+        at org.apache.hadoop.hbase.ScheduledChore.run(ScheduledChore.java:185)
+
+        at java.util.concurrent.Executors$RunnableAdapter.call(Executors.java:511)
+
+        at java.util.concurrent.FutureTask.runAndReset(FutureTask.java:308)  
+
+        at java.util.concurrent.ScheduledThreadPoolExecutor$ScheduledFutureTask.access$301(ScheduledThreadPoolExecutor.java:180)  
+
+        at java.util.concurrent.ScheduledThreadPoolExecutor$ScheduledFutureTask.run(ScheduledThreadPoolExecutor.java:294)
+
+        at org.apache.hadoop.hbase.JitterScheduledThreadPoolExecutorImpl$JitteredRunnableScheduledFuture.run(JitterScheduledThreadPoolExecutorImpl.java:110)
+
+        at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1142)
+
+        at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:617)
+
+        at java.lang.Thread.run(Thread.java:745)
+
+16/02/02 15:22:39 WARN master.ReplicationLogCleaner: Aborting ReplicationLogCleaner because Failed to get stat of replication rs node
+
+org.apache.zookeeper.KeeperException$ConnectionLossException: KeeperErrorCode = ConnectionLoss for /hbase/replication/rs
+
+        at org.apache.zookeeper.KeeperException.create(KeeperException.java:99)
+
+        at org.apache.zookeeper.KeeperException.create(KeeperException.java:51)
+
+        at org.apache.zookeeper.ZooKeeper.getData(ZooKeeper.java:1155)
+
+        at org.apache.hadoop.hbase.zookeeper.RecoverableZooKeeper.getData(RecoverableZooKeeper.java:359)
+
+        at org.apache.hadoop.hbase.zookeeper.ZKUtil.getDataNoWatch(ZKUtil.java:713)
+
+        at org.apache.hadoop.hbase.replication.ReplicationQueuesClientZKImpl.getQueuesZNodeCversion(ReplicationQueuesClientZKImpl.java:80)
+
+        at org.apache.hadoop.hbase.replication.master.ReplicationLogCleaner.loadWALsFromQueues(ReplicationLogCleaner.java:99)
+
+        at org.apache.hadoop.hbase.replication.master.ReplicationLogCleaner.getDeletableFiles(ReplicationLogCleaner.java:70)
+
+        at org.apache.hadoop.hbase.master.cleaner.CleanerChore.checkAndDeleteFiles(CleanerChore.java:233)
+
+        at org.apache.hadoop.hbase.master.cleaner.CleanerChore.checkAndDeleteEntries(CleanerChore.java:157)
+
+        at org.apache.hadoop.hbase.master.cleaner.CleanerChore.chore(CleanerChore.java:124)
+
+        at org.apache.hadoop.hbase.ScheduledChore.run(ScheduledChore.java:185)
+
+        at java.util.concurrent.Executors$RunnableAdapter.call(Executors.java:511)
+
+        at java.util.concurrent.FutureTask.runAndReset(FutureTask.java:308)
+
+        at java.util.concurrent.ScheduledThreadPoolExecutor$ScheduledFutureTask.access$301(ScheduledThreadPoolExecutor.java:180)
+
+        at java.util.concurrent.ScheduledThreadPoolExecutor$ScheduledFutureTask.run(ScheduledThreadPoolExecutor.java:294)
+
+        at org.apache.hadoop.hbase.JitterScheduledThreadPoolExecutorImpl$JitteredRunnableScheduledFuture.run(JitterScheduledThreadPoolExecutorImpl.java:110)
+
+        at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1142)
+
+        at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:617)
+
+        at java.lang.Thread.run(Thread.java:745)
+
+16/02/02 15:22:40 WARN master.ReplicationLogCleaner: Failed to read zookeeper, skipping checking deletable files
+
+

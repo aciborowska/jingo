@@ -1,0 +1,103 @@
+Camel XMPP doesn't use a DNS resolver to look at SRV records, whereas in 2.14.1 it did.
+In 2.15.0, ConnectionConfiguration calls DNSUtil.resolveXMPPDomain(serviceName) which runs this code:
+DNSUtil.java
+
+
+public static List<HostAddress> resolveXMPPDomain(final String domain) {
+
+        if (dnsResolver == null) {
+
+            List<HostAddress> addresses = new ArrayList<HostAddress>(1);
+
+            addresses.add(new HostAddress(domain, 5222));
+
+            return addresses;
+
+        }
+
+        return resolveDomain(domain, 'c');
+
+    }
+
+
+
+dnsResolver is never initialised, so it returns the service name, in my case 'jabberzac.org', instead of the actual XMPP server from the SRV Record, 'xmpp.jabberzac.org', which then causes a timeout.
+The dnsResolver is meant to be instantiated in init(), which is meant to be called by SmackConfiguration, but never is.
+DNSUtil.java
+
+
+    /**
+
+     * Initializes DNSUtil. This method is automatically called by SmackConfiguration, you don't
+
+     * have to call it manually.
+
+     */
+
+    public static void init() {
+
+        final String[] RESOLVERS = new String[] { "javax.JavaxResolver", "minidns.MiniDnsResolver",
+
+                        "dnsjava.DNSJavaResolver" };
+
+        for (String resolver :RESOLVERS) {
+
+            DNSResolver availableResolver = null;
+
+            String resolverFull = "org.jivesoftware.smack.util.dns" + resolver;
+
+            try {
+
+                Class<?> resolverClass = Class.forName(resolverFull);
+
+                Method getInstanceMethod = resolverClass.getMethod("getInstance");
+
+                availableResolver = (DNSResolver) getInstanceMethod.invoke(null);
+
+                if (availableResolver != null) {
+
+                    setDNSResolver(availableResolver);
+
+                    break;
+
+                }
+
+            }
+
+            catch (ClassNotFoundException|NoSuchMethodException|SecurityException|IllegalAccessException|IllegalArgumentException|InvocationTargetException e) {
+
+                LOGGER.log(Level.FINE, "Exception on init", e);
+
+            }
+
+        }
+
+    }
+
+
+
+2.14.1 doesn't seem to have this problem as DNSUtil class in 2.14.1 doesn't have an init() function which is meant to be 'automatically called', it just has a static code block:
+
+
+
+    static {
+
+        try {
+
+            Hashtable env = new Hashtable();
+
+            env.put("java.naming.factory.initial", "com.sun.jndi.dns.DnsContextFactory");
+
+            context = new InitialDirContext(env);
+
+        }
+
+        catch (Exception e) {
+
+            // Ignore.
+
+        }
+
+    }
+
+

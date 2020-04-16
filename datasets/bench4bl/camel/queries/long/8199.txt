@@ -1,0 +1,84 @@
+In my team we have noticed that there is a race condition problem in JmsProducer class for request/response messaging. It causes that sometimes (nondeterministically) body of a response message is changed to null. It can happen when JMS response is received very fast (we use in-memory ActiveMQ with VM transport and no persistence) under heavy load.
+It looks that there is a problem in JmsProducer class in processInOut(exchange, callback) method.
+
+
+
+    protected boolean processInOut(final Exchange exchange, final AsyncCallback callback) {
+
+        …
+
+        doSend(true, destinationName, destination, messageCreator, messageSentCallback);
+
+        // after sending then set the OUT message id to the JMSMessageID so its identical
+
+        setMessageId(exchange);
+
+        // continue routing asynchronously (reply will be processed async when its received)
+
+        return false;
+
+    }
+
+
+
+...
+
+    protected void setMessageId(Exchange exchange) {
+
+        if (exchange.hasOut()) {
+
+            JmsMessage out = exchange.getOut(JmsMessage.class);
+
+            try {
+
+                if (out != null && out.getJmsMessage() != null) {
+
+                    out.setMessageId(out.getJmsMessage().getJMSMessageID());
+
+                }
+
+            } catch (JMSException e) {
+
+                LOG.warn("Unable to retrieve JMSMessageID from outgoing JMS Message and set it into Camel's MessageId", e);
+
+            }
+
+        }
+
+    }
+
+
+
+The problem is caused by invoking setMessageId(...) method after doSend(...). Method doSend(...) is sending JMS request message and causes that another thread is used to handle JMS reply message. This leads to a situation that 2 different threads can operate on the same exchange (which is not synchronized at all) at the same time:
+1) original thread in which processInOut(...) method was called,
+2) separate thread from JMS component for handling JMS response.
+In our case there it was happening sometimes that setMessageId(...) was invoked at the same time as PipelineHelper.createNextMessage(exchange) method:
+
+
+
+    public static Exchange createNextExchange(Exchange previousExchange) {
+
+        Exchange answer = previousExchange;
+
+        // now lets set the input of the next exchange to the output of the
+
+        // previous message if it is not null
+
+        if (answer.hasOut()) {
+
+            answer.setIn(answer.getOut());
+
+            answer.setOut(null);
+
+        }
+
+        return answer;
+
+    }
+
+
+
+It caused that body of response message was lost (set to null).
+It looks for me that calling setMessageId(...) at the end of processInOut(...) method is redundant and this logic should be executed when JMS reply message is handled.
+I've attached a patch where invokation of setMessageId(...) is removed.
+I've checked that it doesn't break any test for camel-jms component.

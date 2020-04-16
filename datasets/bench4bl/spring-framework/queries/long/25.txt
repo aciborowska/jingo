@@ -1,0 +1,40 @@
+In BeanWrapperImpl, there is an exception thrown that will be reported during property type conversion.  This exception will be misleading if the type conversion occurs within an array, as opposed to on a single value...  See code for details:
+	public Object doTypeConversionIfNecessary(String propertyName, Object oldValue, Object newValue,
+																						Class requiredType) throws BeansException {
+		if (newValue instanceof List && requiredType.isArray()) {
+			List list = (List) newValue;
+			Class componentType = requiredType.getComponentType();
+			try {
+				Object[] arr = (Object[]) Array.newInstance(componentType, list.size());
+				for (int i = 0; i < list.size(); i++) 
+{
+					arr[i] = doTypeConversionIfNecessary(propertyName, null, list.get(i), componentType);
+				}
+				return arr;
+			}
+			catch (ArrayStoreException ex) {
+                ex.printStackTrace();
+				throw new TypeMismatchException(createPropertyChangeEvent(propertyName, oldValue, newValue), requiredType, ex);
+			}
+		}
+
+—
+
+In the above code, if it is invoked for an array (bc newValue instanceof List is true), it will proceed to execute the same method for each object in the array:
+
+				for (int i = 0; i < list.size(); i++) {					arr[i] = doTypeConversionIfNecessary(propertyName, null, list.get(i), componentType);				}
+
+
+If the inner type conversion fails to convert to the type of value that the array expects, it will throw an ArrayStoreException, that is then caught by:
+			} catch (ArrayStoreException ex) 
+{
+                ex.printStackTrace();
+				throw new TypeMismatchException(createPropertyChangeEvent(propertyName, oldValue, newValue), requiredType, ex);
+			}
+
+
+Which will then report the conversion error as being a type mismatch converting the ArrayList to the specified type (on the set method).  In fact the error is in converting a single element within the array to the type the array expects.
+For example:
+PropertyVetoExceptionsException: 1 errors:-- ErrorCodedPropertyVetoException: message=[Failed to convert property value of type [java.util.ArrayList] to required type [[Lorg.springframework.web.servl
+t.HandlerInterceptor;] for property named 'interceptors'; nested exception is:
+Would indicate (if you didn't step through the source) that the method setInterceptors() takes a single HandlerInterceptor as an argument.  This is not true, it does in fact take a List and that is what you are passing into it.  It was just that one of the elements in this list wasn't a HandlerInterceptor (perhaps because you accidentally specified a String instead of a beanref in the XML).

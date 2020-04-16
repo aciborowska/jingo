@@ -1,0 +1,112 @@
+In Procedure V2 (HBASE-13203) implementation, Rollback of a CreateTableProcedure would call the Quota Manager to remove the table from namespace quota.
+
+
+
+protected static void deleteTableStates(final MasterProcedureEnv env, final TableName tableName)  {
+
+ ProcedureSyncWait.getMasterQuotaManager(env).removeTableFromNamespaceQuota(tableName);
+
+}
+
+
+
+This could lead to a 'deadlock'-like situation during master starting up:
+(1) The create namespace table procedure failed in the middle of master crash/failover. When master re-started, it tried to rollback, one step of rollback is to call QuotaManager to remove the table from NameSpaceQuota, but the QuotaManager has NOT started - so the rollback has to wait.
+(2). The QuotaManager would start in master after Namespace Manager starts.
+(3). The Namespace Manager is waiting for the table lock to be released by rollback of create namespace table procedure so that it can create namespace table as part of Namespace Manager initialization.
+
+
+
+HMaster#finishActiveMasterInitialization() {
+
+   ...
+
+   status.setStatus("Starting namespace manager");
+
+   initNamespace();
+
+    ...
+
+   status.setStatus("Starting quota manager");
+
+   initQuotaManager();
+
+   ...
+
+}
+
+
+
+(4). Now (1) waits for (2), which waits for (3), which waits for (1) - no one make progress & master could not complete initialization and fails to come up.
+
+2015-05-28 10:01:26,890 INFO  [ip-111-22-33-444:16000.activeMasterManager] master.TableNamespaceManager: Namespace table not found. Creating...
+
+2015-05-28 10:06:22,016 WARN  [ProcedureExecutorThread-0] procedure.CreateTableProcedure: Failed rollback attempt step=CREATE_TABLE_PRE_OPERATION table=hbase:namespace
+
+org.apache.hadoop.hbase.exceptions.TimeoutIOException: Timed out while waiting on quota manager to be available
+
+	at org.apache.hadoop.hbase.master.procedure.ProcedureSyncWait.waitFor(ProcedureSyncWait.java:122)
+
+	at org.apache.hadoop.hbase.master.procedure.ProcedureSyncWait.waitFor(ProcedureSyncWait.java:102)
+
+	at org.apache.hadoop.hbase.master.procedure.ProcedureSyncWait.getMasterQuotaManager(ProcedureSyncWait.java:184)
+
+	at org.apache.hadoop.hbase.master.procedure.DeleteTableProcedure.deleteTableStates(DeleteTableProcedure.java:408)
+
+	at org.apache.hadoop.hbase.master.procedure.CreateTableProcedure.rollbackState(CreateTableProcedure.java:169)
+
+	at org.apache.hadoop.hbase.master.procedure.CreateTableProcedure.rollbackState(CreateTableProcedure.java:58)
+
+	at org.apache.hadoop.hbase.procedure2.StateMachineProcedure.rollback(StateMachineProcedure.java:121)
+
+	at org.apache.hadoop.hbase.procedure2.Procedure.doRollback(Procedure.java:414)
+
+	at org.apache.hadoop.hbase.procedure2.ProcedureExecutor.executeRollback(ProcedureExecutor.java:808)
+
+	at org.apache.hadoop.hbase.procedure2.ProcedureExecutor.executeRollback(ProcedureExecutor.java:773)
+
+	at org.apache.hadoop.hbase.procedure2.ProcedureExecutor.execLoop(ProcedureExecutor.java:653)
+
+	at org.apache.hadoop.hbase.procedure2.ProcedureExecutor.execLoop(ProcedureExecutor.java:626)
+
+	at org.apache.hadoop.hbase.procedure2.ProcedureExecutor.access$200(ProcedureExecutor.java:70)
+
+	at org.apache.hadoop.hbase.procedure2.ProcedureExecutor$1.run(ProcedureExecutor.java:413)
+
+2015-05-28 10:06:22,169 WARN  [ProcedureExecutorThread-1] procedure.CreateTableProcedure: The table hbase:namespace does not exist in meta but has a znode. run hbck to fix inconsistencies.
+
+2015-05-28 10:06:27,292 FATAL [ip-111-22-33-444:16000.activeMasterManager] master.HMaster: Failed to become active master
+
+java.io.IOException: Timedout 300000ms waiting for namespace table to be assigned
+
+	at org.apache.hadoop.hbase.master.TableNamespaceManager.start(TableNamespaceManager.java:104)
+
+	at org.apache.hadoop.hbase.master.HMaster.initNamespace(HMaster.java:980)
+
+	at org.apache.hadoop.hbase.master.HMaster.finishActiveMasterInitialization(HMaster.java:779)
+
+	at org.apache.hadoop.hbase.master.HMaster.access$500(HMaster.java:182)
+
+	at org.apache.hadoop.hbase.master.HMaster$1.run(HMaster.java:1632)
+
+	at java.lang.Thread.run(Thread.java:745)
+
+2015-05-28 10:06:27,293 FATAL [ip-111-22-33-444:16000.activeMasterManager] master.HMaster: Master server abort: loaded coprocessors are: [org.apache.ranger.authorization.hbase.RangerAuthorizationCoprocessor]
+
+2015-05-28 10:06:27,293 FATAL [ip-111-22-33-444:16000.activeMasterManager] master.HMaster: Unhandled exception. Starting shutdown.
+
+java.io.IOException: Timedout 300000ms waiting for namespace table to be assigned
+
+	at org.apache.hadoop.hbase.master.TableNamespaceManager.start(TableNamespaceManager.java:104)
+
+	at org.apache.hadoop.hbase.master.HMaster.initNamespace(HMaster.java:980)
+
+	at org.apache.hadoop.hbase.master.HMaster.finishActiveMasterInitialization(HMaster.java:779)
+
+	at org.apache.hadoop.hbase.master.HMaster.access$500(HMaster.java:182)
+
+	at org.apache.hadoop.hbase.master.HMaster$1.run(HMaster.java:1632)
+
+	at java.lang.Thread.run(Thread.java:745)
+
+

@@ -1,0 +1,92 @@
+I found that when we are using exactly same propagation policy bean in different routes used together with "direct" component, then TransactionErrorHandler always propagates current transaction even if our policy is "PROPAGATION_REQUIRES_NEW".
+The failing code is:
+
+
+
+    public TransactionErrorHandler(CamelContext camelContext, Processor output, CamelLogger logger, 
+
+            Processor redeliveryProcessor, RedeliveryPolicy redeliveryPolicy, ExceptionPolicyStrategy exceptionPolicyStrategy,
+
+            TransactionTemplate transactionTemplate, Predicate retryWhile, ScheduledExecutorService executorService,
+
+            LoggingLevel rollbackLoggingLevel) {
+
+
+
+        super(camelContext, output, logger, redeliveryProcessor, redeliveryPolicy, null, null, false, retryWhile, executorService);
+
+        setExceptionPolicy(exceptionPolicyStrategy);
+
+        this.transactionTemplate = transactionTemplate;
+
+        this.rollbackLoggingLevel = rollbackLoggingLevel;
+
+        this.transactionKey = ObjectHelper.getIdentityHashCode(transactionTemplate);
+
+    }
+
+
+
+    @Override
+
+    public void process(Exchange exchange) throws Exception {
+
+        // we have to run this synchronously as Spring Transaction does *not* support
+
+        // using multiple threads to span a transaction
+
+        if (exchange.getUnitOfWork().isTransactedBy(transactionKey)) {
+
+            // already transacted by this transaction template
+
+            // so lets just let the error handler process it
+
+            processByErrorHandler(exchange);
+
+        } else {
+
+            // not yet wrapped in transaction so lets do that
+
+            // and then have it invoke the error handler from within that transaction
+
+            processInTransaction(exchange);
+
+        }
+
+    }
+
+
+
+So then for each policy there is a hash code created, which then is used to verify whether current route is already transacted by this transaction policy.
+This makes "PROPAGATION_REQUIRES_NEW" ignored when used with "direct" component.
+So for example:
+
+
+
+                from("activemq:queue:start").routeId("route1")
+
+                        .transacted("PROPAGATION_REQUIRES_NEW")
+
+                        .setExchangePattern(ExchangePattern.InOnly)
+
+                        .to("activemq:queue:result1")
+
+                        .to("direct:route2")
+
+                        .throwException(new RuntimeException("Expected!"));
+
+
+
+                from("direct:route2").routeId("route2")
+
+                        .transacted("PROPAGATION_REQUIRES_NEW")
+
+                        .setExchangePattern(ExchangePattern.InOnly)
+
+                        .to("activemq:queue:result2");
+
+
+
+The above route suppose to work in 2 different transactions, as our propagation is REQUIRES_NEW for both of them. But due to hash code verification and optimisation, route2 will participate in same transaction as route1 instead of new.
+This is rather buggy.
+Will create pull request in minutes.

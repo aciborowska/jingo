@@ -1,0 +1,130 @@
+Recently we experienced an online problem that all handlers are stuck. Checking the jstack we could see all handler threads waiting for RingBuffer.next, while the single ring buffer consumer dead waiting for safePointReleasedLatch to count down:
+
+Normal handler thread:
+
+"B.defaultRpcServer.handler=126,queue=9,port=16020" daemon prio=10 tid=0x00007efd4b44f800 nid=0x15f29 runnable [0x00007efd3db7b000]
+
+   java.lang.Thread.State: TIMED_WAITING (parking)
+
+        at sun.misc.Unsafe.park(Native Method)
+
+        at java.util.concurrent.locks.LockSupport.parkNanos(LockSupport.java:349)
+
+        at com.lmax.disruptor.MultiProducerSequencer.next(MultiProducerSequencer.java:136)
+
+        at com.lmax.disruptor.MultiProducerSequencer.next(MultiProducerSequencer.java:105)
+
+        at com.lmax.disruptor.RingBuffer.next(RingBuffer.java:246)
+
+        at org.apache.hadoop.hbase.regionserver.wal.FSHLog.append(FSHLog.java:1222)
+
+        at org.apache.hadoop.hbase.regionserver.HRegion.doMiniBatchMutation(HRegion.java:3188)
+
+        at org.apache.hadoop.hbase.regionserver.HRegion.batchMutate(HRegion.java:2879)
+
+        at org.apache.hadoop.hbase.regionserver.HRegion.batchMutate(HRegion.java:2819)
+
+        at org.apache.hadoop.hbase.regionserver.RSRpcServices.doBatchOp(RSRpcServices.java:736)
+
+        at org.apache.hadoop.hbase.regionserver.RSRpcServices.doNonAtomicRegionMutation(RSRpcServices.java:698)
+
+        at org.apache.hadoop.hbase.regionserver.RSRpcServices.multi(RSRpcServices.java:2095)
+
+        at org.apache.hadoop.hbase.protobuf.generated.ClientProtos$ClientService$2.callBlockingMethod(ClientProtos.java:32213)
+
+        at org.apache.hadoop.hbase.ipc.RpcServer.call(RpcServer.java:774)
+
+        at org.apache.hadoop.hbase.ipc.CallRunner.run(CallRunner.java:102)
+
+        at org.apache.hadoop.hbase.ipc.RpcExecutor.consumerLoop(RpcExecutor.java:133)
+
+        at org.apache.hadoop.hbase.ipc.RpcExecutor$1.run(RpcExecutor.java:108)
+
+        at java.lang.Thread.run(Thread.java:756)
+
+
+
+RingBufferEventHandler thread waiting for safePointReleasedLatch:
+
+"regionserver/hadoop0369.et2.tbsite.net/11.251.152.226:16020.append-pool2-t1" prio=10 tid=0x00007efd320d0000 nid=0x1777b waiting on condition [0x00007efd2d2fa000]
+
+   java.lang.Thread.State: WAITING (parking)
+
+        at sun.misc.Unsafe.park(Native Method)
+
+        - parking to wait for  <0x00007f01b48d9178> (a java.util.concurrent.CountDownLatch$Sync)
+
+        at java.util.concurrent.locks.LockSupport.park(LockSupport.java:186)
+
+        at java.util.concurrent.locks.AbstractQueuedSynchronizer.parkAndCheckInterrupt(AbstractQueuedSynchronizer.java:834)
+
+        at java.util.concurrent.locks.AbstractQueuedSynchronizer.doAcquireSharedInterruptibly(AbstractQueuedSynchronizer.java:994)
+
+        at java.util.concurrent.locks.AbstractQueuedSynchronizer.acquireSharedInterruptibly(AbstractQueuedSynchronizer.java:1303)
+
+        at java.util.concurrent.CountDownLatch.await(CountDownLatch.java:236)
+
+        at org.apache.hadoop.hbase.regionserver.wal.FSHLog$SafePointZigZagLatch.safePointAttained(FSHLog.java:1866)
+
+        at org.apache.hadoop.hbase.regionserver.wal.FSHLog$RingBufferEventHandler.attainSafePoint(FSHLog.java:2066)
+
+        at org.apache.hadoop.hbase.regionserver.wal.FSHLog$RingBufferEventHandler.onEvent(FSHLog.java:2029)
+
+        at org.apache.hadoop.hbase.regionserver.wal.FSHLog$RingBufferEventHandler.onEvent(FSHLog.java:1909)
+
+        at com.lmax.disruptor.BatchEventProcessor.run(BatchEventProcessor.java:128)
+
+        at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1145)
+
+        at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:615)
+
+        at java.lang.Thread.run(Thread.java:756)
+
+
+
+FSHLog#replaceWriter will call SafePointZigZagLatch#releaseSafePoint to count down safePointReleasedLatch, but replaceWriter got stuck when trying to publish a sync onto ring buffer:
+
+"regionserver/hadoop0369.et2.tbsite.net/11.251.152.226:16020.logRoller" daemon prio=10 tid=0x00007efd320c8800 nid=0x16123 runnable [0x00007efd311f6000]
+
+   java.lang.Thread.State: TIMED_WAITING (parking)
+
+        at sun.misc.Unsafe.park(Native Method)
+
+        at java.util.concurrent.locks.LockSupport.parkNanos(LockSupport.java:349)
+
+        at com.lmax.disruptor.MultiProducerSequencer.next(MultiProducerSequencer.java:136)
+
+        at com.lmax.disruptor.MultiProducerSequencer.next(MultiProducerSequencer.java:105)
+
+        at com.lmax.disruptor.RingBuffer.next(RingBuffer.java:246)
+
+        at org.apache.hadoop.hbase.regionserver.wal.FSHLog.publishSyncOnRingBuffer(FSHLog.java:1481)
+
+        at org.apache.hadoop.hbase.regionserver.wal.FSHLog.publishSyncOnRingBuffer(FSHLog.java:1477)
+
+        at org.apache.hadoop.hbase.regionserver.wal.FSHLog.replaceWriter(FSHLog.java:957)
+
+        at org.apache.hadoop.hbase.regionserver.wal.FSHLog.rollWriter(FSHLog.java:726)
+
+        at org.apache.hadoop.hbase.regionserver.LogRoller.run(LogRoller.java:148)
+
+        at java.lang.Thread.run(Thread.java:756)
+
+
+
+Thus deadlock happens.
+A brief process of how deadlock forms:
+
+ring buffer filled with appends
+
+-> rollWriter happens
+
+-> the only consumer of ring buffer waiting for safePointReleasedLatch
+
+-> rollWriter cannot publish sync since ring buffer is full
+
+-> rollWriter won't release safePointReleasedLatch
+
+
+
+This JIRA targeting at resolve this issue, and will add a UT to cover the case

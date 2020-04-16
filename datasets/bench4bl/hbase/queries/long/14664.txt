@@ -1,0 +1,73 @@
+I notice this issue while running IntegrationTestDDLMasterFailover, it can be simply reproduced by executing this on active master (tested on two masters + 3rs cluster setup)
+
+
+
+$ kill -9 master_pid; hbase-daemon.sh  start master
+
+
+
+Logs show that new active master is trying to locate hbase:meta table on restarted active master
+
+
+
+2015-10-21 19:28:20,804 INFO  [hnode2:16000.activeMasterManager] zookeeper.MetaTableLocator: Failed verification of hbase:meta,,1 at address=hnode1,16000,1445447051681, exception=org.apache.hadoop.hbase.ipc.ServerNotRunningYetException: Server is not running yet
+
+        at org.apache.hadoop.hbase.regionserver.RSRpcServices.checkOpen(RSRpcServices.java:1092)
+
+        at org.apache.hadoop.hbase.regionserver.RSRpcServices.getRegionInfo(RSRpcServices.java:1330)
+
+        at org.apache.hadoop.hbase.master.MasterRpcServices.getRegionInfo(MasterRpcServices.java:1525)
+
+        at org.apache.hadoop.hbase.protobuf.generated.AdminProtos$AdminService$2.callBlockingMethod(AdminProtos.java:22233)
+
+        at org.apache.hadoop.hbase.ipc.RpcServer.call(RpcServer.java:2136)
+
+        at org.apache.hadoop.hbase.ipc.CallRunner.run(CallRunner.java:106)
+
+        at org.apache.hadoop.hbase.ipc.RpcExecutor.consumerLoop(RpcExecutor.java:130)
+
+        at org.apache.hadoop.hbase.ipc.RpcExecutor$1.run(RpcExecutor.java:107)
+
+        at java.lang.Thread.run(Thread.java:745)
+
+2015-10-21 19:28:20,805 INFO  [hnode2:16000.activeMasterManager] master.HMaster: Meta was in transition on hnode1,16000,1445447051681
+
+2015-10-21 19:28:20,805 INFO  [hnode2:16000.activeMasterManager] master.AssignmentManager: Processing {1588230740 state=OPEN, ts=1445448500598, server=hnode1,16000,1445447051681
+
+
+
+ and because of above master is unable to read hbase:meta table:
+
+
+
+2015-10-21 19:28:49,429 INFO  [hconnection-0x6e9cebcc-shared--pool6-t1] client.AsyncProcess: #2, table=hbase:meta, attempt=10/351 failed=1ops, last exception: org.apache.hadoop.hbase.ipc.ServerNotRunningYetException: org.apache.hadoop.hbase.ipc.ServerNotRunningYetException: Server is not running yet
+
+        at org.apache.hadoop.hbase.regionserver.RSRpcServices.checkOpen(RSRpcServices.java:1092)
+
+        at org.apache.hadoop.hbase.regionserver.RSRpcServices.multi(RSRpcServices.java:2083)
+
+        at org.apache.hadoop.hbase.protobuf.generated.ClientProtos$ClientService$2.callBlockingMethod(ClientProtos.java:32462)
+
+        at org.apache.hadoop.hbase.ipc.RpcServer.call(RpcServer.java:2136)
+
+        at org.apache.hadoop.hbase.ipc.CallRunner.run(CallRunner.java:106)
+
+        at org.apache.hadoop.hbase.ipc.RpcExecutor.consumerLoop(RpcExecutor.java:130)
+
+        at org.apache.hadoop.hbase.ipc.RpcExecutor$1.run(RpcExecutor.java:107)
+
+        at java.lang.Thread.run(Thread.java:745)
+
+
+
+which cause master is unable to complete start. 
+I have also notices that in this case value of /hbase/meta-region-server znode is always pointing on restarted active master (hnode1 in my cluster ).
+I was able to workaround this issue by repeating same scenario with following:
+
+
+
+$ kill -9 master_pid; hbase zkcli rmr /hbase/meta-region-server; hbase-daemon.sh start master
+
+
+
+So issue is probably caused by staled value in /hbase/meta-region-server znode. I will try to create patch based on above.   

@@ -1,0 +1,110 @@
+entitylistener callback that modifies property value of the entity throws exception
+
+The following test code produces the following exception
+
+<1.0.0-SNAPSHOT-SNAPSHOT fatal user error> org.apache.openjpa.persistence.InvalidStateException: Attempt to set column "T1ENTITY.VER_ID" to two different values: (class java.lang.Integer)"2", (class java.lang.Integer)"3" This can occur when you fail to set both sides of a two-sided relation between objects, or when you map different fields to the same column, but you do not keep the values of these fields in synch.
+	at org.apache.openjpa.jdbc.sql.PrimaryRow.setObject(PrimaryRow.java:338)
+	at org.apache.openjpa.jdbc.sql.RowImpl.setObject(RowImpl.java:505)
+
+
+	/**
+
+	for entity with version field, and if the lifecycle listener such as
+	pre-persist, post-persist handler modifies the entity
+	then when flush is invoke, results in optimistic lock exception
+	
+	this test failes in openjpa 0.9.6
+	this test failes in openjpa 0.9.7
+	this test failes in openjpa 1.0.0
+	
+	This test case will past with either of following changes
+	1) comment out em.flush();
+	2) uncomment <post-update method-name="postUpdate"/> in the orm.xml file
+	 *
+	 */
+
+
+
+	public void testMultipleInsertWithEntityListener()
+{
+		
+		PersistenceProviderImpl openJPA = new PersistenceProviderImpl();
+		EntityManagerFactory factory = 
+			openJPA.createEntityManagerFactory("test", "ptp/test/issue1/persistence.xml",
+						System.getProperties() );
+		
+        EntityManager em = factory.createEntityManager();
+        em.getTransaction().begin();
+        T1Entity e1 = new T1Entity();		
+        T1Entity e2 = new T1Entity();		
+        e1.setName("Mickey");
+        e2.setName("Goofy");
+        
+        em.persist(e1);
+        em.flush();			// works if this line is commented out
+        
+        em.persist(e2);
+        em.getTransaction().commit();
+        em.close();
+	}
+
+
+
+
+
+package ptp.test.issue1;
+
+import java.sql.Timestamp;
+
+public class T1EntityListener {
+
+  static int count;
+  int instNum;
+
+  public T1EntityListener() 
+{
+	 instNum = count++;
+    System.out.println("T1EntityListener=" + this + ", instance=" + instNum );
+  }
+
+  public void preUpdate(Object entity) 
+{
+    audit( "preUpdate", entity);
+  }
+
+  public void postUpdate(Object entity) 
+{
+    audit( "postUpdate", entity);
+  }
+
+  public void prePersist(Object entity) 
+{
+	    audit( "prePersist", entity);
+	  }
+
+	  public void postPersist(Object entity) 
+{
+	    audit( "postPersist", entity);
+	  }
+
+  public void audit(String eventName, Object entity) {
+    if (entity instanceof IAudit) {
+      IAudit auditEntity = (IAudit) entity;
+      System.out.println("****T1EntityListener inst=" + instNum + ", event=" + eventName + ", entity=" + auditEntity + ", ver=" + auditEntity.getVerId());
+
+      try 
+{
+        auditEntity.setModifyDateTime(createTimeStamp());
+      }
+ catch (Exception e) 
+{
+        throw new RuntimeException(e);
+      }
+    }
+  }
+
+  private Timestamp createTimeStamp() 
+{
+	    return new Timestamp(System.currentTimeMillis());
+	  }
+

@@ -1,0 +1,50 @@
+When a joiner is listed as an observer in an initial config,
+the joiner should become a non-voting follower (not an observer) until reconfig is triggered. (Link)
+
+I found a distributed race-condition situation where an observer keeps being an observer and cannot become a non-voting follower.
+
+This race condition happens when an observer receives an UPTODATE Quorum Packet from the leader:2888/tcp after receiving a Notification FLE Packet of which n.config version is larger than the observer's one from leader:3888/tcp.
+
+Detail
+
+	Problem: An observer cannot become a non-voting follower
+	Cause: Cannot restart FLE
+	Cause: In QuorumPeer.run(), cannot shutdown Observer (Link)
+	Cause: In QuorumPeer.run(), cannot return from Observer.observeLeader() (Link)
+	Cause: In Observer.observeLeader(), Learner.syncWithLeader() does not throw an exception of "changes proposed in reconfig" (Link)
+	Cause: In switch(qp.getType()) case UPTODATE of Learner.syncWithLeader() (Link), QuorumPeer.processReconfig() (Link)returns false with a log message like "2 setQuorumVerifier called with known or old config 4294967296. Current version: 4294967296". (Link)
+,
+	Cause: The observer have already received a Notification Packet(n.config.version=4294967296) and invoked QuorumPeer.processReconfig() (Link)
+
+
+
+How I found this bug
+I found this bug using Earthquake, our open-source dynamic model checker for real implementations of distributed systems.
+
+Earthquakes permutes C/Java function calls, Ethernet packets, and injected fault events in various orders so as to find implementation-level bugs of the distributed system.
+
+When Earthquake finds a bug, Earthquake automatically records the event history and helps the user to analyze which permutation of events triggers the bug.
+
+I analyzed Earthquake's event histories and found that the bug is triggered when an observer receives an UPTODATE after receiving a specific kind of FLE packet.
+
+How to reproduce this bug
+You can also easily reproduce the bug using Earthquake.
+I made a Docker container osrg/earthquake-zookeeper-2212 on Docker hub:
+
+    host$ sudo modprobe openvswitch
+    host$ docker run --privileged -t -i --rm osrg/earthquake-zookeeper-2212
+    guest$ ./000-prepare.sh
+    [INFO] Starting Earthquake Ethernet Switch
+    [INFO] Starting Earthquake Orchestrator
+    [INFO] Starting Earthquake Ethernet Inspector
+    [IMPORTANT] Please kill the processes (switch=1234, orchestrator=1235, and inspector=1236) after you finished all of the experiments
+    [IMPORTANT] Please continue to 100-run-experiment.sh..
+    guest$ ./100-run-experiment.sh
+    [IMPORTANT] THE BUG WAS REPRODUCED!
+    guest$ kill -9 1234 1235 1236
+
+
+
+Note that --privileged is needed, as this container uses Docker-in-Docker.
+
+For further information about reproducing this bug, please refer to https://github.com/osrg/earthquake/blob/v0.1/example/zk-found-bug.ether

@@ -1,0 +1,38 @@
+I have a Model with one Entity with an Relation to a Entity of the same Class.
+Im using the LifecycleListeners to detect delete Events onto this Entities.
+
+I had an Testcase with two Entities e1 and e2. e1 had a reference to e2. Now i'm removing e2:
+em.getTransaction().begin();
+TestEntity e1=new TestEnity();
+em.persist(e1);
+TestEntity e2=new TestEntity();
+e1.setRef(e2);
+em.persist(e2);
+
+em.remove(e2);
+
+em.getTransaction().commit();
+
+
+In the Listener ill create a Query to find the Pointing Entity pointing to it (here e1) and remove this entity too.
+
+TestEntity toDelete=helper.getReferer(entity); <- a simple query to get the obj with ref=entity
+em.remove(toDelete);
+assert(em.isRemoved(lastPoint));
+
+This assert here failes inside the Listener.
+
+
+After some analysis, i think, i found the Problem:
+Inside the BrokerImpl is a Set called "_operating". I think it should avoid endless recursions in cycle-Models or twice calls of delete with the same entity. This set is used inside the persist AND the delete Method. The workflow seems like this:
+-> remove(e2);
+-> call Listeners
+-> make query
+-> flush needed, so persist the Entities
+-> the e1 is now added here into that _operating-Set (BrokerImpl Line 2522)
+-> query complete, the right entity was found
+-> remove(e1);
+-> the _operating set contains the e1
+-> ignore the delete command
+
+It could be a Bugfix to create a second _operating Variable for these. One for persists and one for deletes, so that there is no way ignoring a delete-command

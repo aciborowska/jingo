@@ -1,0 +1,139 @@
+Assume the following class hierarchy: A super class of B superclass of C using single table strategy.
+
+Case 1:
+1a: Create and persist instance of B (e.g. primary key = 1)
+1b: Find instance via entity manager find like em.find(B.class, 1) → this works as expected
+1c: Find instance via entity manager find like em.find(A.class, 1) → this works as expected
+
+Case 2:
+2a: Create and persist instance of C (e.g. primary key = 2)
+2b: Find instance via entity manager find like em.find(C.class, 2) → this works as expected
+2c: Find instance via entity manager find like em.find(A.class, 2) → this works as expected
+2d: Find instance via entity manager find like em.find(B.class, 2) → instance is not found
+
+The reason is as follows (only part of the code is shown to make this shorter)
+
+// TestA is like
+@Entity
+@Inheritance
+@DiscriminatorColumn(name = "dis", discriminatorType = DiscriminatorType.STRING)
+public abstract class TestA implements Serializable {
+
+	private static final long serialVersionUID = -4733743965438652043L;
+
+	// id
+	@Id
+	private long id;
+
+	private String name;
+
+	public TestA() {
+	}
+
+	public TestA(String name) 
+{
+		id = System.nanoTime();
+		this.name = name;
+	}
+
+// TestsB is like
+@Entity
+public  class TestB extends TestA {
+
+	private static final long serialVersionUID = -2091733862251849317L;
+
+	// Constructors
+	public TestB() 
+{
+		super();
+	}
+
+	public TestB(String name) {
+		super(name);		
+	}
+
+// TestC is like
+@Entity
+public  class TestC extends TestB {
+
+	private static final long serialVersionUID = -2091733862251849317L;	
+
+	// Constructors
+	public TestC() {		super();	}
+
+	public TestC(String name) 
+{
+		super(name);		
+	}
+	
+
+
+The facade looks like this:
+@Override
+public void create(TestA test) {
+	em.persist(test);
+}
+
+@Override
+public <T extends TestA> T find(Class<T> cls, long id) {
+	return em.find(cls, id);
+}
+
+// Somewhere in a bean ...
+@EJB
+private TestFacadeLocal tf;
+
+// ...
+
+// *** Case 1 ***
+
+// Case 1a
+TestB tb0 = new TestB("name1");
+tf.create(tb0);
+
+// Case 1b
+tb0 = tf.find(TestB.class, tb0.getId());
+
+Resulting SQL:
+SELECT t0.dis, t0.name FROM TestA t0 WHERE t0.dis = ? AND t0.id = ? [params=(String) TestB, (long) 4013390270882]
+
+The discriminator column is taken into account, this is ok
+
+// Case 1c
+TestA ta0 = tf.find(TestA.class, tb0.getId());
+
+Resulting SQL:
+SELECT t0.dis, t0.name FROM TestA t0 WHERE t0.id = ? [params=(long) 4013390270882]
+
+The discriminator column is not taken into account to be able to retrieve TestA. This is ok.
+
+// *** Case 2 ***
+
+// Case 2a
+TestC tc1 = new TestC("name1");
+tf.create(tc1);
+
+
+// Case 2b
+tc1 = tf.find(TestC.class, tc1.getId());
+
+Resulting SQL:
+SELECT t0.dis, t0.name FROM TestA t0 WHERE t0.dis = ? AND t0.id = ? [params=(String) TestC, (long) 4013797794600]
+
+The discriminator column is taken into account. This is ok
+
+// Case 2c
+TestA ta1 = tf.find(TestA.class, tc1.getId());
+
+Resulting SQL:
+SELECT t0.dis, t0.name FROM TestA t0 WHERE t0.id = ? [params=(long) 4013797794600]
+
+The discriminator column is not taken into account to be able to retrieve TestA. This is ok.
+
+// Case 2d
+TestB tb1 = tf.find(TestB.class, tc1.getId());
+
+Resulting SQL:
+SELECT t0.dis, t0.name FROM TestA t0 WHERE t0.dis = ? AND t0.id = ? [params=(String) TestB, (long) 4013797794600]
+
+Here the problem arises. The discriminator column is taken in the wrong way into account. It just checks for "TestB" but it should also take "TestC" into account. The result is, that the instance is not found. Actually the same scenario works fine with SNAPSHOT 1.3.0. 

@@ -1,0 +1,56 @@
+If an exception is thrown while processing a rollback the root exception fails to be logged.
+In ItemOrientedStep it catches Exception then calls processRollback but if processRollback throws an exception the original cause is never even logged, making it very difficult to track down the root cause of the exception. Perhaps changing the code from:
+catch (Exception e) {
+	processRollback(stepExecution, contribution, fatalException, transaction);
+	throw e;
+}
+to:
+catch (Exception e) {
+    try 
+{
+    	processRollback(stepExecution, contribution, fatalException, transaction);
+    	throw e;
+    }
+    catch (Exception rollbackException) 
+{
+        logger.error("Exception thrown during processRollback will be propegated, exception that caused the rollback follows", e);
+        throw rollbackException;
+    }
+}
+An example stack trace for this problem is:
+org.springframework.batch.core.step.AbstractStep$FatalException: Failed while processing rollback
+        at org.springframework.batch.core.step.item.ItemOrientedStep.processRollback(ItemOrientedStep.java:428)
+        at org.springframework.batch.core.step.item.ItemOrientedStep.access$1000(ItemOrientedStep.java:68)
+        at org.springframework.batch.core.step.item.ItemOrientedStep$1.doInIteration(ItemOrientedStep.java:347)
+        at org.springframework.batch.repeat.support.RepeatTemplate.getNextResult(RepeatTemplate.java:346)
+        at org.springframework.batch.repeat.support.RepeatTemplate.executeInternal(RepeatTemplate.java:212)
+        at org.springframework.batch.repeat.support.RepeatTemplate.iterate(RepeatTemplate.java:143)
+        at org.springframework.batch.core.step.item.ItemOrientedStep.doExecute(ItemOrientedStep.java:231)
+        at org.springframework.batch.core.step.AbstractStep.execute(AbstractStep.java:172)
+        at org.springframework.batch.core.job.SimpleJob.execute(SimpleJob.java:100)
+        at org.springframework.batch.core.launch.support.SimpleJobLauncher$1.run(SimpleJobLauncher.java:86)
+        at org.springframework.core.task.SyncTaskExecutor.execute(SyncTaskExecutor.java:49)
+        at org.springframework.batch.core.launch.support.SimpleJobLauncher.run(SimpleJobLauncher.java:81)
+        at org.jasig.portal.stats.quartz.JobLauncherDetails.executeInternal(JobLauncherDetails.java:71)
+        at org.springframework.scheduling.quartz.QuartzJobBean.execute(QuartzJobBean.java:86)
+        at org.quartz.core.JobRunShell.run(JobRunShell.java:203)
+        at org.quartz.simpl.SimpleThreadPool$WorkerThread.run(SimpleThreadPool.java:520)
+Caused by: org.springframework.transaction.TransactionSystemException: Could not roll back JDBC transaction; nested exception is java.sql.SQLException: Protocol violation
+        at org.springframework.jdbc.datasource.DataSourceTransactionManager.doRollback(DataSourceTransactionManager.java:279)
+        at org.springframework.transaction.support.AbstractPlatformTransactionManager.processRollback(AbstractPlatformTransactionManager.java:800)
+        at org.springframework.transaction.support.AbstractPlatformTransactionManager.rollback(AbstractPlatformTransactionManager.java:777)
+        at org.springframework.batch.core.step.item.ItemOrientedStep.processRollback(ItemOrientedStep.java:419)
+        ... 15 more
+Caused by: java.sql.SQLException: Protocol violation
+        at oracle.jdbc.driver.SQLStateMapping.newSQLException(SQLStateMapping.java:70)
+        at oracle.jdbc.driver.DatabaseError.newSQLException(DatabaseError.java:110)
+        at oracle.jdbc.driver.DatabaseError.throwSqlException(DatabaseError.java:171)
+        at oracle.jdbc.driver.DatabaseError.throwSqlException(DatabaseError.java:227)
+        at oracle.jdbc.driver.DatabaseError.throwSqlException(DatabaseError.java:439)
+        at oracle.jdbc.driver.T4C7Ocommoncall.receive(T4C7Ocommoncall.java:130)
+        at oracle.jdbc.driver.T4CConnection.doRollback(T4CConnection.java:613)
+        at oracle.jdbc.driver.PhysicalConnection.rollback(PhysicalConnection.java:3389)
+        at org.apache.commons.dbcp.DelegatingConnection.rollback(DelegatingConnection.java:328)
+        at org.apache.commons.dbcp.PoolingDataSource$PoolGuardConnectionWrapper.rollback(PoolingDataSource.java:312)
+        at org.springframework.jdbc.datasource.DataSourceTransactionManager.doRollback(DataSourceTransactionManager.java:276)
+        ... 18 more

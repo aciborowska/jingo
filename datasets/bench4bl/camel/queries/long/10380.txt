@@ -1,0 +1,86 @@
+My original problem is the fact, that in a Jetty based proxy the consumer sets the header "Transfer-Encoding: chunked" to the backend request for a GET request without body. This is not necessary, since there is no body, but the http component puts that null body into a InputStreamCache/HttpInputOverHTTP. This happens, because there is no content-length header set (which means it's "-1"):
+see https://github.com/apache/camel/blob/master/components/camel-http-common/src/main/java/org/apache/camel/http/common/DefaultHttpBinding.java#L564
+The only workaround I found, is to set "eagerCheckContentAvailable=true". Unfortunately the JettyHttpEndpoint9 does not transfer this setting to the http binding and therefor my problem can't be fixed. (Ok, I found another workaround, but it's really ugly.)
+I found that problem using camel-2.17. In the current master branch, there is an open TODO to transfer this option:
+https://github.com/apache/camel/blame/master/components/camel-jetty9/src/main/java/org/apache/camel/component/jetty9/JettyHttpEndpoint9.java#L52
+For me this fixed the problem in my "test".
+I didn't manage to build a good test, since that header is set deeply inside "org.eclipse.jetty.client.HttpConnection.normalizeRequest(Request)", but it's easy to reproduce it, by running a simple proxy and enable DEBUG log for "org.eclipse.jetty.client.HttpSender":
+Inside the log a http header like will be logged:
+
+Accept-Encoding: gzip
+
+User-Agent: Jetty/9.2.15.v20160210
+
+sendDirect: true
+
+Host: 127.0.0.1
+
+Transfer-Encoding: chunked
+
+
+
+This is the test I used to reproduce and debug that problen
+
+
+
+public class JettyEndpointsChuckedFalseTest extends BaseJettyTest {
+
+    
+
+    @Test
+
+    public void runningTest() throws Exception {
+
+        Exchange exchange = template.request("http://localhost:{{port}}/test", new Processor() {
+
+            @Override
+
+            public void process(Exchange exchange) throws Exception {
+
+            	exchange.getIn().getBody();
+
+            }
+
+        });
+
+        assertNotNull(exchange);
+
+    }
+
+    
+
+    @Override
+
+    protected RouteBuilder createRouteBuilder() throws Exception {
+
+        return new RouteBuilder() {
+
+            @Override
+
+            public void configure() throws Exception {
+
+
+
+            	from("jetty:http://localhost:{{port}}/test?matchOnUriPrefix=true&chunked=false&disableStreamCache=true"
+
+            			+ "&eagerCheckContentAvailable=true")
+
+	            	.to("log:request-debug?showHeaders=true&showBody=false&level=INFO")
+
+	            	.to("jetty:http://localhost:{{port2}}/test?bridgeEndpoint=true&chunked=false");
+
+            	
+
+                from("jetty:http://localhost:{{port2}}/test")
+
+                	.to("mock:dead.end");
+
+            }
+
+        };
+
+    }
+
+}
+
+

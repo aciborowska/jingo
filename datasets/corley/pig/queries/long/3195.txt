@@ -1,0 +1,59 @@
+PhysicalOperator.java contains a race condition that seems to occur in jobs involving a STREAM Operation. What seems to happen, is that the "inputs" List of PhysicalOperator is set to null in one thread, while the PhysicalOperator.processInput() method is running in another Thread.
+
+==Proposed Solution==
+
+Make the following Methods synchronized within org.apache.pig.backend.hadoop.executionengine.physicalLayer.PhysicalOperator
+
+PhysicalOperator.processInput(..)
+PhysicalOperator.setInputs(..)
+PhysicalOperator.attachInput(..)
+PhysicalOperator.detachInput(..)
+
+The problem manifested itself in failing reduce jobs which combined grouping, sorting and streaming. The following is an example of a logged error message:
+
+Backend error message
+---------------------
+org.apache.pig.backend.executionengine.ExecException: ERROR 2083: Error while trying to get next result in POStream.
+        at org.apache.pig.backend.hadoop.executionengine.physicalLayer.relationalOperators.POStream.getNext(POStream.java:239)
+        at org.apache.pig.backend.hadoop.executionengine.physicalLayer.PhysicalOperator.processInput(PhysicalOperator.java:308)
+        at org.apache.pig.backend.hadoop.executionengine.physicalLayer.relationalOperators.POForEach.getNext(POForEach.java:241)
+        at org.apache.pig.backend.hadoop.executionengine.physicalLayer.PhysicalOperator.processInput(PhysicalOperator.java:308)
+        at org.apache.pig.backend.hadoop.executionengine.physicalLayer.relationalOperators.POSplit.getNext(POSplit.java:214)
+        at org.apache.pig.backend.hadoop.executionengine.mapReduceLayer.PigGenericMapReduce$Reduce.runPipeline(PigGenericMapReduce.java:465)
+        at org.apache.pig.backend.hadoop.executionengine.mapReduceLayer.PigGenericMapReduce$Reduce.processOnePackageOutput(PigGenericMapReduce.java:433)
+        at org.apache.pig.backend.hadoop.executionengine.mapReduceLayer.PigGenericMapReduce$Reduce.reduce(PigGenericMapReduce.java:413)
+        at org.apache.pig.backend.hadoop.executionengine.mapReduceLayer.PigGenericMapReduce$Reduce.reduce(PigGenericMapReduce.java:257)
+        at org.apache.hadoop.mapreduce.Reducer.run(Reducer.java:176)
+        at org.apache.hadoop.mapred.ReduceTask.runNewReducer(ReduceTask.java:566)
+        at org.apache.hadoop.mapred.ReduceTask.run(ReduceTask.java:408)
+        at org.apache.hadoop.mapred.Child.main(Child.java:170)
+Caused by: org.apache.pig.backend.executionengine.ExecException: ERROR 2083: Error while trying to get next result in POStream.
+        at org.apache.pig.backend.hadoop.executionengine.physicalLayer.relationalOperators.POStream.getNextHelper(POStream.java:308)
+        at org.apache.pig.backend.hadoop.executionengine.physicalLayer.relationalOperators.POStream.getNext(POStream.java:222)
+        ... 12 more
+Caused by: java.lang.NullPointerException
+        at org.apache.pig.backend.hadoop.executionengine.physicalLayer.PhysicalOperator.processInput(PhysicalOperator.java:308)
+        at org.apache.pig.backend.hadoop.executionengine.physicalLayer.expressionOperators.POProject.getNext(POProject.java:160)
+        at org.apache.pig.backend.hadoop.executionengine.physicalLayer.expressionOperators.POProject.getNext(POProject.java:384)
+        at org.apache.pig.backend.hadoop.executionengine.physicalLayer.PhysicalOperator.getNext(PhysicalOperator.java:340)
+        at org.apache.pig.backend.hadoop.executionengine.physicalLayer.relationalOperators.POSort$SortComparator.getResult(POSort.java:193)
+        at org.apache.pig.backend.hadoop.executionengine.physicalLayer.relationalOperators.POSort$SortComparator.compare(POSort.java:150)
+        at org.apache.pig.backend.hadoop.executionengine.physicalLayer.relationalOperators.POSort$SortComparator.compare(POSort.java:132)
+        at org.apache.pig.data.InternalSortedBag$SortedDataBagIterator$PQContainer.compareTo(InternalSortedBag.java:167)
+        at org.apache.pig.data.InternalSortedBag$SortedDataBagIterator$PQContainer.compareTo(InternalSortedBag.java:161)
+        at java.util.PriorityQueue.siftDownComparable(PriorityQueue.java:624)
+        at java.util.PriorityQueue.siftDown(PriorityQueue.java:614)
+        at java.util.PriorityQueue.poll(PriorityQueue.java:523)
+        at org.apache.pig.data.InternalSortedBag$SortedDataBagIterator.readFromPriorityQ(InternalSortedBag.java:276)
+        at org.apache.pig.data.InternalSortedBag$SortedDataBagIterator.next(InternalSortedBag.java:229)
+        at org.apache.pig.data.InternalSortedBag$SortedDataBagIterator.hasNext(InternalSortedBag.java:206)
+        at org.apache.pig.backend.hadoop.executionengine.physicalLayer.relationalOperators.POSort.getNext(POSort.java:290)
+        at org.apache.pig.backend.hadoop.executionengine.physicalLayer.PhysicalOperator.getNext(PhysicalOperator.java:432)
+        at org.apache.pig.backend.hadoop.executionengine.physicalLayer.expressionOperators.POProject.processInputBag(POProject.java:581)
+        at org.apache.pig.backend.hadoop.executionengine.physicalLayer.expressionOperators.PORelationToExprProject.getNext(PORelationToExprProject.java:107)
+        at org.apache.pig.backend.hadoop.executionengine.physicalLayer.PhysicalOperator.getNext(PhysicalOperator.java:334)
+        at org.apache.pig.backend.hadoop.executionengine.physicalLayer.relationalOperators.POForEach.processPlan(POForEach.java:372)
+        at org.apache.pig.backend.hadoop.executionengine.physicalLayer.relationalOperators.POForEach.getNext(POForEach.java:297)
+        at org.apache.pig.backend.hadoop.executionengine.physicalLayer.PhysicalOperator.processInput(PhysicalOperator.java:308)
+        at org.apache.pig.backend.hadoop.executionengine.physicalLayer.relationalOperators.POStream.getNextHelper(POStream.java:260)
+        ... 13 more

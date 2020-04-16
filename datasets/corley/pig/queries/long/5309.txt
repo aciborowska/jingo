@@ -1,0 +1,43 @@
+I've been using Pig 0.12.1 for quite some time and am finally upgrading to 0.17.  One of my existing scripts failed.  I have a workaround (SET pig.tez.opt.union false), but I thought I'd pass on the problem I observed.  
+
+In stdout: 
+
+ERROR 2017: Internal error creating job configuration.
+
+
+
+In the Pig log:
+
+Caused by: java.lang.IllegalArgumentException: Edge [scope-93 : org.apache.pig.backend.hadoop.executionengine.tez.runtime.PigProcessor] -> [scope-83 : org.apache.pig.backend.hadoop.executionengine.tez.runtime.PigProcessor] ({ BROADCAST : org.apache.tez.runtime.library.input.UnorderedKVInput >> PERSISTED >> org.apache.tez.runtime.library.output.UnorderedKVOutput >> NullEdgeManager }) already defined!
+	at org.apache.tez.dag.api.DAG.addEdge(DAG.java:272)
+	at org.apache.pig.backend.hadoop.executionengine.tez.TezDagBuilder.visitTezOp(TezDagBuilder.java:404)
+	at org.apache.pig.backend.hadoop.executionengine.tez.plan.TezOperator.visit(TezOperator.java:259)
+	at org.apache.pig.backend.hadoop.executionengine.tez.plan.TezOperator.visit(TezOperator.java:56)
+	at org.apache.pig.impl.plan.DependencyOrderWalker.walk(DependencyOrderWalker.java:87)
+	at org.apache.pig.impl.plan.PlanVisitor.visit(PlanVisitor.java:46)
+	at org.apache.pig.backend.hadoop.executionengine.tez.TezJobCompiler.buildDAG(TezJobCompiler.java:69)
+	at org.apache.pig.backend.hadoop.executionengine.tez.TezJobCompiler.getJob(TezJobCompiler.java:120)
+	... 20 more
+
+
+
+I played around with a minimum viable test script and can cause this to fail:
+
+weblogs = LOAD '/tmp/in/weblogInfo' as (path:chararray, queryMap:map[chararray]); 
+featureToExtraData = LOAD '/tmp/in/featureToExtraData' as (feature:chararray, extraData:chararray); 
+
+oldA = FILTER weblogs BY path == '/A';
+newA = FILTER weblogs BY path == '/somethingElse';
+B = FILTER weblogs BY path == '/B';
+
+oldAFeatures = FOREACH oldA GENERATE queryMap#'feature1' as feature1, queryMap#'feature2' as feature2;
+newAFeatures = FOREACH newA GENERATE queryMap#'different1' as feature1, queryMap#'different2' as feature2;
+AFeatures = UNION oldAFeatures, newAFeatures;
+AFeaturesPlusMore = JOIN AFeatures BY feature1 LEFT, featureToExtraData BY feature USING 'replicated';
+
+BFeatures = FOREACH B GENERATE queryMap#'somethingElseEntirely1' as feature1, queryMap#'somethingElseEntirely2' as feature2;
+BFeaturesPlusMore = JOIN BFeatures BY feature1 LEFT, featureToExtraData BY feature USING 'replicated';
+
+STORE AFeaturesPlusMore INTO '/tmp/out/1/AFeaturesPlusMore';
+STORE BFeaturesPlusMore INTO '/tmp/out/1/BFeaturesPlusMore';
+

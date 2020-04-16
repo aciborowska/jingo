@@ -1,0 +1,67 @@
+Shortly we switched from ConfigurationFactory to DefaultConfigurationBuilder for parsing out configuration-files. Unfortunately the resulting Configuration-Objects show different behaviour. The following example illustrates the problem.
+
+public class CommonsConfigTest extends TestCase
+{
+    public void testCommonsConfig() 
+    {
+        try
+        {
+            URL oConfigURL = new File("c:\\config.xml").toURL();
+			
+            //========= ConfigurationFactory ===========
+            final ConfigurationFactory oConfigurationFactory = new ConfigurationFactory();
+            oConfigurationFactory.setConfigurationURL( oConfigURL );
+            printPropertyValue( oConfigurationFactory.getConfiguration() );
+
+            //========= DefaultConfigurationBuilder 1st attempt ===========
+            final DefaultConfigurationBuilder oBuilder = new DefaultConfigurationBuilder();
+            oBuilder.setURL( oConfigURL );
+            printPropertyValue( oBuilder.getConfiguration() );
+
+            //========= DefaultConfigurationBuilder 2nd attempt ===========
+            final DefaultConfigurationBuilder oDelimiterBuilder = new DefaultConfigurationBuilder();
+            oDelimiterBuilder.setListDelimiter( ';' );
+            oDelimiterBuilder.setDelimiterParsingDisabled( true );
+            oDelimiterBuilder.setURL( oConfigURL );
+            printPropertyValue( oDelimiterBuilder.getConfiguration() );
+        }
+        catch ( Exception configEx )
+        {
+            configEx.printStackTrace();
+        }
+    }
+    void printPropertyValue(final Configuration a_oConfig) {
+        System.out.println( a_oConfig.getString( "demo.prop" ) );
+    }
+}
+
+
+contents of config.xml
+
+<?xml version="1.0" encoding="ISO-8859-1" ?>
+<configuration>
+    <properties optional="true" fileName="/config.properties"/>
+</configuration>
+
+
+contents of config.properties
+
+demo.prop=test\, text using \,\, escaped list delimiters
+
+
+the output looks like this
+
+test, text using ,, escaped list delimiters
+test
+test
+
+
+The value of demo.prop depends on the mechanism which was used to create the Configuration-objects. 
+Using ConfigurationFactory gives the expected result: the list delimiters are ignored as they are escaped by backslashes.
+Both attempts using a DefaultConfigurationBuilder fail; even changing the List-delimiter and disabling delimiter-processing doesn't give the expected result.
+One reason for the problem is the invocation of ConfigurationUtils.copy() during internel processing. The method copies the value of the property from one configuration into another. During insertion of the property, the value of the property is split (StringUtils.split) a second time. Unfortunately the escape-backslashes have already been removed, as a result of the first invocation of StringUtils.split(), which happended during the initial parsing of the file.  That's why the second split-invocation treats the value as list.
+I see two problems
+
+the information about escape-characters is lost, copying a property from one configuration into another gives different results
+setListDelimiter() and setDelimiterParsingDisabled() don't work as expected
+

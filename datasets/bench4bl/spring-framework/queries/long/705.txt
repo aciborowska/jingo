@@ -1,0 +1,34 @@
+When using iBatis with TransactionAwareDataSourceProxy (TADS), DataSource resource gets registered twice (different instances - same underlying datasource).
+First with SqlMapClientTemplat on actual TADSP and then yet again with  TADSP's getConnection() method.
+So when it is cleaning up the transaction on APTransactionManager's triggerBeforeCompletion method, it gets already closed connection.
+My fix (currently is working ok :
+from SqlMapClientTemplate.java
+    public Object execute(SqlMapClientCallback action) throws DataAccessException {
+        Assert.notNull(getSqlMapClient(), "No SqlMapClient specified");
+        SqlMapSession session = this.getSqlMapClient().openSession();
+        try {
+            DataSource dataSource = getDataSource();
+            if (dataSource instanceof TransactionAwareDataSourceProxy) 
+{
+                dataSource = ((TransactionAwareDataSourceProxy)dataSource).getTargetDataSource();
+            }
+            Connection con = DataSourceUtils.getConnection(dataSource);
+            try 
+{
+                session.setUserConnection(con);
+                return action.doInSqlMapClient(session);
+            }
+            catch (SQLException ex) 
+{
+                throw getExceptionTranslator().translate("SqlMapClient operation", null, ex);
+            }
+            finally 
+{
+                DataSourceUtils.closeConnectionIfNecessary(con, dataSource);
+            }
+        }
+        finally 
+{
+            session.close();
+        }
+    }

@@ -1,0 +1,44 @@
+ToDate() function doesnt work with a partitioned table, partitioned by the column of DATE Datatype.
+Below are the steps I followed to recreate the problem.
+-->Sample input file to hive table :
+hdfs@testhost ~$ cat test.log 
+2012-06-13,16:11:17,574,140.134.127.109,SearchPage,Google.com,Win8,5,HTC
+2012-06-13,16:11:17,466,43.176.108.158,Electronics,Google.com,Win8,3,iPhone
+2012-06-13,16:11:17,501,97.73.102.79,Appliances,Google.com,Android,4,iPhone
+2012-06-13,16:11:17,469,166.98.157.122,Recommendations,Google.com,Win8,5,HTC
+2012-06-13,16:11:17,557,36.159.147.50,Sporting,Google.com,Win8,3,Samsung
+2012-06-13,16:11:17,449,128.215.122.234,ShoppingCart,Google.com,Win8,5,HTC
+2012-06-13,16:11:17,502,46.81.131.92,Electronics,Google.com,Android,5,Samsung
+2012-06-13,16:11:17,554,120.187.105.127,Automotive,Google.com,Win8,5,HTC
+2012-06-13,16:11:17,447,127.94.64.59,DetailPage,Google.com,Win8,3,Samsung
+2012-06-13,16:11:17,490,132.54.25.75,ShoppingCart,Google.com,Win8,3,iPhone
+2012-06-13,16:11:17,578,79.201.53.179,Automotive,Google.com,Win8,5,Samsung
+2012-06-13,16:11:17,435,158.106.164.38,HomePage,Google.com,Web,5,Chrome
+2012-06-13,16:11:17,523,17.131.82.171,Recommendations,Google.com,Web,3,IE9
+2012-06-13,16:11:17,575,178.95.126.105,Appliances,Google.com,iOS,3,iPhone
+2012-06-13,16:11:17,468,225.143.39.176,SearchPage,Google.com,iOS,5,HTC
+2012-06-13,16:11:17,511,43.103.102.147,ShoppingCart,Google.com,iOS,5,Samsung
+--> Copied to hdfs directory:
+hdfs@testhost ~$ hdfs dfs -put -f test.log /user/hdfs/
+-->Create partitoned table (partitioned with date data type column) in hive:
+0: jdbc:hive2://hdp2.raghav.com:10000/default> create table mytable(Dt DATE,Time STRING,Number INT,IPAddr STRING,Type STRING,Site STRING,OSType STRING,Visit INT,PhModel STRING) row format delimited fields terminated by ',' stored as textfile;
+0: jdbc:hive2://testhost.com:10000/default> load data inpath '/user/hdfs/test.log' overwrite into table mytable;
+0: jdbc:hive2://testhost..com:10000/default> SET hive.exec.dynamic.partition = true;
+0: jdbc:hive2://testhost.com:10000/default> SET hive.exec.dynamic.partition.mode = nonstrict;
+0: jdbc:hive2://testhost.com:10000/default> create table partmytable(Number INT,IPAddr STRING,Type STRING,Site STRING,OSType STRING,Visit INT,PhModel STRING) partitioned by (Dt DATE,Time STRING) row format delimited fields terminated by ',' stored as textfile;
+0: jdbc:hive2://testhost.com:10000/default> insert overwrite table partmytable partition(Dt,Time) select Number,IPAddr,Type,Site,OSType,Visit,PhModel,Dt,Time from mytable;
+0: jdbc:hive2://hdp2.raghav.com:10000/default> describe partmytable;
+--> Try to filter with ToDate function which fails with error:
+hdfs@testhost ~$ pig -useHCatalog
+grunt>
+grunt> temp = LOAD 'partmytable' using org.apache.hive.hcatalog.pig.HCatLoader();
+grunt> temp1 = FILTER temp by dt == ToDate('2012-06-13','yyyy-MM-dd');
+grunt> dump temp1;
+-->Try to filter the normal table with same statement works;
+grunt>
+grunt> temp = LOAD 'mytable' using org.apache.hive.hcatalog.pig.HCatLoader();
+grunt> temp1 = FILTER temp by dt == ToDate('2012-06-13','yyyy-MM-dd');
+grunt> dump temp1;
+Workaround :
+Use below statement instead of direct ToDate();
+grunt>temp1 = FILTER temp5 by DaysBetween(dt,(datetime)ToDate('2012-06-13', 'yyyy-MM-dd')) >=(long)0 AND DaysBetween(dt,(datetime)ToDate('2012-06-13', 'yyyy-MM-dd')) <=(long)0;

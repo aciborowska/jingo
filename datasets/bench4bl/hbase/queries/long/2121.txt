@@ -1,0 +1,18 @@
+org.apache.hadoop.hbase.client.HConnectionManager$TableServers.getRegionServerWithRetries retries 10 times (by default).   It ends up calling HConnectionManager$TableServers.locateRegionInMeta, which retries 10 times on its own.  So the HBase client is effectively retrying 100 times before giving up, instead of 10 (10 is the default hbase.client.retries.number).
+I'm using hbase trunk HEAD.  I verified this bug is also in 0.20.2.
+Sample call stack:
+ org.apache.hadoop.hbase.client.RegionOfflineException: region offline: mytable,,1263421423787
+ 	at org.apache.hadoop.hbase.client.HConnectionManager$TableServers.locateRegionInMeta(HConnectionManager.java:709)
+ 	at org.apache.hadoop.hbase.client.HConnectionManager$TableServers.locateRegion(HConnectionManager.java:640)
+ 	at org.apache.hadoop.hbase.client.HConnectionManager$TableServers.relocateRegion(HConnectionManager.java:609)
+ 	at org.apache.hadoop.hbase.client.HConnectionManager$TableServers.getRegionLocation(HConnectionManager.java:430)
+ 	at org.apache.hadoop.hbase.client.ServerCallable.instantiateServer(ServerCallable.java:57)
+ 	at org.apache.hadoop.hbase.client.ScannerCallable.instantiateServer(ScannerCallable.java:62)
+ 	at org.apache.hadoop.hbase.client.HConnectionManager$TableServers.getRegionServerWithRetries(HConnectionManager.java:1047)
+ 	at org.apache.hadoop.hbase.client.HTable$ClientScanner.nextScanner(HTable.java:836)
+ 	at org.apache.hadoop.hbase.client.HTable$ClientScanner.initialize(HTable.java:756)
+ 	at org.apache.hadoop.hbase.client.HTable.getScanner(HTable.java:354)
+ 	at <my application>
+How to reproduce:
+with a trivial HBase client (mine was just trying to scan the table), start the client, take offline the table the client uses, tell the client to start the scan.  The client will not give up after 10 attempts, unlike what it's supposed to do.
+If locateRegionInMeta is only ever called from getRegionServerWithRetries, then the fix is trivial: just remove the retry logic in there.  If it has some other callers who possibly relied on the retry logic in locateRegionInMeta, then the fix is going to be a bit more involved.

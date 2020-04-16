@@ -1,0 +1,70 @@
+Currently 3.5.X sends its hdr as follows:
+
+QuorumCnxManager.java
+dout.writeLong(PROTOCOL_VERSION);
+dout.writeLong(self.getId());
+String addr = self.getElectionAddress().getHostString() + ":" + self.getElectionAddress().getPort();
+byte[] addr_bytes = addr.getBytes();
+dout.writeInt(addr_bytes.length);
+dout.write(addr_bytes);
+dout.flush();
+
+
+
+Since it writes length of host and port byte string there is no simple way to append new fields to this hdr anymore. I.e the rx side has to consider all bytes after sid for host and port parsing, which is what it does here:
+
+[QuorumCnxManager.InitialMessage.parse(): http://bit.ly/1Q0znpW]
+QuorumCnxManager.java
+            sid = din.readLong();
+
+            int remaining = din.readInt();
+            if (remaining <= 0 || remaining > maxBuffer) {
+                throw new InitialMessageException(
+                        "Unreasonable buffer length: %s", remaining);
+            }
+
+            byte[] b = new byte[remaining];
+            int num_read = din.read(b);
+
+            if (num_read != remaining) {
+                throw new InitialMessageException(
+                        "Read only %s bytes out of %s sent by server %s",
+                        num_read, remaining, sid);
+            }
+
+            // FIXME: IPv6 is not supported. Using something like Guava's HostAndPort
+            //        parser would be good.
+            String addr = new String(b);
+            String[] host_port = addr.split(":");
+
+
+
+This has been captured in the discussion here: ZOOKEEPER-2186.
+Though it is possible to circumvent this problem by various means the request here is to design messages with hdr such that there is no need to bump version number or hack certain fields (i.e figure out if its length of host/port or length of different message etc, in the above case).
+
+This is the idea here as captured in ZOOKEEPER-2186.
+
+dout.writeLong(PROTOCOL_VERSION);
+
+String addr = self.getElectionAddress().getHostString() + ":" + self.getElectionAddress().getPort();
+byte[] addr_bytes = addr.getBytes();
+
+// After version write the total length of msg sent by sender.
+dout.writeInt(Long.BYTES + addr_bytes.length);   
+// Write sid afterwards
+dout.writeLong(self.getId());
+// Write length of host/port string                                   
+dout.writeInt(addr_bytes.length);
+// Write host/port string                       
+dout.write(addr_bytes); 
+
+
+
+Since total length of the message and length of each variable field is also present it is quite easy to provide backward compatibility, w.r.t to parsing of the message. 
+Older code will read the length of message it knows and ignore the rest. Newer revision(s), that wants to keep things compatible, will only append to hdr and not change the meaning of current fields.
+
+I am guessing this was the original intent w.r.t the introduction of protocol version here: ZOOKEEPER-1633
+
+Since 3.4.x code does not parse this and 3.5.x is still in alpha mode perhaps it is possible to consider this change now?.
+
+Also I would like to propose to carefully consider the option of using protobufs for the next protocol version bump. This will prevent issues like this in the future.

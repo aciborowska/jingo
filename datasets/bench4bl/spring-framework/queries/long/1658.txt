@@ -1,0 +1,30 @@
+Current implementation of TransactionSychronizationManager assumes that completion of transaction will occur in the same thread that registered notification and it uses ThreadLocal variable for this purpose.
+This is not the case in WebLogic 8,1, where completion is notified sometimes (occurs rarely) in different thread. I'm not sure if this is bug or explicit design in WebLogic.
+For sure WebLogic does parallel XA two-phase commit using two threads (for two XAResource's), but sometimes it does also transaction notifications in different thread...
+Such behaviour obsoletes purpose of using ThreadLocal variables for this task...
+Below is the stacktrace we have registered when completion is done in different thread.
+        at org.springframework.transaction.support.AbstractPlatformTransactionManager.invokeAfterCompletion(AbstractPlatformTransactionManager.java:725)
+        at org.springframework.transaction.jta.JtaTransactionManager.access$000(JtaTransactionManager.java:181)
+        at org.springframework.transaction.jta.JtaTransactionManager$JtaAfterCompletionSynchronization.afterCompletion(JtaTransactionManager.java:921)
+        at weblogic.transaction.internal.ServerSCInfo.callAfterCompletions(ServerSCInfo.java:853)
+        at weblogic.transaction.internal.ServerTransactionImpl$CallAfterCompletionsAction.run(ServerTransactionImpl.java:2808)
+        at weblogic.security.acl.internal.AuthenticatedSubject.doAs(AuthenticatedSubject.java:321)
+        at weblogic.security.service.SecurityManager.runAs(SecurityManager.java:121)
+        at weblogic.transaction.internal.ServerTransactionImpl.callAfterCompletions(ServerTransactionImpl.java:2785)
+        at weblogic.transaction.internal.ServerTransactionImpl.afterCommittedStateHousekeeping(ServerTransactionImpl.java:2687)
+        at weblogic.transaction.internal.ServerTransactionImpl.setCommitted(ServerTransactionImpl.java:2719)
+        at weblogic.transaction.internal.ServerTransactionImpl.localCommit(ServerTransactionImpl.java:1889)
+        at weblogic.transaction.internal.ServerTransactionImpl.localCommit(ServerTransactionImpl.java:1177)
+        at weblogic.transaction.internal.SubCoordinatorImpl.startCommit(SubCoordinatorImpl.java:226)
+        at weblogic.transaction.internal.CoordinatorImpl_WLSkel.invoke(Unknown Source)
+        at weblogic.rmi.internal.BasicServerRef.invoke(BasicServerRef.java:477)
+        at weblogic.rmi.internal.BasicServerRef$1.run(BasicServerRef.java:420)
+        at weblogic.security.acl.internal.AuthenticatedSubject.doAs(AuthenticatedSubject.java:363)
+        at weblogic.security.service.SecurityManager.runAs(SecurityManager.java:147)
+        at weblogic.rmi.internal.BasicServerRef.handleRequest(BasicServerRef.java:415)
+        at weblogic.rmi.internal.BasicExecuteRequest.execute(BasicExecuteRequest.java:30)
+        at weblogic.kernel.ExecuteThread.execute(ExecuteThread.java:219)
+        at weblogic.kernel.ExecuteThread.run(ExecuteThread.java:178)
+I suspect this can be cause for many different problems as TransactionSynchronization is used widely in Spring.
+Proposed fix is to implement static global per-jvm map where the key is not a thread but transaction identifier.
+I could not find workaround or setting in WL to disable this feature, but even then I would not do it for performance reasons...

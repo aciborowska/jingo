@@ -1,0 +1,82 @@
+The ClientScanner try to find next scanner if remainingResultSize and countdown are bigger than zero. 
+The remainingResultSize is calculated by CellUtil.estimatedHeapSizeOf(cell)
+Bar.java
+
+
+@Override
+
+    public Result next() throws IOException {
+
+        ....
+
+        do {
+
+          ...
+
+          if (values != null && values.length > 0) {
+
+            for (Result rs : values) {
+
+              cache.add(rs);
+
+              // We don't make Iterator here
+
+              for (Cell cell : rs.rawCells()) {
+
+                remainingResultSize -= CellUtil.estimatedHeapSizeOf(cell);
+
+              }
+
+              countdown--;
+
+              this.lastResult = rs;
+
+            }
+
+          }
+
+       }while (remainingResultSize > 0 && countdown > 0 &&
+
+            possiblyNextScanner(countdown, values == null));
+
+    }
+
+
+
+RSRpcServices also use CellUtil.estimatedHeapSizeOf(cell) to calculate the result size
+Bar.java
+
+
+  @Override
+
+  public ScanResponse scan(final RpcController controller, final ScanRequest request)
+
+  throws ServiceException {
+
+  ...
+
+            if (!results.isEmpty()) {
+
+              for (Result r : results) {
+
+                for (Cell cell : r.rawCells()) {
+
+                  currentScanResultSize += CellUtil.estimatedHeapSizeOf(cell);
+
+                  totalCellSize += CellUtil.estimatedSerializedSizeOf(cell);
+
+                }
+
+              }
+
+            }
+
+  ...
+
+ }
+
+
+
+If we encode the data block, like FastDiff, the cell read from HFile is implemented by ClonedSeekerState. And it's heap size is bigger than KeyValue. 
+So the RSRpcServices return the results to client with insufficient caching due to result size reaches the limit. ClientScanner consider that current region has no more data, and remainingResultSize and countdown are both bigger than zero. In fact, the remainingResultSize should be smaller than zero, and current region still have more data for reading.
+Does result size calculated by RSRpcServices should be return to client for checking the remainingResultSize ?

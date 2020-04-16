@@ -1,0 +1,12 @@
+This feature reused some of the mechanism already provided by ReadOnlyZooKeeper (ZOOKEEPER-704) but implemented in a different way
+
+Goal: read-only clients should be able to connect to the observer or continue to read data from the observer event when there is an outage of underling quorum. This means that it is possible for the observer to provide 100% read uptime for read-only local session (ZOOKEEPER-1147)
+
+Implementation: 
+The observer don't tear down itself when it lose connection with the leader. It only close the connection associated with non read-only sessions and global sessions. So the client can try other observer if this is a temporal failure. 
+
+During the outage, the observer switch to read-only mode. All the pending and future write requests get will get NOT_READONLY error. Read-only state transition is sent to all session on that observer. The observer only accepts a new connection from a read-only client.
+
+When the observer is able to reconnect to the leader. It sends state transition (CONNECTED_STATE) to all current session. If it is able to synchronize with the leader using DIFF, the steam of txns is sent through the commit processor instead of applying to the DataTree directly to prevent raise condition between in-flight read requests (see ZOOKEEPER-1505). The client will receive watch events correctly and can start issuing write requests. 
+
+However, if the observer is getting the snapshot. It need to drop all the connection since it cannot fire a watch correctly.  

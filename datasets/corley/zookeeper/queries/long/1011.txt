@@ -1,0 +1,40 @@
+There is a race condition in the Barrier example of the java doc: http://hadoop.apache.org/zookeeper/docs/current/zookeeperTutorial.html. It's in the enter() method. Here's the original example:
+boolean enter() throws KeeperException, InterruptedException{
+            zk.create(root + "/" + name, new byte[0], Ids.OPEN_ACL_UNSAFE,
+                    CreateMode.EPHEMERAL_SEQUENTIAL);
+            while (true) {
+                synchronized (mutex) {
+                    List<String> list = zk.getChildren(root, true);
+
+                    if (list.size() < size) 
+{
+                        mutex.wait();
+                    }
+ else 
+{
+                        return true;
+                    }
+                }
+            }
+        }
+
+Here's the race condition scenario:
+Let's say there are two machines/nodes: node1 and node2 that will use this code to synchronize over ZK. Let's say the following steps take place:
+node1 calls the zk.create method and then reads the number of children, and sees that it's 1 and starts waiting. 
+
+node2 calls the zk.create method (doesn't call the zk.getChildren method yet, let's say it's very slow) 
+node1 is notified that the number of children on the znode changed, it checks that the size is 2 so it leaves the barrier, it does its work and then leaves the barrier, deleting its node.
+
+node2 calls zk.getChildren and because node1 has already left, it sees that the number of children is equal to 1. Since node1 will never enter the barrier again, it will keep waiting.
+
+— End of scenario —
+
+Here's Flavio's fix suggestions (copying from the email thread):
+...
+I see two possible action points out of this discussion:
+
+1- State clearly in the beginning that the example discussed is not correct under the assumption that a process may finish the computation before another has started, and the example is there for illustration purposes;
+2- Have another example following the current one that discusses the problem and shows how to fix it. This is an interesting option that illustrates how one could reason about a solution when developing with zookeeper.
+...
+
+We'll go with the 2nd option.

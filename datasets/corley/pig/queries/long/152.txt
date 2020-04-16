@@ -1,0 +1,70 @@
+Since the changes for PIG-123 were checked in, we got lots of parsing errors when running the unit tests on Windows.
+
+It seems all these errors are generated when a query string that contains a single quote for the path of the data file is passed into the PigServer::registerQuery() method.  
+
+Here is an example of such an error and the location where it is generated in the unit test code (on the line "pig.registerQuery(query);" in the following code):
+
+
+org.apache.pig.impl.logicalLayer.parser.TokenMgrError: Lexical error at line 1, column 39.  Encountered: "W" (87), after : "\'file:c:\\"
+	at org.apache.pig.impl.logicalLayer.parser.QueryParserTokenManager.getNextToken(QueryParserTokenManager.java:1599)
+	at org.apache.pig.impl.logicalLayer.parser.QueryParser.jj_consume_token(QueryParser.java:4069)
+	at org.apache.pig.impl.logicalLayer.parser.QueryParser.FileName(QueryParser.java:717)
+	at org.apache.pig.impl.logicalLayer.parser.QueryParser.LoadClause(QueryParser.java:615)
+	at org.apache.pig.impl.logicalLayer.parser.QueryParser.BaseExpr(QueryParser.java:497)
+	at org.apache.pig.impl.logicalLayer.parser.QueryParser.NestedExpr(QueryParser.java:425)
+	at org.apache.pig.impl.logicalLayer.parser.QueryParser.GroupItem(QueryParser.java:1043)
+	at org.apache.pig.impl.logicalLayer.parser.QueryParser.CogroupClause(QueryParser.java:996)
+	at org.apache.pig.impl.logicalLayer.parser.QueryParser.BaseExpr(QueryParser.java:523)
+	at org.apache.pig.impl.logicalLayer.parser.QueryParser.NestedExpr(QueryParser.java:425)
+	at org.apache.pig.impl.logicalLayer.parser.QueryParser.ForEachClause(QueryParser.java:1364)
+	at org.apache.pig.impl.logicalLayer.parser.QueryParser.BaseExpr(QueryParser.java:552)
+	at org.apache.pig.impl.logicalLayer.parser.QueryParser.Expr(QueryParser.java:373)
+	at org.apache.pig.impl.logicalLayer.parser.QueryParser.Parse(QueryParser.java:227)
+	at org.apache.pig.impl.logicalLayer.LogicalPlanBuilder.parse(LogicalPlanBuilder.java:47)
+	at org.apache.pig.PigServer.registerQuery(PigServer.java:237)
+	at org.apache.pig.test.TestAlgebraicEval.testSimpleCount(TestAlgebraicEval.java:50)
+
+Standard Output
+
+Starting DataNode 0 with dfs.data.dir: dfs\data\data1,dfs\data\data2
+Starting DataNode 1 with dfs.data.dir: dfs\data\data3,dfs\data\data4
+Starting DataNode 2 with dfs.data.dir: dfs\data\data5,dfs\data\data6
+Starting DataNode 3 with dfs.data.dir: dfs\data\data7,dfs\data\data8
+myid =  foreach (group (load 'file:c:\WINDOWS\TEMP\test39837txt') all) generate COUNT($1);
+myid = foreach (group (load 'file:c:\WINDOWS\TEMP\test39838txt') all) generate group, COUNT($1) ;
+myid = foreach (group (load 'file:c:\WINDOWS\TEMP\test39839txt') all) generate COUNT($1), group ;
+myid = foreach (group (load 'file:c:\WINDOWS\TEMP\test39840txt' using org.apache.pig.builtin.PigStorage(':')) by $0) generate group, COUNT($1.$1) ;
+myid = foreach (group (load 'file:c:\WINDOWS\TEMP\test39841txt' using org.apache.pig.builtin.PigStorage(':')) by $0) generate group, COUNT($1.$1), COUNT($1.$0) ;
+
+
+
+Here is the corresponding code:
+
+
+public class TestAlgebraicEval extends TestCase {
+    
+	MiniCluster cluster = MiniCluster.buildCluster();
+    @Test
+    public void testSimpleCount() throws Throwable {
+        int LOOP_COUNT = 1024;
+        PigServer pig = new PigServer(MAPREDUCE);
+        File tmpFile = File.createTempFile("test", "txt");
+        PrintStream ps = new PrintStream(new FileOutputStream(tmpFile));
+        for(int i = 0; i < LOOP_COUNT; i++) {
+            ps.println(i);
+        }
+        ps.close();
+        String query = "myid =  foreach (group (load 'file:" + tmpFile + "') all) generate COUNT($1);";
+        System.out.println(query);
+        pig.registerQuery(query);
+        Iterator it = pig.openIterator("myid");
+        tmpFile.delete();
+        Tuple t = (Tuple)it.next();
+        Double count = t.getAtomField(0).numval();
+        assertEquals(count, (double)LOOP_COUNT);
+    }
+
+    .
+    .
+    .
+

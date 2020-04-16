@@ -1,0 +1,40 @@
+Procedure for reproduction:
+ 1. Set up hadoop
+ 2. Prepare data file and link.txt:
+    data:
+      $ hadoop fs -cat /path/to/data/2012-07-01/20120701.csv
+      1, 20120701 00:00:00
+      2, 20120701 00:00:01
+      3, 20120701 01:12:45
+    link.txt
+      $ cat link.txt
+       /path/to/data/2012-07-01//*
+ 2. On hive, create table like below:
+   CREATE TABLE user_logs(id INT, created_at STRING)
+   row format delimited fields terminated by ',' lines terminated by '\n'
+   stored as inputformat 'org.apache.hadoop.hive.ql.io.SymlinkTextInputFormat'
+   outputformat 'org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat';
+ 3. Put link.txt to /user/hive/warehouse/user_logs
+   $ sudo -u hdfs hadoop fs -put link.txt  /user/hive/warehouse/user_logs
+ 4. Open another session(A session), and watch socket,
+   $ netstat -a | grep CLOSE_WAIT
+    tcp        1      0 localhost:48121             localhost:50010
+         CLOSE_WAIT
+    tcp        1      0 localhost:48124             localhost:50010
+         CLOSE_WAIT
+   $
+ 5. Return to hive session, execute this,
+   $ select * from user_logs;
+ 6. Return to A session, watch socket again,
+   $ netstat -a | grep CLOSE_WAIT
+   tcp        1      0 localhost:48121             localhost:50010
+        CLOSE_WAIT
+   tcp        1      0 localhost:48124             localhost:50010
+        CLOSE_WAIT
+   tcp        1      0 localhost:48166             localhost:50010
+        CLOSE_WAIT
+ If you makes any partitions, you'll watch unclosed socket whose count
+equals partitions by once.
+I think that this problem maybe is caused by this point:
+  At https://github.com/apache/hive/blob/trunk/ql/src/java/org/apache/hadoop/hive/ql/io/SymbolicInputFormat.java,
+  line 66. BufferedReader was opened, but it doesn't closed.

@@ -1,0 +1,127 @@
+If I have a ConnectionFactory defined as:
+
+
+
+ConnectionFactory connectionFactory = new ConnectionFactory();
+
+connectionFactory.setAutomaticRecoveryEnabled(true);
+
+connectionFactory.setUsername(username);
+
+connectionFactory.setPassword(password);
+
+
+
+And a Camel route defined like:
+
+
+
+rabbitmq://localhost:5672/MyExchange?connectionFactory=#connectionFactory&exchangeType=direct&queue=MyQueue&routingKey=MyRoutingKey
+
+
+
+Performing these steps:
+
+Start my application and it connects to Rabbit and consumes messages
+Shutdown the RabbbitMQ server
+Shutdown my Camel application
+
+The application doesn't stop fully because the automatic recovery mechanism has background threads running. It carries on indefinately logging messages like:
+
+
+
+	at com.rabbitmq.client.impl.AMQChannel.wrap(AMQChannel.java:106)
+
+	at com.rabbitmq.client.impl.AMQChannel.wrap(AMQChannel.java:102)
+
+	at com.rabbitmq.client.impl.AMQConnection.start(AMQConnection.java:350)
+
+	at com.rabbitmq.client.impl.recovery.RecoveryAwareAMQConnectionFactory.newConnection(RecoveryAwareAMQConnectionFactory.java:37)
+
+	at com.rabbitmq.client.impl.recovery.AutorecoveringConnection.recoverConnection(AutorecoveringConnection.java:476)
+
+	at com.rabbitmq.client.impl.recovery.AutorecoveringConnection.beginAutomaticRecovery(AutorecoveringConnection.java:444)
+
+	at com.rabbitmq.client.impl.recovery.AutorecoveringConnection.access$000(AutorecoveringConnection.java:53)
+
+	at com.rabbitmq.client.impl.recovery.AutorecoveringConnection$1.shutdownCompleted(AutorecoveringConnection.java:383)
+
+	at com.rabbitmq.client.impl.ShutdownNotifierComponent.notifyListeners(ShutdownNotifierComponent.java:75)
+
+	at com.rabbitmq.client.impl.AMQConnection$MainLoop.run(AMQConnection.java:578)
+
+
+
+Looking at org.apache.camel.component.rabbitmq.RabbitConsumer.stop()
+
+
+
+    public void stop() throws IOException, TimeoutException {
+
+        stopping = true;
+
+        if (channel == null) {
+
+            return;
+
+        }
+
+        channel.basicCancel(tag);
+
+        try {
+
+            channel.close();
+
+        } catch (TimeoutException e) {
+
+            log.error("Timeout occured");
+
+            throw e;
+
+        }
+
+    }
+
+
+
+The calls to channel.basicCancel(tag) and channel.close() both throw com.rabbitmq.client.AlreadyClosedException when the server has closed the connection which stops the automatic recovery thread from being halted. Checking whether the channel is open before the calls to channel.basicCancel(tag) and channel.close() seems to fix the issue.
+
+
+
+    public void stop() throws IOException, TimeoutException {
+
+        stopping = true;
+
+        if (channel == null) {
+
+            return;
+
+        }
+
+        if (tag != null && isChannelOpen()) {
+
+            channel.basicCancel(tag);
+
+        }
+
+        try {
+
+            if (isChannelOpen()) {
+
+                channel.close();
+
+            }
+
+        } catch (TimeoutException e) {
+
+            log.error("Timeout occured");
+
+            throw e;
+
+        }
+
+    }
+
+
+
+I'll submit a PR later

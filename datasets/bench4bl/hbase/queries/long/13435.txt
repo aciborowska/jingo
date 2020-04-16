@@ -1,0 +1,188 @@
+We've run this with an hbase shell prefix filter, tried with column, range filters, and limits, and tried doing a pig script – which we knew was going to be less performant but thought it could work with the same, simple purpose. We wanted to select a specific user's data from a few days (14 ish) worth of data. We also tried selecting a few hours worth of data as a work around, to no avail. In pig, we switched it to just give us all the data for the two week time range.
+The errors look like RPC timeouts, but we don't feel it should be happening and that pig/hbase/both should be able to handle these "queries", if you will.
+The error we get in both the hbase shell and in pig boils down to "possible RPC timeout?". Literally says "?" in the message. 
+We saw this stack overflow, but it's not very helpful. I also saw a few hbase tickets, none of which are super helpful and none indicate that this was an issue fixed in hbase 0.99 or anything newer that what we have. 
+http://stackoverflow.com/questions/26437830/hbase-shell-outoforderscannernextexception-error-on-scanner-count-calls
+Here are the down and dirty deets: 
+Pig script: 
+
+ 
+
+hbase_records = LOAD 'hbase://impression_event_production_hbase' 
+
+USING org.apache.pig.backend.hadoop.hbase.HBaseStorage( 
+
+'cf1:uid:chararray,cf1:ts:chararray,cf1:data_regime_id:chararray,cf1:ago:chararray,cf1:ao:chararray,cf1:aca:chararray,cf1:si:chararray,cf1:ci:chararray,cf1:kv0:chararray,cf1:g_id:chararray,cf1:h_id:chararray,cf1:cg:chararray,cf1:kv1:chararray,cf1:kv2:chararray,cf1:kv3:chararray,cf1:kv4:chararray,cf1:kv5:chararray,cf1:kv6:chararray,cf1:kv7:chararray,cf1:kv8:chararray,cf1:kv9:chararray',
+
+'-loadKey=false -minTimestamp=1427299200000 -maxTimestamp=1428551999000') 
+
+AS 
+
+(uid,ts,data_regime_id,ago,ao,aca,si,ci,kv0,g_id,h_id,cg,kv1,kv2,kv3,kv4,kv5,kv6,kv7,kv8,kv9); 
+
+
+
+store hbase_records into 'output_place'; 
+
+
+
+Error: 
+
+ 
+
+2015-04-08 20:18:35,316 [main] INFO org.apache.pig.backend.hadoop.executionengine.mapReduceLayer.MapReduceLauncher - Failed! 
+
+2015-04-08 20:18:35,610 [main] ERROR org.apache.pig.tools.grunt.GruntParser - ERROR 2997: Unable to recreate exception from backed error: Error: org.apache.hadoop.hbase.DoNotRetryIOException: Failed after retry of OutOfOrderScannerNextException: was there a rpc timeout? 
+
+at org.apache.hadoop.hbase.client.ClientScanner.next(ClientScanner.java:403) 
+
+at org.apache.hadoop.hbase.mapreduce.TableRecordReaderImpl.nextKeyValue(TableRecordReaderImpl.java:232) 
+
+at org.apache.hadoop.hbase.mapreduce.TableRecordReader.nextKeyValue(TableRecordReader.java:138) 
+
+at org.apache.pig.backend.hadoop.hbase.HBaseTableInputFormat$HBaseTableRecordReader.nextKeyValue(HBaseTableInputFormat.java:162) 
+
+at org.apache.pig.backend.hadoop.hbase.HBaseStorage.getNext(HBaseStorage.java:645) 
+
+at org.apache.pig.backend.hadoop.executionengine.mapReduceLayer.PigRecordReader.nextKeyValue(PigRecordReader.java:204) 
+
+at org.apache.hadoop.mapred.MapTask$NewTrackingRecordReader.nextKeyValue(MapTask.java:533) 
+
+at org.apache.hadoop.mapreduce.task.MapContextImpl.nextKeyValue(MapContextImpl.java:80) 
+
+at org.apache.hadoop.mapreduce.lib.map.WrappedMapper$Context.nextKeyValue(WrappedMapper.java:91) 
+
+at org.apache.hadoop.mapreduce.Mapper.run(Mapper.java:144) 
+
+at org.apache.hadoop.mapred.MapTask.runNewMapper(MapTask.java:764) 
+
+at org.apache.hadoop.mapred.MapTask.run(MapTask.java:340) 
+
+at org.apache.hadoop.mapred.YarnChild$2.run(YarnChild.java:167) 
+
+at java.security.AccessController.doPrivileged(Native Method) 
+
+at javax.security.auth.Subject.doAs(Subject.java:415) 
+
+at org.apache.hadoop.security.UserGroupInformation.doAs(UserGroupInformation.java:1557) 
+
+at org.apache.hadoop.mapred.YarnChild.main(YarnChild.java:162) 
+
+Caused by: org.apache.hadoop.hbase.exceptions.OutOfOrderScannerNextException: org.apache.hadoop.hbase.exceptions.OutOfOrderScannerNextException: Expected nextCallSeq: 1 But the nextCallSeq got from client: 0; request=scanner_id: 4919882396333524452 number_of_rows: 100 close_scanner: false next_call_seq: 0 
+
+at org.apache.hadoop.hbase.regionserver.HRegionServer.scan(HRegionServer.java:3110) 
+
+at org.apache.hadoop.hbase.protobuf.generated.ClientProtos$ClientService$2.callBlockingMethod(ClientProtos.java:28861) 
+
+at org.apache.hadoop.hbase.ipc.RpcServer.call(RpcServer.java:2008) 
+
+at org.apache.hadoop.hbase.ipc.CallRunner.run(CallRunner.java:92) 
+
+at org.apache.hadoop.hbase.ipc.SimpleRpcScheduler.consumerLoop(SimpleRpcScheduler.java:160) 
+
+at org.apache.hadoop.hbase.ipc.SimpleRpcScheduler.access$000(SimpleRpcScheduler.java:38) 
+
+at org.apache.hadoop.hbase.ipc.SimpleRpcScheduler$1.run(SimpleRpcScheduler.java:110) 
+
+at java.lang.Thread.run(Thread.java:744) 
+
+
+
+at sun.reflect.NativeConstructorAccessorImpl.newInstance0(Native Method) 
+
+at sun.reflect.NativeConstructorAccessorImpl.newInstance(NativeConstructorAccessorImpl.java:57) 
+
+at sun.reflect.DelegatingConstructorAccessorImpl.newInstance(DelegatingConstructorAccessorImpl.java:45) 
+
+at java.lang.reflect.Constructor.newInstance(Constructor.java:526) 
+
+at org.apache.hadoop.ipc.RemoteException.instantiateException(RemoteException.java:106) 
+
+at org.apache.hadoop.ipc.RemoteException.unwrapRemoteException(RemoteException.java:95) 
+
+at org.apache.hadoop.hbase.protobuf.ProtobufUtil.getRemoteException(ProtobufUtil.java:285) 
+
+at org.apache.hadoop.hbase.client.ScannerCallable.call(ScannerCallable.java:204) 
+
+at org.apache.hadoop.hbase.client.ScannerCallable.call(ScannerCallable.java:59) 
+
+at org.apache.hadoop.hbase.client.RpcRetryingCaller.callWithRetries(RpcRetryingCaller.java:114) 
+
+at org.apache.hadoop.hbase.client.RpcRetryingCaller.callWithRetries(RpcRetryingCaller.java:90) 
+
+at org.apache.hadoop.hbase.client.ClientScanner.next(ClientScanner.java:355) 
+
+... 16 more 
+
+Caused by: org.apache.hadoop.hbase.ipc.RemoteWithExtrasException(org.apache.hadoop.hbase.exceptions.OutOfOrderScannerNextException): org.apache.hadoop.hbase.exceptions.OutOfOrderScannerNextException: Expected nextCallSeq: 1 But the nextCallSeq got from client: 0; request=scanner_id: 4919882396333524452 number_of_rows: 100 close_scanner: false next_call_seq: 0 
+
+at org.apache.hadoop.hbase.regionserver.HRegionServer.scan(HRegionServer.java:3110) 
+
+at org.apache.hadoop.hbase.protobuf.generated.ClientProtos$ClientService$2.callBlockingMethod(ClientProtos.java:28861) 
+
+at org.apache.hadoop.hbase.ipc.RpcServer.call(RpcServer.java:2008) 
+
+at org.apache.hadoop.hbase.ipc.CallRunner.run(CallRunner.java:92) 
+
+at org.apache.hadoop.hbase.ipc.SimpleRpcScheduler.consumerLoop(SimpleRpcScheduler.java:160) 
+
+at org.apache.hadoop.hbase.ipc.SimpleRpcScheduler.access$000(SimpleRpcScheduler.java:38) 
+
+at org.apache.hadoop.hbase.ipc.SimpleRpcScheduler$1.run(SimpleRpcScheduler.java:110) 
+
+at java.lang.Thread.run(Thread.java:744) 
+
+
+
+at org.apache.hadoop.hbase.ipc.RpcClient.call(RpcClient.java:1457) 
+
+at org.apache.hadoop.hbase.ipc.RpcClient.callBlockingMethod(RpcClient.java:1661) 
+
+at org.apache.hadoop.hbase.ipc.RpcClient$BlockingRpcChannelImplementation.callBlockingMethod(RpcClient.java:1719) 
+
+at org.apache.hadoop.hbase.protobuf.generated.ClientProtos$ClientService$BlockingStub.scan(ClientProtos.java:29990) 
+
+at org.apache.hadoop.hbase.client.ScannerCallable.call(ScannerCallable.java:174) 
+
+... 20 more 
+
+
+
+HBase shell command: 
+
+ 
+
+1.9.3-p194 :014 > scan 'impression_event_production_hbase', {FILTER=>"(PrefixFilter('oPbHNBCaRn6T'))"} 
+
+
+
+Error: 
+
+ 
+
+ROW COLUMN+CELL 
+
+
+
+ERROR: org.apache.hadoop.hbase.exceptions.OutOfOrderScannerNextException: Expected nextCallSeq: 1 But the nextCallSeq got from client: 0; request=scanner_id: 2229260827522260650 number_of_rows: 100 close_scanner: false next_call_seq: 0 
+
+at org.apache.hadoop.hbase.regionserver.HRegionServer.scan(HRegionServer.java:3110) 
+
+at org.apache.hadoop.hbase.protobuf.generated.ClientProtos$ClientService$2.callBlockingMethod(ClientProtos.java:28861) 
+
+at org.apache.hadoop.hbase.ipc.RpcServer.call(RpcServer.java:2008) 
+
+at org.apache.hadoop.hbase.ipc.CallRunner.run(CallRunner.java:92) 
+
+at org.apache.hadoop.hbase.ipc.SimpleRpcScheduler.consumerLoop(SimpleRpcScheduler.java:160) 
+
+at org.apache.hadoop.hbase.ipc.SimpleRpcScheduler.access$000(SimpleRpcScheduler.java:38) 
+
+at org.apache.hadoop.hbase.ipc.SimpleRpcScheduler$1.run(SimpleRpcScheduler.java:110) 
+
+at java.lang.Thread.run(Thread.java:744) 
+
+
+
+
+

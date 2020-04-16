@@ -1,0 +1,62 @@
+I have met subtle, but unpleasant bug (or rather bug family) in the transaction processing under following conditions:
+I have a class annotated by @Configurable with one of methods annotated by @Transactional (import ommited for brevity).
+@Configurable
+public class TestAnnotations {
+    PlatformTransactionManager fManager;
+    public void setTransactionManager(PlatformTransactionManager manager) 
+{
+        fManager= manager;
+    }
+    @Transactional(propagation = Propagation.REQUIRED)
+    public Object getTransaction() 
+{
+          System.out.println("Transaction activity "+
+            TransactionSynchronizationManager.isActualTransactionActive());
+        return fManager.getTransaction(
+            new DefaultTransactionAttribute(
+               TransactionDefinition.PROPAGATION_MANDATORY
+       ));
+    }
+;
+}
+Objects of this class are not Spring beans but are created by "new". AspectJ load time weaving is enabled and following aop.xml is present
+<!DOCTYPE aspectj PUBLIC
+"-//AspectJ//DTD//EN" "http://www.eclipse.org/aspectj/dtd/aspectj.dtd">
+<aspectj>
+   <weaver options="-showWeaveInfo -XmessageHandlerClass:org.springframework.aop.aspectj.AspectJWeaverMessageHandler">
+        <include within="de.ntec.feasibility.configurable.TestAnnotations"/>
+    </weaver>
+</aspectj>
+Context.xml is as follows
+<?xml version="1.0" encoding="UTF-8"?>
+<beans xmlns="http://www.springframework.org/schema/beans"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xmlns:aop="http://www.springframework.org/schema/aop"
+  xmlns:tx="http://www.springframework.org/schema/tx"
+  xsi:schemaLocation="http://www.springframework.org/schema/beans http://www.springframework.org/schema/beans/spring-beans.xsd http://www.springframework.org/schema/aop http://www.springframework.org/schema/aop/spring-aop.xsd http://www.springframework.org/schema/tx http://www.springframework.org/schema/tx/spring-tx.xsd"
+>
+    <aop:spring-configured/>       
+<!--    <tx:annotation-driven transaction-manager="txManager"/>  -->
+    <bean id="txManager" class="org.springframework.transaction.CallCountingTransactionManager">
+    </bean>
+    <bean class="de.ntec.feasibility.configurable.TestAnnotations"
+        singleton="false">
+        <property name="transactionManager" ref="txManager"/>
+    </bean>
+</beans>
+(note that <tx:aspect-driven ...> is commented out, but if comments are removed, result is the same).
+Java (1.5.0_08) is started with -javaagent:aspectjweaver.jar (latter resides in current directory). Weaving take place
+"INFO - [AspectJ] weaving 'de/ntec/feasibility/configurable/Configurabl'"
+Call 
+TransactionSynchronizationManager.isActualTransactionActive()); 
+returns "true", but 
+fManager.getTransaction(new DefaultTransactionAttribute(TransactionDefinition.PROPAGATION_MANDATORY));
+fails with exception 
+org.springframework.transaction.IllegalTransactionStateException: Transaction propagation 'mandatory' but no existing transaction found
+        at org.springframework.transaction.support.AbstractPlatformTransactionManager.getTransaction(AbstractPlatformTransactionManager.java:306)
+        at de.ntec.feasibility.configurable.TestAnnotations.getTransaction(Configurabl.java:29)
+        at de.ntec.feasibility.configurable.Main.main(Main.java:22)
+So TransactionSynchronizationManager reports that transaction exists but TransactionManager is unable to found it - clear contradiction.
+To finis a picture main method initializes transaction aspect in the following way
+      AnnotationTransactionAspect.aspectOf().setTransactionManager( (PlatformTransactionManager)(fContext.getBean("txManager")));
+If I try to create as Sring-managed bean some object of a another class that has "@Transactional" annotation on one of its methods it fails as well (in different manner depending on presence of <tx:annotation-driven/>, presence of this class in "include" clause of aop.xml and even is this bean singleton or not.  I was unable to find combination that works in presence of load-time weaving (even if wweaved classes has only @Configurable)

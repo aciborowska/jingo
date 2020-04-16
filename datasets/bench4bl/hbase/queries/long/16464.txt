@@ -1,0 +1,88 @@
+We met the problem on our real production cluster,  we need to cleanup some data on hbase,  we notice the archive folder is much larger than others,  so we delete all snapshots of all tables,  but the archive folder still grows bigger and bigger. 
+After check the hmaster log, we notice the exception below:
+
+
+
+2016-08-22 15:34:33,089 ERROR [f04,16000,1471240833208_ChoreService_1] snapshot.SnapshotHFileCleaner: Exception while checking if files were valid, keeping them just in case.
+
+org.apache.hadoop.hbase.snapshot.CorruptedSnapshotException: Couldn't read snapshot info from:hdfs://f04/hbase/.hbase-snapshot/.tmp/frog_stastic_2016-08-17/.snapshotinfo
+
+        at org.apache.hadoop.hbase.snapshot.SnapshotDescriptionUtils.readSnapshotInfo(SnapshotDescriptionUtils.java:295)
+
+        at org.apache.hadoop.hbase.snapshot.SnapshotReferenceUtil.getHFileNames(SnapshotReferenceUtil.java:328)
+
+        at org.apache.hadoop.hbase.master.snapshot.SnapshotHFileCleaner$1.filesUnderSnapshot(SnapshotHFileCleaner.java:85)
+
+        at org.apache.hadoop.hbase.master.snapshot.SnapshotFileCache.getSnapshotsInProgress(SnapshotFileCache.java:303)
+
+        at org.apache.hadoop.hbase.master.snapshot.SnapshotFileCache.getUnreferencedFiles(SnapshotFileCache.java:194)
+
+        at org.apache.hadoop.hbase.master.snapshot.SnapshotHFileCleaner.getDeletableFiles(SnapshotHFileCleaner.java:62)
+
+        at org.apache.hadoop.hbase.master.cleaner.CleanerChore.checkAndDeleteFiles(CleanerChore.java:233)
+
+        at org.apache.hadoop.hbase.master.cleaner.CleanerChore.checkAndDeleteEntries(CleanerChore.java:157)
+
+        at org.apache.hadoop.hbase.master.cleaner.CleanerChore.checkAndDeleteDirectory(CleanerChore.java:180)
+
+        at org.apache.hadoop.hbase.master.cleaner.CleanerChore.checkAndDeleteEntries(CleanerChore.java:149)
+
+        at org.apache.hadoop.hbase.master.cleaner.CleanerChore.checkAndDeleteDirectory(CleanerChore.java:180)
+
+        at org.apache.hadoop.hbase.master.cleaner.CleanerChore.checkAndDeleteEntries(CleanerChore.java:149)
+
+        at org.apache.hadoop.hbase.master.cleaner.CleanerChore.checkAndDeleteDirectory(CleanerChore.java:180)
+
+        at org.apache.hadoop.hbase.master.cleaner.CleanerChore.checkAndDeleteEntries(CleanerChore.java:149)
+
+        at org.apache.hadoop.hbase.master.cleaner.CleanerChore.checkAndDeleteDirectory(CleanerChore.java:180)
+
+        at org.apache.hadoop.hbase.master.cleaner.CleanerChore.checkAndDeleteEntries(CleanerChore.java:149)
+
+        at org.apache.hadoop.hbase.master.cleaner.CleanerChore.checkAndDeleteDirectory(CleanerChore.java:180)
+
+        at org.apache.hadoop.hbase.master.cleaner.CleanerChore.checkAndDeleteEntries(CleanerChore.java:149)
+
+        at org.apache.hadoop.hbase.master.cleaner.CleanerChore.chore(CleanerChore.java:124)
+
+        at org.apache.hadoop.hbase.ScheduledChore.run(ScheduledChore.java:185)
+
+        at java.util.concurrent.Executors$RunnableAdapter.call(Executors.java:511)
+
+        at java.util.concurrent.FutureTask.runAndReset(FutureTask.java:308)
+
+        at java.util.concurrent.ScheduledThreadPoolExecutor$ScheduledFutureTask.access$301(ScheduledThreadPoolExecutor.java:180)
+
+        at java.util.concurrent.ScheduledThreadPoolExecutor$ScheduledFutureTask.run(ScheduledThreadPoolExecutor.java:294)
+
+        at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1142)
+
+        at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:617)
+
+        at java.lang.Thread.run(Thread.java:745)
+
+Caused by: java.io.FileNotFoundException: File does not exist: /hbase/.hbase-snapshot/.tmp/frog_stastic_2016-08-17/.snapshotinfo
+
+        at org.apache.hadoop.hdfs.server.namenode.INodeFile.valueOf(INodeFile.java:71)
+
+        at org.apache.hadoop.hdfs.server.namenode.INodeFile.valueOf(INodeFile.java:61)
+
+        at org.apache.hadoop.hdfs.server.namenode.FSNamesystem.getBlockLocationsInt(FSNamesystem.java:1828)
+
+        at org.apache.hadoop.hdfs.server.namenode.FSNamesystem.getBlockLocations(FSNamesystem.java:1799)
+
+        at org.apache.hadoop.hdfs.server.namenode.FSNamesystem.getBlockLocations(FSNamesystem.java:1712)
+
+        at org.apache.hadoop.hdfs.server.namenode.NameNodeRpcServer.getBlockLocations(NameNodeRpcServer.java:587)
+
+        at org.apache.hadoop.hdfs.protocolPB.ClientNamenodeProtocolServerSideTranslatorPB.getBlockLocations(ClientNamenodeProtocolServerSideTranslatorPB.java:365)
+
+        at org.apache.hadoop.hdfs.protocol.proto.ClientNamenodeProtocolProtos$ClientNamenodeProtocol$2.callBlockingMethod(ClientNamenodeProtocolProtos.java)
+
+        at org.apache.hadoop.ipc.ProtobufRpcEngine$Server$ProtoBufRpcInvoker.call(ProtobufRpcEngine.java:616)
+
+
+
+It means when SnapshotHFileCleaner begin to cleanup the archive folder, it reads the the snapshot dir to check if any links to hfiles exist, but when read the file /.hbase-snapshot/.tmp/frog_stastic_2016-08-17/.snapshotinfo, corrupt exception thrown out (not sure why the file not found),  and cleanup will be failed.
+When i check the /.hbase-snapshot/.tmp/frog_stastic_2016-08-17, i can see there is only one file exist /hbase/.hbase-snapshot/.tmp/frog_stastic_2016-08-17/region-manifest.8e3179c388e10770eba7d35e30f2777f,  /hbase/.hbase-snapshot/.tmp/frog_stastic_2016-08-17/.snapshotinfo missed. 
+I think we should catch up the exception and delete the file to ensure cleanup will go on.

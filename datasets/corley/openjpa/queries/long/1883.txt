@@ -1,0 +1,51 @@
+I have a child class 'B' which extends via Joined Inheritance the class 'A'.  The entityManager.getSingleResult function returns an incomplete instantiation of the entity if not already in cache.  I can't speak for the JPA 2.0 specification, but the behavior of OpenJPA is clearly inconsistent and this looks like a clear bug.  A more complete description of the problem appears below.
+
+FWIW, this surprised me in production after having passed all my unit tests.  The unit tests assumed an empty database and therefore created the entities before persisting them.  This caused the entities to be placed in cache.  Subsequent attempts to load each entity then returned the full object.  In production, however, the cache starts off empty and the 'getSingleResult' call only loads part of the entity.  Using an 'em.find' as a workaround then causes the complete entity to be loaded into the cache.  Any subsequent calls to 'getSingleResult' will then return the entire entity.
+
+
+[A.java]
+
+@Entity 
+@Inheritance(strategy=InheritanceType.JOINED) 
+@DiscriminatorColumn(name="class_type", discriminatorType=DiscriminatorType.INTEGER) 
+public abstract class A { 
+	// Defines an ID and at least one persistent field. 
+} 
+
+[B.java]
+
+@Entity
+@DiscriminatorValue("2")
+class B extends A implements Serializable { 
+	... 
+	private String details; 
+	public String getDetails() 
+{ return details; }
+	public void setDetails(String details) 
+{ this.details = details; }
+	...
+}
+
+[SomeDAOImpl.java]
+
+TypedQuery<A> query = em.createNamedQuery("GetDetails", A.class);
+
+A a = query.getSingleResult();
+Assert.assertTrue(a instanceof B);
+Assert.assertNull(a.getDetails());  // ERROR: This should be defined
+
+em.refresh(a);
+Assert.assertTrue(a instanceof B);
+Assert.assertNull(a.getDetails());  // ERROR: This should be defined
+
+a = em.merge(a);
+Assert.assertTrue(a instanceof B);
+Assert.assertNull(a.getDetails());  // ERROR: This should be defined
+
+a = em.find(A.class, a.getId());
+Assert.assertTrue(a instanceof B);
+Assert.assertNotNull(a.getDetails());  // SUCCESS!
+
+a = query.getSingleResult();
+Assert.assertTrue(a instanceof B);
+Assert.assertNotNull(a.getDetails());  // SUCCESS!

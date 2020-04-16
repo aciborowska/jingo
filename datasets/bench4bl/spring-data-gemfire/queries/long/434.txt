@@ -1,0 +1,88 @@
+This, originally a support ticket, is intended to address problems uncovered at Pivotal customer TIM GemFire in the context of Spring (and specifically Spring XD with Spring Data GemFire) and to verify that both Spring Data GemFire and GemFire are doing the right thing.
+As of Friday, October 9th, 2015, I have determined that Spring Data GemFire has 2 bugs specifically as it relates to "durable" client functionality in GemFire.
+The first bug is that SDG prematurely fires (from here which is called here during ClientCache "initialization") the ClientCache.readyForEvents() notification to the servers to let the servers know the "durable" client is now ready to receive events (updates) from the server while the client was offline (disconnected).
+And, because the "ready-for-events" notification is fired before any GemFire Regions (with registered callbacks/listeners), interests registration or CQs (as required by GemFire as stated in the User Guide; see sub-section "Program the Client to Manage Durable Messaging", 2.b, 2.c, 2.d), the events are effectively sent to the void and lost.
+However, a user can workaround this problem by explicitly setting (or not setting as the default is false) the ready-for-events attribute on the <gfe:client-cache> element in the SDG namespace to false...
+
+
+
+
+
+
+<gfe:client-cache ready-for-events="false"/>
+
+
+
+
+
+
+
+And then specifically in application code, calling ClientCache.readyForEvents()...
+
+
+
+
+
+
+@Component
+
+
+
+
+class MyApplicationComponent {
+
+
+
+
+ 
+
+
+
+
+  @Autowired
+
+
+
+
+  private ClientCache clientCache;
+
+
+
+
+ 
+
+
+
+
+  @PostConstruct
+
+
+
+
+  public void init() {
+
+
+
+
+    clientCache.readyForEvents();
+
+
+
+
+  }
+
+
+
+
+}
+
+
+
+
+
+
+
+The second bug has no workaround.  The second bug causes the cache client to miss events while the client is offline, and specifically when it voluntarily disconnects from the GemFire cluster (perhaps for a maintenance cycle (upgrade or something of that nature)).  If the cache client crashes, this bug will not occur.
+As you can see in the code, the ClientRegionFactoryBean SDG class tries to clean up after itself on the server when the client shutdowns.  Specifically, it attempts to "unregister" any interests the clients expresses when it started up and declared it's subscription.  Normally, I would argue "cleaning up after one's self is admirable and preferable", but in this case, it just caused problems.
+By the client's own undoing, it informed the server that its interests in any events while it is offline should effectively be unregistered, even if the interests are "durable", and even if the client is "durable" and the server maintains a queue for client events.  If there is not "interests" matching events while the client is offline, there are simply no events recorded to the client's queue.
+In fact, a client should not be explicitly cleaning up it's interests registration on the server when it either unexpectedly or willing disconnects from the server since the server will handle this automatically on behalf of the client once the server has detected the client has disconnected, regardless of reason.  This enables the server to continue to keep track of events matching it's interests for a "durable" client when it disconnects.

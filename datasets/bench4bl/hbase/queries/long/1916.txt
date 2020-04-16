@@ -1,0 +1,484 @@
+FindBugs was run on the 0.20 branch code recently and produced ~400 warnings, which were presented to me in a meeting. So I installed the Eclipse FindBugs plugin, analyzed both trunk and 0.20 branch, and systematically went through and addressed the warnings. About a quarter of them were incorrect (spurious, pointless, etc.). Of the remainder, most were stylistic. A few were real bugs. Attached are big patches against trunk and branch which roll up all of the changes. They are too numerous to separate out and mostly do not warrant special attention. 
+All tests pass with patches applied.
+There are a few real bugs fixed:
+Would-be null dereference (fall through from null test):
+
+
+
+Index: src/java/org/apache/hadoop/hbase/regionserver/HRegionServer.java
+
+===================================================================
+
+@@ -1222,12 +1222,13 @@
+
+     // queue at time iterator was taken out.  Apparently goes from oldest.
+
+     for (ToDoEntry e: this.toDo) {
+
+       HMsg msg = e.msg;
+
+-      if (msg == null) {
+
++      if (msg != null) {
+
++        if (msg.isType(HMsg.Type.MSG_REGION_OPEN)) {
+
++          addProcessingMessage(msg.getRegionInfo());
+
++        }
+
++      } else {
+
+         LOG.warn("Message is empty: " + e);
+
+       }
+
+-      if (e.msg.isType(HMsg.Type.MSG_REGION_OPEN)) {
+
+-        addProcessingMessage(e.msg.getRegionInfo());
+
+-      }
+
+     }
+
+   }
+
+
+
+Invalid attempt to remove scanner from string keyed map using an integer key instead of scanner name:
+
+
+
+Index: src/java/org/apache/hadoop/hbase/regionserver/HRegionServer.java
+
+===================================================================
+
+@@ -1900,7 +1902,8 @@
+
+         null: results.toArray(new Result[0]);
+
+     } catch (Throwable t) {
+
+       if (t instanceof NotServingRegionException) {
+
+-        this.scanners.remove(scannerId);
+
++        String scannerName = String.valueOf(scannerId);
+
++        this.scanners.remove(scannerName);
+
+       }
+
+       throw convertThrowableToIOE(cleanup(t));
+
+     }
+
+
+
+Invalid equality test:
+
+
+
+Index: src/java/org/apache/hadoop/hbase/util/FSUtils.java
+
+===================================================================
+
+@@ -301,11 +301,15 @@
+
+       // should be regions.  Then in each region, should only be family
+
+       // directories.  Under each of these, should be one file only.
+
+       Path d = tableDirs[i].getPath();
+
+-      if (d.getName().equals(HConstants.HREGION_LOGDIR_NAME)) continue;
+
++      if (d.getName().equals(HConstants.HREGION_LOGDIR_NAME)) {
+
++        continue;
+
++      }
+
+       FileStatus [] regionDirs = fs.listStatus(d, new DirFilter(fs));
+
+       for (int j = 0; j < regionDirs.length; j++) {
+
+         Path dd = regionDirs[j].getPath();
+
+-        if (dd.equals(HConstants.HREGION_COMPACTIONDIR_NAME)) continue;
+
++        if (dd.getName().equals(HConstants.HREGION_COMPACTIONDIR_NAME)) {
+
++          continue;
+
++        }
+
+         // Else its a region name.  Now look in region for families.
+
+         FileStatus [] familyDirs = fs.listStatus(dd, new DirFilter(fs));
+
+         for (int k = 0; k < familyDirs.length; k++) {
+
+@@ -360,11 +364,15 @@
+
+       // only be family directories.  Under each of these, should be a mapfile
+
+       // and info directory and in these only one file.
+
+       Path d = tableDirs[i].getPath();
+
+-      if (d.getName().equals(HConstants.HREGION_LOGDIR_NAME)) continue;
+
++      if (d.getName().equals(HConstants.HREGION_LOGDIR_NAME)) {
+
++        continue;
+
++      }
+
+       FileStatus [] regionDirs = fs.listStatus(d, new DirFilter(fs));
+
+       for (int j = 0; j < regionDirs.length; j++) {
+
+         Path dd = regionDirs[j].getPath();
+
+-        if (dd.equals(HConstants.HREGION_COMPACTIONDIR_NAME)) continue;
+
++        if (dd.getName().equals(HConstants.HREGION_COMPACTIONDIR_NAME)) {
+
++          continue;
+
++        }
+
+         // Else its a region name.  Now look in region for families.
+
+         FileStatus [] familyDirs = fs.listStatus(dd, new DirFilter(fs));
+
+         for (int k = 0; k < familyDirs.length; k++) {
+
+
+
+Minor race:
+
+
+
+Index: src/java/org/apache/hadoop/hbase/client/HConnectionManager.java
+
+===================================================================
+
+@@ -197,7 +197,7 @@
+
+      * Get this watcher's ZKW, instanciate it if necessary.
+
+      * @return ZKW
+
+      */
+
+-    public ZooKeeperWrapper getZooKeeperWrapper() throws IOException {
+
++    public synchronized ZooKeeperWrapper getZooKeeperWrapper() throws IOException {
+
+       if(zooKeeperWrapper == null) {
+
+         zooKeeperWrapper = new ZooKeeperWrapper(conf, this);
+
+       } 
+
+
+
+Sleep within lock. Rewritten to sleep using lock instead. Also, notify when sleep is no longer necessary. Saves 20-30 seconds in TestZooKeeper:
+
+
+
+Index: src/java/org/apache/hadoop/hbase/client/HConnectionManager.java
+
+===================================================================
+
+@@ -323,6 +323,7 @@
+
+             
+
+             if (tryMaster.isMasterRunning()) {
+
+               this.master = tryMaster;
+
++              this.masterLock.notifyAll();
+
+               break;
+
+             }
+
+             
+
+@@ -340,7 +341,7 @@
+
+ 
+
+           // Cannot connect to master or it is not running. Sleep & retry
+
+           try {
+
+-            Thread.sleep(getPauseTime(tries));
+
++            this.masterLock.wait(getPauseTime(tries));
+
+           } catch (InterruptedException e) {
+
+             // continue
+
+           }
+
+
+
+'column' and 'newColumn' are not guaranteed to not be null along some code paths. Protect against possible null dereference and make the static tool happy.
+
+
+
+Index: src/java/org/apache/hadoop/hbase/regionserver/WildcardColumnTracker.java
+
+===================================================================
+
+@@ -165,74 +165,80 @@
+
+       this.newColumn = newColumns.get(newIndex);
+
+       return MatchCode.INCLUDE;
+
+     }
+
+-    
+
+-    
+
+-    // There are new and old, figure which to check first
+
+-    int ret = Bytes.compareTo(column.getBuffer(), column.getOffset(), 
+
++
+
++    if (column != null && newColumn != null) {
+
++      // There are new and old, figure which to check first
+
++      int ret = Bytes.compareTo(column.getBuffer(), column.getOffset(), 
+
+         column.getLength(), newColumn.getBuffer(), newColumn.getOffset(), 
+
+         newColumn.getLength());
+
+         
+
+-    // Old is smaller than new, compare against old
+
+-    if(ret <= -1) {
+
+-      ret = Bytes.compareTo(column.getBuffer(), column.getOffset(), 
+
++      // Old is smaller than new, compare against old
+
++      if(ret <= -1) {
+
++        ret = Bytes.compareTo(column.getBuffer(), column.getOffset(), 
+
+           column.getLength(), bytes, offset, length);
+
+       
+
++        // Same column
+
++        if(ret == 0) {
+
++          if(column.increment() > this.maxVersions) {
+
++            return MatchCode.SKIP;
+
++          }
+
++          return MatchCode.INCLUDE;
+
++        }
+
++      
+
++        // Specified column is bigger than current column
+
++        // Move down current column and check again
+
++        if(ret <= -1) {
+
++          if(++index == columns.size()) {
+
++            this.column = null;
+
++          } else {
+
++            this.column = columns.get(index);
+
++          }
+
++          return checkColumn(bytes, offset, length);
+
++        }
+
++      
+
++        // ret >= 1
+
++        // Specified column is smaller than current column
+
++        // Nothing to match against, add to new and include
+
++        newColumns.add(new ColumnCount(bytes, offset, length, 1));
+
++        return MatchCode.INCLUDE;
+
++      }
+
++    }
+
++
+
++    if (newColumn != null) {
+
++      // Cannot be equal, so ret >= 1
+
++      // New is smaller than old, compare against new
+
++      int ret = Bytes.compareTo(newColumn.getBuffer(), newColumn.getOffset(), 
+
++        newColumn.getLength(), bytes, offset, length);
+
++    
+
+       // Same column
+
+       if(ret == 0) {
+
+-        if(column.increment() > this.maxVersions) {
+
++        if(newColumn.increment() > this.maxVersions) {
+
+           return MatchCode.SKIP;
+
+         }
+
+         return MatchCode.INCLUDE;
+
+       }
+
+-      
+
++    
+
+       // Specified column is bigger than current column
+
+       // Move down current column and check again
+
+       if(ret <= -1) {
+
+-        if(++index == columns.size()) {
+
+-          this.column = null;
+
++        if(++newIndex == newColumns.size()) {
+
++          this.newColumn = null;
+
+         } else {
+
+-          this.column = columns.get(index);
+
++          this.newColumn = newColumns.get(newIndex);
+
+         }
+
+         return checkColumn(bytes, offset, length);
+
+       }
+
+-      
+
++    
+
+       // ret >= 1
+
+       // Specified column is smaller than current column
+
+       // Nothing to match against, add to new and include
+
+       newColumns.add(new ColumnCount(bytes, offset, length, 1));
+
+       return MatchCode.INCLUDE;
+
+     }
+
+-    
+
+-    // Cannot be equal, so ret >= 1
+
+-    // New is smaller than old, compare against new
+
+-    
+
+-    ret = Bytes.compareTo(newColumn.getBuffer(), newColumn.getOffset(), 
+
+-        newColumn.getLength(), bytes, offset, length);
+
+-    
+
+-    // Same column
+
+-    if(ret == 0) {
+
+-      if(newColumn.increment() > this.maxVersions) {
+
+-        return MatchCode.SKIP;
+
+-      }
+
+-      return MatchCode.INCLUDE;
+
+-    }
+
+-    
+
+-    // Specified column is bigger than current column
+
+-    // Move down current column and check again
+
+-    if(ret <= -1) {
+
+-      if(++newIndex == newColumns.size()) {
+
+-        this.newColumn = null;
+
+-      } else {
+
+-        this.newColumn = newColumns.get(newIndex);
+
+-      }
+
+-      return checkColumn(bytes, offset, length);
+
+-    }
+
+-    
+
+-    // ret >= 1
+
+-    // Specified column is smaller than current column
+
+-    // Nothing to match against, add to new and include
+
++
+
++    // No match happened, add to new and include
+
+     newColumns.add(new ColumnCount(bytes, offset, length, 1));
+
+-    return MatchCode.INCLUDE;
+
++    return MatchCode.INCLUDE;    
+
+   }
+
+

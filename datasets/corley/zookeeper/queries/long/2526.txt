@@ -1,0 +1,53 @@
+According to ZOOKEEPER-1736 the flag allowSaslFailedClient will allow clients whose Sasl auth has failed the same privileges as a client that does not attempt Sasl, i.e., anonymous login.
+
+It would be nice to have a second property "allowAnonLogin" that defaults to true and allows current behavior. But if it is set to false it disconnects any clients that do not attempt Sasl auth or do not complete it successfully.
+
+The motivation would be to protect a shared ZooKeeper ensemble in a datacenter and reduce the surface area of vulnerability by protecting the service from a resiliency/availability perspective by limiting interaction by anonymous clients. This would also protect against rogue clients that could otherwise deny service by filling up the znode storage in non-ACLed locations.
+
+I'm working off of 3.4.6 source code (that's the one we have deployed internally). This functionality could be implemented by adding a flag ServerCnxn#isAuthenticated that is set to true iff ZooKeeperServer#processSasl() succeeds and which is inspected at every incoming request and the session is closed if auth isn't done and opcode is other than Sasl or Auth:
+
+— src/java/main/org/apache/zookeeper/server/ServerCnxn.java	(revision 1757035)
++++ src/java/main/org/apache/zookeeper/server/ServerCnxn.java	(working copy)
+@@ -55,6 +55,8 @@
+      */
+     boolean isOldClient = true;
+
++    boolean isAuthenticated = false;
++
+     abstract int getSessionTimeout();
+
+     abstract void close();
+
+
+
+— src/java/main/org/apache/zookeeper/server/ZooKeeperServer.java	(revision 1757035)
++++ src/java/main/org/apache/zookeeper/server/ZooKeeperServer.java	(working copy)
+@@ -884,11 +892,26 @@
+         BinaryInputArchive bia = BinaryInputArchive.getArchive(bais);
+         RequestHeader h = new RequestHeader();
+         h.deserialize(bia, "header");
+         // Through the magic of byte buffers, txn will not be
+         // pointing
+         // to the start of the txn
+         incomingBuffer = incomingBuffer.slice();
+
+	if (h.getType() == OpCode.auth) {
++        if (allowAnonLogin == false && cnxn.isAuthenticated == false) 
+Unknown macro: {+            if (!(h.getType() == OpCode.auth ||+                  h.getType() == OpCode.ping ||+                  h.getType() == OpCode.sasl)) {
++                LOG.warn(String.format("Closing client connection %s. OpCode %d received before Sasl authentication was complete and allowAnonLogin=false",
++                        cnxn.getRemoteSocketAddress().toString(), h.getType()));
++                ReplyHeader rh = new ReplyHeader(h.getXid(), 0,
++                        KeeperException.Code.AUTHFAILED.intValue());
++                cnxn.sendResponse(rh, null, null);
++                cnxn.sendBuffer(ServerCnxnFactory.closeConn);
++                cnxn.disableRecv();
++            }+        } 
+@@ -963,6 +986,7 @@
+                     String authorizationID = saslServer.getAuthorizationID();
+                     LOG.info("adding SASL authorization for authorizationID: " + authorizationID);
+                     cnxn.addAuthInfo(new Id("sasl",authorizationID));
++                    cnxn.isAuthenticated = true;
+                 }
+             }
+             catch (SaslException e) {
+

@@ -1,0 +1,43 @@
+In our production hadoop environment, the "/tmp/" is actually pretty small, and we encountered a problem when a query used the RowContainer class and filled up the /tmp/ partition.  I tracked down the cause to the RowContainer class putting temporary files in the '/tmp/' path instead of using the configured Hadoop temporary path.  I've attached a patch to fix this.
+Here's the traceback:
+2010-04-25 12:05:05,120 INFO org.apache.hadoop.hive.ql.exec.persistence.RowContainer: RowContainer created temp file /tmp/hive-rowcontainer-1244151903/RowContainer7816.tmp
+2010-04-25 12:05:06,326 INFO ExecReducer: ExecReducer: processing 10000000 rows: used memory = 385520312
+2010-04-25 12:05:08,513 INFO ExecReducer: ExecReducer: processing 11000000 rows: used memory = 341780472
+2010-04-25 12:05:10,697 INFO ExecReducer: ExecReducer: processing 12000000 rows: used memory = 301446768
+2010-04-25 12:05:12,837 INFO ExecReducer: ExecReducer: processing 13000000 rows: used memory = 399208768
+2010-04-25 12:05:15,085 INFO ExecReducer: ExecReducer: processing 14000000 rows: used memory = 364507216
+2010-04-25 12:05:17,260 INFO ExecReducer: ExecReducer: processing 15000000 rows: used memory = 332907280
+2010-04-25 12:05:19,580 INFO ExecReducer: ExecReducer: processing 16000000 rows: used memory = 298774096
+2010-04-25 12:05:21,629 INFO ExecReducer: ExecReducer: processing 17000000 rows: used memory = 396505408
+2010-04-25 12:05:23,830 INFO ExecReducer: ExecReducer: processing 18000000 rows: used memory = 362477288
+2010-04-25 12:05:25,914 INFO ExecReducer: ExecReducer: processing 19000000 rows: used memory = 327229744
+2010-04-25 12:05:27,978 INFO ExecReducer: ExecReducer: processing 20000000 rows: used memory = 296051904
+2010-04-25 12:05:28,155 FATAL ExecReducer: org.apache.hadoop.fs.FSError: java.io.IOException: No space left on device
+	at org.apache.hadoop.fs.RawLocalFileSystem$LocalFSFileOutputStream.write(RawLocalFileSystem.java:199)
+	at java.io.BufferedOutputStream.flushBuffer(BufferedOutputStream.java:65)
+	at java.io.BufferedOutputStream.write(BufferedOutputStream.java:109)
+	at org.apache.hadoop.fs.FSDataOutputStream$PositionCache.write(FSDataOutputStream.java:49)
+	at java.io.DataOutputStream.write(DataOutputStream.java:90)
+	at org.apache.hadoop.fs.ChecksumFileSystem$ChecksumFSOutputSummer.writeChunk(ChecksumFileSystem.java:346)
+	at org.apache.hadoop.fs.FSOutputSummer.writeChecksumChunk(FSOutputSummer.java:150)
+	at org.apache.hadoop.fs.FSOutputSummer.flushBuffer(FSOutputSummer.java:132)
+	at org.apache.hadoop.fs.FSOutputSummer.flushBuffer(FSOutputSummer.java:121)
+	at org.apache.hadoop.fs.FSOutputSummer.write1(FSOutputSummer.java:112)
+	at org.apache.hadoop.fs.FSOutputSummer.write(FSOutputSummer.java:86)
+	at org.apache.hadoop.fs.FSDataOutputStream$PositionCache.write(FSDataOutputStream.java:49)
+	at java.io.DataOutputStream.write(DataOutputStream.java:90)
+	at org.apache.hadoop.io.SequenceFile$Writer.append(SequenceFile.java:1013)
+	at org.apache.hadoop.io.SequenceFile$Writer.append(SequenceFile.java:977)
+	at org.apache.hadoop.hive.ql.io.HiveSequenceFileOutputFormat$1.write(HiveSequenceFileOutputFormat.java:70)
+	at org.apache.hadoop.hive.ql.exec.persistence.RowContainer.spillBlock(RowContainer.java:343)
+	at org.apache.hadoop.hive.ql.exec.persistence.RowContainer.add(RowContainer.java:163)
+	at org.apache.hadoop.hive.ql.exec.JoinOperator.processOp(JoinOperator.java:118)
+	at org.apache.hadoop.hive.ql.exec.Operator.process(Operator.java:456)
+	at org.apache.hadoop.hive.ql.exec.ExecReducer.reduce(ExecReducer.java:244)
+	at org.apache.hadoop.mapred.ReduceTask.run(ReduceTask.java:436)
+	at org.apache.hadoop.mapred.Child.main(Child.java:158)
+Caused by: java.io.IOException: No space left on device
+	at java.io.FileOutputStream.writeBytes(Native Method)
+	at java.io.FileOutputStream.write(FileOutputStream.java:260)
+	at org.apache.hadoop.fs.RawLocalFileSystem$LocalFSFileOutputStream.write(RawLocalFileSystem.java:197)
+	... 22 more

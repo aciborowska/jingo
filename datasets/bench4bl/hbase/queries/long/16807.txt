@@ -1,0 +1,54 @@
+It's little weird, but it happened in the product environment that few RegionServer missed master znode create notification on master failover. In that case ZooKeeperNodeTracker will not refresh the cached data and MasterAddressTracker will always return old active HM detail to Region server on ServiceException.
+Though We create region server stub on failure but without refreshing the MasterAddressTracker data.
+In HRegionServer.createRegionServerStatusStub()
+
+
+
+  boolean refresh = false; // for the first time, use cached data
+
+    RegionServerStatusService.BlockingInterface intf = null;
+
+    boolean interrupted = false;
+
+    try {
+
+      while (keepLooping()) {
+
+        sn = this.masterAddressTracker.getMasterAddress(refresh);
+
+        if (sn == null) {
+
+          if (!keepLooping()) {
+
+            // give up with no connection.
+
+            LOG.debug("No master found and cluster is stopped; bailing out");
+
+            return null;
+
+          }
+
+          if (System.currentTimeMillis() > (previousLogTime + 1000)) {
+
+            LOG.debug("No master found; retry");
+
+            previousLogTime = System.currentTimeMillis();
+
+          }
+
+          refresh = true; // let's try pull it from ZK directly
+
+          if (sleep(200)) {
+
+            interrupted = true;
+
+          }
+
+          continue;
+
+        }
+
+
+
+Here we refresh node only when 'sn' is NULL otherwise it will use same cached data. 
+So in above case RegionServer will never report active HMaster successfully until HMaster failover or RegionServer restart.

@@ -1,0 +1,190 @@
+Incoming SOAP messages with attachments are parsed correctly, but outgoing messages with attachments are missing attachment parts and all part boundaries, even though the overall HTTP content-type is "multipart/related" with a boundary value specified.
+Given this message sending scenario:
+
+
+
+
+
+
+WebServiceMessageCallback requestCallback = new WebServiceMessageCallback() {
+
+
+
+
+  public void doWithMessage(WebServiceMessage message)
+
+
+
+
+      throws IOException, TransformerException {
+
+
+
+
+    
+
+
+
+
+    SoapMessage soapMessage = (SoapMessage) message;
+
+
+
+
+      
+
+
+
+
+    soapMessage.addAttachment(
+
+
+
+
+        generateContentId(), // generates a unique Content-ID String
+
+
+
+
+        new ByteArrayResource(attachmentData),   // Data
+
+
+
+
+        "application/octet-stream");        // Content-Type
+
+
+
+
+  }
+
+
+
+
+}; 
+
+
+
+
+ 
+
+
+
+
+// ...create response extractor ....
+
+
+
+
+ 
+
+
+
+
+serviceTemplate.sendAndReceive(
+
+
+
+
+  "https://foo.bar.com/SendSubmissionReceipts", 
+
+
+
+
+  requestCallback, responseExtractor);
+
+
+
+
+
+
+I get an HTTP message like this:
+
+
+
+
+
+
+Accept-Encoding: gzip
+
+
+
+
+Content-Type: multipart/related; boundary=MIMEBoundaryurn_uuid_3D927F4433B32F68641210953465313; type="text/xml"; start="0.urn:uuid:3D927F4433B32F68641210953465314@apache.org"; charset="UTF-8"
+
+
+
+
+SOAPAction: "SendSubmissionReceipts"
+
+
+
+
+User-Agent: Jakarta Commons-HttpClient/3.1
+
+
+
+
+Host: foo.bar.com
+
+
+
+
+Cookie: $Version=0; JSESSIONID=0001JGVZICF0ATPGIDRKW5J1LHY:11p9fo6l7; $Path=/
+
+
+
+
+Content-Length: 3978
+
+
+
+
+ 
+
+
+
+
+<?xml version='1.0' encoding='UTF-8'?><soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/"><soapenv:Header>[contents intentionally omitted]</soapenv:Header><soapenv:Body>[contents intentionally omitted]</soapenv:Body></soapenv:Envelope>
+
+
+
+
+
+
+Correct overall content-type and boundary value, but no attachment parts and no boundaries.
+The problem may be in CommonsHttpConnection.onSendAfterWrite() where a ByteArrayRequestEntity is always used instead of the MultipartRequestEntity that the Commons HttpClient API says should be used for requests with attachments
+
+
+
+
+
+
+protected void onSendAfterWrite(WebServiceMessage message) throws IOException {
+
+
+
+
+  postMethod.setRequestEntity(new ByteArrayRequestEntity(requestBuffer.toByteArray()));
+
+
+
+
+  requestBuffer = null;
+
+
+
+
+  httpClient.executeMethod(postMethod);
+
+
+
+
+}
+
+
+
+
+
+
+It would seem to me that onSendAfterWrite() should be checking the WebServiceMessage to see if there are any attachments, and if there are, creating the necessary xml message and attachment Parts and passing them to a MultipartRequestEntity instead of sending the entire request to a ByteArrayRequestEntity.

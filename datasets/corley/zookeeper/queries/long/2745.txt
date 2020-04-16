@@ -1,0 +1,51 @@
+If disk is full on 1 zookeeper node in a 3 node ensemble, it is able to join the quorum with partial data.
+
+Setup:
+--------
+
+	Running a 3 node zookeeper ensemble on Ubuntu 12.04 as upstart services. Let's call the nodes: A, B and C.
+
+
+
+Observation:
+-----------------
+
+	Connecting to 2 (Node A and B) of the 3 nodes and doing an `ls` in zookeeper data directory was giving:
+/foo
+/bar
+/baz
+But an `ls` on node C was giving:
+/baz
+	On node C, the zookeeper data directory had the following files:
+log.1001
+log.1600
+snapshot.1000 -> size 200
+snapshot.1200 -> size 269
+snapshot.1300 -> size 300
+	Snapshot sizes on node A and B were in the vicinity of 500KB
+
+
+
+RCA
+-------
+
+	Disk was full on node C prior to the creation time of the small snapshot
+  files.
+	Looking at zookeeper server logs, we observed that zookeeper had crashed and restarted a few times after the first instance of disk full. Everytime time zookeeper starts, it does 3 things:
+  1. Run the purge task to cleanup old snapshot and txn logs. Our
+  autopurge.snapRetainCount is set to 3.
+  2. Restore from the most recent valid snapshot and the txn logs that follow.
+  3. Take part in a leader election - realize it has missed something - become the follower - get diff of missed txns from the current leader - create a new snapshot of its current state.
+	We confirmed that a valid snapshot of the system had existed prior to, and
+  immediately after the crash. Let's call this snapshot snapshot.800.
+	Over the next 3 restarts, zookeeper did the following:
+	Purged older snapshots
+	Restored from snapshot.800 + txn logs
+	Synced up with master, tried to write its updated state to a new snapshot. Crashed due to disk full. The snapshot file, even though invalid, had been created.
+	Note: This is the first source of the bug. It might be more appropriate to first write the snapshot to a temporary file, and then rename it
+snapshot.<txn_id>. That would gives us more confidence in the validity of snapshots in the data dir. 
+	Let's say the snapshot files created above were snapshot.850, snapshot.920 and snapshot.950
+	On the 4th restart, the purge task retained the 3 recent snapshots - snapshot.850, snapshot.920, and snapshot.950, and proceeded to purge snapshot.800 and associated txn logs assuming that they were no longer needed.
+	Note: This is the second source of the bug. Instead of retaining the 3 most recent valid snapshots, the server just retains 3 most recent snapshots, regardless of their validity.
+	When restoring, zookeeper doesn't find any valid snapshot logs to restore from. So it tries to reload its state from txn logs starting at zxid 0. However, those transaction logs would have long ago been garbage collected. It reloads from whatever txn logs are present. Let's say the only txn log file present (log.951) contains logs for zxid 951 to 998.  It reloads from that log file, syncs with master - gets txns 999 and 1000, and writes the snapshot log snapshot.1000 to disk. Now that we have deleted snapshot.800, we have enough free disk space to write snapshot.1000. From this state onwards, zookeeper will always assume it has the state till txn id 1000, even though it only has state from txn id 951 to 1000.
+

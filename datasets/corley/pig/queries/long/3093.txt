@@ -1,0 +1,62 @@
+So this one took a while to isolate, but is pretty crazy.
+
+
+A = load 'a' as (field1:chararray);
+B = foreach A generate *;
+C = join A by field1, B by field1;
+D = foreach C generate A::field1 as field2, B::field1;
+describe D;
+/*
+D: {
+    field2: chararray,
+    B::field1: chararray
+}
+*/
+E = foreach D generate field2, field1;
+describe E;
+/*
+E: {
+    B::field1: chararray,
+    B::field1: chararray
+}
+*/
+F = foreach E generate field2;
+store F into 'fail';
+-- <file cristian_simpler.pig, line 20, column 4> Invalid field projection. Projected field [field2] does not exist in schema: B::field1:chararray,B::field1:chararray.
+
+
+
+If you take a look at that code snippet, that is pretty nuts! Since the 2 fields come from the same original table, renaming one causes issues with both. WUT. The even weirder part is not that they both get renamed, but that they both become the unrenamed value.
+
+Interestingly, flipping the value of the projection changes the order of the output, so it looks like it's whatever the final reference is. ie
+
+
+A = load 'a' as (field1:chararray);
+B = foreach A generate *;
+C = join A by field1, B by field1;
+D = foreach C generate B::field1, A::field1 as field2;
+describe D;
+E = foreach D generate field2, field1;
+describe E;
+F = foreach E generate field2;
+store F into 'fail';
+
+
+
+results in
+
+
+D: {
+    B::field1: chararray,
+    field2: chararray
+}
+E: {
+    field2: chararray,
+    field2: chararray
+}
+2012-12-13 00:13:10,045 [main] ERROR org.apache.pig.tools.grunt.Grunt - ERROR 1025: 
+<file simplest.pig, line 8, column 23> Invalid field projection. Projected field [field2] does not exist in schema: field2:chararray,field2:chararray.
+
+
+
+This seems to imply the solution: make copies of the Schema. I added a test and will hopefully have a patch soon.

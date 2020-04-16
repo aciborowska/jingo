@@ -1,0 +1,175 @@
+In Spring Hadoop it's common to let framework itself to create a Hadoop Configuration instead of rely on a classpath and what then would get set when Configuration class is instantiated. With Kite SDK and its usage of ParquetReader/Writer it is not possible to pass your own custom Configuration.
+Below stacktrace is throw from Reader when tests are run with Hadoop's minicluster where Configuration is provided by Hadoop itself. This is a similar use case when Spring Hadoop creates its own custom Configuration.
+
+
+
+
+
+
+java.lang.IllegalArgumentException: Wrong FS: hdfs://localhost:53548/tmp/dataset/test/simplepojo/c5716ae2-df6a-4ce1-b240-85255d40d728.parquet, expected: file:///
+
+
+
+
+	at org.apache.hadoop.fs.FileSystem.checkPath(FileSystem.java:642)
+
+
+
+
+	at org.apache.hadoop.fs.RawLocalFileSystem.pathToFile(RawLocalFileSystem.java:69)
+
+
+
+
+	at org.apache.hadoop.fs.RawLocalFileSystem.listStatus(RawLocalFileSystem.java:375)
+
+
+
+
+	at org.apache.hadoop.fs.FileSystem.listStatus(FileSystem.java:1482)
+
+
+
+
+	at org.apache.hadoop.fs.FileSystem.listStatus(FileSystem.java:1522)
+
+
+
+
+	at org.apache.hadoop.fs.ChecksumFileSystem.listStatus(ChecksumFileSystem.java:564)
+
+
+
+
+	at parquet.hadoop.ParquetReader.<init>(ParquetReader.java:95)
+
+
+
+
+	at parquet.hadoop.ParquetReader.<init>(ParquetReader.java:79)
+
+
+
+
+	at parquet.hadoop.ParquetReader.<init>(ParquetReader.java:59)
+
+
+
+
+	at parquet.avro.AvroParquetReader.<init>(AvroParquetReader.java:36)
+
+
+
+
+	at org.kitesdk.data.spi.filesystem.ParquetFileSystemDatasetReader.open(ParquetFileSystemDatasetReader.java:67)
+
+
+
+
+	at org.kitesdk.data.spi.filesystem.MultiFileDatasetReader.openNextReader(MultiFileDatasetReader.java:92)
+
+
+
+
+	at org.kitesdk.data.spi.filesystem.MultiFileDatasetReader.hasNext(MultiFileDatasetReader.java:106)
+
+
+
+
+	at org.springframework.data.hadoop.store.dataset.DatasetTemplate.readGenericRecords(DatasetTemplate.java:232)
+
+
+
+
+
+
+Let's check the call stack:
+
+
+
+
+
+
+Thread [main] (Suspended (breakpoint at line 95 in ParquetReader))	
+
+
+
+
+	AvroParquetReader<T>(ParquetReader<T>).<init>(Configuration, Path, ReadSupport<T>, UnboundRecordFilter) line: 95	
+
+
+
+
+	AvroParquetReader<T>(ParquetReader<T>).<init>(Path, ReadSupport<T>, UnboundRecordFilter) line: 79	
+
+
+
+
+	AvroParquetReader<T>(ParquetReader<T>).<init>(Path, ReadSupport<T>) line: 59	
+
+
+
+
+	AvroParquetReader<T>.<init>(Path) line: 36	
+
+
+
+
+	ParquetFileSystemDatasetReader<E>.open() line: 67	
+
+
+
+
+	MultiFileDatasetReader<E>.openNextReader() line: 92	
+
+
+
+
+	MultiFileDatasetReader<E>.hasNext() line: 106	
+
+
+
+
+	DatasetTemplate.readGenericRecords(Class<T>, PartitionKey) line: 232	
+
+
+
+
+	DatasetTemplate.read(Class<T>) line: 137	
+
+
+
+
+	DatasetTemplateParquetTests.testSavePojo() line: 101	
+
+
+
+
+
+
+Culprit seem to be:
+
+
+
+
+
+
+public ParquetReader(Path file, ReadSupport<T> readSupport, UnboundRecordFilter filter) throws IOException {
+
+
+
+
+  this(new Configuration(), file, readSupport, filter);
+
+
+
+
+}
+
+
+
+
+
+
+where call from org.kitesdk.data.spi.filesystem.ParquetFileSystemDatasetReader.open() ends up. There is a constructor along a way to pass Hadoop Configuration but Kite doesn't allow to use it thus defaulting to what happens when Configuration is instantiated.
+Path for file itself will have a correct hdfs uri. There is a similar problem with Writer but it seems that correct uri in Path is enough, but with Reader a status check will fail because default Configuration(without core-site.xml in a classpath) will point to file:// and uri in Path will point to hdfs://.

@@ -1,0 +1,40 @@
+As part of a complex project, I have a class 'Child' inherited from 'Parent' (i.e. InheritanceType.JOINED).  Within 'Child' are two @ElementCollection fields.  Under some circumstances, updates to these fields are ignored by the EntityManager BUT it is not yet clear exactly what is triggering this behavior.
+
+This one works:
+	Child child  = em.find(Child.class, 3071151);
+	em.detach(child);
+	child.setName("Test Update In Place - Update B");
+	Collection<ChildNote> notes = child.getNotes();
+	ChildNote note = new ChildNote("Note B");
+	notes.add(note);
+	child.setNotes(notes);
+	em.merge(.updateLocality(loc);
+
+	SELECT ... FROM child_data t0 INNER JOIN parent_data t1 ON t0.id = t1.id LEFT OUTER JOIN child_notes t2 ON t0.id = t2.child_ref WHERE t0.id = ?
+	DELETE FROM child_notes WHERE child_ref = ?
+	UPDATE parent_data SET name = ?, version = ? WHERE id = ? AND version = ? [params=(String) Test Update In Place - Update B, (int) 3, (long) 3071151, (int) 2]
+	INSERT INTO child_notes (child_ref, note) VALUES (?, ?) [params=(long) 3071151, (String) Note A]
+	INSERT INTO child_notes (child_ref, note) VALUES (?, ?) [params=(long) 3071151, (String) Note B]
+
+Here you can see the SELECT to populate the record.  On the merge, the old 'child_notes' associated with the record are deleted and the values repopulated. All is good.  But in the very next test, I delete a note:
+
+	Child child  = em.find(Child.class, 3071151);
+	em.detach(child);
+	child.setName("Test Update In Place - Update C");
+	Collection<ChildNote> notes = child.getNotes();
+	Iterator<ChildNote> i = child.iterator();
+	ChildNote eliminateMe = i.next();
+	notes.remove(eliminateMe);
+	// child.setNotes(null); // TODO: Workaround for OPENJPA-xxxx
+	child.setNotes(notes);
+	em.merge(.updateLocality(loc);
+
+	SELECT ... FROM child_data t0 INNER JOIN parent_data t1 ON t0.id = t1.id LEFT OUTER JOIN child_notes t2 ON t0.id = t2.child_ref WHERE t0.id = ?
+	UPDATE parent_data SET name = ?, version = ? WHERE id = ? AND version = ? [params=(String) Test Update In Place - Update C, (int) 4, (long) 3071151, (int) 3]
+
+This is the same sequence of operations, save for a note being removed as opposed to added.  Here the 'child_notes' are not cleared and repopulated!  Adding the 'child.setNotes(null)' call, however, restores the correct behavior.
+
+	SELECT ... FROM child_data t0 INNER JOIN parent_data t1 ON t0.id = t1.id LEFT OUTER JOIN child_notes t2 ON t0.id = t2.child_ref WHERE t0.id = ?
+	DELETE FROM child_notes WHERE child_ref = ?
+	UPDATE parent_data SET name = ?, version = ? WHERE id = ? AND version = ? [params=(String) Test Update In Place - Update C, (int) 4, (long) 3071151, (int) 3]
+	INSERT INTO child_notes (child_ref, note) VALUES (?, ?) [params=(long) 3071151, (String) Note A]

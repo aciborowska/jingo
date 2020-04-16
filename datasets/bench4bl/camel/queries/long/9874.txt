@@ -1,0 +1,109 @@
+The problem lies in the way Camel Jetty (camel-jetty9 to be precise) handles multipart/form-data requets.
+The issue consists of two parts:
+
+NPE is thrown if no Content-Type is specified in a part;
+Only application/octet-stream part Content-Type is supported (not sure whether it actually should be relevant)
+
+Location in code:
+https://github.com/apache/camel/blob/c134e5a6e104c60ddcd198341718a37f0a4401ba/components/camel-jetty9/src/main/java/org/apache/camel/component/jetty9/AttachmentHttpBinding.java#L53
+To reproduce:
+
+
+
+from("jetty:http://0.0.0.0:8028").process((e) -> {});
+
+
+
+The call (generated from postman)
+
+
+
+OkHttpClient client = new OkHttpClient();
+
+
+
+MediaType mediaType = MediaType.parse("multipart/form-data; boundary=---011000010111000001101001");
+
+RequestBody body = RequestBody.create(mediaType, "-----011000010111000001101001\r\nContent-Disposition: form-data; name=\"test\"\r\n\r\ntest\r\n-----011000010111000001101001--");
+
+Request request = new Request.Builder()
+
+  .url("http://localhost:8028/")
+
+  .post(body)
+
+  .addHeader("content-type", "multipart/form-data; boundary=---011000010111000001101001")
+
+  .addHeader("cache-control", "no-cache")
+
+  .addHeader("postman-token", "a9fd95b6-04b9-ea7a-687e-ff828ea00774")
+
+  .build();
+
+
+
+Response response = client.newCall(request).execute();
+
+
+
+Exception:
+
+
+
+org.apache.camel.RuntimeCamelException: Cannot populate attachments
+
+        at org.apache.camel.component.jetty9.AttachmentHttpBinding.populateAttachments(AttachmentHttpBinding.java:56) ~[camel-jetty-2.17.0.jar!/:2.17.0]
+
+        at org.apache.camel.http.common.DefaultHttpBinding.readRequest(DefaultHttpBinding.java:176) ~[camel-http-common-2.17.0.jar!/:2.17.0]
+
+        at org.apache.camel.http.common.HttpMessage.<init>(HttpMessage.java:52) ~[camel-http-common-2.17.0.jar!/:2.17.0]
+
+        at org.apache.camel.component.jetty.CamelContinuationServlet.service(CamelContinuationServlet.java:161) ~[camel-jetty-common-2.17.0.jar!/:2.17.0]
+
+        at javax.servlet.http.HttpServlet.service(HttpServlet.java:790) ~[javax.servlet-api-3.1.0.jar!/:3.1.0]
+
+        at org.eclipse.jetty.servlet.ServletHolder.handle(ServletHolder.java:812) ~[jetty-servlet-9.2.15.v20160210.jar!/:9.2.15.v20160210]
+
+        at org.eclipse.jetty.servlet.ServletHandler$CachedChain.doFilter(ServletHandler.java:1669) ~[jetty-servlet-9.2.15.v20160210.jar!/:9.2.15.v20160210]
+
+        at org.eclipse.jetty.servlets.MultiPartFilter.doFilter(MultiPartFilter.java:200) ~[jetty-servlets-9.2.15.v20160210.jar!/:9.2.15.v20160210]
+
+        at org.apache.camel.component.jetty.CamelFilterWrapper.doFilter(CamelFilterWrapper.java:43) ~[camel-jetty-common-2.17.0.jar!/:2.17.0]
+
+        at org.eclipse.jetty.servlet.ServletHandler$CachedChain.doFilter(ServletHandler.java:1652) ~[jetty-servlet-9.2.15.v20160210.jar!/:9.2.15.v20160210]
+
+        at org.eclipse.jetty.servlet.ServletHandler.doHandle(ServletHandler.java:585) [jetty-servlet-9.2.15.v20160210.jar!/:9.2.15.v20160210]
+
+        at org.eclipse.jetty.server.handler.ContextHandler.doHandle(ContextHandler.java:1127) [jetty-server-9.2.15.v20160210.jar!/:9.2.15.v20160210]
+
+        at org.eclipse.jetty.servlet.ServletHandler.doScope(ServletHandler.java:515) [jetty-servlet-9.2.15.v20160210.jar!/:9.2.15.v20160210]
+
+        at org.eclipse.jetty.server.handler.ContextHandler.doScope(ContextHandler.java:1061) [jetty-server-9.2.15.v20160210.jar!/:9.2.15.v20160210]
+
+        at org.eclipse.jetty.server.handler.ScopedHandler.handle(ScopedHandler.java:141) [jetty-server-9.2.15.v20160210.jar!/:9.2.15.v20160210]
+
+        at org.eclipse.jetty.server.handler.HandlerWrapper.handle(HandlerWrapper.java:97) [jetty-server-9.2.15.v20160210.jar!/:9.2.15.v20160210]
+
+        at org.eclipse.jetty.server.Server.handle(Server.java:499) [jetty-server-9.2.15.v20160210.jar!/:9.2.15.v20160210]
+
+        at org.eclipse.jetty.server.HttpChannel.handle(HttpChannel.java:311) [jetty-server-9.2.15.v20160210.jar!/:9.2.15.v20160210]
+
+        at org.eclipse.jetty.server.HttpConnection.onFillable(HttpConnection.java:257) [jetty-server-9.2.15.v20160210.jar!/:9.2.15.v20160210]
+
+        at org.eclipse.jetty.io.AbstractConnection$2.run(AbstractConnection.java:544) [jetty-io-9.2.15.v20160210.jar!/:9.2.15.v20160210]
+
+        at org.eclipse.jetty.util.thread.QueuedThreadPool.runJob(QueuedThreadPool.java:635) [jetty-util-9.2.15.v20160210.jar!/:9.2.15.v20160210]
+
+        at org.eclipse.jetty.util.thread.QueuedThreadPool$3.run(QueuedThreadPool.java:555) [jetty-util-9.2.15.v20160210.jar!/:9.2.15.v20160210]
+
+        at java.lang.Thread.run(Thread.java:745) [na:1.8.0_73]
+
+Caused by: java.lang.NullPointerException: null
+
+        at org.apache.camel.component.jetty9.AttachmentHttpBinding.populateAttachments(AttachmentHttpBinding.java:48) ~[camel-jetty-2.17.0.jar!/:2.17.0]
+
+        ... 22 common frames omitted
+
+
+
+SO: https://stackoverflow.com/questions/36656340/how-to-upload-a-file-via-multipart-form-data-file-upload-to-camel-jetty-2-17-0

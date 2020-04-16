@@ -1,0 +1,40 @@
+I execute a huge query on a table with a lot of 2-level partitions. There is a perl reducer in my query. Maps worked ok, but every reducer fails with the following exception:
+2011-08-11 04:58:29,865 INFO org.apache.hadoop.hive.ql.exec.ScriptOperator: Executing [/usr/bin/perl, <reducer.pl>, <my_argument>]
+2011-08-11 04:58:29,866 INFO org.apache.hadoop.hive.ql.exec.ScriptOperator: tablename=null
+2011-08-11 04:58:29,866 INFO org.apache.hadoop.hive.ql.exec.ScriptOperator: partname=null
+2011-08-11 04:58:29,866 INFO org.apache.hadoop.hive.ql.exec.ScriptOperator: alias=null
+2011-08-11 04:58:29,935 FATAL ExecReducer: org.apache.hadoop.hive.ql.metadata.HiveException: Hive Runtime Error while processing row (tag=0) {"key":
+{"reducesinkkey0":129390185139228,"reducesinkkey1":"00008AF10000000063CA6F"}
+,"value":
+{"_col0":"00008AF10000000063CA6F","_col1":"2011-07-27 22:48:52","_col2":129390185139228,"_col3":2006,"_col4":4100,"_col5":"10017388=6","_col6":1063,"_col7":"NULL","_col8":"address.com","_col9":"NULL","_col10":"NULL"}
+,"alias":0}
+	at org.apache.hadoop.hive.ql.exec.ExecReducer.reduce(ExecReducer.java:256)
+	at org.apache.hadoop.mapred.ReduceTask.runOldReducer(ReduceTask.java:468)
+	at org.apache.hadoop.mapred.ReduceTask.run(ReduceTask.java:416)
+	at org.apache.hadoop.mapred.Child$4.run(Child.java:268)
+	at java.security.AccessController.doPrivileged(Native Method)
+	at javax.security.auth.Subject.doAs(Subject.java:396)
+	at org.apache.hadoop.security.UserGroupInformation.doAs(UserGroupInformation.java:1115)
+	at org.apache.hadoop.mapred.Child.main(Child.java:262)
+Caused by: org.apache.hadoop.hive.ql.metadata.HiveException: Cannot initialize ScriptOperator
+	at org.apache.hadoop.hive.ql.exec.ScriptOperator.processOp(ScriptOperator.java:320)
+	at org.apache.hadoop.hive.ql.exec.Operator.process(Operator.java:471)
+	at org.apache.hadoop.hive.ql.exec.Operator.forward(Operator.java:744)
+	at org.apache.hadoop.hive.ql.exec.SelectOperator.processOp(SelectOperator.java:84)
+	at org.apache.hadoop.hive.ql.exec.Operator.process(Operator.java:471)
+	at org.apache.hadoop.hive.ql.exec.Operator.forward(Operator.java:744)
+	at org.apache.hadoop.hive.ql.exec.ExtractOperator.processOp(ExtractOperator.java:45)
+	at org.apache.hadoop.hive.ql.exec.Operator.process(Operator.java:471)
+	at org.apache.hadoop.hive.ql.exec.ExecReducer.reduce(ExecReducer.java:247)
+	... 7 more
+Caused by: java.io.IOException: Cannot run program "/usr/bin/perl": java.io.IOException: error=7, Argument list too long
+	at java.lang.ProcessBuilder.start(ProcessBuilder.java:460)
+	at org.apache.hadoop.hive.ql.exec.ScriptOperator.processOp(ScriptOperator.java:279)
+	... 15 more
+Caused by: java.io.IOException: java.io.IOException: error=7, Argument list too long
+	at java.lang.UNIXProcess.<init>(UNIXProcess.java:148)
+	at java.lang.ProcessImpl.start(ProcessImpl.java:65)
+	at java.lang.ProcessBuilder.start(ProcessBuilder.java:453)
+	... 16 more
+It seems to me, I found the cause. ScriptOperator.java puts a lot of configs as environment variables to the child reduce process. One of variables is mapred.input.dir, which in my case more than 150KB. There are a huge amount of input directories in this variable. In short, the problem is that Linux (up to 2.6.23 kernel version) limits summary size of environment variables for child processes to 132KB. This problem could be solved by upgrading the kernel. But strings limitations still be 132KB per string in environment variable. So such huge variable doesn't work even on my home computer (2.6.32). You can read more information on (http://www.kernel.org/doc/man-pages/online/pages/man2/execve.2.html).
+For now all our work has been stopped because of this problem and I can't find the solution. The only solution, which seems to me more reasonable is to get rid of this variable in reducers.

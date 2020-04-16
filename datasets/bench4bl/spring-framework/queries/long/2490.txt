@@ -1,0 +1,81 @@
+There are 3 problems in AbstractOverridingClassLoader class.
+
+If "inclusions" is empty, excludeFromUndelegation() always returns true.
+   This is not intended operation.
+
+
+AbstractOverridingClassLoader should override loadClass(String name, boolean resolve),
+   instead of loadClass(String name).
+   Because, if declared as follows,
+     loader1 = new SimpleThrowawayClassLoader(parent);
+     loader2 = new URLClassLoader(..., loader1);
+   loader2.loadClass("FooClass") call is processed as follows.
+     loader2.loadClass("FooClass") => loader2.loadClass("FooClass", false)
+       => loader1.loadClass("FooClass", false)
+
+
+loadClass() and addClassName*() methods should be synchronized.
+
+These problems are solved by the following patch.
+Index: AbstractOverridingClassLoader.java
+===================================================================
+RCS file: /cvsroot/springframework/spring/tiger/src/org/springframework/instrument/classloading/AbstractOverridingClassLoader.java,v
+retrieving revision 1.6
+diff -u -r1.6 AbstractOverridingClassLoader.java
+— AbstractOverridingClassLoader.java	20 Aug 2006 20:43:30 -0000	1.6
++++ AbstractOverridingClassLoader.java	28 Aug 2006 02:59:09 -0000
+@@ -59,21 +59,21 @@
+ 	}
+
+public void addClassNameToExcludeFromUndelegation(String className) {
++	public synchronized void addClassNameToExcludeFromUndelegation(String className) 
+{
+ 		this.exclusions.add(className);
+ 	}
+
+
+public void addClassNameToExplicitlyInclude(String className) {
++	public synchronized void addClassNameToExplicitlyInclude(String className) 
+{
+ 		this.inclusions.add(className);
+ 	}
+
+ 	protected boolean excludeFromUndelegation(String name) 
+{
+-		return (this.exclusions.contains(name) || !this.inclusions.contains(name));
++		return (this.exclusions.contains(name) || (!this.inclusions.isEmpty() && !this.inclusions.contains(name)));
+ 	}
+
+
+ 	@Override
+
+public Class<?> loadClass(String name) throws ClassNotFoundException {
++	protected synchronized Class<?> loadClass(String name, boolean resolve) throws ClassNotFoundException {
+ 		if (!name.startsWith("java") && !this.namesSeen.contains(name) && !excludeFromUndelegation(name)) {
+ 			this.namesSeen.add(name);
+ 			String internalName = StringUtils.replace(name, ".", "/") + ".class";
+@@ -86,7 +86,11 @@
+ 				byte[] bytes = FileCopyUtils.copyToByteArray(is);
+ 				// Transform if necessary and use the potentially transformed bytes.
+ 				byte[] transformed = transformIfNecessary(name, internalName, bytes);
+return defineClass(name, transformed, 0, transformed.length);
++				Class<?> c = defineClass(name, transformed, 0, transformed.length);
++				if (resolve) 
+{
++					resolveClass(c);
++				}
++				return c;
+ 			}
+ 			catch (IOException ex) 
+{
+ 				throw new ClassNotFoundException("Cannot load resource for class [" + name + "]", ex);
+@@ -94,7 +98,7 @@
+ 		}
+ 		else 
+{
+ 			// We don't override this class.
+-			return super.loadClass(name);
++			return super.loadClass(name, resolve);
+ 		}
+ 	}
+

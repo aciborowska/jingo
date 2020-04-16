@@ -1,0 +1,293 @@
+This case just happened after a regionserver halt.(HBASE-9645)
+As we know, when a RS was down, the master would direct other live RS to split the hlog remains of the dead RS. Then, after the whole splitting, it reassign the regions to other live RS. 
+The case I described here is that one of the hlog file of the dead RS cannot be splitted. This hlog splitting task had been resubmitted by master several times to different RS, but all of them failed.
+I checked one of the RS's regionserver log, it had some read error:
+
+2013-09-19 15:54:53,082 INFO org.apache.hadoop.hbase.regionserver.SplitLogWorker: worker hadoop250.cm6,60020,1378886880990 acquired task /hbase/splitlog/hdfs%3A%2F%2Fhadoopnnvip.cm6%3A9000%2Fhbase%2F.logs
+
+%2Fhadoop230.cm6%2C60020%2C1378886880970-splitting%2Fhadoop230.cm6%252C60020%252C1378886880970.1379572773730
+
+2013-09-19 15:54:53,083 INFO org.apache.hadoop.hbase.regionserver.wal.HLogSplitter: Splitting hlog: hdfs://hadoopnnvip.cm6:9000/hbase/.logs/hadoop230.cm6,60020,1378886880970-splitting/hadoop230.cm6%2C6002
+
+0%2C1378886880970.1379572773730, length=1169560315
+
+2013-09-19 15:54:53,083 INFO org.apache.hadoop.hbase.util.FSHDFSUtils: Recovering file hdfs://hadoopnnvip.cm6:9000/hbase/.logs/hadoop230.cm6,60020,1378886880970-splitting/hadoop230.cm6%2C60020%2C137888688
+
+0970.1379572773730
+
+2013-09-19 15:54:53,084 INFO org.apache.hadoop.hbase.util.FSHDFSUtils: Finished lease recovery attempt for hdfs://hadoopnnvip.cm6:9000/hbase/.logs/hadoop230.cm6,60020,1378886880970-splitting/hadoop230.cm6
+
+%2C60020%2C1378886880970.1379572773730
+
+2013-09-19 15:54:53,166 WARN org.apache.hadoop.hbase.regionserver.wal.HLogSplitter: Found existing old edits file. It could be the result of a previous failed split attempt. Deleting hdfs://hadoopnnvip.cm
+
+6:9000/hbase/page_content_queue/1af5b36fd3695e18ef85ea6d768a3e45/recovered.edits/0000000080485091467, length=71240
+
+2013-09-19 15:54:53,177 WARN org.apache.hadoop.hbase.regionserver.wal.HLogSplitter: Found existing old edits file. It could be the result of a previous failed split attempt. Deleting hdfs://hadoopnnvip.cm
+
+6:9000/hbase/offline_dashboard_queue/2514b6f61f05a2616f1e3dd893a56da6/recovered.edits/0000000080485091468, length=1242
+
+2013-09-19 15:54:53,188 WARN org.apache.hadoop.hbase.regionserver.wal.HLogSplitter: Found existing old edits file. It could be the result of a previous failed split attempt. Deleting hdfs://hadoopnnvip.cm
+
+6:9000/hbase/taobao_auction_rowkey_queue/45ba2b931f94d4d453977ea16bccda6b/recovered.edits/0000000080485091472, length=704
+
+2013-09-19 15:54:53,204 WARN org.apache.hadoop.hbase.regionserver.wal.HLogSplitter: Found existing old edits file. It could be the result of a previous failed split attempt. Deleting hdfs://hadoopnnvip.cm
+
+6:9000/hbase/shangpin_alt_taoke_doc_queue/aabc3dc0ab1c9c1ead1239b6be4234ed/recovered.edits/0000000080485091471, length=8998
+
+2013-09-19 15:54:53,216 WARN org.apache.hadoop.hbase.regionserver.wal.HLogSplitter: Found existing old edits file. It could be the result of a previous failed split attempt. Deleting hdfs://hadoopnnvip.cm
+
+6:9000/hbase/link_rowkey/eb004b12a0e1d3f467cadb19a53ca29e/recovered.edits/0000000080485091462, length=612
+
+2013-09-19 15:54:53,219 INFO org.apache.hadoop.hbase.regionserver.wal.HLogSplitter: Processed 13 edits across 5 regions threw away edits for 0 regions; log file=hdfs://hadoopnnvip.cm6:9000/hbase/.logs/hadoop230.cm6,60020,1378886880970-splitting/hadoop230.cm6%2C60020%2C1378886880970.1379572773730 is corrupted = false progress failed = false
+
+2013-09-19 15:54:53,219 INFO org.apache.hadoop.hbase.regionserver.SplitLogWorker: worker hadoop250.cm6,60020,1378886880990 done with task /hbase/splitlog/hdfs%3A%2F%2Fhadoopnnvip.cm6%3A9000%2Fhbase%2F.logs%2Fhadoop230.cm6%2C60020%2C1378886880970-splitting%2Fhadoop230.cm6%252C60020%252C1378886880970.1379572773730 in 137ms
+
+2013-09-19 15:54:53,219 ERROR org.apache.hadoop.hbase.regionserver.SplitLogWorker: unexpected error 
+
+java.lang.IndexOutOfBoundsException: index (5) must be less than size (5)
+
+        at com.google.common.base.Preconditions.checkElementIndex(Preconditions.java:301)
+
+        at com.google.common.base.Preconditions.checkElementIndex(Preconditions.java:280)
+
+        at org.apache.hadoop.hbase.regionserver.wal.LRUDictionary$BidirectionalLRUMap.get(LRUDictionary.java:122)
+
+        at org.apache.hadoop.hbase.regionserver.wal.LRUDictionary$BidirectionalLRUMap.access$000(LRUDictionary.java:69)
+
+        at org.apache.hadoop.hbase.regionserver.wal.LRUDictionary.getEntry(LRUDictionary.java:40)
+
+        at org.apache.hadoop.hbase.regionserver.wal.Compressor.readCompressed(Compressor.java:111)
+
+        at org.apache.hadoop.hbase.regionserver.wal.HLogKey.readFields(HLogKey.java:307)
+
+        at org.apache.hadoop.io.SequenceFile$Reader.next(SequenceFile.java:2199)
+
+        at org.apache.hadoop.io.SequenceFile$Reader.next(SequenceFile.java:2239)
+
+        at org.apache.hadoop.hbase.regionserver.wal.SequenceFileLogReader.next(SequenceFileLogReader.java:245)
+
+        at org.apache.hadoop.hbase.regionserver.wal.SequenceFileLogReader.next(SequenceFileLogReader.java:214)
+
+        at org.apache.hadoop.hbase.regionserver.wal.HLogSplitter.getNextLogLine(HLogSplitter.java:813)
+
+        at org.apache.hadoop.hbase.regionserver.wal.HLogSplitter.splitLogFile(HLogSplitter.java:437)
+
+        at org.apache.hadoop.hbase.regionserver.wal.HLogSplitter.splitLogFile(HLogSplitter.java:381)
+
+        at org.apache.hadoop.hbase.regionserver.SplitLogWorker$1.exec(SplitLogWorker.java:112)
+
+        at org.apache.hadoop.hbase.regionserver.SplitLogWorker.grabTask(SplitLogWorker.java:280)
+
+        at org.apache.hadoop.hbase.regionserver.SplitLogWorker.taskLoop(SplitLogWorker.java:211)
+
+        at org.apache.hadoop.hbase.regionserver.SplitLogWorker.run(SplitLogWorker.java:179)
+
+        at java.lang.Thread.run(Thread.java:662)
+
+2013-09-19 15:54:53,219 INFO org.apache.hadoop.hbase.regionserver.SplitLogWorker: SplitLogWorker hadoop250.cm6,60020,1378886880990 exiting
+
+
+
+I then used the HLog dump tool to analyze the hlog file. Here is what I got:
+
+$ hbase org.apache.hadoop.hbase.regionserver.wal.HLog --dump /user/hadoop/hbase_admin/logs/hadoop230.cm6%2C60020%2C1378886880970.1379572773730
+
+13/09/24 14:24:38 WARN conf.Configuration: fs.default.name is deprecated. Instead, use fs.defaultFS
+
+Sequence 80485091459 from region aabc3dc0ab1c9c1ead1239b6be4234ed in table shangpin_alt_taoke_doc_queue
+
+  Action:
+
+    row: 00015:0000001379572773802:00001
+
+    column: message:789
+
+    at time: Thu Sep 19 14:39:33 CST 2013
+
+Sequence 80485091460 from region aabc3dc0ab1c9c1ead1239b6be4234ed in table shangpin_alt_taoke_doc_queue
+
+  Action:
+
+    row: 00015:0000001379572773799:00001
+
+    column: message:789
+
+    at time: Thu Sep 19 14:39:33 CST 2013
+
+Sequence 80485091461 from region eb004b12a0e1d3f467cadb19a53ca29e in table link_rowkey
+
+  Action:
+
+    row: 191:1379572773794
+
+    column: link_crawler:15acca08d58e374208eb603aaa4c58e8_1379572773791_345445
+
+    at time: Thu Sep 19 14:39:33 CST 2013
+
+Sequence 80485091462 from region eb004b12a0e1d3f467cadb19a53ca29e in table link_rowkey
+
+  Action:
+
+    row: 191:1379572773793
+
+    column: link_crawler:f8a52947d7a0e794204f118fc7c5fb5a_1379572773791_916104
+
+    at time: Thu Sep 19 14:39:33 CST 2013
+
+Sequence 80485091463 from region 1af5b36fd3695e18ef85ea6d768a3e45 in table page_content_queue
+
+  Action:
+
+    row: 00039:0000001379572773776:00001
+
+    column: message:content
+
+    at time: Thu Sep 19 14:39:33 CST 2013
+
+Sequence 80485091464 from region 2514b6f61f05a2616f1e3dd893a56da6 in table offline_dashboard_queue
+
+  Action:
+
+    row: 00082:0000001379572773772:00001
+
+    column: message:parser
+
+    at time: Thu Sep 19 14:39:33 CST 2013
+
+Sequence 80485091465 from region 2514b6f61f05a2616f1e3dd893a56da6 in table offline_dashboard_queue
+
+  Action:
+
+    row: 00082:0000001379572773770:00001
+
+    column: message:parser
+
+    at time: Thu Sep 19 14:39:33 CST 2013
+
+Sequence 80485091466 from region 45ba2b931f94d4d453977ea16bccda6b in table taobao_auction_rowkey_queue
+
+  Action:
+
+    row: 00095:0000001379572773768:00001
+
+    column: message:taobao_auction
+
+    at time: Thu Sep 19 14:39:33 CST 2013
+
+  Action:
+
+    row: 00095:0000001379572773768:00002
+
+    column: message:taobao_auction
+
+    at time: Thu Sep 19 14:39:33 CST 2013
+
+  Action:
+
+    row: 00095:0000001379572773768:00003
+
+    column: message:taobao_auction
+
+    at time: Thu Sep 19 14:39:33 CST 2013
+
+Sequence 80485091467 from region 1af5b36fd3695e18ef85ea6d768a3e45 in table page_content_queue
+
+  Action:
+
+    row: 00039:0000001379572773766:00001
+
+    column: message:content
+
+    at time: Thu Sep 19 14:39:33 CST 2013
+
+Sequence 80485091468 from region 2514b6f61f05a2616f1e3dd893a56da6 in table offline_dashboard_queue
+
+  Action:
+
+    row: 00082:0000001379572773759:00001
+
+    column: message:parser
+
+    at time: Thu Sep 19 14:39:33 CST 2013
+
+Sequence 80485091469 from region aabc3dc0ab1c9c1ead1239b6be4234ed in table shangpin_alt_taoke_doc_queue
+
+  Action:
+
+    row: 00015:0000001379572773756:00001
+
+    column: message:789
+
+    at time: Thu Sep 19 14:39:33 CST 2013
+
+Sequence 80485091471 from region aabc3dc0ab1c9c1ead1239b6be4234ed in table shangpin_alt_taoke_doc_queue
+
+  Action:
+
+    row: 00015:0000001379572773755:00001
+
+    column: message:789
+
+    at time: Thu Sep 19 14:39:33 CST 2013
+
+Sequence 80485091472 from region 45ba2b931f94d4d453977ea16bccda6b in table taobao_auction_rowkey_queue
+
+  Action:
+
+    row: 00095:0000001379572773754:00001
+
+    column: message:taobao_auction
+
+    at time: Thu Sep 19 14:39:33 CST 2013
+
+  Action:
+
+    row: 00095:0000001379572773754:00002
+
+    column: message:taobao_auction
+
+    at time: Thu Sep 19 14:39:33 CST 2013
+
+  Action:
+
+    row: 00095:0000001379572773754:00003
+
+    column: message:taobao_auction
+
+    at time: Thu Sep 19 14:39:33 CST 2013
+
+Exception in thread "main" java.lang.IndexOutOfBoundsException: index (5) must be less than size (5)
+
+	at com.google.common.base.Preconditions.checkElementIndex(Preconditions.java:301)
+
+	at com.google.common.base.Preconditions.checkElementIndex(Preconditions.java:280)
+
+	at org.apache.hadoop.hbase.regionserver.wal.LRUDictionary$BidirectionalLRUMap.get(LRUDictionary.java:122)
+
+	at org.apache.hadoop.hbase.regionserver.wal.LRUDictionary$BidirectionalLRUMap.access$000(LRUDictionary.java:69)
+
+	at org.apache.hadoop.hbase.regionserver.wal.LRUDictionary.getEntry(LRUDictionary.java:40)
+
+	at org.apache.hadoop.hbase.regionserver.wal.Compressor.readCompressed(Compressor.java:148)
+
+	at org.apache.hadoop.hbase.regionserver.wal.HLogKey.readFields(HLogKey.java:307)
+
+	at org.apache.hadoop.io.SequenceFile$Reader.next(SequenceFile.java:2199)
+
+	at org.apache.hadoop.io.SequenceFile$Reader.next(SequenceFile.java:2239)
+
+	at org.apache.hadoop.hbase.regionserver.wal.SequenceFileLogReader.next(SequenceFileLogReader.java:245)
+
+	at org.apache.hadoop.hbase.regionserver.wal.SequenceFileLogReader.next(SequenceFileLogReader.java:214)
+
+	at org.apache.hadoop.hbase.regionserver.wal.HLogPrettyPrinter.processFile(HLogPrettyPrinter.java:242)
+
+	at org.apache.hadoop.hbase.regionserver.wal.HLogPrettyPrinter.run(HLogPrettyPrinter.java:371)
+
+	at org.apache.hadoop.hbase.regionserver.wal.HLog.main(HLog.java:1935)
+
+
+
+The exception was the same, but in the hlog detail, we could see that the sequence id '80485091470' was missing. Actually, that could be the missing index '5' in the exception.
+So, I think there might be some bugs in HLog writing logic that made a 'gap' in the sequence writing phase. 

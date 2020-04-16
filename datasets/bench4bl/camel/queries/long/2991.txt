@@ -1,0 +1,18 @@
+A route that sends to a CxfBean destination is unusable after the CamelContext has been stopped and re-started.  The following is an example of a route that demonstrates the problem.
+
+	<camelContext id="camel" xmlns="http://camel.apache.org/schema/spring">
+		<route>
+			<from uri="jetty:http://localhost:9000?matchOnUriPrefix=true" />
+			<to uri="cxfbean:customerServiceBean" />
+		</route>
+	</camelContext>
+
+	<util:list id="customerServiceBean">
+		<bean class="org.apache.camel.component.cxf.jaxrs.testbean.CustomerService" />
+	</util:list>
+
+
+The follow issues have been identified.
+1) SendProcessor should implement the Navigate interface so that its children (if they are Services) can be managed by the lifecycle methods.  This will address any destination endpoint that requires services to be re-started.
+2) CxfBeanEndpoint should be a Service itself.  The reason why the start() on CxfBeanEndpoint gets called during the first start is because CxfBeanComponent.start() gets invoked during route definition initialization.   The problem is that re-starting doesn't trigger the CxfBeanComponent.start() method.  Therefore, putting the hook in CxfBeanComponent to start/stop CxfBeanEndpoint was a bug.
+3) The default type converter which is a Service won't get "re-started' as the (lazy-instantiation) getTypeConverter() method won't perform addService() on a created but "stopped' typeConverter.  We need to discuss the correct remedy since I am not sure how to fix it.  It is kind of strange that the type converter is a service (which has the start/stop semantics) and yet it can be used even the CamelContext is stopped (or never started).  In the patch, I just set the type converter to null in DefaultCamelContext doStop() for now.

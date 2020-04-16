@@ -1,0 +1,21 @@
+Discussed on the user@hbase mailing list (http://markmail.org/thread/w3cqjxwo2smkn2jw)
+
+"Recently switched from 0.94 and 0.98, and finding that periodically things
+are having issues - lots of retry exceptions" :
+client log:
+
+2014-08-08 17:22:43 o.a.h.h.c.AsyncProcess [INFO] #105158,
+table=rt_global_monthly_campaign_deliveries, attempt=10/35 failed 500 ops,
+last exception: java.net.SocketTimeoutException: Call to
+ip-10-201-128-23.us-west-1.compute.internal/10.201.128.23:60020 failed
+because java.net.SocketTimeoutException: 2000 millis timeout while waiting
+for channel to be ready for read. ch :
+java.nio.channels.SocketChannel[connected local=/10.248.130.152:46014
+remote=ip-10-201-128-23.us-west-1.compute.internal/10.201.128.23:60020] on
+ip-10-201-128-23.us-west-1.compute.internal,60020,1405642103651, tracking
+started Fri Aug 08 17:21:55 UTC 2014, retrying after 10043 ms, replay 500
+ops.
+analysis:
+there are 2 methods in RpcRetryingCaller: callWithRetries and callWithoutRetries.
+it looks the timeout setup of callWithRetries is good, while callWithoutRetries is wrong(multi RPC for this user): caller cannot specify a valid timeout, but callWithoutRetries still calls beforeCall, which looks a method for callWithRetries only,  to set timeout. since RpcRetryingCaller#callTimeout  is not set, thread local timeout is set to 2s(MIN_RPC_TIMEOUT) via RpcClient.setRpcTimeout, which is the final pinginterval set to the socket.
+when there are heavy write workload and the rpc cannot complete in 2s, the client close the connection, so the server side connection is reset and finally exposes the problem in HBASE-11705

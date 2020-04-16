@@ -1,0 +1,49 @@
+FlatFileItemWriter will inadvertently delete it's output file multiple times if open is not called first.  The following unit test fails on my machine:
+	public void testWriteBeforeOpen() throws Exception
+{
+		
+		writer.write("test1");
+		writer.flush();
+		writer.open(executionContext);
+		writer.write("test2");
+		writer.flush();
+		assertEquals("test1", readLine());
+		assertEquals("test2", readLine());
+	}
+
+The issue is that the write method initializes the buffer:
+public void write(String line) throws IOException {
+			if (!initialized) 
+{
+				initializeBufferedWriter();
+			}
+
+			outputBufferedWriter.write(line);
+			outputBufferedWriter.flush();
+			linesWritten++;
+		}
+Note: the above is from OutputState#write
+However, the open method never checks to see if it's already been initialized:
+	public void open(ExecutionContext executionContext) throws ItemStreamException {
+		OutputState outputState = getOutputState();
+		if (executionContext.containsKey(getKey(RESTART_DATA_NAME))) 
+{
+			outputState.restoreFrom(executionContext);
+		}
+		try 
+{
+			outputState.initializeBufferedWriter();
+		}
+		catch (IOException ioe) 
+{
+			throw new ItemStreamException("Failed to initialize writer", ioe);
+		}
+		if (outputState.lastMarkedByteOffsetPosition == 0) {
+			for (Iterator iterator = headerLines.iterator(); iterator.hasNext() 
+{
+				String line = (String) iterator.next();
+				lineBuffer.add(line + lineSeparator);
+			}
+		}
+	}
+Thus, the FileUtils will call delete on the file.

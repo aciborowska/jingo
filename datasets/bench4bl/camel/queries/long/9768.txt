@@ -1,0 +1,101 @@
+This issue is related to CAMEL-7638 which was recently fixed/released in 2.17.0
+I was doing some testing with disableStreamCache=true on a http4 producer and am getting "java.io.IOException: Attempted read from closed stream"
+The stack trace shows the error occurring when trying to copy the input stream to an output stream inside the DefaultHttpBinding copyStream methods (i am using camel as a proxy from a sevlet component (consumer) to an http4 component (producer)).
+I think though, I see the root cause of this issue.  Inside the HttpProducer process method.
+
+
+
+// lets store the result in the output message.
+
+        HttpResponse httpResponse = null;
+
+        try {
+
+            if (LOG.isDebugEnabled()) {
+
+                LOG.debug("Executing http {} method: {}", httpRequest.getMethod(), httpRequest.getURI().toString());
+
+            }
+
+            httpResponse = executeMethod(httpRequest);
+
+            int responseCode = httpResponse.getStatusLine().getStatusCode();
+
+            LOG.debug("Http responseCode: {}", responseCode);
+
+
+
+            if (!throwException) {
+
+                // if we do not use failed exception then populate response for all response codes
+
+                populateResponse(exchange, httpRequest, httpResponse, in, strategy, responseCode);
+
+            } else {
+
+                boolean ok = HttpHelper.isStatusCodeOk(responseCode, getEndpoint().getOkStatusCodeRange());
+
+                if (ok) {
+
+                    // only populate response for OK response
+
+                    populateResponse(exchange, httpRequest, httpResponse, in, strategy, responseCode);
+
+                } else {
+
+                    // operation failed so populate exception to throw
+
+                    throw populateHttpOperationFailedException(exchange, httpRequest, httpResponse, responseCode);
+
+                }
+
+            }
+
+        } finally {
+
+            if (httpResponse != null) {
+
+                try {
+
+                    EntityUtils.consume(httpResponse.getEntity());
+
+                } catch (IOException e) {
+
+                    // nothing we could do
+
+                }
+
+            }
+
+        }
+
+
+
+Specifically, that finally block at the end.
+When disableStreamCache=true is set on the Producer, the raw input stream is put in the exchange body, which was the change fixed by CAMEL-7638
+However, the finally block is consuming and closing that input stream making it unusable later when we try to copy it to the servlet output stream to send back to the caller.
+I think the fix for this would be to check the endpoint to see if disableStreamCaching is set prior to consuming the entity in the finally block, perhaps something like this:
+
+
+
+    ...
+
+    } finally {
+
+            if (httpResponse != null && !getEndpoint().isDisableStreamCache()) {
+
+                try {
+
+                    EntityUtils.consume(httpResponse.getEntity());
+
+                } catch (IOException e) {
+
+                    // nothing we could do
+
+                }
+
+            }
+
+        }
+
+

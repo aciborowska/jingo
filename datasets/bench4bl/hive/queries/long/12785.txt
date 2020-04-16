@@ -1,0 +1,153 @@
+Unfortunately HIVE-12156 is breaking the following use case:
+I do have a table with a uniontype of struct s, such as:
+
+
+
+CREATE TABLE `minimal_sample`(
+
+  `record_type` string,
+
+  `event` uniontype<struct<string_value:string>,struct<int_value:int>>)
+
+
+
+In my case, the table comes from an Avro schema which looks like: 
+
+  'avro.schema.literal'='{\"type\":\"record\",\"name\":\"Minimal\",\"namespace\":\"org.ver.vkanalas.minimalsamp\",\"fields\":[{\"name\":\"record_type\",\"type\":\"string\"},{\"name\":\"event\",\"type\":[{\"type\":\"record\",\"name\":\"a\",\"fields\":[{\"name\":\"string_value\",\"type\":\"string\"}]},{\"type\":\"record\",\"name\":\"b\",\"fields\":[{\"name\":\"int_value\",\"type\":\"int\"}]}]}]}'
+
+
+
+I wrote custom UDF (source attached) to cast the union type to one of the struct to access nested elements, such as int_value in my example.
+
+
+
+CREATE FUNCTION toSint AS 'org.ver.udf.minimal.StructFromUnionMinimalB';
+
+
+
+A simple query with the UDF is working fine. But creating a view with the same select is failing when I'm trying to query it:
+
+
+
+CREATE OR REPLACE VIEW minimal_sample_viewB AS SELECT toSint(event).int_value FROM minimal_sample WHERE record_type = 'B';
+
+
+
+SELECT * FROM minimal_sample_viewB;
+
+
+
+The stack trace is posted below.
+I did try to revert (or exclude) HIVE-12156 from the version I'm running and this use case is working fine.
+
+
+
+FAILED: SemanticException Line 0:-1 . Operator is only supported on struct or list of struct types 'int_value' in definition of VIEW minimal_sample_viewb [
+
+SELECT null.`int_value` FROM `default`.`minimal_sample` WHERE `minimal_sample`.`record_type` = 'B'
+
+] used as minimal_sample_viewb at Line 3:14
+
+16/01/05 22:49:41 [main]: ERROR ql.Driver: FAILED: SemanticException Line 0:-1 . Operator is only supported on struct or list of struct types 'int_value' in definition of VIEW minimal_sample_viewb [
+
+SELECT null.`int_value` FROM `default`.`minimal_sample` WHERE `minimal_sample`.`record_type` = 'B'
+
+] used as minimal_sample_viewb at Line 3:14
+
+org.apache.hadoop.hive.ql.parse.SemanticException: Line 0:-1 . Operator is only supported on struct or list of struct types 'int_value' in definition of VIEW minimal_sample_viewb [
+
+SELECT null.`int_value` FROM `default`.`minimal_sample` WHERE `minimal_sample`.`record_type` = 'B'
+
+] used as minimal_sample_viewb at Line 3:14
+
+	at org.apache.hadoop.hive.ql.parse.TypeCheckProcFactory$DefaultExprProcessor.getXpathOrFuncExprNodeDesc(TypeCheckProcFactory.java:893)
+
+	at org.apache.hadoop.hive.ql.parse.TypeCheckProcFactory$DefaultExprProcessor.process(TypeCheckProcFactory.java:1321)
+
+	at org.apache.hadoop.hive.ql.lib.DefaultRuleDispatcher.dispatch(DefaultRuleDispatcher.java:90)
+
+	at org.apache.hadoop.hive.ql.lib.DefaultGraphWalker.dispatchAndReturn(DefaultGraphWalker.java:95)
+
+	at org.apache.hadoop.hive.ql.lib.DefaultGraphWalker.dispatch(DefaultGraphWalker.java:79)
+
+	at org.apache.hadoop.hive.ql.lib.DefaultGraphWalker.walk(DefaultGraphWalker.java:133)
+
+	at org.apache.hadoop.hive.ql.lib.DefaultGraphWalker.startWalking(DefaultGraphWalker.java:110)
+
+	at org.apache.hadoop.hive.ql.parse.TypeCheckProcFactory.genExprNode(TypeCheckProcFactory.java:209)
+
+	at org.apache.hadoop.hive.ql.parse.TypeCheckProcFactory.genExprNode(TypeCheckProcFactory.java:153)
+
+	at org.apache.hadoop.hive.ql.parse.SemanticAnalyzer.genAllExprNodeDesc(SemanticAnalyzer.java:10500)
+
+	at org.apache.hadoop.hive.ql.parse.SemanticAnalyzer.genExprNodeDesc(SemanticAnalyzer.java:10455)
+
+	at org.apache.hadoop.hive.ql.parse.SemanticAnalyzer.genSelectPlan(SemanticAnalyzer.java:3822)
+
+	at org.apache.hadoop.hive.ql.parse.SemanticAnalyzer.genSelectPlan(SemanticAnalyzer.java:3601)
+
+	at org.apache.hadoop.hive.ql.parse.SemanticAnalyzer.genPostGroupByBodyPlan(SemanticAnalyzer.java:8943)
+
+	at org.apache.hadoop.hive.ql.parse.SemanticAnalyzer.genBodyPlan(SemanticAnalyzer.java:8898)
+
+	at org.apache.hadoop.hive.ql.parse.SemanticAnalyzer.genPlan(SemanticAnalyzer.java:9743)
+
+	at org.apache.hadoop.hive.ql.parse.SemanticAnalyzer.genPlan(SemanticAnalyzer.java:9623)
+
+	at org.apache.hadoop.hive.ql.parse.SemanticAnalyzer.genPlan(SemanticAnalyzer.java:9650)
+
+	at org.apache.hadoop.hive.ql.parse.SemanticAnalyzer.genPlan(SemanticAnalyzer.java:9636)
+
+	at org.apache.hadoop.hive.ql.parse.SemanticAnalyzer.genOPTree(SemanticAnalyzer.java:10109)
+
+	at org.apache.hadoop.hive.ql.parse.CalcitePlanner.genOPTree(CalcitePlanner.java:329)
+
+	at org.apache.hadoop.hive.ql.parse.SemanticAnalyzer.analyzeInternal(SemanticAnalyzer.java:10120)
+
+	at org.apache.hadoop.hive.ql.parse.CalcitePlanner.analyzeInternal(CalcitePlanner.java:211)
+
+	at org.apache.hadoop.hive.ql.parse.BaseSemanticAnalyzer.analyze(BaseSemanticAnalyzer.java:227)
+
+	at org.apache.hadoop.hive.ql.Driver.compile(Driver.java:454)
+
+	at org.apache.hadoop.hive.ql.Driver.compile(Driver.java:314)
+
+	at org.apache.hadoop.hive.ql.Driver.compileInternal(Driver.java:1164)
+
+	at org.apache.hadoop.hive.ql.Driver.runInternal(Driver.java:1212)
+
+	at org.apache.hadoop.hive.ql.Driver.run(Driver.java:1101)
+
+	at org.apache.hadoop.hive.ql.Driver.run(Driver.java:1091)
+
+	at org.apache.hadoop.hive.cli.CliDriver.processLocalCmd(CliDriver.java:216)
+
+	at org.apache.hadoop.hive.cli.CliDriver.processCmd(CliDriver.java:168)
+
+	at org.apache.hadoop.hive.cli.CliDriver.processLine(CliDriver.java:379)
+
+	at org.apache.hadoop.hive.cli.CliDriver.processLine(CliDriver.java:314)
+
+	at org.apache.hadoop.hive.cli.CliDriver.processReader(CliDriver.java:412)
+
+	at org.apache.hadoop.hive.cli.CliDriver.processFile(CliDriver.java:428)
+
+	at org.apache.hadoop.hive.cli.CliDriver.executeDriver(CliDriver.java:717)
+
+	at org.apache.hadoop.hive.cli.CliDriver.run(CliDriver.java:684)
+
+	at org.apache.hadoop.hive.cli.CliDriver.main(CliDriver.java:624)
+
+	at sun.reflect.NativeMethodAccessorImpl.invoke0(Native Method)
+
+	at sun.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:62)
+
+	at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)
+
+	at java.lang.reflect.Method.invoke(Method.java:497)
+
+	at org.apache.hadoop.util.RunJar.run(RunJar.java:221)
+
+	at org.apache.hadoop.util.RunJar.main(RunJar.java:136)
+
+

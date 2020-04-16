@@ -1,0 +1,72 @@
+I started using embedded Pig in Python scripts. I had a need to execute a pig script with slightly different set of parameters for each run. 
+The job are quite small so taking advantage of the cluster and running them in parallel made sense for me.
+
+Here's a python code I've used. (I executed it like that: bin/pig run.py script.pig ):
+
+
+from org.apache.pig.scripting import Pig
+import sys
+
+def main():
+        SCRIPT_NAME = sys.argv[1]
+
+        jobParamsSets = prepareParameterSets()
+
+        NUM_OF_JOBS_TO_RUN_AT_ONCE = 5
+
+        while len(jobParamsSets) != 0:
+            batchParamSet = jobParamsSets[:NUM_OF_JOBS_TO_RUN_AT_ONCE]
+            del jobParamsSets[:NUM_OF_JOBS_TO_RUN_AT_ONCE]
+            print 'batch to execute:', batchParamSet
+            P = Pig.compileFromFile(SCRIPT_NAME)
+            bound = P.bind(batchParamSet)
+            stats = bound.run()
+            for s in stats:
+               print s.isSuccessful(), s.getDuration(), s.getReturnCode(), s.getErrorMessage()
+
+def prepareParameterSets():
+# loads properties from files and creates multiple sets of parameters
+
+
+
+
+With NUM_OF_JOBS_TO_RUN_AT_ONCE variable I'm able to control the parallelism.
+
+
+I can have up to 150 parameter sets so that means 150 pig executions. 
+
+Everything seemed to work just fine but I started noticing single failures for some job executions. 
+It happens occasionally. 0-5 executions fail out of 150 for example. Always with the same kind of error.
+
+2013-02-14 16:25:04,575 [main] ERROR org.apache.pig.scripting.BoundScript - Pig pipeline failed to complete
+java.util.concurrent.ExecutionException: org.apache.pig.impl.logicalLayer.FrontendException: ERROR 1000: Error during parsing. Could not resolve my.pig.udf.OrderQueryTokens using imports: [, org.apache.pig.builtin., org.apache.pig.impl.builtin.]
+...
+
+
+
+Full stacktrace attached.
+
+I'm using many UDFs so the name of the UDF in the exception is changing.
+
+I suspect there is a threading issue somewhere. 
+My best guess is that org.apache.pig.impl.PigContext.resolveClassName is not thread safe and when multiple threads are trying to resolve a UDF class something goes wrong.
+
+I've tried a couple of tricks hoping that maybe it would help. What I did is that to my knowledge there are 3 ways in how you can register your jars with udfs.
+
+	in pig script ( REGISTER lib/*.jar
+	in python Pig.registerJar("/lib/*.jar")
+	command line param for pig command, $PIGDIR/bin/pig -Dpig.additional.jars=lib/*.jar
+
+
+
+Initially the 1) option was used. I was thinking that maybe if I register the jars globally right at the beginning with the option 3) I could go around the bug. Well it seems the problem dropped but didn't go away fully and still appears from time to time.
+
+
+The problem is that I cannot provide an reproducible use case. My process is quite complicated and presenting it here seems infeasible. I've tried to strip down my scripts and have something quick and simple to present. I've run that with like 1000 parameter sets with parallelism set to 10 or 20 and it sadly never occurred.
+
+
+
+PS.
+With pig-0.10.1 I had to substitute the distributed jython dependency with a standalone version. Otherwise I wasn't able to use python standard modules.
+
+I couldn't try if this bug still exists in pig-0.11.0 as the version is incompatible with hadoo 0.20. pig-0.11.1 has not been released yet.

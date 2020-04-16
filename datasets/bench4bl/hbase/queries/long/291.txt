@@ -1,0 +1,69 @@
+There is a need to add versioning support to Record I/O. Users frequently update DDL files, usually by adding/removing fields, but do not want to change the name of the data structure. They would like older & newer deserializers to read as much data as possible. For example, suppose Record I/O is used to serialize/deserialize log records, each of which contains a message and a timestamp. An initial data definition could be as follows:
+
+class MyLogRecord {
+  ustring msg;
+  long timestamp;
+}
+
+
+Record I/O creates a class, MyLogRecord, which represents a log record and can serialize/deserialize itself. Now, suppose newer log records additionally contain a severity level. A user would want to update the definition for a log record but use the same class name. The new definition would be:
+
+class MyLogRecord {
+  ustring msg;
+  long timestamp;
+  int severity;
+}
+
+
+Users would want a new deserializer to read old log records (and perhaps use a default value for the severity field), and an old deserializer to read newer log records (and skip the severity field).
+This requires some concept of versioning in Record I/O, or rather, the additional ability to read/write type information of a record. The following is a proposal to do this. 
+Every Record I/O Record will have type information which represents how the record is structured (what fields it has, what types, etc.). This type information, represented by the class RecordTypeInfo, is itself serializable/deserializable. Every Record supports a method getRecordTypeInfo(), which returns a RecordTypeInfo object. Users are expected to serialize this type information (by calling RecordTypeInfo.serialize()) in an appropriate fashion (in a separate file, for example, or at the beginning of a file). Using the same DDL as above, here's how we could serialize log records: 
+
+FileOutputStream fOut = new FileOutputStream("data.log");
+CsvRecordOutput csvOut = new CsvRecordOutput(fOut);
+...
+// get the type information for MyLogRecord
+RecordTypeInfo typeInfo = MyLogRecord.getRecordTypeInfo();
+// ask it to write itself out
+typeInfo.serialize(csvOut);
+...
+// now, serialize a bunch of records
+while (...) {
+   MyLogRecord log = new MyLogRecord();
+   // fill up the MyLogRecord object
+  ...
+  // serialize
+  log.serialize(csvOut);
+}
+
+
+In this example, the type information of a Record is serialized fist, followed by contents of various records, all into the same file. 
+Every Record also supports a method that allows a user to set a filter for deserializing. A method setRTIFilter() takes a RecordTypeInfo object as a parameter. This filter represents the type information of the data that is being deserialized. When deserializing, the Record uses this filter (if one is set) to figure out what to read. Continuing with our example, here's how we could deserialize records:
+
+FileInputStream fIn = new FileInputStream("data.log");
+// we know the record was written in CSV format
+CsvRecordInput csvIn = new CsvRecordInput(fIn);
+...
+// we know the type info is written in the beginning. read it. 
+RecordTypeInfo typeInfoFilter = new RecordTypeInfo();
+// deserialize it
+typeInfoFilter.deserialize(csvIn);
+// let MyLogRecord know what to expect
+MyLogRecord.setRTIFilter(typeInfoFilter);
+// deserialize each record
+while (there is data in file) {
+  MyLogRecord log = new MyLogRecord();
+  log.read(csvIn);
+  ...
+}
+
+
+The filter is optional. If not provided, the deserializer expects data to be in the same format as it would serialize. (Note that a filter can also be provided for serializing, forcing the serializer to write information in the format of the filter, but there is no use case for this functionality yet). 
+What goes in the type information for a record? The type information for each field in a Record is made up of:
+   1. a unique field ID, which is the field name. 
+   2. a type ID, which denotes the type of the field (int, string, map, etc). 
+The type information for a composite type contains type information for each of its fields. This approach is somewhat similar to the one taken by Facebook's Thrift, as well as by Google's Sawzall. The main difference is that we use field names as the field ID, whereas Thrift and Sawzall use user-defined field numbers. While field names take more space, they have the big advantage that there is no change to support existing DDLs. 
+When deserializing, a Record looks at the filter and compares it with its own set of 
+{field name, field type}
+ tuples. If there is a field in the data that it doesn't know about it, it skips it (it knows how many bytes to skip, based on the filter). If the deserialized data does not contain some field values, the Record gives them default values. Additionally, we could allow users to optionally specify default values in the DDL. The location of a field in a structure does not matter. This lets us support reordering of fields. Note that there is no change required to the DDL syntax, and very minimal changes to client code (clients just need to read/write type information, in addition to record data). 
+This scheme gives us an addition powerful feature: we can build a generic serializer/deserializer, so that users can read all kinds of data without having access to the original DDL or the original stubs. As long as you know where the type information of a record is serialized, you can read all kinds of data. One can also build a simple UI that displays the structure of data serialized in any generic file. This is very useful for handling data across lots of versions. 

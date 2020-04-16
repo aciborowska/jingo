@@ -1,0 +1,84 @@
+I have 3 entity classes classes
+
+@Entity
+@Inheritance(strategy = InheritanceType.TABLE_PER_CLASS)
+public class DiscoveryObjectImpl implements DiscoveryObject {
+	@Id
+	private String id;
+	public String getId() 
+{
+		return id;
+	}
+
+	public void setId(String id) 
+{
+		this.id = id;
+	}
+}
+@Entity
+public class VirtualTableImpl extends DiscoveryObjectImpl {
+@OneToMany(mappedBy="table")
+	private List<ColumnImpl> column = new ArrayList<ColumnImpl>();
+}
+@Entity
+public class ColumnImpl extends DiscoveryObjectImpl {
+@ManyToOne(cascade = CascadeType.PERSIST, optional=true)
+	VirtualTableImpl table;
+}
+
+test code 
+public void test() {
+		EntityManager em = OpenJPAPersistence.createEntityManagerFactory("Test", "test/persistence.xml").createEntityManager();
+        CriteriaBuilder cb = em.getCriteriaBuilder();
+        CriteriaQuery<VirtualTableImpl> cri = cb.createQuery(VirtualTableImpl.class);
+        Root<VirtualTableImpl> tbl = cri.from(VirtualTableImpl.class);
+        Subquery<Integer> sq = cri.subquery(Integer.class);
+        Root<VirtualTableImpl> tbl1 = sq.from(VirtualTableImpl.class);
+        Path<ColumnImpl> cols = tbl1.join("column", JoinType.LEFT);
+        sq.where(cb.isNull(cols), cb.equal(tbl1, tbl));
+        sq.select(cb.literal(new Integer(1)));
+        cri.where(cb.exists(sq));
+        em.createQuery(cri).getResultList();
+}
+
+persistence.xml
+<persistence xmlns="http://java.sun.com/xml/ns/persistence"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="http://java.sun.com/xml/ns/persistence http://java.sun.com/xml/ns/persistence/persistence_1_0.xsd"
+    version="1.0">
+ <persistence-unit name="Test" transaction-type="RESOURCE_LOCAL">
+ 	<provider>org.apache.openjpa.persistence.PersistenceProviderImpl</provider>
+ 	<class>com.ibm.infosphere.test.model.interfaces.impl.DiscoveryObjectImpl</class>
+ 	<class>com.ibm.infosphere.test.model.interfaces.impl.VirtualTableImpl</class>
+ 	<class>com.ibm.infosphere.test.model.interfaces.impl.ColumnImpl</class>
+ 	<exclude-unlisted-classes>true</exclude-unlisted-classes> 			
+	<properties>
+			<property name="openjpa.Log" value="DefaultLevel=ERROR, Runtime=ERROR, Tool=ERROR, SQL=TRACE, MetaData=ERROR"/>
+			<property name="openjpa.DynamicEnhancementAgent"  value="false"/>
+            <property name="openjpa.RuntimeUnenhancedClasses" value="supported"/>
+            <property name="openjpa.jdbc.SynchronizeMappings" value="buildSchema(ForeignKeys=true)"/>
+            <property name="openjpa.InitializeEagerly" value="true"/>
+            <property name="openjpa.jdbc.DBDictionary" value="oracle"/>
+            <property name="openjpa.jdbc.DBDictionary" value="MaxTableNameLength=61"/>
+            <property name="openjpa.jdbc.DBDictionary" value="useWildCardForCount=true"/>
+            <property name="openjpa.jdbc.DBDictionary" value="JoinSyntax=sql92"/>
+ 			<property name="openjpa.ConnectionURL" value="jdbc:oracle:thin:@localhost:1521:orcl"/>
+
+    		<property name="openjpa.ConnectionDriverName" value="oracle.jdbc.driver.OracleDriver"/> 
+      		<property name="openjpa.ConnectionUserName" value="********"/>
+      		<property name="openjpa.ConnectionPassword" value="*********"/>
+
+            <property name="openjpa.ConnectionFactoryProperties"    value="PrettyPrint=true, PrettyPrintLineLength=80, PrintParameters=true"/>
+            <property name="openjpa.DataCache"                value="true"/>        
+            <property name="openjpa.RemoteCommitProvider"     value="sjvm"/>            
+            <property name="openjpa.jdbc.QuerySQLCache"       value="true(EnableStatistics=true)"/>            
+		</properties>
+</persistence-unit>
+</persistence>
+
+The SQL trace is as the following SELECT t2.id 
+    FROM VirtualTableImpl t2 
+    WHERE (EXISTS (SELECT ? FROM VirtualTableImpl t0 INNER JOIN ColumnImpl t1 ON 
+        t0.id = t1.TABLE_ID WHERE (t1.id IS NULL AND t0.id = t2.id))) 
+
+Please note that sub query contains INNER JOIN instead of LEFT OUTER JOIN

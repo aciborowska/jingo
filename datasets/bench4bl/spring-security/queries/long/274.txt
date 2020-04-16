@@ -1,0 +1,173 @@
+AdvisorChainFactoryUtils does not return a SecurityConfig for a method security via annotation attribute source for a bridge method using generics when the annotation is on the subclass.
+Here is an example, complete with source and JUnit test.
+Department extends Entity
+BusinessServiceImpl implements BusinessService and takes a generic type that extends Entity
+there is a method: public E someUserMethod3(final E entity) with no annotation
+DepartmentService extends BusinessService with the method: Department someUserMethod3(final Department dept) with an annotation @Secured(
+{"ROLE_USER"})
+DepartmentServiceImpl extends BusinessServerImpl with the generic type Department and implements DepartmentService, it also has a method: public Department someUserMethod3(final Department dept) with a different annotation of @Secured({"ROLE_ADMIN"})
+
+AdvisorChainFactoryUtils finds the bridge method that Java 1.5 creates to adhere to the interface BusinessService this method is: public Entity someUserMethod3(final Entity entity)
+the utility does not find the annotation (because it's not on this class) but this means that any class that uses this class via an interface will not have security applied to it.  I have all of these classes and the JUnit test to add to SecurityAnnotationAttributesTests.  I will try to post them here, but if you need the files you can e-mail me
+
+/********************************************************************/
+New classes start here:
+
+/********************************************************************/
+
+
+package org.acegisecurity.annotation;
+
+import org.acegisecurity.Entity;
+
+/**
+ * Notes:<br/>
+ *
+ * @author joes.checkernet.com
+ * @version 0.0.1
+ */
+public class BusinessServiceImpl<E extends Entity> implements BusinessService {
+
+    @Secured({"ROLE_USER"}
+)
+    public void someUserMethod1() {
+    }
+    @Secured(
+{"ROLE_USER"})
+    public void someUserMethod2() {
+    }
+
+    @Secured({"ROLE_USER", "ROLE_ADMIN"})
+    public void someUserAndAdminMethod() {
+    }
+
+    @Secured({"ROLE_ADMIN"})
+    public void someAdminMethod() {
+    }
+
+    public E someUserMethod3(final E entity) {
+        return entity;
+    }
+}
+
+package org.acegisecurity.annotation;
+
+import org.acegisecurity.Entity;
+
+/**
+ * Notes:<br/>
+ *
+ * @author joes.checkernet.com
+ * @version 0.0.1
+ */
+public class Department extends Entity {
+    //~ Instance fields ========================================================
+
+    private boolean active = true;
+
+    //~ Constructors ===========================================================
+
+    public Department(String name) {
+        super(name);
+    }
+
+    //~ Methods ================================================================
+
+    public boolean isActive() {
+        return this.active;
+    }
+
+    void deactive() {
+        this.active = true;
+    }
+
+}
+
+
+package org.acegisecurity.annotation;
+
+/**
+ * Notes:<br/>
+ *
+ * @author joes.checkernet.com
+ * @version 0.0.1
+ */
+public interface DepartmentService extends BusinessService {
+
+    @Secured({"ROLE_USER"}
+)
+    Department someUserMethod3(Department dept);
+}
+package org.acegisecurity.annotation;
+import org.acegisecurity.Entity;
+/**
+
+Notes:<br/>
+ *
+@author joes.checkernet.com
+@version 0.0.1
+ */
+public class DepartmentServiceImpl extends BusinessServiceImpl <Department> implements DepartmentService {
+
+    @Secured(
+{"ROLE_ADMIN"}
+)
+    public Department someUserMethod3(final Department dept) 
+{
+        return super.someUserMethod3(dept);
+    }
+}
+/********************************************************************/
+Changes start here
+/********************************************************************/
+Changes to SecurityAnnotationAttributesTests for the JUnit test.  The first part checks that we can find the security annotation on the implementation class, the second part fails because it doesn't find it for the bridge method signature.
+    private Log logger = LogFactory.getLog(SecurityAnnotationAttributesTests.class);
+    public void testGenericsSuperclassDeclarationsAreIncludedWhenSubclassesOverride() {
+        Method method = null;
+        try {
+            method = DepartmentServiceImpl.class.getMethod("someUserMethod3", new Class[]
+{Department.class}
+);
+        } catch (NoSuchMethodException unexpected) 
+{
+            fail("Should be a superMethod called 'someUserMethod3' on class!");
+        }
+        Collection attrs = this.attributes.getAttributes(method);
+
+        if (logger.isDebugEnabled()) {
+            logger.debug("attrs: ");
+            logger.debug(attrs);
+        }
+        assertNotNull(attrs);
+
+        // expect 1 attribute
+        assertTrue("Did not find 1 attribute", attrs.size() == 1);
+
+        // should have 1 SecurityConfig
+        for (Object obj : attrs) {
+            assertTrue(obj instanceof SecurityConfig);
+            SecurityConfig sc = (SecurityConfig) obj;
+            assertEquals("Found an incorrect role", "ROLE_ADMIN", sc.getAttribute());
+        }
+
+        Method superMethod = null;
+        try {
+            superMethod = DepartmentServiceImpl.class.getMethod("someUserMethod3", new Class[]{Entity.class});
+        } catch (NoSuchMethodException unexpected) {            fail("Should be a superMethod called 'someUserMethod3' on class!");        }
+        Collection superAttrs = this.attributes.getAttributes(superMethod);
+        if (logger.isDebugEnabled()) 
+{
+            logger.debug("superAttrs: ");
+            logger.debug(superAttrs);
+        }
+        assertNotNull(superAttrs);
+        // expect 1 attribute
+        assertTrue("Did not find 1 attribute", superAttrs.size() == 1);
+        // should have 1 SecurityConfig
+        for (Object obj : superAttrs) 
+{
+            assertTrue(obj instanceof SecurityConfig);
+            SecurityConfig sc = (SecurityConfig) obj;
+            assertEquals("Found an incorrect role", "ROLE_ADMIN", sc.getAttribute());
+        }
+    }

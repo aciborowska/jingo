@@ -1,0 +1,1264 @@
+Based on my analysis, I think this is because HashMap does not guarantee ordering.
+1.
+[junit] Running org.apache.pig.test.TestDataModel
+[junit] Tests run: 22, Failures: 1, Errors: 0, Time elapsed: 0.382 sec
+Caused by different output of HashMap.toString() with open source JDK and sun jdk. Based on the discussion with Thejas Nair(pig committer) the output in open source jdk is also correct.
+Detail: 
+Testcase: testTupleToString took 0.002 sec
+        FAILED
+toString expected:<...ad a little lamb)},[hello#world,goodbye#all],42,5000000000,3.14...> but was:<...ad a little lamb)},[goodbye#all,hello#world],42,5000000000,3.14...>
+junit.framework.ComparisonFailure: toString expected:<...ad a little lamb)},[hello#world,goodbye#all],42,5000000000,3.14...> but was:<...ad a little lamb)},[goodbye#all,hello#world],42,5000000000,3.14...>
+at org.apache.pig.test.TestDataModel.testTupleToString(TestDataModel.java:269)
+
+    public void testTupleToString() throws Exception {
+        Tuple t = giveMeOneOfEach();
+
+        assertEquals("toString", "((3,3.0),
+{(4),(mary had a little lamb)}
+,hello#world,goodbye#all,42,5000000000,3.1415927,2.99792458E8,true,hello,goodbye,)", t.toString());//line 269
+    }
+comment:
+    private Tuple giveMeOneOfEach() throws Exception 
+{
+        TupleFactory tf = TupleFactory.getInstance();
+
+        Tuple t1 = tf.newTuple(11);
+        Tuple t2 = tf.newTuple(2);
+
+        t2.set(0, new Integer(3));
+        t2.set(1, new Float(3.0));
+
+        DataBag bag = BagFactory.getInstance().newDefaultBag();
+        bag.add(tf.newTuple(new Integer(4)));
+        bag.add(tf.newTuple(new String("mary had a little lamb")));
+
+        Map<String, Object> map = new HashMap<String, Object>(2);
+        map.put(new String("hello"), new String("world"));
+        map.put(new String("goodbye"), new String("all"));
+
+        t1.set(0, t2);
+        t1.set(1, bag);
+        t1.set(2, map);//when run t.toString(), HashMap.toString() will be invoked
+        t1.set(3, new Integer(42));
+        t1.set(4, new Long(5000000000L));
+        t1.set(5, new Float(3.141592654));
+        t1.set(6, new Double(2.99792458e8));
+        t1.set(7, new Boolean(true));
+        t1.set(8, new DataByteArray("hello"));
+        t1.set(9, new String("goodbye"));
+
+        return t1;
+    }
+}
+
+2. 
+[junit] Running org.apache.pig.test.TestLogToPhyCompiler
+[junit] Tests run: 23, Failures: 1, Errors: 0, Time elapsed: 1.16 sec
+Maybe caused by different output of HashMap.keySet() with open source JDK and sun jdk. 
+Detail:
+Failure information:
+Testcase: testSplit took 0.226 sec
+        FAILED
+Plan not match
+junit.framework.AssertionFailedError: Plan not match
+        at org.apache.pig.test.TestLogToPhyCompiler.testSplit(TestLogToPhyCompiler.java:444)
+    public void testSplit() throws VisitorException, IOException {
+    	String query = "split (load 'a') into x if $0 < '7', y if $0 > '7';";
+    	LogicalPlan plan = buildPlan(query);
+        log.info("ff test plan:"+plan);	
+    	PhysicalPlan pp = buildPhysicalPlan(plan);
+    	log.info("ff test pp:"+pp);
+    	int MAX_SIZE = 100000;
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+
+        pp.explain(baos);
+        baos.write((int)'\n');
+        String compiledPlan = baos.toString();
+        compiledPlan = compiledPlan.replaceAll("Load(.*)","Load()");
+
+        if(generate)
+{
+            FileOutputStream fos = new FileOutputStream("test/org/apache/pig/test/data/GoldenFiles/Split1.gld");
+            fos.write(baos.toByteArray());
+            return;
+        }
+
+    	FileInputStream fis1 = new FileInputStream("test/org/apache/pig/test/data/GoldenFiles/Split1.gld");
+    	FileInputStream fis2 = new FileInputStream("test/org/apache/pig/test/data/GoldenFiles/Split2.gld");
+        byte[] b1 = new byte[MAX_SIZE];
+        byte[] b2 = new byte[MAX_SIZE];
+        int len = fis1.read(b1);
+        int test = fis2.read(b2);
+        //System.out.println("Length of first plan = " + len + " of second = " + test);
+        String goldenPlan1 = new String(b1, 0, len);
+        String goldenPlan2 = new String(b2, 0, len);
+        goldenPlan1 = goldenPlan1.replaceAll("Load(.*)","Load()");
+        goldenPlan2 = goldenPlan2.replaceAll("Load(.*)","Load()");
+
+        System.out.println();
+        System.out.println(compiledPlan);
+        System.out.println("-------------");
+
+        if(compiledPlan.compareTo(goldenPlan1) == 0 || compiledPlan.compareTo(goldenPlan2) == 0) 
+{
+            // good
+        }
+        else 
+{
+            System.out.println("Expected plan1=") ;
+            System.out.println(goldenPlan1) ;
+            System.out.println("Expected plan2=") ;
+            System.out.println(goldenPlan1) ;
+            System.out.println("Actual plan=") ;
+            System.out.println(compiledPlan) ;
+            System.out.println("**END**") ;
+            fail("Plan not match") ;//line 444
+
+        }
+
+    }
+
+comment:
+variable compiledPlan initialize invoke the following methods:
+        pp.explain(baos);// explain(OutputStream out) method
+        baos.write((int)'\n');
+        String compiledPlan = baos.toString();
+explain(OutputStream out)explain(OutputStream out, boolean verbose)print(OutputStream printer)depthFirstPP()getLeaves()
+    public List<E> getLeaves() {
+        if (mLeaves.size() == 0 && mOps.size() > 0) {
+            for (E op : mOps.keySet()) {//mOps is HashMap structure, and keySet method output different with OPEN SOURCE JDK compared with SUN JDK.
+                if (mFromEdges.get(op) == null) 
+{
+                    mLeaves.add(op);
+                }
+            }
+        }
+        return mLeaves;
+    }
+baos variable output:
+> open source jdk:
+> x: Filter[tuple] - Test-Plan-Builder-240
+> | |
+> | Less Than[boolean] - Test-Plan-Builder-243
+> | |
+> | |---Project[bytearray][0] - Test-Plan-Builder-241
+> | |
+> | |---Constant(7) - Test-Plan-Builder-242
+> |
+> |---Split - Test-Plan-Builder-239
+> |
+> |---229: Load()
+>
+> y: Filter[tuple] - Test-Plan-Builder-244
+> | |
+> | Greater Than[boolean] - Test-Plan-Builder-247
+> | |
+> | |---Project[bytearray][0] - Test-Plan-Builder-245
+> | |
+> | |---Constant(7) - Test-Plan-Builder-246
+> |
+> |---Split - Test-Plan-Builder-239
+> |
+> |---229: Load()
+> sun jdk:
+> y: Filter[tuple] - Test-Plan-Builder-240
+> | |
+> | Greater Than[boolean] - Test-Plan-Builder-243
+> | |
+> | |---Project[bytearray][0] - Test-Plan-Builder-241
+> | |
+> | |---Constant(7) - Test-Plan-Builder-242
+> |
+> |---Split - Test-Plan-Builder-239
+> |
+> |---229: Load()
+>
+> x: Filter[tuple] - Test-Plan-Builder-244
+> | |
+> | Less Than[boolean] - Test-Plan-Builder-247
+> | |
+> | |---Project[bytearray][0] - Test-Plan-Builder-245
+> | |
+> | |---Constant(7) - Test-Plan-Builder-246
+> |
+> |---Split - Test-Plan-Builder-239
+> |
+> |---229: Load()
+
+
+3. 
+ [junit] Running org.apache.pig.test.TestMRCompiler
+ [junit] Tests run: 25, Failures: 1, Errors: 0, Time elapsed: 0.729 sec
+Maybe, caused by different output of HashMap.keySet() with OPEN SOURCE JDK and sun jdk. 
+
+Detail:
+Testcase: testSortUDF1 took 0.02 sec
+        FAILED
+null expected:<...---MapReduce(20,SUM,[COUNT,TestMRCompiler$WeirdComparator]) - -18:
+        |  ...> but was:<...---MapReduce(20,SUM,[TestMRCompiler$WeirdComparator,COUNT]) - -18:
+        |  ...>
+junit.framework.ComparisonFailure: null expected:<...---MapReduce(20,SUM,[COUNT,TestMRCompiler$WeirdComparator]) - -18:
+        |  ...> but was:<...---MapReduce(20,SUM,[TestMRCompiler$WeirdComparator,COUNT]) - -18:
+        |  ...>
+        at org.apache.pig.test.TestMRCompiler.run(TestMRCompiler.java:1056)
+        at org.apache.pig.test.TestMRCompiler.testSortUDF1(TestMRCompiler.java:790)
+
+    private void run(PhysicalPlan pp, String expectedFile) throws Exception {
+        String compiledPlan, goldenPlan = null;
+        int MAX_SIZE = 100000;
+        MRCompiler comp = new MRCompiler(pp, pc);
+        comp.compile();
+
+        MROperPlan mrp = comp.getMRPlan();
+        PlanPrinter ppp = new PlanPrinter(mrp);
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        ppp.print(baos);//see "comments"
+        compiledPlan = baos.toString();//compiledPlan's initialize is based on baos
+
+        if(generate ){
+            FileOutputStream fos = new FileOutputStream(expectedFile);
+            fos.write(baos.toByteArray());
+            return;
+        }
+        FileInputStream fis = new FileInputStream(expectedFile);
+        byte[] b = new byte[MAX_SIZE];
+        int len = fis.read(b);
+        goldenPlan = new String(b, 0, len);
+        if (goldenPlan.charAt(len-1) == '\n')
+            goldenPlan = goldenPlan.substring(0, len-1);
+
+        pp.explain(System.out);
+        System.out.println();
+        System.out.println("<<<" + compiledPlan + ">>>");
+        System.out.println("-------------");
+        System.out.println("Golden");
+        System.out.println("<<<" + goldenPlan + ">>>");
+        System.out.println("-------------");
+        assertEquals(goldenPlan, compiledPlan);//line 1056
+    }
+comment: 
+ppp.print(baos) invokes method as following:
+print(OutputStream printer) depthFirstPP()getLeaves()
+    public List<E> getLeaves() {
+        if (mLeaves.size() == 0 && mOps.size() > 0) {
+            for (E op : mOps.keySet()) { //mOps is HashMap structure, and keySet method output different with OPEN SOURCE JDK compared with SUN JDK.
+                if (mFromEdges.get(op) == null) {                    mLeaves.add(op);                }
+            }
+        }
+        return mLeaves;
+    }
+
+
+4. 
+[junit] Running org.apache.pig.test.TestMergeJoinOuter
+[junit] Tests run: 5, Failures: 1, Errors: 0, Time elapsed: 132.66 sec
+Caused by different output of HashMap.keySet() with OPEN SOURCE JDK and sun jdk. 
+
+Testcase: testCompilation took 0.443 sec
+        FAILED
+junit.framework.AssertionFailedError:
+        at org.apache.pig.test.TestMergeJoinOuter.testCompilation(TestMergeJoinOuter.java:116)
+Iterator<MapReduceOper> itr = mrPlan.iterator();// see comments
+MapReduceOper oper = itr.next();
+assertTrue(oper.reducePlan.isEmpty());//line 116
+comments: 
+iterator() method:
+    public Iterator<E> iterator() { 
+        return mOps.keySet().iterator();//mOps is HashMap structure, and keySet method output different with OPEN SOURCE JDK compared with SUN JDK.
+}
+with same mrPlan:
+MapReduce(-1,IsEmpty,TestMapSideCogroup$DummyCollectableLoader,PigStorage) - scope-39:
+Reduce Plan Empty
+
+
+
+   C: Store(hdfs://localhost.localdomain:34390/user/root/out:org.apache.pig.builtin.PigStorage) - scope-38
+
+
+ 
+
+
+ 
+---C: New For Each(true,true)[tuple] - scope-37
+
+
+ 
+ 
+
+
+ 
+   Project[bag][1] - scope-31
+
+
+ 
+ 
+
+
+ 
+   POBinCond[bag] - scope-36
+
+
+ 
+ 
+
+
+ 
+ 
+---Project[bag][2] - scope-32
+
+
+ 
+ 
+
+
+ 
+ 
+---POUserFunc(org.apache.pig.builtin.IsEmpty)[boolean] - scope-34
+
+
+ 
+ 
+ 
+
+
+ 
+ 
+ 
+---Project[bag][2] - scope-33
+
+
+ 
+ 
+
+
+ 
+ 
+---Constant(
+{(,,)}
+) - scope-35
+
+
+ 
+
+
+ 
+---C: MergeCogroup[tuple] - scope-30
+
+
+ 
+
+
+ 
+---A: Load(hdfs://localhost.localdomain:34390/user/root/data1:org.apache.pig.test.TestMapSideCogroup$DummyCollectableLoader) - scope-22
+
+
+
+
+---MapReduce(1) - scope-41:
+
+
+   Store(hdfs://localhost.localdomain:34390/tmp/temp-1456742965/tmp2077335416:org.apache.pig.impl.io.InterStorage) - scope-48
+
+
+ 
+
+
+ 
+---New For Each(true)[bag] - scope-47
+
+
+ 
+ 
+
+
+ 
+   Project[tuple][1] - scope-46
+
+
+ 
+
+
+ 
+---Package[tuple]
+{tuple} - scope-45
+    |   Local Rearrange[tuple]{tuple}
+(false) - scope-44
+
+
+ 
+ 
+
+
+ 
+   Project[tuple][*] - scope-43
+
+
+ 
+
+
+
+
+variable itr is in different order:
+open source jdk:
+(Name: MapReduce(1) - scope-41(itr.next())
+(Name: MapReduce(-1,IsEmpty,TestMapSideCogroup$DummyCollectableLoader,PigStorage) - scope-39:
+sun jdk:
+(Name: MapReduce(-1,TestMapSideCogroup$DummyCollectableLoader,IsEmpty,PigStorage) - scope-39: (itr.next())
+(Name: MapReduce(1) - scope-41:
+
+5.
+[junit] Running org.apache.pig.test.TestNewPlanLogToPhyTranslationVisitor
+[junit] Tests run: 25, Failures: 3, Errors: 0, Time elapsed: 1.081 sec
+Caused by different output of HashMap.keySet() with OPEN SOURCE JDK and sun jdk. 
+(1). 
+Testcase: testSimplePlan took 0.295 sec
+        FAILED
+expected:<class org.apache.pig.backend.hadoop.executionengine.physicalLayer.expressionOperators.POProject> but was:<class org.apache.pig.backend.hadoop.executionengine.physicalLayer.expressionOperators.ConstantExpression>
+junit.framework.AssertionFailedError: expected:<class org.apache.pig.backend.hadoop.executionengine.physicalLayer.expressionOperators.POProject> but was:<class org.apache.pig.backend.hadoop.executionengine.physicalLayer.expressionOperators.ConstantExpression>
+        at org.apache.pig.test.TestNewPlanLogToPhyTranslationVisitor.testSimplePlan(TestNewPlanLogToPhyTranslationVisitor.java:131)
+        public void testSimplePlan() throws Exception {
+        LogicalPlanTester lpt = new LogicalPlanTester(pc);
+        lpt.buildPlan("a = load 'd.txt';");
+        lpt.buildPlan("b = filter a by $0==NULL;");        
+        LogicalPlan plan = lpt.buildPlan("store b into 'empty';");  
+
+        org.apache.pig.newplan.logical.relational.LogicalPlan newLogicalPlan = migratePlan(plan);
+        PhysicalPlan phyPlan = translatePlan(newLogicalPlan);
+
+        assertEquals( 3, phyPlan.size() );
+        assertEquals( 1, phyPlan.getRoots().size() );
+        assertEquals( 1, phyPlan.getLeaves().size() );
+
+        PhysicalOperator load = phyPlan.getRoots().get(0);
+        assertEquals( POLoad.class, load.getClass() );
+        assertTrue(  ((POLoad)load).getLFile().getFileName().contains("d.txt") );
+
+        // Check for Filter
+        PhysicalOperator fil = phyPlan.getSuccessors(load).get(0);
+        assertEquals( POFilter.class, fil.getClass() );
+        PhysicalPlan filPlan = ((POFilter)fil).getPlan();
+        assertEquals( 2, filPlan.getRoots().size() );
+        assertEquals( 1, filPlan.getLeaves().size() );
+
+        PhysicalOperator eq = filPlan.getLeaves().get(0);
+        assertEquals( EqualToExpr.class, eq.getClass() );
+
+        PhysicalOperator prj1 = filPlan.getRoots().get(0);
+        assertEquals( POProject.class, prj1.getClass() );//line 131
+        assertEquals( 0, ((POProject)prj1).getColumn() );
+        PhysicalOperator constExp = filPlan.getRoots().get(1);
+        assertEquals( ConstantExpression.class, constExp.getClass() );
+        assertEquals( null, ((ConstantExpression)constExp).getValue() );
+
+        // Check for Store
+        PhysicalOperator stor = phyPlan.getSuccessors(fil).get(0);
+        assertEquals( POStore.class, stor.getClass() );
+        assertTrue(  ((POStore)stor).getSFile().getFileName().contains("empty"));
+}
+comment:
+    public List<E> getRoots() {
+        if (mRoots.size() == 0 && mOps.size() > 0) {
+            for (E op : mOps.keySet()) { mOps is HashMap structure, and keySet method output different with OPEN SOURCE JDK compared with SUN JDK.
+                if (mToEdges.get(op) == null) 
+{
+                    mRoots.add(op);
+                }
+            }
+        }
+        return mRoots;
+    
+
+(2). 
+Testcase: testJoinPlan took 0.062 sec
+        FAILED
+expected:<class org.apache.pig.backend.hadoop.executionengine.physicalLayer.expressionOperators.ConstantExpression> but was:<class org.apache.pig.backend.hadoop.executionengine.physicalLayer.expressionOperators.POProject>
+junit.framework.AssertionFailedError: expected:<class org.apache.pig.backend.hadoop.executionengine.physicalLayer.expressionOperators.ConstantExpression> but was:<class org.apache.pig.backend.hadoop.executionengine.physicalLayer.expressionOperators.POProject>
+        at org.apache.pig.test.TestNewPlanLogToPhyTranslationVisitor.testJoinPlan(TestNewPlanLogToPhyTranslationVisitor.java:201)
+
+    public void testJoinPlan() throws Exception {
+        LogicalPlanTester lpt = new LogicalPlanTester(pc);
+        lpt.buildPlan("a = load 'd1.txt' as (id, c);");
+        lpt.buildPlan("b = load 'd2.txt'as (id, c);");
+        lpt.buildPlan("c = join a by id, b by c;");
+        lpt.buildPlan("d = filter c by a::id==NULL AND b::c==NULL;");        
+        LogicalPlan plan = lpt.buildPlan("store d into 'empty';");
+        
+        // check basics
+        org.apache.pig.newplan.logical.relational.LogicalPlan newPlan = migratePlan(plan);
+        PhysicalPlan physicalPlan = translatePlan(newPlan);
+        assertEquals(9, physicalPlan.size());
+        assertEquals(physicalPlan.getRoots().size(), 2);
+        
+        // Check Load and LocalRearrange and GlobalRearrange
+        PhysicalOperator LoR = (PhysicalOperator)physicalPlan.getSuccessors(physicalPlan.getRoots().get(0)).get(0);
+        assertEquals( POLocalRearrange.class, LoR.getClass() );
+        POLocalRearrange Lor = (POLocalRearrange) LoR;
+        PhysicalOperator prj3 = Lor.getPlans().get(0).getLeaves().get(0);
+        assertEquals( POProject.class, prj3.getClass() );
+        assertEquals(0, ((POProject)prj3).getColumn() );
+        PhysicalOperator inp1 = Lor.getInputs().get(0);
+        assertEquals( POLoad.class, inp1.getClass() );
+        assertTrue(  ((POLoad)inp1).getLFile().getFileName().contains("d1.txt") );
+                
+        PhysicalOperator LoR1 = (PhysicalOperator)physicalPlan.getSuccessors(physicalPlan.getRoots().get(1)).get(0);
+        assertEquals( POLocalRearrange.class, LoR1.getClass() );
+        POLocalRearrange Lor1 = (POLocalRearrange) LoR1;
+        PhysicalOperator prj4 = Lor1.getPlans().get(0).getLeaves().get(0);
+        assertEquals( POProject.class, prj4.getClass() );
+        assertEquals(1, ((POProject)prj4).getColumn() );
+        PhysicalOperator inp2 = Lor1.getInputs().get(0);
+        assertEquals( POLoad.class, inp2.getClass() );
+        assertTrue(  ((POLoad)inp2).getLFile().getFileName().contains("d2.txt") );
+        
+        PhysicalOperator GoR = (PhysicalOperator)physicalPlan.getSuccessors(LoR).get(0);
+        assertEquals( POGlobalRearrange.class, GoR.getClass() );
+        
+        PhysicalOperator Pack = (PhysicalOperator)physicalPlan.getSuccessors(GoR).get(0);
+        assertEquals( POPackage.class, Pack.getClass() );
+
+        // Check for ForEach
+        PhysicalOperator ForE = (PhysicalOperator)physicalPlan.getSuccessors(Pack).get(0);
+        assertEquals( POForEach.class, ForE.getClass() );
+        PhysicalOperator prj5 = ((POForEach)ForE).getInputPlans().get(0).getLeaves().get(0);
+        assertEquals( POProject.class, prj5.getClass() );
+        assertEquals( 1, ((POProject)prj5).getColumn() ); 
+        PhysicalOperator prj6 = ((POForEach)ForE).getInputPlans().get(1).getLeaves().get(0);
+        assertEquals( POProject.class, prj6.getClass() );
+        assertEquals( 2, ((POProject)prj6).getColumn() );
+        
+        // Filter Operator
+        PhysicalOperator fil = (PhysicalOperator)physicalPlan.getSuccessors(ForE).get(0);
+        assertEquals( POFilter.class, fil.getClass() );        
+        
+        PhysicalPlan filPlan = ((POFilter)fil).getPlan();
+        List<PhysicalOperator> filRoots = filPlan.getRoots();
+        
+        assertEquals( ConstantExpression.class, filRoots.get(1).getClass() );//line 201
+        ConstantExpression ce1 = (ConstantExpression) filRoots.get(1);
+        assertEquals( null, ce1.getValue() ); 
+        assertEquals( ConstantExpression.class, filRoots.get(3).getClass() );
+        ConstantExpression ce2 = (ConstantExpression) filRoots.get(3);
+        assertEquals( null, ce2.getValue() );
+        assertEquals( POProject.class, filRoots.get(0).getClass() );
+        POProject prj1 = (POProject) filRoots.get(0);
+        assertEquals( 3, prj1.getColumn() );
+        assertEquals( POProject.class, filRoots.get(2).getClass() );
+        POProject prj2 = (POProject) filRoots.get(2);
+        assertEquals( 0, prj2.getColumn() );
+
+
+        // Check Store Operator
+        PhysicalOperator stor = (PhysicalOperator)physicalPlan.getSuccessors(fil).get(0);
+        assertEquals( POStore.class, stor.getClass() );
+        assertTrue(  ((POStore)stor).getSFile().getFileName().contains("empty") );
+    }
+comment:
+    public List<E> getRoots() {
+        if (mRoots.size() == 0 && mOps.size() > 0) {
+            for (E op : mOps.keySet()) { mOps is HashMap structure, and keySet method output different with OPEN SOURCE JDK compared with SUN JDK.
+                if (mToEdges.get(op) == null) {                    mRoots.add(op);                }
+            }
+        }
+        return mRoots;
+    }
+(3). 
+Testcase: testMultiStore took 0.083 sec
+        FAILED
+expected:<1> but was:<0>
+junit.framework.AssertionFailedError: expected:<1> but was:<0>
+        at org.apache.pig.test.TestNewPlanLogToPhyTranslationVisitor.testMultiStore(TestNewPlanLogToPhyTranslationVisitor.java:255)
+PhysicalOperator prj2 = Lor1.getPlans().get(0).getLeaves().get(0);
+assertEquals(1, ((POProject)prj2).getColumn() );//line 255
+comment:
+    public List<E> getLeaves() {
+        if (mLeaves.size() == 0 && mOps.size() > 0) {
+            for (E op : mOps.keySet()) { //mOps is HashMap structure, and keySet method output different with OPEN SOURCE JDK compared with SUN JDK.
+                if (mFromEdges.get(op) == null) 
+{
+                    mLeaves.add(op);
+                }
+            }
+        }
+        return mLeaves;
+    }
+
+6.
+[junit] Running org.apache.pig.test.TestPruneColumn
+[junit] Tests run: 67, Failures: 4, Errors: 0, Time elapsed: 528.047 sec
+Maybe caused by different output of HashMap.keySet() with OPEN SOURCE JDK and sun jdk. 
+(1).
+Testcase: testMapKey2 took 6.291 sec
+        FAILED
+null
+junit.framework.AssertionFailedError: null
+        at org.apache.pig.test.TestPruneColumn.testMapKey2(TestPruneColumn.java:1213)
+    public void testMapKey2() throws Exception{
+        pigServer.registerQuery("A = load '"+ Util.generateURI(tmpFile3.toString(), pigServer.getPigContext()) + "' as (a0:int, a1:map[]);");
+        pigServer.registerQuery("B = foreach A generate a1, a1#'key1';");// see comment3
+        pigServer.registerQuery("C = foreach B generate $0#'key2', $1;");
+        
+        Iterator<Tuple> iter = pigServer.openIterator("C");//see comment1
+        
+        assertTrue(iter.hasNext());
+        Tuple t = iter.next();
+        assertTrue(t.size()==2);
+        assertTrue(t.get(0).toString().equals("2"));
+        assertTrue(t.get(1).toString().equals("1"));
+        
+        assertTrue(iter.hasNext());
+        t = iter.next();
+        assertTrue(t.size()==2);
+        assertTrue(t.get(0).toString().equals("4"));
+        assertTrue(t.get(1).toString().equals("2"));
+        
+        assertFalse(iter.hasNext());
+        
+        assertTrue(checkLogFileMessage(new String[]{"Columns pruned for A: $0", 
+                "Map key required for A: $1->[key2, key1]"}));// line 1213 see comment2
+}
+comments1: 
+pigServer.openIterator("C") invokes the following method to save pigServer information to filename:
+      store(String id, String filename, String func)
+comment2:
+    public boolean checkLogFileMessage(String[] messages)
+    {
+        BufferedReader reader = null;
+        
+        try {
+            reader = new BufferedReader(new FileReader(logFile));//logFile=filename
+            List<String> logMessages=new ArrayList<String>();
+            String line;
+            while ((line=reader.readLine())!=null)
+            {
+                logMessages.add(line);
+            }
+            
+            // Check if all messages appear in the log
+            for (int i=0;i<messages.length;i++)
+            {
+                boolean found = false;
+                for (int j=0;j<logMessages.size();j++)
+                if (logMessages.get(j).contains(messages[i])) {
+                    found = true;
+                    break;
+                }
+                if (!found)
+                    return false;
+            }
+            
+            // Check no other log besides messages
+            for (int i=0;i<logMessages.size();i++) {
+                boolean found = false;
+                for (int j=0;j<messages.length;j++) {
+                    if (logMessages.get.contains(messages[j])) {
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
+                    if (logMessages.get.contains("Columns pruned for")||
+                            logMessages.get.contains("Map key required for")) {
+                        return false;
+                    }
+                }
+            }
+            return true;
+        }
+        catch (IOException e) {
+            return false;
+        }
+    }
+comment3: 
+the content in filename is different, because pigServer(invoke HashMap.keySet()) is different.
+pigServer.registerQuery(...)getSingleLeafPlanOutputOp()getLeaves()
+    public List<E> getLeaves() {
+        if (mLeaves.size() == 0 && mOps.size() > 0) {
+            for (E op : mOps.keySet()) { //mOps is HashMap structure, and keySet method output different with OPEN SOURCE JDK compared with SUN JDK.
+                if (mFromEdges.get(op) == null) {                    mLeaves.add(op);                }
+            }
+        }
+        return mLeaves;
+}
+
+(2)
+Testcase: testMapKey3 took 6.319 sec
+        FAILED
+null
+junit.framework.AssertionFailedError: null
+        at org.apache.pig.test.TestPruneColumn.testMapKey3(TestPruneColumn.java:1229)
+    public void testMapKey3() throws Exception {
+        pigServer.registerQuery("A = load '"+ Util.generateURI(tmpFile3.toString(),      pigServer.getPigContext()) + "' as (a0:int, a1:map[]);");
+        pigServer.registerQuery("B = foreach A generate a1, a1#'key1';");
+        pigServer.registerQuery("C = group B all;");
+
+        Iterator<Tuple> iter = pigServer.openIterator("C");
+
+        assertTrue(iter.hasNext());
+        Tuple t = iter.next();
+        assertTrue(t.size()==2);
+        assertTrue(t.get(0).toString().equals("all"));
+        assertTrue(t.get(1).toString().equals("
+{([key2#2,key1#1],1),([key2#4,key1#2],2)}"));
+//line 1229
+        
+        assertFalse(iter.hasNext());
+        
+        assertTrue(checkLogFileMessage(new String[]{"Columns pruned for A: $0"}));
+    }
+comment: 
+variable "t" initialize process:
+titerpigServer.registerQuery(...)getSingleLeafPlanOutputOp()getLeaves()
+    public List<E> getLeaves() {
+        if (mLeaves.size() == 0 && mOps.size() > 0) {
+            for (E op : mOps.keySet()) { //mOps is HashMap structure, and keySet method output different with OPEN SOURCE JDK compared with SUN JDK.
+                if (mFromEdges.get(op) == null) {
+                    mLeaves.add(op);
+                }
+            }
+        }
+        return mLeaves;
+}
+different t.get(1).toString():
+OPEN SOURCE JDK:
+{([key1#1,key2#2],1),([key1#2,key2#4],2)}
+SUN JDK:{([key2#2,key1#1],1),([key2#4,key1#2],2)}
+(3).
+Testcase: testMapKeyInSplit1 took 6.3 sec
+        FAILED
+null
+junit.framework.AssertionFailedError: null
+        at org.apache.pig.test.TestPruneColumn.testMapKeyInSplit1(TestPruneColumn.java:1303)
+
+    public void testMapKeyInSplit1() throws Exception {
+        pigServer.registerQuery("A = load '"+ Util.generateURI(tmpFile12.toString(), pigServer.getPigContext()) + "' as (m:map[]);");
+        pigServer.registerQuery("B = foreach A generate m#'key1' as key1;");
+        pigServer.registerQuery("C = foreach A generate m#'key2' as key2;");
+        pigServer.registerQuery("D = join B by key1, C by key2;");
+
+        Iterator<Tuple> iter = pigServer.openIterator("D");
+
+        assertTrue(iter.hasNext());
+        Tuple t = iter.next();
+        assertTrue(t.size()==2);
+        assertTrue(t.get(0).toString().equals("2"));
+        assertTrue(t.get(1).toString().equals("2"));
+
+        assertFalse(iter.hasNext());
+
+        assertTrue(checkLogFileMessage(new String[]
+{"Map key required for A: $0->[key2, key1]"}
+));//line 1303
+    }
+comment: same with (1).
+(4).
+Testcase: testSharedSchemaObject took 6.327 sec
+        FAILED
+null
+junit.framework.AssertionFailedError: null
+        at org.apache.pig.test.TestPruneColumn.testSharedSchemaObject(TestPruneColumn.java:1626)
+    public void testSharedSchemaObject() throws Exception {
+        pigServer.registerQuery("A = load '"+ Util.generateURI(tmpFile10.toString(), pigServer.getPigContext()) + "' AS (a0, a1:map[], a2);");
+        pigServer.registerQuery("B = foreach A generate a1;");
+        pigServer.registerQuery("C = limit B 10;");
+
+        Iterator<Tuple> iter = pigServer.openIterator("C");
+
+        assertTrue(iter.hasNext());
+        Tuple t = iter.next();
+        assertTrue(t.toString().equals("(2#1,1#1)"));
+
+        assertFalse(iter.hasNext());
+
+        assertTrue(checkLogFileMessage(new String[]
+{"Columns pruned for A: $0, $2"}
+));// line 1626
+}
+comment: same with (2).
+7.
+[junit] Running org.apache.pig.test.TestUnionOnSchema
+[junit] Tests run: 21, Failures: 1, Errors: 0, Time elapsed: 196.841 sec 
+
+Testcase: testUnionOnSchemaScopedColumnNameNeg took 0.008 sec
+        FAILED
+Expected exception message matching 'Found more than one match: l1::i, l2::i' but got 'Error during parsing. Found more than one match: l2::i, l1::i'
+        at org.apache.pig.test.TestUnionOnSchema.checkSchemaEx(TestUnionOnSchema.java:604)
+        at org.apache.pig.test.TestUnionOnSchema.testUnionOnSchemaScopedColumnNameNeg(TestUnionOnSchema.java:370)
+
+8..
+[junit] Running org.apache.pig.test.TestPushDownForeachFlatten
+[junit] Tests run: 37, Failures: 0, Errors: 8, Time elapsed: 1.455 sec
+Caused by different output of HashMap.keySet() with OPEN SOURCE JDK and sun jdk. 
+
+(1)
+Testcase: testForeachUnion took 0.039 sec
+        Caused an ERROR
+Expected LOForEach, got LOUnion
+org.apache.pig.impl.plan.optimizer.OptimizerException: ERROR 2005: Expected LOForEach, got LOUnion
+        at org.apache.pig.impl.logicalLayer.optimizer.PushDownForeachFlatten.getOperator(PushDownForeachFlatten.java:338)
+        at org.apache.pig.impl.logicalLayer.optimizer.PushDownForeachFlatten.check(PushDownForeachFlatten.java:101)
+        at org.apache.pig.test.TestPushDownForeachFlatten.testForeachUnion(TestPushDownForeachFlatten.java:275)
+    public void testForeachUnion() throws Exception 
+{
+        planTester.buildPlan("A = load 'myfile' as (name, age, gpa);");
+        planTester.buildPlan("B = foreach A generate $0, $1, flatten($2);");
+        planTester.buildPlan("C = load 'anotherfile' as (name, age, preference);");
+        LogicalPlan lp = planTester.buildPlan("D = union B, C;");        
+        
+        planTester.setPlan(lp);
+        planTester.setProjectionMap(lp);
+        
+        PushDownForeachFlatten pushDownForeach = new PushDownForeachFlatten(lp);
+        
+        LOLoad load = (LOLoad) lp.getRoots().get(0);// see comment
+        
+        assertTrue(!pushDownForeach.check(lp.getSuccessors(load)));//line 275
+        assertTrue(pushDownForeach.getSwap() == false);
+        assertTrue(pushDownForeach.getInsertBetween() == false);
+        assertTrue(pushDownForeach.getFlattenedColumnMap() == null);        
+    }
+comment: 
+LOLoad load = (LOLoad) lp.getRoots().get(0);//
+    public List<E> getRoots() {
+        if (mRoots.size() == 0 && mOps.size() > 0) {
+            for (E op : mOps.keySet()) {//mOps is HashMap structure, and keySet method output different with OPEN SOURCE JDK compared with SUN JDK.
+                if (mToEdges.get(op) == null) 
+{
+                    mRoots.add(op);
+                }
+            }
+        }
+        return mRoots;
+    }
+(2)
+Testcase: testForeachCogroup took 0.038 sec
+        Caused an ERROR
+Expected LOForEach, got LOCogroup
+org.apache.pig.impl.plan.optimizer.OptimizerException: ERROR 2005: Expected LOForEach, got LOCogroup
+        at org.apache.pig.impl.logicalLayer.optimizer.PushDownForeachFlatten.getOperator(PushDownForeachFlatten.java:338)
+        at org.apache.pig.impl.logicalLayer.optimizer.PushDownForeachFlatten.check(PushDownForeachFlatten.java:101)
+        at org.apache.pig.test.TestPushDownForeachFlatten.testForeachCogroup(TestPushDownForeachFlatten.java:295)
+    public void testForeachCogroup() throws Exception {
+        planTester.buildPlan("A = load 'myfile' as (name, age, gpa);");
+        planTester.buildPlan("B = foreach A generate $0, $1, flatten($2);");
+        planTester.buildPlan("C = load 'anotherfile' as (name, age, preference);");
+        LogicalPlan lp = planTester.buildPlan("D = cogroup B by $0, C by $0;");
+        
+        planTester.setPlan(lp);
+        planTester.setProjectionMap(lp);
+        
+        PushDownForeachFlatten pushDownForeach = new PushDownForeachFlatten(lp);
+        
+        LOLoad load = (LOLoad) lp.getRoots().get(0);
+        
+        assertTrue(!pushDownForeach.check(lp.getSuccessors(load)));//line 295
+        assertTrue(pushDownForeach.getSwap() == false);
+        assertTrue(pushDownForeach.getInsertBetween() == false);
+        assertTrue(pushDownForeach.getFlattenedColumnMap() == null);        
+    }
+comment: same with (1)
+(3)
+Testcase: testForeachCross took 0.035 sec
+        Caused an ERROR
+Expected LOForEach, got LOCross
+org.apache.pig.impl.plan.optimizer.OptimizerException: ERROR 2005: Expected LOForEach, got LOCross
+        at org.apache.pig.impl.logicalLayer.optimizer.PushDownForeachFlatten.getOperator(PushDownForeachFlatten.java:338)
+        at org.apache.pig.impl.logicalLayer.optimizer.PushDownForeachFlatten.check(PushDownForeachFlatten.java:101)
+        at org.apache.pig.test.TestPushDownForeachFlatten.testForeachCross(TestPushDownForeachFlatten.java:427)
+    public void testForeachCross() throws Exception {
+        planTester.buildPlan("A = load 'myfile' as (name, age, gpa:(letter_grade, point_score));");
+        planTester.buildPlan("B = foreach A generate $0, $1, flatten($2);");
+        planTester.buildPlan("C = load 'anotherfile' as (name, age, preference);");
+        planTester.buildPlan("D = cross B, C;");
+        LogicalPlan lp = planTester.buildPlan("E = limit D 10;");
+        
+        planTester.setPlan(lp);
+        planTester.setProjectionMap(lp);
+        planTester.rebuildSchema(lp);
+        
+        PushDownForeachFlatten pushDownForeach = new PushDownForeachFlatten(lp);
+
+        LOLoad load = (LOLoad) lp.getRoots().get(0);
+        LOLimit limit = (LOLimit) lp.getLeaves().get(0);
+        LOCross cross = (LOCross)lp.getPredecessors(limit).get(0);
+        LOForEach foreach = (LOForEach) lp.getPredecessors(cross).get(0);
+        
+        Schema limitSchema = limit.getSchema();
+        
+        assertTrue(pushDownForeach.check(lp.getSuccessors(load)));
+        assertTrue(pushDownForeach.getSwap() == false);
+        assertTrue(pushDownForeach.getInsertBetween() == true);
+        assertTrue(pushDownForeach.getFlattenedColumnMap() != null);
+
+        pushDownForeach.transform(lp.getSuccessors(load));//line 427
+        
+        planTester.rebuildSchema(lp);
+        
+        for(Boolean b: foreach.getFlatten()) {
+            assertEquals(b.booleanValue(), false);
+        }
+        
+        LOForEach newForeach = (LOForEach)lp.getSuccessors(cross).get(0);
+        
+        
+        List<Boolean> newForeachFlatten = newForeach.getFlatten();
+        Map<Integer, Integer> remap = pushDownForeach.getFlattenedColumnMap();        
+        for(Integer key: remap.keySet()) {
+            Integer value = remap.get(key);
+            assertEquals(newForeachFlatten.get(value).booleanValue(), true);
+        }
+        
+        assertTrue(Schema.equals(limitSchema, limit.getSchema(), false, true));        
+        
+    }
+comment: same with (1)
+
+(4)
+Testcase: testForeachFlattenAddedColumnCross took 0.034 sec
+        Caused an ERROR
+Expected LOForEach, got LOCross
+org.apache.pig.impl.plan.optimizer.OptimizerException: ERROR 2005: Expected LOForEach, got LOCross
+        at org.apache.pig.impl.logicalLayer.optimizer.PushDownForeachFlatten.getOperator(PushDownForeachFlatten.java:338)
+        at org.apache.pig.impl.logicalLayer.optimizer.PushDownForeachFlatten.check(PushDownForeachFlatten.java:101)
+        at org.apache.pig.test.TestPushDownForeachFlatten.testForeachFlattenAddedColumnCross(TestPushDownForeachFlatten.java:545)
+    public void testForeachFlattenAddedColumnCross() throws Exception {
+        planTester.buildPlan("A = load 'myfile' as (name, age, gpa:(letter_grade, point_score));");
+        planTester.buildPlan("B = foreach A generate $0, $1, flatten(1);");
+        planTester.buildPlan("C = load 'anotherfile' as (name, age, preference:(course_name, instructor));");
+        planTester.buildPlan("D = cross B, C;");
+        LogicalPlan lp = planTester.buildPlan("E = limit D 10;");
+        
+        planTester.setPlan(lp);
+        planTester.setProjectionMap(lp);
+        planTester.rebuildSchema(lp);
+        
+        PushDownForeachFlatten pushDownForeach = new PushDownForeachFlatten(lp);
+
+        LOLoad loada = (LOLoad) lp.getRoots().get(0);
+        
+        assertTrue(!pushDownForeach.check(lp.getSuccessors(loada)));//line 545
+        assertTrue(pushDownForeach.getSwap() == false);
+        assertTrue(pushDownForeach.getInsertBetween() == false);
+        assertTrue(pushDownForeach.getFlattenedColumnMap() == null);
+
+    }
+comment: same with (1)
+(5)
+Testcase: testForeachFRJoin took 0.027 sec
+        Caused an ERROR
+Expected LOForEach, got LOJoin
+org.apache.pig.impl.plan.optimizer.OptimizerException: ERROR 2005: Expected LOForEach, got LOJoin
+        at org.apache.pig.impl.logicalLayer.optimizer.PushDownForeachFlatten.getOperator(PushDownForeachFlatten.java:338)
+        at org.apache.pig.impl.logicalLayer.optimizer.PushDownForeachFlatten.check(PushDownForeachFlatten.java:101)
+        at org.apache.pig.test.TestPushDownForeachFlatten.testForeachFRJoin(TestPushDownForeachFlatten.java:619)
+    public void testForeachFRJoin() throws Exception {
+        planTester.buildPlan("A = load 'myfile' as (name, age, gpa:(letter_grade, point_score));");
+        planTester.buildPlan("B = foreach A generate $0, $1, flatten($2);");
+        planTester.buildPlan("C = load 'anotherfile' as (name, age, preference);");
+        planTester.buildPlan("D = join B by $0, C by $0 using \"replicated\";");
+        LogicalPlan lp = planTester.buildPlan("E = limit D 10;");
+        
+        planTester.setPlan(lp);
+        planTester.setProjectionMap(lp);
+        planTester.rebuildSchema(lp);
+        
+        PushDownForeachFlatten pushDownForeach = new PushDownForeachFlatten(lp);
+
+        LOLoad load = (LOLoad) lp.getRoots().get(0);
+        LOLimit limit = (LOLimit) lp.getLeaves().get(0);
+        LOJoin frjoin = (LOJoin)lp.getPredecessors(limit).get(0);
+        LOForEach foreach = (LOForEach) lp.getPredecessors(frjoin).get(0);
+        
+        Schema limitSchema = limit.getSchema();
+        
+        assertTrue(pushDownForeach.check(lp.getSuccessors(load)));//line 619
+        assertTrue(pushDownForeach.getSwap() == false);
+        assertTrue(pushDownForeach.getInsertBetween() == true);
+        assertTrue(pushDownForeach.getFlattenedColumnMap() != null);
+
+        pushDownForeach.transform(lp.getSuccessors(load));
+        
+        planTester.rebuildSchema(lp);
+        
+        for(Boolean b: foreach.getFlatten()) {            assertEquals(b.booleanValue(), false);        }
+        
+        LOForEach newForeach = (LOForEach)lp.getSuccessors(frjoin).get(0);
+        
+        
+        List<Boolean> newForeachFlatten = newForeach.getFlatten();
+        Map<Integer, Integer> remap = pushDownForeach.getFlattenedColumnMap();        
+        for(Integer key: remap.keySet()) {
+            Integer value = remap.get(key);
+            assertEquals(newForeachFlatten.get(value).booleanValue(), true);
+        }
+        
+        assertTrue(Schema.equals(limitSchema, limit.getSchema(), false, true));        
+
+    }
+comment: same with (1)
+(6)
+Testcase: testForeachFlattenAddedColumnFRJoin took 0.026 sec
+        Caused an ERROR
+Expected LOForEach, got LOJoin
+org.apache.pig.impl.plan.optimizer.OptimizerException: ERROR 2005: Expected LOForEach, got LOJoin
+        at org.apache.pig.impl.logicalLayer.optimizer.PushDownForeachFlatten.getOperator(PushDownForeachFlatten.java:338)
+        at org.apache.pig.impl.logicalLayer.optimizer.PushDownForeachFlatten.check(PushDownForeachFlatten.java:101)
+        at org.apache.pig.test.TestPushDownForeachFlatten.testForeachFlattenAddedColumnFRJoin(TestPushDownForeachFlatten.java:738)
+   public void testForeachFlattenAddedColumnFRJoin() throws Exception {
+        planTester.buildPlan("A = load 'myfile' as (name, age, gpa:(letter_grade, point_score));");
+        planTester.buildPlan("B = foreach A generate $0, $1, flatten(1);");
+        planTester.buildPlan("C = load 'anotherfile' as (name, age, preference:(course_name, instructor));");
+        planTester.buildPlan("D = join B by $0, C by $0 using \"replicated\";");
+        LogicalPlan lp = planTester.buildPlan("E = limit D 10;");
+        
+        planTester.setPlan(lp);
+        planTester.setProjectionMap(lp);
+        planTester.rebuildSchema(lp);
+        
+        PushDownForeachFlatten pushDownForeach = new PushDownForeachFlatten(lp);
+
+        LOLoad loada = (LOLoad) lp.getRoots().get(0);
+        
+        assertTrue(!pushDownForeach.check(lp.getSuccessors(loada)));//line 738
+        assertTrue(pushDownForeach.getSwap() == false);
+        assertTrue(pushDownForeach.getInsertBetween() == false);
+        assertTrue(pushDownForeach.getFlattenedColumnMap() == null);
+
+    }
+comment: same with (1)
+(7)
+Testcase: testForeachInnerJoin took 0.026 sec
+        Caused an ERROR
+Expected LOForEach, got LOJoin
+org.apache.pig.impl.plan.optimizer.OptimizerException: ERROR 2005: Expected LOForEach, got LOJoin
+        at org.apache.pig.impl.logicalLayer.optimizer.PushDownForeachFlatten.getOperator(PushDownForeachFlatten.java:338)
+        at org.apache.pig.impl.logicalLayer.optimizer.PushDownForeachFlatten.check(PushDownForeachFlatten.java:101)
+        at org.apache.pig.test.TestPushDownForeachFlatten.testForeachInnerJoin(TestPushDownForeachFlatten.java:812)
+    public void testForeachInnerJoin() throws Exception {
+        planTester.buildPlan("A = load 'myfile' as (name, age, gpa:(letter_grade, point_score));");
+        planTester.buildPlan("B = foreach A generate $0, $1, flatten($2);");
+        planTester.buildPlan("C = load 'anotherfile' as (name, age, preference:(course_name, instructor));");
+        planTester.buildPlan("D = join B by $0, C by $0;");
+        LogicalPlan lp = planTester.buildPlan("E = limit D 10;");
+        
+        planTester.setPlan(lp);
+        planTester.setProjectionMap(lp);
+        planTester.rebuildSchema(lp);
+        
+        PushDownForeachFlatten pushDownForeach = new PushDownForeachFlatten(lp);
+
+        LOLoad load = (LOLoad) lp.getRoots().get(0);
+        LOLimit limit = (LOLimit) lp.getLeaves().get(0);
+        LOJoin join = (LOJoin)lp.getPredecessors(limit).get(0);
+        LOForEach foreach = (LOForEach) lp.getPredecessors(join).get(0);
+        
+        Schema limitSchema = limit.getSchema();
+        
+        assertTrue(pushDownForeach.check(lp.getSuccessors(load)));//line 812
+        assertTrue(pushDownForeach.getSwap() == false);
+        assertTrue(pushDownForeach.getInsertBetween() == true);
+        assertTrue(pushDownForeach.getFlattenedColumnMap() != null);
+
+        pushDownForeach.transform(lp.getSuccessors(load));
+        
+        planTester.rebuildSchema(lp);
+        
+        for(Boolean b: foreach.getFlatten()) {
+            assertEquals(b.booleanValue(), false);
+        }
+        
+        LOForEach newForeach = (LOForEach)lp.getSuccessors(join).get(0);
+        
+        
+        List<Boolean> newForeachFlatten = newForeach.getFlatten();
+        Map<Integer, Integer> remap = pushDownForeach.getFlattenedColumnMap();        
+        for(Integer key: remap.keySet()) {            Integer value = remap.get(key);            assertEquals(newForeachFlatten.get(value).booleanValue(), true);        }
+        
+        assertTrue(Schema.equals(limitSchema, limit.getSchema(), false, true));        
+
+}
+comment: same with (1)
+(8)
+Testcase: testForeachFlattenAddedColumnInnerJoin took 0.021 sec
+        Caused an ERROR
+Expected LOForEach, got LOJoin
+org.apache.pig.impl.plan.optimizer.OptimizerException: ERROR 2005: Expected LOForEach, got LOJoin
+        at org.apache.pig.impl.logicalLayer.optimizer.PushDownForeachFlatten.getOperator(PushDownForeachFlatten.java:338)
+        at org.apache.pig.impl.logicalLayer.optimizer.PushDownForeachFlatten.check(PushDownForeachFlatten.java:101)
+        at org.apache.pig.test.TestPushDownForeachFlatten.testForeachFlattenAddedColumnInnerJoin(TestPushDownForeachFlatten.java:931)
+    public void testForeachFlattenAddedColumnInnerJoin() throws Exception {
+        planTester.buildPlan("A = load 'myfile' as (name, age, gpa:(letter_grade, point_score));");
+        planTester.buildPlan("B = foreach A generate $0, $1, flatten(1);");
+        planTester.buildPlan("C = load 'anotherfile' as (name, age, preference:(course_name, instructor));");
+        planTester.buildPlan("D = join B by $0, C by $0;");
+        LogicalPlan lp = planTester.buildPlan("E = limit D 10;");
+        
+        planTester.setPlan(lp);
+        planTester.setProjectionMap(lp);
+        planTester.rebuildSchema(lp);
+        
+        PushDownForeachFlatten pushDownForeach = new PushDownForeachFlatten(lp);
+
+        LOLoad loada = (LOLoad) lp.getRoots().get(0);
+        
+        assertTrue(!pushDownForeach.check(lp.getSuccessors(loada)));//line 931
+        assertTrue(pushDownForeach.getSwap() == false);
+        assertTrue(pushDownForeach.getInsertBetween() == false);
+        assertTrue(pushDownForeach.getFlattenedColumnMap() == null);
+
+    }
+
+9.
+[junit] Running org.apache.pig.test.TestTypeCheckingValidator
+[junit] Tests run: 120, Failures: 0, Errors: 1, Time elapsed: 15.047 sec
+Caused by different output of HashMap.keySet() with OPEN SOURCE JDK and sun jdk. Based on the discussion with Thejas Nair(pig committer) the output in OPEN SOURCE jdk is also correct.
+Detail:
+Testcase: testMapLookupLineage took 0.012 sec
+        Caused an ERROR
+org.apache.pig.impl.logicalLayer.LOAdd incompatible with org.apache.pig.impl.logicalLayer.LOCast
+java.lang.ClassCastException: org.apache.pig.impl.logicalLayer.LOAdd incompatible with org.apache.pig.impl.logicalLayer.LOCast
+        at org.apache.pig.test.TestTypeCheckingValidator.testMapLookupLineage(TestTypeCheckingValidator.java:5397)
+    public void testMapLookupLineage() throws Throwable {
+        planTester.buildPlan("a = load 'a' using BinStorage() as (field1, field2: float, field3: chararray );") ;
+        planTester.buildPlan("b = foreach a generate field1#'key1' as map1;") ;
+        LogicalPlan plan = planTester.buildPlan("c = foreach b generate map1#'key2' + 1 ;") ;
+
+        // validate
+        CompilationMessageCollector collector = new CompilationMessageCollector() ;
+        TypeCheckingValidator typeValidator = new TypeCheckingValidator() ;
+        typeValidator.validate(plan, collector) ;
+
+        printMessageCollector(collector) ;
+        printTypeGraph(plan) ;
+        planTester.printPlan(plan, TypeCheckingTestUtil.getCurrentMethodName());
+
+        if (collector.hasError()) {
+            throw new AssertionError("Expect no  error") ;
+        }
+
+
+        LOForEach foreach = (LOForEach)plan.getLeaves().get(0);// see comement1
+        LogicalPlan foreachPlan = foreach.getForEachPlans().get(0);
+
+        LogicalOperator exOp = foreachPlan.getRoots().get(0);//see comment2
+        // the root would be the project and there would be cast
+        // to map between the project and LOMapLookup
+        LOCast cast1 = (LOCast)foreachPlan.getSuccessors(exOp).get(0);//line 5397
+        assertTrue(cast1.getLoadFuncSpec().getClassName().startsWith("BinStorage"));
+        LOMapLookup map = (LOMapLookup)foreachPlan.getSuccessors(cast1).get(0);
+        LOCast cast = (LOCast)foreachPlan.getSuccessors(map).get(0);
+        assertTrue(cast.getLoadFuncSpec().getClassName().startsWith("BinStorage"));
+
+}
+comment1: 
+foreachPlan initialize process, this will cause the different foreachPlan.
+foreachPlanforeachplan.getLeaves
+    public List<E> getLeaves() {
+        if (mLeaves.size() == 0 && mOps.size() > 0) {
+            for (E op : mOps.keySet()) { //mOps is HashMap structure, and keySet method output different with OPEN SOURCE JDK compared with SUN JDK.
+                if (mFromEdges.get(op) == null) {
+                    mLeaves.add(op);
+                }
+            }
+        }
+        return mLeaves;
+}
+comment2:
+exOpforeachPlan.getRoots(), this is the root cause
+    public List<E> getRoots() {
+        if (mRoots.size() == 0 && mOps.size() > 0) {
+            for (E op : mOps.keySet()) {//mOps is HashMap structure, and keySet method output different with OPEN SOURCE JDK compared with SUN JDK.
+                if (mToEdges.get(op) == null) {                    mRoots.add(op);                }
+            }
+        }
+        return mRoots;
+    }
+
+SUN JDK output:
+foreachPlan:
+Add scope-12 FieldSchema: int Type: int
+
+
+
+
+
+---Const scope-15( 1 ) FieldSchema: int Type: int
+
+
+
+
+---Cast scope-19 FieldSchema: int Type: int
+
+
+
+
+---MapLookup scope-14 FieldSchema: bytearray Type: bytearray
+
+
+
+
+---Cast scope-18 FieldSchema: map Type: map
+
+
+
+
+---Project scope-13 Projections: [0] Overloaded: false FieldSchema: map1: bytearray Type: bytearray
+                Input: b: ForEach scope-6
+getRoots method process:
+keySet() method:
+Cast scope-19
+Cast scope-18
+Add scope-12
+Project scope-13 Projections: [0] Overloaded: false(add to mRoots)
+MapLookup scope-14
+Const scope-15( 1 )(add to mRoots)
+foreachPlan.getRoots():(Name: Project scope-13 Projections: [0] Overloaded: false Operator Key: scope-13)
+                                          (Name: Const scope-15( 1 ) Operator Key: scope-15)
+exOp:(Name: Project scope-13 Projections: [0] Overloaded: false Operator Key: scope-13)
+OPEN SOURCE JDK output:
+foreachPlan:
+Add scope-13 FieldSchema: int Type: int
+
+
+
+
+---Const scope-12( 1 ) FieldSchema: int Type: int
+
+
+
+
+---Cast scope-19 FieldSchema: int Type: int
+
+
+
+
+---MapLookup scope-15 FieldSchema: bytearray Type: bytearray
+
+
+
+
+---Cast scope-18 FieldSchema: map Type: map
+
+
+
+
+---Project scope-14 Projections: [0] Overloaded: false FieldSchema: map1: bytearray Type: bytearray
+                Input: b: ForEach scope-6
+getRoots method process: 
+keySet() method:
+Cast scope-18
+Cast scope-19
+Const scope-12( 1 )(add to mRoots)
+Add scope-13
+Project scope-14 Projections: [0] Overloaded: false(add to mRoots)
+MapLookup scope-15
+foreachPlan.getRoots():(Name: Const scope-12( 1 ) Operator Key: scope-12)
+                                          (Name: Project scope-14 Projections: [0] Overloaded: false Operator Key: scope-14)//output in different order compared with SUN JDK output
+exOp:(Name: Const scope-12( 1 ) Operator Key: scope-12)
+
+
+
+
+
+
+
+

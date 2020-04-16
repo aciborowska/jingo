@@ -1,0 +1,148 @@
+My persistence.xml looks like following
+
+*******************************************************************************************************
+<?xml version="1.0" ?>
+<persistence xmlns="http://java.sun.com/xml/ns/persistence"
+             xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+             version="1.0">
+<persistence-unit name="dwtest" transaction-type="JTA">
+<provider>org.apache.openjpa.persistence.PersistenceProviderImpl</provider>
+   <non-jta-data-source>jdbc/ErwwDS</non-jta-data-source> 
+       <class>ejb.jpa.test.Customer</class> 
+        <class>ejb.jpa.test.District</class>
+        <class>ejb.jpa.test.Warehouse</class>
+        <class>ejb.jpa.test.History</class>
+       <class>ejb.jpa.test.Item</class>
+      <class>ejb.jpa.test.Neworders</class>
+      <class>ejb.jpa.test.Orderline</class>
+    <class>ejb.jpa.test.Orders</class>
+      <class>ejb.jpa.test.Stock</class>
+        <properties>
+
+ <property name="openjpa.LockManager" value="pessimistic"/>
+<property name="openjpa.ReadLockLevel" value="read"/>
+<property name="openjpa.WriteLockLevel" value="write"/>
+<property name="openjpa.LockTimeout" value="30000"/>
+ <property name="openjpa.FetchBatchSize" value="1" />
+ <property name="openjpa.jdbc.TransactionIsolation" value="read-committed" /> 
+  <property name="openjpa.Log" value="DefaultLevel=WARN, Runtime=INFO, Tool=INFO,SQL=TRACE"/>
+
+        </properties>
+    </persistence-unit>
+</persistence>
+*******************************************************************************************************************
+The Orderline entity looks like following
+
+*************************************************************************************************
+
+@Entity
+@IdClass(ejb.jpa.test.OrderlineId.class)
+@SequenceGenerator(name="mysequence",sequenceName="ORDER_ID")
+public  class Orderline implements Serializable{
+
+	@Id
+	@GeneratedValue(strategy=GenerationType.SEQUENCE,generator="mysequence")
+	java.lang.Integer ol_o_id =  null;
+	@Id
+	java.lang.String ol_d_id = null;
+	@Id
+	java.lang.String ol_w_id = null;
+	@Id
+	java.lang.Short ol_number = null;
+	java.lang.String ol_i_id = null;
+	java.sql.Timestamp ol_delivery_d = null;
+	java.lang.String ol_supply_w_id = null;
+	java.lang.Short ol_quantity = null;
+	java.math.BigDecimal ol_amount = null;
+	java.sql.Timestamp itime = null;
+	java.lang.String ol_dist_info = null;
+	@ManyToOne(fetch=FetchType.LAZY)
+	@JoinColumns(
+{
+	        @JoinColumn(name="ol_o_id", referencedColumnName="o_id"),
+            @JoinColumn(name="ol_d_id", referencedColumnName="o_d_id"),
+            @JoinColumn(name="ol_w_id", referencedColumnName="o_w_id")
+   }
+)
+	 Orders orders = null;
+	@ManyToOne(fetch=FetchType.LAZY)
+	@JoinColumns(
+{
+	        @JoinColumn(name="ol_i_id", referencedColumnName="s_i_id"),
+            @JoinColumn(name="ol_supply_w_id", referencedColumnName="s_w_id")
+            
+   }
+)
+	 Stock stock = null;
+
+*************************************************************************************************************************
+Now if I run the following client 
+
+UserTransaction ut = null;
+		ClientEJB  facade = null;
+		EntityManager em = null;
+		try {
+		Hashtable parms = new Hashtable();
+		parms.put(	Context.INITIAL_CONTEXT_FACTORY,
+			"com.ibm.websphere.naming.WsnInitialContextFactory");
+		InitialContext ctx = new InitialContext(parms);
+		ut = (UserTransaction) ctx.lookup("java:comp/UserTransaction");         			                     ut.begin();
+		em = getFactory().createEntityManager (); 
+
+                                           try 
+{
+			OpenJPAEntityManager kem = OpenJPAPersistence.cast (em);
+			kem.getFetchPlan().setReadLockMode(LockModeType.WRITE);
+			 stock = (Stock)kem.find(Stock.class,stockKey);
+			kem.getFetchPlan().setReadLockMode(null);
+				
+			}
+ catch (Exception fe) {}
+                                           try {
+
+		                     Timestamp itime = new Timestamp(System.currentTimeMillis());
+			Orderline orderLine = new Orderline (districtId, warehouseId,
+						new Short((short)ol_number), itemId,null, itemSupplyWarehouseId,new Short((short)itemQuantity), amount, itime, stockDistInfo);
+				em.persist(orderLine);
+				em.flush();
+
+
+***************************************************************************************************************
+I get the the following stack trace, which appears to happen when we try to get the next  value from Sequence
+[3/12/07 13:59:06:496 PDT] 00000020 SystemErr     R 3073  TRACE  [WebContainer : 0] openjpa.jdbc.SQL - <t 1503025558, conn 1348751460> executing prepstmnt 2134933312 SELECT t0.s_data, t0.s_dist_01, t0.s_dist_02, t0.s_dist_03, t0.s_dist_04, t0.s_dist_05, t0.s_dist_06, t0.s_dist_07, t0.s_dist_08, t0.s_dist_09, t0.s_dist_10, t0.s_order_cnt, t0.s_quantity, t0.s_remote_cnt, t0.s_ytd FROM Stock t0 WHERE t0.s_i_id = ? AND t0.s_w_id = ? WITH RS USE AND KEEP UPDATE LOCKS [params=(String) 000111, (String) 0001]
+[3/12/07 13:59:06:498 PDT] 00000020 SystemErr     R 3075  TRACE  [WebContainer : 0] openjpa.jdbc.SQL - <t 1503025558, conn 1348751460> [2 ms] spent
+[3/12/07 13:59:06:720 PDT] 00000020 SystemErr     R javax.ejb.EJBException: ClientEJB: CreateException: OrderLineLocalHome create failed in placeNewOrder() of ClientEJB; nested exception is: <0|true|0.9.6-incubating> org.apache.openjpa.persistence.PersistenceException: DSRA9250E: Operation setTransactionIsolation is not allowed during a global transaction for Shareable Connections.
+<0|true|0.9.6-incubating> org.apache.openjpa.persistence.PersistenceException: DSRA9250E: Operation setTransactionIsolation is not allowed during a global transaction for Shareable Connections.
+ at org.apache.openjpa.jdbc.sql.DBDictionary.newStoreException(DBDictionary.java:3764)
+ at org.apache.openjpa.jdbc.sql.SQLExceptions.getStore(SQLExceptions.java:94)
+ at org.apache.openjpa.jdbc.sql.SQLExceptions.getStore(SQLExceptions.java:80)
+ at org.apache.openjpa.jdbc.sql.SQLExceptions.getStore(SQLExceptions.java:56)
+ at org.apache.openjpa.jdbc.kernel.AbstractJDBCSeq.next(AbstractJDBCSeq.java:59)
+ at org.apache.openjpa.util.ImplHelper.generateValue(ImplHelper.java:159)
+ at org.apache.openjpa.util.ImplHelper.generateFieldValue(ImplHelper.java:143)
+ at org.apache.openjpa.jdbc.kernel.JDBCStoreManager.assignField(JDBCStoreManager.java:554)
+ at org.apache.openjpa.util.ApplicationIds.assign(ApplicationIds.java:435)
+ at org.apache.openjpa.util.ApplicationIds.assign(ApplicationIds.java:420)
+ at org.apache.openjpa.jdbc.kernel.JDBCStoreManager.assignObjectId(JDBCStoreManager.java:538)
+ at org.apache.openjpa.kernel.DelegatingStoreManager.assignObjectId(DelegatingStoreManager.java:131)
+ at org.apache.openjpa.kernel.StateManagerImpl.assignObjectId(StateManagerImpl.java:471)
+ at org.apache.openjpa.kernel.StateManagerImpl.preFlush(StateManagerImpl.java:2662)
+ at org.apache.openjpa.kernel.PNewState.beforeFlush(PNewState.java:36)
+ at org.apache.openjpa.kernel.StateManagerImpl.beforeFlush(StateManagerImpl.java:845)
+ at org.apache.openjpa.kernel.BrokerImpl.flush(BrokerImpl.java:1865)
+ at org.apache.openjpa.kernel.BrokerImpl.flushSafe(BrokerImpl.java:1825)
+ at org.apache.openjpa.kernel.BrokerImpl.flush(BrokerImpl.java:1609)
+ at org.apache.openjpa.kernel.DelegatingBroker.flush(DelegatingBroker.java:959)
+ at org.apache.openjpa.persistence.EntityManagerImpl.flush(EntityManagerImpl.java:438)
+ at helpers.ClientEJB.placeNewOrder(Unknown Source)
+ at erww.web.ErwwController.performServicesForNewOrder(ErwwController.java:550)
+ at erww.web.ErwwController.performTask(ErwwController.java:272)
+ at erww.web.ErwwController.doGet(ErwwController.java:85)
+ at javax.servlet.http.HttpServlet.service(HttpServlet.java:743)
+ at javax.servlet.http.HttpServlet.service(HttpServlet.java:856)
+ at com.ibm.ws.webcontainer.servlet.ServletWrapper.service(ServletWrapper.java:966)
+
+
+Any idea why is this happening is this a bug.It appears like that while trying to get the next value from Sequence JPA tries to get a connection and then on the connection if the isolationLevel is not already READ_COMMITTED it tries to set it to READ_COMMITTED and that is where it blows out
+
+ritika

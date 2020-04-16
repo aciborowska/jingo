@@ -1,0 +1,34 @@
+Description:
+
+The get_xid functions in mt_adaptor.c/st_adaptor.c return a 32 bit signed integer that is initialized to the current unix epoch timestamp on startup.
+
+This counter will eventually wrap around, which is not a problem per se, since the client does not expect XID values to monotonically increase: It just verifies that replies to operations come back in order by checking the XID of a request received against the next XID expected. (zookeeper.c:zookeeper_process).
+
+However, after a wrap-around the XID values will eventually collide with the reserved XIDs ad defined in zk_adaptor.h:
+
+	The first collision will be with SET_WATCHES_XID (-8): The reply to the request that happens to get tagged with -8 will be misinterpreted as a reply to SET_WATCHES. This causes the client to see a connection timeout.
+	The next collision will be with AUTH_XID (-4): At that point the client will segfault, when mis-interpreting the reply:
+
+
+
+#0  0x0000000000407645 in auth_completion_func (zh=0x61d010, rc=0) at src/zookeeper.c:1823
+ #1  zookeeper_process (zh=zh@entry=0x61d010, events=<optimized out>) at src/zookeeper.c:2896
+ #2  0x000000000040c34c in do_io (v=0x61d010) at src/mt_adaptor.c:451
+ #3  0x00007ffff7bc8dc5 in start_thread () from /lib64/libpthread.so.0
+ #4  0x00007ffff75f573d in clone () from /lib64/libc.so.6
+
+I hit this with a busy C client that runs for a very long time (months). Also, when a client spins in a tight loop trying to submit more operations even for a short period of time after a connection loss the xid values will increment very fast.
+
+ 
+
+Proposed patch:
+
+To avoid introducing any additional locking, this can be solved by just masking out the MSB in the xid returned by get_xid. Effectively this prevents the returned XID from ever going negative.
+
+To avoid a race when the static xid variable hits -1 eventually after a wrap, around, I propose to not initialize xid with the result of time(0) on startup. This is not needed. This also means that the get_xid function in mt_adapter.c no longer needs to be flagged as constructor.
+
+ Proposed patch is attached.
+
+ 
+
+I ran into this on zookeeper 3.5.4 but other versions are likely affected as well.

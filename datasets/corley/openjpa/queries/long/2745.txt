@@ -1,0 +1,55 @@
+On IBM WebSphere Server, which currently ships OpenJPA as our JPA 2.0 implementation provider, we are seeing the following FFDC exception:
+
+
+
+FFDC Exception:com.ibm.db2.jcc.am.SqlSyntaxErrorException SourceId:com.ibm.ws.rsadapter.jdbc.WSJdbcResultSet.getBlob ProbeId:754 Reporter:com.ibm.ws.rsadapter.jdbc.WSJccResultSet@a35b6d30
+com.ibm.db2.jcc.am.SqlSyntaxErrorException: [jcc][t4][1092][11643][4.19.49] Invalid data conversion: Wrong result column type for requested conversion. ERRORCODE=-4461, SQLSTATE=42815
+	at com.ibm.db2.jcc.am.kd.a(Unknown Source)
+	at com.ibm.db2.jcc.am.kd.a(Unknown Source)
+	at com.ibm.db2.jcc.am.kd.a(Unknown Source)
+	at com.ibm.db2.jcc.am.mc.V(Unknown Source)
+	at com.ibm.db2.jcc.am.ResultSet.getBlob(Unknown Source)
+	at com.ibm.ws.rsadapter.jdbc.WSJdbcResultSet.getBlob(WSJdbcResultSet.java:739)
+	at org.apache.openjpa.lib.jdbc.DelegatingResultSet.getBlob(DelegatingResultSet.java:588)
+	at org.apache.openjpa.jdbc.sql.DBDictionary.getBlob(DBDictionary.java:667)
+	at org.apache.openjpa.jdbc.sql.DB2Dictionary.getBytes(DB2Dictionary.java:1032)
+	at org.apache.openjpa.jdbc.sql.ResultSetResult.getBytesInternal(ResultSetResult.java:290)
+	at org.apache.openjpa.jdbc.sql.ResultSetResult.getObjectInternal(ResultSetResult.java:425)
+
+
+
+The reason for this exception is due to the implementation of org.apache.openjpa.jdbc.sql.DB2Dictionary.getBytes(ResultSet rs, int column):
+
+
+
+        // At this point we don't have any idea if the DB2 column was defined as
+        //     a blob or if it was defined as CHAR for BIT DATA.
+        // First try as a blob, if that doesn't work, then try as CHAR for BIT DATA
+        // If that doesn't work, then go ahead and throw the first exception
+        try {
+            Blob blob = getBlob(rs, column);
+            if (blob == null) {
+                return null;
+            }
+            
+            int length = (int) blob.length();
+            if (length == 0) {
+                return null;
+            }
+            
+            return blob.getBytes(1, length);
+        }
+        catch (SQLException e) {
+            try {
+                return rs.getBytes(column);
+            }
+            catch (SQLException e2) {
+                throw e;                
+            }
+        }
+
+
+
+With this implementation, if getBlob() throws an SQLException, then we attempt rs.getBytes(). However, on WebSphere, the exception has already been thrown and logged, regardless if getBytes() will end up working. This causes false FFDC exceptions for us. A better implementation would be to make the decision based on the column type and not a random guess-check.
+
+The thing is, the current implementation still works, but is not written in with the best performance. This change is just to streamline the implementation and shy away from the try-catch pattern. I am not including a test since existing tests should be sufficient to make sure this implementation doesnt change behavior. 

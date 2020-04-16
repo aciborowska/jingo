@@ -1,0 +1,50 @@
+Say we have 3 classes A, B and C with A referencing B and B referencing C. Both relations are marked as dependent. The following sequence will fail:
+
+        pm.currentTransaction().begin();
+
+        final A a = new A();
+        final B b = new B();
+        a.setB(b);
+
+        getPm().makePersistent(a);
+
+        a.setB(null);
+
+        pm.currentTransaction().commit();
+
+
+Upon committing we get:
+
+Exception in thread "main" <openjpa-1.0.0-r420667:568756 nonfatal store error> kodo.jdo.DataStoreException: null
+	at org.apache.openjpa.kernel.BrokerImpl.beforeCompletion(BrokerImpl.java:1770)
+	at org.apache.openjpa.kernel.LocalManagedRuntime.commit(LocalManagedRuntime.java:81)
+	at org.apache.openjpa.kernel.BrokerImpl.commit(BrokerImpl.java:1292)
+	at kodo.kernel.KodoBroker.commit(KodoBroker.java:103)
+	at org.apache.openjpa.kernel.DelegatingBroker.commit(DelegatingBroker.java:861)
+	at kodo.jdo.PersistenceManagerImpl.commit(PersistenceManagerImpl.java:394)
+	at business.Test.run(Test.java:61)
+	at business.Test.main(Test.java:68)
+NestedThrowablesStackTrace:
+java.lang.NullPointerException
+	at model.B.pcProvideField(B.java)
+	at org.apache.openjpa.kernel.StateManagerImpl.provideField(StateManagerImpl.java:2959)
+	at org.apache.openjpa.kernel.StateManagerImpl.fetchObjectField(StateManagerImpl.java:2201)
+	at org.apache.openjpa.kernel.StateManagerImpl.fetchField(StateManagerImpl.java:759)
+	at org.apache.openjpa.kernel.StateManagerImpl.cascadeDelete(StateManagerImpl.java:2816)
+	at org.apache.openjpa.kernel.BrokerImpl.deleteDeref(BrokerImpl.java:2056)
+	at org.apache.openjpa.kernel.BrokerImpl.flush(BrokerImpl.java:1894)
+	at org.apache.openjpa.kernel.BrokerImpl.flushSafe(BrokerImpl.java:1844)
+	at org.apache.openjpa.kernel.BrokerImpl.beforeCompletion(BrokerImpl.java:1762)
+	at org.apache.openjpa.kernel.LocalManagedRuntime.commit(LocalManagedRuntime.java:81)
+	at org.apache.openjpa.kernel.BrokerImpl.commit(BrokerImpl.java:1292)
+	at kodo.kernel.KodoBroker.commit(KodoBroker.java:103)
+	at org.apache.openjpa.kernel.DelegatingBroker.commit(DelegatingBroker.java:861)
+	at kodo.jdo.PersistenceManagerImpl.commit(PersistenceManagerImpl.java:394)
+	at business.Test.run(Test.java:61)
+	at business.Test.main(Test.java:68)
+
+
+
+From what I gathered, when "a" is made persistent, so is "b". Then "b" is dereferenced from "b". The fact that at that point both are persistent-new is important because committing immediately and unreferencing "b" in a new transaction where both are fully persistent would work. When committing, "b" is deleted because of its dependence on its relation with "a" (a preDelete callback would be called). And then "b"'s fields are browsed by openjpa to cascade delete from it. Its reference to an object of class C is found and "b"'s pcProvideField is called to see if there is indeed a C, but at that point "b" has already lost its StateManager which causes the NullPointerException.
+
+This seems to affect at least all the 1.0.x versions.

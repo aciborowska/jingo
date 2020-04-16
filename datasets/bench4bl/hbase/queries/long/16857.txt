@@ -1,0 +1,30 @@
+Steps to reproduce using phoenix (that's the easiest way to run a lot of parallel scans):
+1. Create table:
+
+
+
+create table "abc" (id bigint not null primary key, name varchar) salt_buckets=50; 
+
+
+
+2. set quota from hbase shell:
+
+
+
+set_quota TYPE => THROTTLE, TABLE => 'abc', LIMIT => '10G/sec' 
+
+
+
+3. in phoenix run 
+
+
+
+ select * from "abc"; 
+
+
+
+It will fail with ThrottlingException.
+Sometimes it requires to run it several times to reproduce.
+That happens because the logic in DefaultOperationQuota. First we run limiter.checkQuota where we may change available to Long.MAX_VALUE, after that we run limiter.grabQuota where we reduce available for 1000 (is it scan overhead or what?) and in close() we adding this 1000 back. 
+When number of parallel scans are executing there is a chance that one of the threads run limiter.checkQuota right before the second run close(). We get overflow and as the result available value becomes negative, so during the next check we just fail. 
+This behavior was introduced in HBASE-13686.

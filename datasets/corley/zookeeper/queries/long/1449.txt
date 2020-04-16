@@ -1,0 +1,67 @@
+I've been running in to this situation in our labs fairly regularly where we'll get a single follower that will be in an inconsistent state with dangling ephemeral znodes.  Here is all of the information that I have right now.  Please ask if there is anything else that is useful.
+
+Here is a quick snapshot of the state of the ensemble where you can see it is out of sync across several znodes: 
+
+-bash-3.2$ echo srvr | nc il23n04sa-zk001 2181
+Zookeeper version: 3.3.3-cdh3u2--1, built on 10/14/2011 05:17 GMT
+Latency min/avg/max: 0/7/25802
+Received: 64002
+Sent: 63985
+Outstanding: 0
+Zxid: 0x500000a41
+Mode: follower
+Node count: 497
+
+-bash-3.2$ echo srvr | nc il23n04sa-zk002 2181
+Zookeeper version: 3.3.3-cdh3u2--1, built on 10/14/2011 05:17 GMT
+Latency min/avg/max: 0/13/79032
+Received: 74320
+Sent: 74276
+Outstanding: 0
+Zxid: 0x500000a41
+Mode: leader
+Node count: 493
+
+-bash-3.2$ echo srvr | nc il23n04sa-zk003 2181
+Zookeeper version: 3.3.3-cdh3u2--1, built on 10/14/2011 05:17 GMT
+Latency min/avg/max: 0/2/25234
+Received: 187310
+Sent: 187320
+Outstanding: 0
+Zxid: 0x500000a41
+Mode: follower
+Node count: 493
+
+All of the zxids match up just fine but zk001 has 4 more nodes in its node count than the other two (including the leader..).  When I use a zookeeper client connect to connect directly to zk001 I can see the following znode that should no longer exist: 
+
+[zk: localhost:2181(CONNECTED) 0] stat /siri/Douroucouli/clients/il23n04sa-app004.siri.apple.com:38096
+cZxid = 0x40000001a
+ctime = Mon Apr 16 11:00:47 PDT 2012
+mZxid = 0x40000001a
+mtime = Mon Apr 16 11:00:47 PDT 2012
+pZxid = 0x40000001a
+cversion = 0
+dataVersion = 0
+aclVersion = 0
+ephemeralOwner = 0x236bc504cb50002
+dataLength = 0
+numChildren = 0
+
+This node does not exist using the client to connect to either of the other two members of the ensemble.
+
+I searched through the logs for that session id and it looks like it was established and closed cleanly.  There were several leadership/quorum problems during the course of the session but it looks like it should have been shut down properly.  Neither the session nor the znode show up in the "dump" on the leader but the problem znode does show up in the "dump" on zk001.
+
+2012-04-16 11:00:47,637 - INFO  [CommitProcessor:2:NIOServerCnxn@1580] - Established session 0x236bc504cb50002 with negotiated timeout 15000 for client /17.202.71.201:38971
+2012-04-16 11:20:59,341 - INFO  [NIOServerCxn.Factory:0.0.0.0/0.0.0.0:2181:NIOServerCnxn@770] - Client attempting to renew session 0x236bc504cb50002 at /17.202.71.201:50841
+2012-04-16 11:20:59,342 - INFO  [NIOServerCxn.Factory:0.0.0.0/0.0.0.0:2181:NIOServerCnxn@1580] - Established session 0x236bc504cb50002 with negotiated timeout 15000 for client /17.202.71.201:50841
+2012-04-16 11:21:09,343 - WARN  [NIOServerCxn.Factory:0.0.0.0/0.0.0.0:2181:NIOServerCnxn@634] - EndOfStreamException: Unable to read additional data from client sessionid 0x236bc504cb50002, likely client has closed socket
+2012-04-16 11:21:09,343 - INFO  [NIOServerCxn.Factory:0.0.0.0/0.0.0.0:2181:NIOServerCnxn@1435] - Closed socket connection for client /17.202.71.201:50841 which had sessionid 0x236bc504cb50002
+2012-04-16 11:21:20,352 - INFO  [QuorumPeer:/0:0:0:0:0:0:0:0:2181:NIOServerCnxn@1435] - Closed socket connection for client /17.202.71.201:38971 which had sessionid 0x236bc504cb50002
+2012-04-16 11:21:22,151 - INFO  [NIOServerCxn.Factory:0.0.0.0/0.0.0.0:2181:NIOServerCnxn@770] - Client attempting to renew session 0x236bc504cb50002 at /17.202.71.201:38166
+2012-04-16 11:21:22,152 - INFO  [QuorumPeer:/0:0:0:0:0:0:0:0:2181:NIOServerCnxn@1580] - Established session 0x236bc504cb50002 with negotiated timeout 15000 for client /17.202.71.201:38166
+2012-04-16 11:27:17,902 - INFO  [ProcessThread:-1:PrepRequestProcessor@387] - Processed session termination for sessionid: 0x236bc504cb50002
+2012-04-16 11:27:17,904 - INFO  [NIOServerCxn.Factory:0.0.0.0/0.0.0.0:2181:NIOServerCnxn@1435] - Closed socket connection for client /17.202.71.201:38166 which had sessionid 0x236bc504cb50002
+
+The only way I've been able to recover from this situation is to shut down the problem follower, delete its snapshots and let it resync with the leader.
+
+I'll attach the full log4j logs, the txn logs, the snapshots and the conf files for each member of the ensemble.  Please let me know what other information is useful.

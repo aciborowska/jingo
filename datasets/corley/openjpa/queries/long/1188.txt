@@ -1,0 +1,20 @@
+This JIRA is the result of a discussion on our users forum:
+http://n2.nabble.com/openJPA-generates-select-per-row---impossible-to-use-for-simple-select-statements-td3261512.html#a3261512
+
+Mikhail was very helpful (and patient) with helping to reproduce the problem.  I will be posting a testcase patch very soon.  The actual fix may be left up to a potential contributor or committer...  
+
+Requirements...
+
+o  Your Entity needs to have an attribute that OpenJPA wrappers with a proxy.  This proxy is used to detect changes to these object types.  Example object types that OpenJPA wrappers are Calendar (culprit for this scenario), Date, Collection, and Map.
+
+o  In the Setter method for the proxied attribute, you must modify the value getting set.  In this scenario, the Calendar object was being modified in the setDate method via the set() method.
+
+o  The Entity must be using property-based access (annotations on the Getter methods).
+
+o  The Persistence Context must be clear of any Entities that are being queried.  For example, my testcase was persisting several Entities before executing the Query that was supposedly generating the extra SQL statements.  If I didn't clear the Persistence Context before executing the Query, the Entities were already populated and it didn't trigger the extra SQL statements.
+
+o  And, now comes the magic...    Access to the attribute's meta data seems to be done alphabetically.  From what I can tell, this seems to be a Java format convention.  In any case, the extra SQL statements are used to re-populate any attributes that are alphabetically after the proxied attribute that was modified in the corresponding Setter method.
+
+Given all of that setup, here's an explanation of what's happening...
+
+After the initial query is executed, the resulting Entity objects need to be populated with the data returned by the query.  When the setter was called for this proxied attribute, and the value was modified, this attribute (and the Entity) was marked as being "dirty".  Part of the dirty processing is to determine which fields need to be re-loaded.  Of course, the proxied attribute does not have to be re-loaded since it was in the process of being modified.  The id field does not have to re-loaded since we're using id generation for this particular scenario.  And, any fields that are alphabetically before the proxied attribute were just loaded, so they don't have to be re-loaded.  But, any fields that come after the proxied attribute (alphabetically) don't realize that they will be loaded (due to the original query), so the extra SQL is pushed out to load these fields.

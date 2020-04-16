@@ -1,0 +1,54 @@
+i'm using openjpa-all-2.4.0 as my orm and slice solution.here is the scenario:
+two clients send http request to our backend api server.cient A's request was doing some crud operation  on db named 'pos' on a seprate mysql host instance(ip1),client B's request  was doing some report query and calculation on db named 'pos' on an another seprate mysql host(ip2) instance.
+and request A was sended later than request B about 1 min,but requst B was spending  lot time about 10 min,during this 10 min,request A was totally hanging there,until request A finished its job.
+
+so i debuged into the openjpa code ,found something:
+1 every brokerimpl is created from a template instance in Class BrokerValue:
+public Object newInstance(String clsName, Class type, Configuration conf,
+        boolean fatal) {
+        getTemplateBroker(clsName, type, conf, fatal);
+
+        try 
+{
+            return _templateBroker.clone();
+        }
+ catch (CloneNotSupportedException e) 
+{
+            throw new InternalException(e);
+        }
+    }
+
+the code "_templateBroker.clone()" makes every single DistributedBrokerimpl instance have a "_lock" prop point to the same instance (ReentrantSliceLock _lock).
+
+
+then when  do db operation like crud,the code get into DistributedQueryImpl.execute() method,in this method it invokes broker.beginOperation(true);
+
+   public boolean beginOperation(boolean syncTrans) {
+        lock();
+        try 
+{
+            assertOpen();
+
+            if (syncTrans && _operationCount == 0 && _syncManaged
+                && (_flags & FLAG_ACTIVE) == 0)
+                syncWithManagedTransaction();
+            return _operationCount++ == 1;
+        }
+ catch (OpenJPAException ke) 
+{
+            unlock();
+            throw ke;
+        }
+ catch (RuntimeException re) 
+{
+            unlock();
+            throw new GeneralException(re);
+        }
+    }
+
+the lock() method in this beginOperation() is using the _lock prop of DistributedBrokerImpl instance that cloned from the template instance,
+so every other thread will be blocked if there is a thread already call the lock() method in beginoperation().
+
+this is the root cause in my scenario.
+
+my quesion is : "_templateBroker.clone()" makes every DistributedBrokerImpl instance have a same "_lock" prop ,is it a bug or is there some intention for this use?

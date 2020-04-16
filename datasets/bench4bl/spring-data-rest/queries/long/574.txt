@@ -1,0 +1,214 @@
+I have a project like:
+
+
+
+
+
+
+@Entity
+
+
+
+
+public class Store {
+
+
+
+
+  @Id
+
+
+
+
+  public Long id;
+
+
+
+
+ 
+
+
+
+
+  @OneToMany 
+
+
+
+
+  @JsonIgnore
+
+
+
+
+  public Set<Hours> hours;
+
+
+
+
+  
+
+
+
+
+   @OneToMany
+
+
+
+
+   @JsonIgnore
+
+
+
+
+   public Set<HourOverrides> overrides;
+
+
+
+
+ 
+
+
+
+
+  public TodaysHours getTodaysHoursComputedValue() {
+
+
+
+
+      TodayHours todaysHours = //computation based on hours and overrides
+
+
+
+
+      return todaysHours;
+
+
+
+
+  }
+
+
+
+
+ 
+
+
+
+
+  public setTodaysHoursComputedValue() {
+
+
+
+
+  //Do nothing, just needed so that jackson has a corresponding setter to call, but value is discarded
+
+
+
+
+  }
+
+
+
+
+
+
+I have a separate manual controller that handles 
+
+
+
+
+
+/stores/{id}/hours
+
+
+
+
+
+ and lets your CRUD against a DTO containing both hours and overrides - so I do not want to expose those values directly on the Store, but i do want to expose a read-only version of the hours. 
+In DomainObjectReader there is the call to: 		
+
+
+
+
+
+
+final MappedProperties properties = getJacksonProperties(entity, mapper);
+
+
+
+
+
+ which returns all the properties jackson knows about. Then for each of those it calls:
+
+
+
+
+
+
+PersistentProperty<?> persistentProperty = entity.getPersistentProperty(property.getInternalName());
+
+
+
+
+
+
+which in the case of this, returns null as this is a COMPUTED value and doesn't map to a persisted entity. 
+The problem is that even though there IS no persistent property it adds the null to a couple of 
+
+
+
+
+
+propertyToFieldName.put(persistentProperty, property.getName());
+
+
+
+
+fieldNameToProperty.put(property.getName(), persistentProperty);
+
+
+
+
+
+ which are later dereferenced and leads to an NPE.
+
+
+
+
+
+
+Caused by: java.lang.NullPointerException
+
+
+
+
+	at org.springframework.data.mapping.model.BeanWrapper.getProperty(BeanWrapper.java:96) ~[spring-data-commons-1.11.0.M1.jar:?]
+
+
+
+
+	at org.springframework.data.rest.webmvc.json.DomainObjectReader.doMerge(DomainObjectReader.java:185) ~[spring-data-rest-webmvc-2.4.0.M1.jar:?]
+
+
+
+
+	at org.springframework.data.rest.webmvc.json.DomainObjectReader.merge(DomainObjectReader.java:136) ~[spring-data-rest-webmvc-2.4.0.M1.jar:?]
+
+
+
+
+	at org.springframework.data.rest.webmvc.json.DomainObjectReader.readPut(DomainObjectReader.java:130) ~[spring-data-rest-webmvc-2.4.0.M1.jar:?]
+
+
+
+
+	at org.springframework.data.rest.webmvc.config.JsonPatchHandler.applyPut(JsonPatchHandler.java:134) ~[spring-data-rest-webmvc-2.4.0.M1.jar:?]
+
+
+
+
+
+
+I believe the fix would be on DomainObjectReader.java:237 to add a null check before adding the nulls to those maps. 
+It seems like you should be able to have computed values in your response and to simply ignore them on the deserialization if the client happens to pass them. I know it's a bit of a hack in jackson to have a getter with an empty setter for computed properties - but this is getting full support in jackson 2.6 (https://github.com/FasterXML/jackson-databind/issues/95) - and i believe it's a valid use case. 
+Please let me know if you disagree, or if you know of any work arounds. 

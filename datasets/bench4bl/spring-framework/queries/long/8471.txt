@@ -1,0 +1,166 @@
+A less significant version of this problem has already been raised under SPR-5360 - a performance bottleneck affecting Wicket. However, the same issue causes a serious thread deadlock in our application, occasionally preventing application startup.
+The basic issue seems to be that DefaultSingletonBeanRegistry takes a global synchronization lock when creating a singleton bean. Here is the code in that class:
+
+
+
+
+
+
+	public Object getSingleton(String beanName, ObjectFactory singletonFactory) {
+
+
+
+
+		Assert.notNull(beanName, "'beanName' must not be null");
+
+
+
+
+		synchronized (this.singletonObjects) {
+
+
+
+
+			Object singletonObject = this.singletonObjects.get(beanName);
+
+
+
+
+			if (singletonObject == null) {
+
+
+
+
+			... stuff ...
+
+
+
+
+					singletonObject = singletonFactory.getObject();
+
+
+
+
+			... stuff ...
+
+
+
+
+	}
+
+
+
+
+
+
+The synchronized block (the same this.singletonObjects reference is used by all threads entering the method) means that Spring can only create singleton beans one at a time, regardless of their type (beanName). This clearly introduces a performance penalty if an application has a large number of singleton beans to construct, e.g. at startup.
+That is not the issue affecting our code, though. We see a deadlock, caused by the following two sets of behaviour:
+1. We have Spring-managed singleton beans which perform database access in their constructor (basically loading and caching configuration sets from the database). In order to do this they obtain database connections, which are pooled, with relatively small pool sizes. If a pooled connection is not available, the calling thread blocks and waits until one becomes free. This is usually not a problem since queries are small and rapid, so pool wait times are low, and the maximum pool size is sufficient to work the databasea at full capacity anyway.
+2. We also have non-Spring code doing database access. Such code obtains a database connection from the same pool, purely for the lifetime of running a query and processing a result set, so again very quick for almost cases in our system. But sometimes, whilst processing the result set, we need to use a Spring-managed bean, which may have singleton scope.
+You now have a deadlock - thread number one is trying to get a Spring-managed singleton bean, which is waiting for a JDBC connection in its constructor; thread number two is running database code which has the JDBC connection and is waiting to create a Spring-managed singleton of a completely different type. Both thread own the resource needed by the other, so will wait forever. (OK, if the database pool size is two or higher you need two or more threads in the second state, but this has happened to us in customer environments, in production).
+Obviously our application code is almost certainly less than ideal in how we use Spring, but it seems to me that we ought to be able to use Spring-managed beans which do database access in the manner I've described, without encountering unpleasant deadlocks such as this. Note that the problem is actually much more general than this particular example of database connections: if your singleton beans require any kind of global monitor, which is also used outside of the context of Spring, you have a deadlock condition.
+Both the originally-reported performance problem, and this deadlock, could be solved by a simple improvement to  DefaultSingletonBeanRegistry. The getSingleton() method should not synchronize on a global monitor, but instead a monitor specific to the beanName you are instantiating. This is the correct level at which to lock - what you are trying to do is prevent a bean of a certain type being created more than once, but allowing two beans of different types to construct at the same time is perfectly reasonable. Of course you have to synchronize access to the underlying collections with a global lock, but the construction of the singleton bean does not need to be protected with the same global monitor. For instance I believe this kind of thing would do it:
+
+
+
+
+
+
+	public Object getSingleton(String beanName, ObjectFactory singletonFactory) {
+
+
+
+
+		Object bean;
+
+
+
+
+		Object perBeanMonitor;
+
+
+
+
+		synchronized (GLOBAL_MONITOR) {
+
+
+
+
+			perBeanMonitor = getPerBeanMonitor(beanName);
+
+
+
+
+		}
+
+
+
+
+		synchronized (perBeanMonitor) {
+
+
+
+
+			synchronized (GLOBAL_MONITOR) {
+
+
+
+
+				bean = getBeanFromRegistry(beanName);
+
+
+
+
+			}
+
+
+
+
+			if (bean==null) {
+
+
+
+
+				Object bean = doConstructBean(beanName, singletonFactory);
+
+
+
+
+				synchronized (GLOBAL_MONITOR) {
+
+
+
+
+					addToRegistry(beanName, bean);
+
+
+
+
+				}
+
+
+
+
+			}
+
+
+
+
+		}
+
+
+
+
+		return bean;
+
+
+
+
+	}
+
+
+
+
+
+
+It would be extremely helpful if this approach could be implemented in this core part of the Spring framework. We rely on singleton construction to be performant and thread-safe; the fact that DefaultSingletonBeanRegistry behaves as it currently does is causing us serious production problems at client sites, and, whilst we can modify our application code to work around the issue, I do see this as a fundamental flaw in Spring - would be nice to get a quick fix please.

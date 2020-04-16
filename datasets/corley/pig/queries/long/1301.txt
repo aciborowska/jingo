@@ -1,0 +1,58 @@
+I just upgraded to pig 0.6.0.
+
+I have a pig file like
+raw = load 'foo.csv' using PigStorage() as (field1:chararray, field2:chararray);
+
+define contains com.mycompany.pig.Contains();
+
+rawactions = foreach raw generate contains(field1, field2) as junk,  field1;
+
+reqcnt = foreach rawactions generate field1;
+
+dump reqcnt
+
+When I try to run this code, I get an error:
+Problem with input: (Name: Project 1-40 Projections: [1] Overloaded: false Operator Key: 1-40) of User-defined function: (Name: UserFunc 1-39 function: com.mycompany.pig.Contains Operator Key: 1-39)
+Thrown from line 98 of LOUserFunction.java
+
+This was caused by another FrontEndException 
+Attempt to access field: 1 from schema: 
+{field1: chararray}
+from Schema.java
+
+I also investigated changing the pig code
+if you change
+rawactions = foreach raw generate contains(field1, field2) as junk,  field1;
+
+to either
+rawactions = foreach raw generate contains(field2, field2) as junk,  field1;
+or
+rawactions = foreach raw generate contains(field2, field2) as junk,  field1;
+
+or if you change
+reqcnt = foreach rawactions generate field1;
+to
+reqcnt = foreach rawactions generate field1, junk;
+
+It all works correctly.
+
+The problem appears to be that it prunes out field2, but then gets confused and does not prune out the plan associated with the UDF contains, since field1 is not pruned.  So if the UDF only references field2 it will get removed, if it only references field1 the field will have not been pruned and it can run.
+
+I eventually tracked this down to the code around 947 of LOForEach.java
+            for (LOProject loProject : projectFinder.getProjectSet()) {
+                Pair<Integer, Integer> pair = new Pair<Integer, Integer>(0,
+                        loProject.getCol());
+                if (!columns.contains(pair)) 
+{
+                    allPruned = false;
+                    break;
+                }
+            }
+            if (allPruned) 
+{
+                planToRemove.add(i);
+            }
+
+In the example pig, allPruned is false for the plan associated the UDF.  This is because field1 is both a column for the UDF and for the ForEach in general.  Since field1 is not pruned, the plan is not removed and bad things happen later.
+
+I don't really understand the pruning code all that well, so I don't have a fix for it.  I hope that it will be clear to someone who understands this code better.  I can provide a better test case for this if necessary.

@@ -1,0 +1,26 @@
+the trunc code (from ZOOKEEPER-1154?) cannot work correct if the snapshot is not correct.
+here is scenario(similar to 1154):
+Initial Condition
+1.	Lets say there are three nodes in the ensemble A,B,C with A being the leader
+2.	The current epoch is 7. 
+3.	For simplicity of the example, lets say zxid is a two digit number, with epoch being the first digit.
+4.	The zxid is 73
+5.	All the nodes have seen the change 73 and have persistently logged it.
+Step 1
+Request with zxid 74 is issued. The leader A writes it to the log but there is a crash of the entire ensemble and B,C never write the change 74 to their log.
+Step 2
+A,B restart, A is elected as the new leader,  and A will load data and take a clean snapshot(change 74 is in it), then send diff to B, but B died before sync with A. A died later.
+Step 3
+B,C restart, A is still down
+B,C form the quorum
+B is the new leader. Lets say B minCommitLog is 71 and maxCommitLog is 73
+epoch is now 8, zxid is 80
+Request with zxid 81 is successful. On B, minCommitLog is now 71, maxCommitLog is 81
+Step 4
+A starts up. It applies the change in request with zxid 74 to its in-memory data tree
+A contacts B to registerAsFollower and provides 74 as its ZxId
+Since 71<=74<=81, B decides to send A the diff. 
+Problem:
+The problem with the above sequence is that after truncate the log, A will load the snapshot again which is not correct.
+
+In 3.3 branch, FileTxnSnapLog.restore does not call listener(ZOOKEEPER-874), the leader will send a snapshot to follower, it will not be a problem.

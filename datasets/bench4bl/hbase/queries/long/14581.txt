@@ -1,0 +1,65 @@
+When the master process or region server process dies on Linux, we invoke:
+
+
+
+  if [ -f ${HBASE_ZNODE_FILE} ]; then
+
+    if [ "$command" = "master" ]; then
+
+      $bin/hbase master clear > /dev/null 2>&1
+
+    else
+
+      #call ZK to delete the node
+
+      ZNODE=`cat ${HBASE_ZNODE_FILE}`
+
+      $bin/hbase zkcli delete ${ZNODE} > /dev/null 2>&1
+
+    fi
+
+    rm ${HBASE_ZNODE_FILE}
+
+  fi
+
+
+
+We delete its znode from the process which started the server JVM for faster crash recovery.
+In secure deployment however, the second process does not authenticate to zookeeper properly and fails to delete the znode: 
+
+
+
+2015-06-11 11:05:06,238 WARN  [main-SendThread(ip-172-31-32-230.ec2.internal:2181)] client.ZooKeeperSaslClient: Could not login: the client is being asked for a password, but the Zookeeper client code does not currently support obtaining a password from the user. Make sure that the client is configured to use a ticket cache (using the JAAS config
+
+2015-06-11 11:05:06,248 WARN  [main-SendThread(ip-172-31-32-230.ec2.internal:2181)] zookeeper.ClientCnxn: SASL configuration failed: javax.security.auth.login.LoginException: No password provided Will continue connection to Zookeeper server without SASL authentication, if Zookeeper server allows it.
+
+2015-06-11 11:05:06,251 INFO  [main-SendThread(ip-172-31-32-230.ec2.internal:2181)] zookeeper.ClientCnxn: Opening socket connection to server ip-172-31-32-230.ec2.internal/172.31.32.230:2181
+
+2015-06-11 11:05:06,263 INFO  [main-SendThread(ip-172-31-32-230.ec2.internal:2181)] zookeeper.ClientCnxn: Socket connection established to ip-172-31-32-230.ec2.internal/172.31.32.230:2181, initiating session
+
+2015-06-11 11:05:06,294 INFO  [main-SendThread(ip-172-31-32-230.ec2.internal:2181)] zookeeper.ClientCnxn: Session establishment complete on server ip-172-31-32-230.ec2.internal/172.31.32.230:2181, sessionid = 0x14de1dd0f3200cf, negotiated timeout = 40000
+
+2015-06-11 11:05:06,664 WARN  [main] util.HeapMemorySizeUtil: hbase.regionserver.global.memstore.upperLimit is deprecated by hbase.regionserver.global.memstore.size
+
+2015-06-11 11:05:09,070 WARN  [main] zookeeper.ZooKeeperNodeTracker: Can't get or delete the master znode
+
+org.apache.zookeeper.KeeperException$NoAuthException: KeeperErrorCode = NoAuth for /hbase-secure/master
+
+  at org.apache.zookeeper.KeeperException.create(KeeperException.java:113)
+
+  at org.apache.zookeeper.KeeperException.create(KeeperException.java:51)
+
+  at org.apache.zookeeper.ZooKeeper.delete(ZooKeeper.java:873)
+
+  at org.apache.hadoop.hbase.zookeeper.RecoverableZooKeeper.delete(RecoverableZooKeeper.java:179)
+
+  at org.apache.hadoop.hbase.zookeeper.ZKUtil.deleteNode(ZKUtil.java:1345)
+
+  at org.apache.hadoop.hbase.zookeeper.MasterAddressTracker.deleteIfEquals(MasterAddressTracker.java:270)
+
+  at org.apache.hadoop.hbase.ZNodeClearer.clear(ZNodeClearer.java:149)
+
+
+
+This is due to REGIONSERVER_OPTS / HBASE_MASTER_OPTS not being passed for invoking the zkcli command.
+Thanks to Enis who spotted the issue.

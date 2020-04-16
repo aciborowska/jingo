@@ -1,0 +1,25 @@
+There is a mess that you can get into with
+@EnableGlobalMethodSecurity. This annotation
+lead to registration of an InfrastructureAdvisorAutoProxyCreator
+which is responsible for locating the `Advisor` bean that provides the
+enabled feature. The mess is caused by aggressive bean instantiation
+in that component which can cause cascades of unsafe bean instantation
+in the middle of the bean post-processing phase of the
+ApplicationContext lifecycle (which is very early and quite
+fragile). 
+The net result is bad in two ways.
+1. Some beans end up uninitialized, or un-postprocessed, which is a
+situation that Spring anticipates (since it logs the beans that are
+screwed up in a BeanPostProcessorChecker at INFO level, this is
+plain to see for most users), but the side effects can be subtle.
+2. Any bean which is accidentally instantiated in this phase and tries
+to publish an ApplicationEvent is in for a nasty shock: the
+ApplicationContext is not ready for them yet and will barf in an
+ugly and confusing way, saying that it is not yet "refreshed".
+Things are bad with @EnableGlobalMethodSecurity} because its {{Advisor doesn't defer the
+instantiation of its dependencies. It needs an AuthenticationManager
+at runtime, and users can put the whole kitchen sink into their
+AuthenticationManager (e.g. JPA), so practically the whole bean
+registry can be aggressively instantiated by the user inadvertently
+(and reasonably) using Spring to configure his authentication
+requirements.

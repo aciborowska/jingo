@@ -1,0 +1,32 @@
+Maybe related to bug #192.
+SqlJobDao, configured with a DataSource pointing to an Oracle database, with the provided sql schema for table creation does not work properly, due to the datatype of SCHEDULE_DATE : passing a jobIdentifier with a java.util.Date containing non-0 milliseconds to dao.createJob() does create a record that cannot be requested using the dao.findJobs() with the same jobIdentifier.
+Here is a test case that shows this :
+    @Test
+    public void testSqlJobDao() throws Exception {
+        SqlJobDao dao = new SqlJobDao();
+        DriverManagerDataSource ds = new DriverManagerDataSource();
+        ds.setOracleDriver("oracle.jdbc.driver.OracleDriver");
+        ds.setUrl("url");
+        ds.setUsername("user");
+        ds.setPassword("password");
+        JdbcTemplate jdbc = new JdbcTemplate(ds);
+        dao.setJdbcTemplate(jdbc);
+        dao.setJobIncrementer(new OracleSequenceMaxValueIncrementer(ds, "sequence_name"));
+        ScheduledJobIdentifierFactory factory = new ScheduledJobIdentifierFactory();
+        JobIdentifier jobId = factory.getJobIdentifier("name");
+        JobInstance instance = dao.createJob(jobId);
+        try 
+{
+            assertEquals(1, dao.findJobs(jobId).size());
+        }
+ finally {
+            String sql = "delete from job where id = ?";
+            jdbc.update(sql, new Object[] 
+{ instance.getId() }
+);
+        }
+    }
+There are 2 affordable solutions to solve this :
+1. in SqlJobDao, both createJob() and findJob() (and maybe other methods) can specify the argTypes arguments to JdbcTemplate.query() and JdbcTemplate.update() and specify Types.DATE for scheduleDate argument
+2. in JOB table, specify the SCHEDULE_DATE as TIMESTAMP
+I personnally changed the JOB table schema, as it does not imply a java code change.

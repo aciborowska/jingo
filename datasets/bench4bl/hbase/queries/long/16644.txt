@@ -1,0 +1,107 @@
+There seems to be a regression in branch 1.3 where we can't read HFile trailer(getting "CorruptHFileException: Problem reading HFile Trailer") on some HFiles that could be successfully read on 1.2.
+I've seen this error manifesting in two ways so far.
+
+Caused by: org.apache.hadoop.hbase.io.hfile.CorruptHFileException: Problem reading HFile Trailer from file  <file name>
+
+	at org.apache.hadoop.hbase.io.hfile.HFile.pickReaderVersion(HFile.java:497)
+
+	at org.apache.hadoop.hbase.io.hfile.HFile.createReader(HFile.java:525)
+
+	at org.apache.hadoop.hbase.regionserver.StoreFile$Reader.<init>(StoreFile.java:1164)
+
+	at org.apache.hadoop.hbase.regionserver.StoreFileInfo.open(StoreFileInfo.java:259)
+
+	at org.apache.hadoop.hbase.regionserver.StoreFile.open(StoreFile.java:427)
+
+	at org.apache.hadoop.hbase.regionserver.StoreFile.createReader(StoreFile.java:528)
+
+	at org.apache.hadoop.hbase.regionserver.StoreFile.createReader(StoreFile.java:518)
+
+	at org.apache.hadoop.hbase.regionserver.HStore.createStoreFileAndReader(HStore.java:652)
+
+	at org.apache.hadoop.hbase.regionserver.HStore.access$000(HStore.java:117)
+
+	at org.apache.hadoop.hbase.regionserver.HStore$1.call(HStore.java:519)
+
+	at org.apache.hadoop.hbase.regionserver.HStore$1.call(HStore.java:516)
+
+	... 6 more
+
+Caused by: java.io.IOException: Invalid HFile block magic: \x00\x00\x04\x00\x00\x00\x00\x00
+
+	at org.apache.hadoop.hbase.io.hfile.BlockType.parse(BlockType.java:155)
+
+	at org.apache.hadoop.hbase.io.hfile.BlockType.read(BlockType.java:167)
+
+	at org.apache.hadoop.hbase.io.hfile.HFileBlock.<init>(HFileBlock.java:344)
+
+	at org.apache.hadoop.hbase.io.hfile.HFileBlock$FSReaderImpl.readBlockDataInternal(HFileBlock.java:1735)
+
+	at org.apache.hadoop.hbase.io.hfile.HFileBlock$FSReaderImpl.readBlockData(HFileBlock.java:1558)
+
+	at org.apache.hadoop.hbase.io.hfile.HFileBlock$AbstractFSReader$1.nextBlock(HFileBlock.java:1397)
+
+	at org.apache.hadoop.hbase.io.hfile.HFileBlock$AbstractFSReader$1.nextBlockWithBlockType(HFileBlock.java:1405)
+
+	at org.apache.hadoop.hbase.io.hfile.HFileReaderV2.<init>(HFileReaderV2.java:156)
+
+	at org.apache.hadoop.hbase.io.hfile.HFile.pickReaderVersion(HFile.java:485)
+
+
+
+and second
+
+
+
+Caused by: org.apache.hadoop.hbase.io.hfile.CorruptHFileException: Problem reading HFile Trailer from file <file path>
+
+	at org.apache.hadoop.hbase.io.hfile.HFile.pickReaderVersion(HFile.java:497)
+
+	at org.apache.hadoop.hbase.io.hfile.HFile.createReader(HFile.java:525)
+
+	at org.apache.hadoop.hbase.regionserver.StoreFile$Reader.<init>(StoreFile.java:1164)
+
+	at org.apache.hadoop.hbase.io.HalfStoreFileReader.<init>(HalfStoreFileReader.java:104)
+
+	at org.apache.hadoop.hbase.regionserver.StoreFileInfo.open(StoreFileInfo.java:256)
+
+	at org.apache.hadoop.hbase.regionserver.StoreFile.open(StoreFile.java:427)
+
+	at org.apache.hadoop.hbase.regionserver.StoreFile.createReader(StoreFile.java:528)
+
+	at org.apache.hadoop.hbase.regionserver.StoreFile.createReader(StoreFile.java:518)
+
+	at org.apache.hadoop.hbase.regionserver.HStore.createStoreFileAndReader(HStore.java:652)
+
+	at org.apache.hadoop.hbase.regionserver.HStore.access$000(HStore.java:117)
+
+	at org.apache.hadoop.hbase.regionserver.HStore$1.call(HStore.java:519)
+
+	at org.apache.hadoop.hbase.regionserver.HStore$1.call(HStore.java:516)
+
+	... 6 more
+
+Caused by: java.io.IOException: Premature EOF from inputStream (read returned -1, was trying to read 10083 necessary bytes and 24 extra bytes, successfully read 1072
+
+	at org.apache.hadoop.hbase.io.hfile.HFileBlock.readWithExtra(HFileBlock.java:737)
+
+	at org.apache.hadoop.hbase.io.hfile.HFileBlock$AbstractFSReader.readAtOffset(HFileBlock.java:1459)
+
+	at org.apache.hadoop.hbase.io.hfile.HFileBlock$FSReaderImpl.readBlockDataInternal(HFileBlock.java:1712)
+
+	at org.apache.hadoop.hbase.io.hfile.HFileBlock$FSReaderImpl.readBlockData(HFileBlock.java:1558)
+
+	at org.apache.hadoop.hbase.io.hfile.HFileBlock$AbstractFSReader$1.nextBlock(HFileBlock.java:1397)
+
+	at org.apache.hadoop.hbase.io.hfile.HFileBlock$AbstractFSReader$1.nextBlockWithBlockType(HFileBlock.java:1405)
+
+	at org.apache.hadoop.hbase.io.hfile.HFileReaderV2.<init>(HFileReaderV2.java:156)
+
+	at org.apache.hadoop.hbase.io.hfile.HFile.pickReaderVersion(HFile.java:485)
+
+
+
+In my case this problem was reproducible by running `hbase hfile -m  -f` command. There seem to be two changes in behavior introduced by HBASE-15477 (cc stack).
+One is that HFileBlock#getOnDiskSizeWithHeader always assumes that checksum verification is true (this behavior results in onDiskSizeWithHeader being calculated differently in 1.2 and 1.3 for some cases).
+Second is that in HFileBlock constructor we always attempt to retrive checksum-related fields from the header even if no checksum verification is going on.
+Attached is the patch which when applied allows 1.3 to read again the same HFiles.

@@ -1,0 +1,32 @@
+Was looking at an issue from our internal testing. It seems the Deletes of the region rows from the meta done during the merge transaction could be eclipsed by the Put of a region row that might have happened moments before.
+The master logs this for the merge:
+
+2015-06-18 13:13:46,018 INFO  [AM.ZK.Worker-pool2-t12] master.AssignmentManager: Handled MERGED event; merged=IntegrationTestIngest,a666665c,1434633226681.0927319db6bf5e128e3bec2a420819aa., region_a=IntegrationTestIngest,a666665c,1434631353820.8b911862d7705ac808b8d132d0154c16., region_b=IntegrationTestIngest,acccccc2,1434631353820.1bdaf759862f45d133ef77fdbda21aec., on ddas-2-5.openstacklocal,16020,1434632778438
+
+
+
+One of the regions that got merged got Opened a few seconds back:
+
+2015-06-18 13:13:46,591 INFO  [RS_OPEN_REGION-ddas-2-5:16020-1] regionserver.HRegion: Onlined 1bdaf759862f45d133ef77fdbda21aec; next sequenceid=182988
+
+
+
+The above would have done a Put in the meta.
+Looking at the raw scan of the meta, for the new merged region, the creation timestamp is 1434633226101:
+
+ IntegrationTestIngest,a666665c,1434633226681.0927319db6bf5e128e3bec2a420819aa. column=info:regioninfo, timestamp=1434633226101, value={ENCODED => 0927319db6bf5e128e3bec2a420819aa, NAME => 'IntegrationTestIngest,a666665c,1434633226681.0927319db6bf5e128e3bec2a420819aa.', STARTKEY => 'a666665c', ENDKEY => 'b3333328'}
+
+
+
+Looking at the raw scan of the meta, the timestamp for the region open of the already merged region is 1434633226600. This is a little after the merge transaction's timestamp.
+
+IntegrationTestIngest,acccccc2,1434631353820.1bdaf759862f45d133ef77fdbda21aec. column=info:seqnumDuringOpen, timestamp=1434633226600, value=\x00\x00\x00\x00\x00\x02\xCA\xCC
+
+ IntegrationTestIngest,acccccc2,1434631353820.1bdaf759862f45d133ef77fdbda21aec. column=info:server, timestamp=1434633226600, value=ddas-2-5.openstacklocal:16020
+
+ IntegrationTestIngest,acccccc2,1434631353820.1bdaf759862f45d133ef77fdbda21aec. column=info:serverstartcode, timestamp=1434633226600, value=1434632778438
+
+
+
+We need to fix it so that the merge region transaction also takes the master's timestamp. Similar to HBASE-13875.
+When this happens, clients start to see a row in the meta with an empty HRegionInfo (this is because the Put done during the region open only updates the location information but not the HRI, and the HRI deleted during the merge transaction "remains deleted").

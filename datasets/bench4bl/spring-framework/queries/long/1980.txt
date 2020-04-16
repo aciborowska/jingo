@@ -1,0 +1,46 @@
+Hi,
+I think I found a bug with Spring's aspects.
+Actually I wanted to inject a HibernateDAO in a Spring aspect.
+My HibernateDAO implements a JobDAO interface.
+The hibernateDAO also extends HibernateDaoSupport and I made it transactional
+with the configuration below. The problem is that if the DAO is used a property
+in an aspect, it looses its transactional "aspect". Below, if i comment out
+the section with beforeAdviceJobAuth bean and jobAuthorizationAspect,
+my DAO is transactional, Hibernate session is flushed, transaction is committed.
+If I uncomment the declarations of the beans (beforeAdviceJobAuth bean and jobAuthorizationAspect)
+like below, the DAO is not transactional anymore.
+Hibernate session is flushed when a method of the HibernateDAO ends but transaction
+is never commited (or rollbacked). 
+I think it is linked to the fact the DAO is injected in a Spring aspect and therefore proxied and
+I don't know why but it looses its transaction behaviour.
+    ...
+    <bean id="hibernatebaseDao" abstract="true">
+        <property name="sessionFactory" ref="sessionFactory"/>
+    </bean>
+    <bean id="jobDAO" parent="hibernatebaseDao" class="com.fis.integ2.dao.hibernate.HibernateJobDAO"/>
+    <aop:config>
+  		<aop:advisor pointcut="execution(* ..JobDAO.(..))"
+               advice-ref="txAdvice"/>
+	</aop:config>
+	<tx:advice id="txAdvice" transaction-manager="transactionManager">
+		<tx:attributes>
+	    	<tx:method name="insert*"/>
+	    	<tx:method name="update*"/>
+	    	<tx:method name="delete*"/>
+	     	<tx:method name="*" read-only="true"/>
+	 	</tx:attributes>		
+	</tx:advice>
+        <!-- If commented out below the DAO works -->
+	<aop:config proxy-target-class="true">
+		  <aop:aspect id="beforeAdviceJobAuth" ref="jobAuthorizationAspect">
+		  	<aop:advice 
+				kind="before"
+				method="checkForAuthorization" arg-names="jobid"
+				pointcut="(execution(* com.fis.integ2.jobqueue.JobExecutorService.stopJob(..)) and args (jobid)) || ( execution(* com.fis.integ2.jobqueue.JobExecutorService.removeJob(..)) and args(jobid)) "/>
+		  </aop:aspect>
+	</aop:config>
+	<bean id="jobAuthorizationAspect" class="com.fis.integ2.security.JobAuthorizationAspect">
+		<property name="jobDAO">
+			<ref bean="jobDAO"/>
+		</property>
+	</bean>

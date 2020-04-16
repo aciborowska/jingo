@@ -1,0 +1,242 @@
+If sub selects are nested within another subselect the generated SQL in invalid.
+
+If you look at the generated SQL in the follow sample:
+In line 11 a wrong join (department t2) is generated and referenced in the where clause. Actually it should use department t1 (line 6) from the outer select.
+
+The entity classes and test code are at the end of the bug report.
+
+
+Sample:
+
+
+Given JPQL:
+     1	SELECT o
+     2	FROM Organisation o
+     3	WHERE 
+     4	  EXISTS (
+     5	    SELECT d 
+     6	    FROM Department d 
+     7	    WHERE
+     8	      o.organisation_id = d.organisation.organisation_id 
+     9	      AND EXISTS (
+    10	        SELECT m 
+    11	        FROM Member m 
+    12	        WHERE 
+    13	          d.department_id = m.department.department_id 
+    14	          AND m.member_name = :name
+    15	      )
+    16	  )
+
+
+Generated SQL (for Oracle 10g):
+     1	SELECT t0.organisation_id, t0.organisation_name 
+     2	FROM ORGANISATION t0 
+     3	WHERE (
+     4	  EXISTS (
+     5	    SELECT t1.department_id 
+     6	    FROM department t1 
+     7	    WHERE (
+     8	      t0.organisation_id = t1.organisation_id 
+     9	      AND EXISTS (
+    10	        SELECT t3.member_id 
+    11	        FROM department t2, member t3 
+    12	        WHERE (
+    13	          t2.department_id = t3.department_id 
+    14	          AND t3.member_name = ?
+    15	        )
+    16	      )
+    17	    )
+    18	  )
+    19	)
+
+
+
+Generated SQL (for Derby):
+     1	SELECT t0.organisation_id, t0.organisation_name 
+     2	FROM ORGANISATION t0 
+     3	WHERE (
+     4	  EXISTS (
+     5	    SELECT t4.department_id 
+     6	    FROM department t4 
+     7	    WHERE (
+     8	      t0.organisation_id = t1.organisation_id 
+     9	      AND EXISTS (
+    10	        SELECT t3.member_id 
+    11	        FROM department t1, department t2, member t3 
+    12	        WHERE (
+    13	          t2.department_id = t3.department_id 
+    14	          AND t3.member_name = ?
+    15	        )
+    16	      )
+    17	    )
+    18	  )
+    19	)
+
+
+
+
+Snippet used to call the test:
+
+=====
+            String query  = 
+                    "SELECT o" +
+                            " FROM Organisation o" +
+                            " WHERE " +
+                            "   EXISTS (" +
+                            "     SELECT d " +
+                            "     FROM Department d " +
+                            "     WHERE" +
+                            "       o.organisation_id = d.organisation.organisation_id " +
+                            "       AND EXISTS (" +
+                            "         SELECT m " +
+                            "         FROM Member m " +
+                            "         WHERE " +
+                            "           d.department_id = m.department.department_id " +
+                            "           AND m.member_name = :name" +
+                            "       )" +
+                            "  )";
+            EntityManager em = emf.createEntityManager();
+            Query q = em.createQuery(query);
+            q.setParameter("name", "xxx");
+
+            q.getResultList();
+=====
+
+
+The 3 entity classes used:
+
+===== Organisation.java =====
+package org.apache.openjpa.persistence.query;
+
+import javax.persistence.Entity;
+import javax.persistence.Id;
+import javax.persistence.Table;
+
+@Entity
+@Table(name="ORGANISATION")
+public class Organisation {
+
+    @Id 
+    private int organisation_id;
+    private String organisation_name;
+	public int getOrganisation_id() 
+{
+		return organisation_id;
+	}
+	public void setOrganisation_id(int organisation_id) 
+{
+		this.organisation_id = organisation_id;
+	}
+	public String getOrganisation_name() 
+{
+		return organisation_name;
+	}
+	public void setOrganisation_name(String organisation_name) 
+{
+		this.organisation_name = organisation_name;
+	}
+
+
+}
+===== END Organisation.java =====
+
+
+===== Department.java =====
+package org.apache.openjpa.persistence.query;
+
+import javax.persistence.Entity;
+import javax.persistence.FetchType;
+import javax.persistence.Id;
+import javax.persistence.JoinColumn;
+import javax.persistence.ManyToOne;
+import javax.persistence.Table;
+
+
+@Entity
+@Table(name="department")
+public class Department {
+
+    @Id 
+    private int department_id;
+	@ManyToOne(fetch=FetchType.LAZY)
+	@JoinColumn(name="organisation_id", nullable=false)
+    private Organisation organisation;
+    private String department_name;
+	public int getDepartment_id() 
+{
+		return department_id;
+	}
+	public void setDepartment_id(int department_id) 
+{
+		this.department_id = department_id;
+	}
+	public Organisation getOrganisation() 
+{
+		return organisation;
+	}
+	public void setOrganisation(Organisation organisation) 
+{
+		this.organisation = organisation;
+	}
+	public String getDepartment_name() 
+{
+		return department_name;
+	}
+	public void setDepartment_name(String department_name) 
+{
+		this.department_name = department_name;
+	}
+
+}
+===== END Department.java =====
+
+
+==== Member.java =====
+package org.apache.openjpa.persistence.query;
+
+import javax.persistence.Entity;
+import javax.persistence.FetchType;
+import javax.persistence.Id;
+import javax.persistence.JoinColumn;
+import javax.persistence.ManyToOne;
+import javax.persistence.Table;
+
+
+@Entity
+@Table(name="member")
+public class Member {
+
+    @Id 
+    private int member_id;
+	@ManyToOne(fetch=FetchType.LAZY)
+	@JoinColumn(name="department_id", nullable=false)
+    private Department department;
+    private String member_name;
+	public int getMember_id() 
+{
+		return member_id;
+	}
+	public void setMember_id(int member_id) 
+{
+		this.member_id = member_id;
+	}
+	public Department getDepartment() 
+{
+		return department;
+	}
+	public void setDepartment(Department department) 
+{
+		this.department = department;
+	}
+	public String getMember_name() 
+{
+		return member_name;
+	}
+	public void setMember_name(String member_name) 
+{
+		this.member_name = member_name;
+	}
+
+}
+
+=== END Member.java ===

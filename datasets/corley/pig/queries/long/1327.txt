@@ -1,0 +1,25 @@
+In a script with multiple JOIN and GROUP operations, the column pruner incorrectly removes some of the fields that it shouldn't. Here is a script that demonstrates the issue
+
+ = LOAD 'data1' USING PigStorage() AS (a:chararray, b:chararray, c:long);
+B = LOAD 'data2' USING PigStorage() AS (x:chararray, y:chararray, z:long);
+C = LOAD 'data3' using PigStorage() AS (d:chararray, e:chararray, f:chararray);
+
+join1 = JOIN B by x, A by a;
+filtered1 = FILTER join1  BY y == b;
+InterimData = FOREACH filtered1 GENERATE a, b, c, y, z;
+join2 = JOIN InterimData BY b LEFT OUTER, C BY d  PARALLEL 2;
+proj = FOREACH join2 GENERATE a,b,y,z,e,f;
+TopNPrj = FOREACH proj GENERATE a, (( e is not null and e != '') ? e : 'None') , z;
+TopNDataGrp = GROUP TopNPrj BY (a, e) PARALLEL 2;
+TopNDataSum = FOREACH TopNDataGrp GENERATE flatten(group) as (a, e), SUM(TopNPrj.z) as views;
+TopNDataRegrp = GROUP TopNDataSum BY (a) PARALLEL 2;
+TopNDataCount = FOREACH TopNDataRegrp 
+{ OrderedData = ORDER TopNDataSum BY views desc; LimitedData = LIMIT OrderedData 50; GENERATE LimitedData; }
+TopNData = FOREACH TopNDataCount GENERATE flatten($0) as (a, e, views);
+store TopNData into 'tmpTopN';
+TopNData_stored = load 'tmpTopN' as (a:chararray, b:chararray, c:long);
+joinTopNData = JOIN TopNData_stored BY (a,b) RIGHT OUTER, proj BY (a,b) PARALLEL 2;
+describe joinTopNData;
+STORE  joinTopNData  INTO 'output';
+
+The column 'f' from relation 'C' participating in the 2nd JOIN is missing from the final join ouput

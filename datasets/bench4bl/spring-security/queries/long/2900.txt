@@ -1,0 +1,81 @@
+Active-directory based login in my project works fine with version 3.2.5.
+With 3.2.6 it does not anymore, without any exception.
+I am using a "FilteringAuthenticationProvider" to decide if the AD-controller is hit with an auth. request or not. I will include the code here.
+<beans:bean id="filteringLdapProvider" class="com.example.FilteringAuthenticationProvider">
+	<beans:constructor-arg ref="adAuthenticationProvider" />
+</beans:bean>
+<authentication-manager alias="authenticationManager">
+	<authentication-provider ref="filteringLdapProvider" />
+	<authentication-provider user-service-ref="myUserDetailsService">
+		<password-encoder ref="passwordEncoder" />
+	</authentication-provider>
+</authentication-manager>
+<beans:bean id="adAuthenticationProvider" class="org.springframework.security.ldap.authentication.ad.ActiveDirectoryLdapAuthenticationProvider">
+	<beans:constructor-arg value="the.domain" />
+	<beans:constructor-arg value="ldap://the.host/" />
+</beans:bean>
+import javax.inject.Inject;
+import com.example.service.UserService;
+import org.apache.commons.lang3.StringUtils;
+import org.apache.commons.validator.GenericValidator;
+import org.apache.log4j.Logger;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.security.authentication.AuthenticationProvider;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.AuthenticationException;
+import org.springframework.security.web.authentication.WebAuthenticationDetails;
+import org.springframework.stereotype.Component;
+@Component
+public class FilteringAuthenticationProvider implements AuthenticationProvider {
+	// http://stackoverflow.com/questions/21381893/use-different-authenticationprovider-depending-on-username-and-remote-ip-address/
+	private static Logger			logger		= Logger.getLogger(FilteringAuthenticationProvider.class);
+	private AuthenticationProvider	delegate	= null;
+	@Inject
+	private UserService				userService;
+	public FilteringAuthenticationProvider() {
+	}
+	public FilteringAuthenticationProvider(final AuthenticationProvider delegate) 
+{
+		this.delegate = delegate;
+	}
+
+
+	@Override
+	public Authentication authenticate(final Authentication authentication) throws AuthenticationException {
+		final Object details = authentication.getDetails();
+		final String username = authentication.getPrincipal().toString();
+		String remoteAddress = null;
+		if (details instanceof WebAuthenticationDetails) 
+{
+			remoteAddress = ((WebAuthenticationDetails) details).getRemoteAddress();
+		}
+
+		if (matches(remoteAddress, username)) {
+			final boolean isWindowsLoginEnabled = userService.isWindowsLoginEnabled(username);
+			if (isWindowsLoginEnabled) 
+{
+				logger.info("Delegating user '" + username + "' to ActiveDirectoryLdapAuthenticationProvider");
+				return delegate.authenticate(authentication);
+			}
+ else 
+{
+				return null;
+			}
+		}
+		return null;
+	}
+	private boolean matches(final String remoteAddress, final String username) {
+		if (!GenericValidator.isEmail(username)) 
+{
+			return true;
+		}
+
+		return false;
+	}
+	@Override
+	public boolean supports(final Class<?> authentication) 
+{
+		return authentication.equals(UsernamePasswordAuthenticationToken.class);
+	}
+}

@@ -1,0 +1,36 @@
+Backgound: The name node (also a DataNode and RegionServer) in our cluster ran out of disk space.  I created some space, restarted HDFS and fsck reported corruption with an HBase file.  I cleared up that corruption and restarted HBase.  I was still unable to read anything from HBase even though HSFS was now healthy.
+The following was gather from the log files.  When HMaster starts up, it finds a region that is no good (Key: 17_125736271):
+2007-12-24 09:07:14,342 DEBUG org.apache.hadoop.hbase.HMaster: Current assignment of spider_pages,17_125736271,1198286140018 is no good
+HMaster then assigns this region to RegionServer X.60:
+2007-12-24 09:07:17,126 INFO org.apache.hadoop.hbase.HMaster: assigning region spider_pages,17_125736271,1198286140018 to server 10.100.11.60:60020
+2007-12-24 09:07:20,152 DEBUG org.apache.hadoop.hbase.HMaster: Received MSG_REPORT_PROCESS_OPEN : spider_pages,17_125736271,1198286140018 from 10.100.11.60:60020
+The RegionServer has trouble reading that region (from the RegionServer log on X.60); Note that the worker thread exits
+2007-12-24 09:07:22,611 DEBUG org.apache.hadoop.hbase.HStore: starting spider_pages,17_125736271,1198286140018/meta (2062710340/meta with reconstruction log: (/data/hbase1/hregion_2062710340/oldlogfile.log
+2007-12-24 09:07:22,620 DEBUG org.apache.hadoop.hbase.HStore: maximum sequence id for hstore spider_pages,17_125736271,1198286140018/meta (2062710340/meta) is 4549496
+2007-12-24 09:07:22,622 ERROR org.apache.hadoop.hbase.HRegionServer: error opening region spider_pages,17_125736271,1198286140018
+java.io.EOFException
+        at java.io.DataInputStream.readFully(DataInputStream.java:180)
+        at java.io.DataInputStream.readFully(DataInputStream.java:152)
+        at org.apache.hadoop.io.SequenceFile$Reader.init(SequenceFile.java:1383)
+        at org.apache.hadoop.io.SequenceFile$Reader.<init>(SequenceFile.java:1360)
+        at org.apache.hadoop.io.SequenceFile$Reader.<init>(SequenceFile.java:1349)
+        at org.apache.hadoop.io.SequenceFile$Reader.<init>(SequenceFile.java:1344)
+        at org.apache.hadoop.hbase.HStore.doReconstructionLog(HStore.java:697)
+        at org.apache.hadoop.hbase.HStore.<init>(HStore.java:632)
+        at org.apache.hadoop.hbase.HRegion.<init>(HRegion.java:288)
+        at org.apache.hadoop.hbase.HRegionServer.openRegion(HRegionServer.java:1211)
+        at org.apache.hadoop.hbase.HRegionServer$Worker.run(HRegionServer.java:1162)
+        at java.lang.Thread.run(Thread.java:619)
+2007-12-24 09:07:22,623 FATAL org.apache.hadoop.hbase.HRegionServer: Unhandled exception
+java.lang.NullPointerException
+        at org.apache.hadoop.hbase.HRegionServer.reportClose(HRegionServer.java:1095)
+        at org.apache.hadoop.hbase.HRegionServer.openRegion(HRegionServer.java:1217)
+        at org.apache.hadoop.hbase.HRegionServer$Worker.run(HRegionServer.java:1162)
+        at java.lang.Thread.run(Thread.java:619)
+2007-12-24 09:07:22,623 INFO org.apache.hadoop.hbase.HRegionServer: worker thread exiting
+The HMaster then tries to assign the same region to X.60 again and fails.  The HMaster tries to assign the region to X.31 with the same result (X.31 worker thread exits).
+The file it is complaining about, /data/hbase1/hregion_2062710340/oldlogfile.log, is a zero-length file in HDFS.  After deleting that file and restarting HBase, HBase appears to be back to normal.
+One thing I can't figure out is that the HMaster log show several entries after the worker thread on X.60 has exited suggesting that the RegionServer is talking with HMaster:
+2007-12-24 09:08:23,349 DEBUG org.apache.hadoop.hbase.HMaster: Received MSG_REPORT_PROCESS_OPEN : spider_pages,17_125736271,1198286140018 from 10.100.11.60:60020
+2007-12-24 09:10:29,543 DEBUG org.apache.hadoop.hbase.HMaster: Received MSG_REPORT_PROCESS_OPEN : spider_pages,17_125736271,1198286140018 from 10.100.11.60:60020
+There is no corresponding entry in the RegionServer's log.

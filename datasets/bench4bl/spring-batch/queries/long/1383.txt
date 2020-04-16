@@ -1,0 +1,40 @@
+The method onSkipInProcess in the SkipListener is not called. My application logs the step execution after each step:
+After: execution(execute) with: StepExecution: id=264, name=stage, status=COMPLETED, exitStatus=COMPLETED, readCount=28, filterCount=15, writeCount=13 readSkipCount=0, writeSkipCount=0, processSkipCount=15, commitCount=1, rollbackCount=0, exitDescription=
+I expected that the onSkipInProcess method should be called 15 times, but it is not. The listener class is defined as follows:
+public class CommandStepListener extends SkipListenerSupport<Command, Command> {
+   @Override
+    public void onSkipInProcess(Command item, Throwable t) 
+{
+         // some skip logic
+    }
+   @BeforeStep
+    public void initialize(StepExecution stepExecution) 
+{
+        // some initialization setup
+    }
+}
+The step definitions:
+<batch:step id="abstractStep" abstract="true">
+  <batch:tasklet job-repository="jobRepository" transaction-manager="transactionManager" allow-start-if-complete="false">
+  </batch:tasklet>
+</batch:step>
+<batch:job id="myJob" restartable="true">
+  <batch:step id="stage" next="operation" parent="abstractStep">
+    <batch:tasklet>
+      <batch:chunk reader="commandFileReader" processor="commandProcessor" writer="commandWriter" commit-interval="100" skip-limit="1000000" retry-limit="10">
+        <batch:skippable-exception-classes>org.springframework.batch.item.validator.ValidationException</batch:skippable-exception-classes>
+        <batch:retryable-exception-classes>java.io.IOException</batch:retryable-exception-classes>
+      </batch:chunk>
+      <batch:no-rollback-exception-classes>org.springframework.batch.item.validator.ValidationException</batch:no-rollback-exception-classes>
+      <batch:listeners>
+        <batch:listener ref="commandStepListener" />
+      </batch:listeners>
+   </batch:tasklet>
+  </batch:step>
+and processor definition is:
+<bean id="commandProcessor" scope="step" class="org.springframework.batch.item.validator.ValidatingItemProcessor">
+    <constructor-arg ref="commandValidator" />
+</bean>
+The commandValidator just throws the ValidationException if the processed command is invalid.
+The listener bean is registered, the initialize method is called. When I added onSkipInRead method to the listener and simulate error during command reading, the method was called. It seems that my setup is fine, but onSkipInProcess is not called 
+I also tried switch to pure annotation configuration with @OnSkipInProcess. The method is not called, also.

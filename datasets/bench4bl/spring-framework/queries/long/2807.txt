@@ -1,0 +1,28 @@
+Spring doesn't respect generics metadata for nested collection classes. For example, when a Map is within a Map, the key for the inner map is not respected and is set to a value of type string (instead of looking up the type from the method and using a property editor). 
+Here is a concrete example. We are creating a message passing class that receives a message with an optional payload and delivers it to a series of subscribers. It is kind of like the ApplicationEventMulticaster (we will probably later make it implement that) but it only sends the message to those who sign up for the certain type. For example, a class could sign up for save events of a certain type of persistent class. Instead of everyone hearing about it, only those who are interested get it. We want to set it all up in context files (because that is the best place for it since it wont couple things as tightly). The property that the listeners are set up with is below:
+	public void setReceivers(Map<Class, Map<Class, Set<NotificationReceiver>>> receivers) 
+{
+		this.receivers = receivers;
+	}
+
+The Map listed is organized by Notification class > Payload class > receivers. So we tried to set it up with a bean like follows:
+
+	<bean id="notifier" class="....Notifier">
+		<property name="receivers">
+			<map>
+				<entry key="com.some.package.SaveNotification">
+					<map>
+						<entry key="com.some.other.package.SomePersistentClass">
+							<set>
+								<ref bean="mySpecialNotificationListener"/>
+							</set>
+						</entry>
+					</map>
+				</entry>
+			</map>
+		</property>
+	</bean>
+
+This didn't, however, yield the expected results. We instead got the structure Map<Class, Map<String,Set<?>>>. This messed up the lookups on the objects. Although now we can work around the issue by using class names instead of the class objects themselves, it is not the desired implementation. This could also be worked around if we could specify maps and sets outside of beans and also be able to specify their key and value types. But that is also just a work around.
+I tried to make sense of the code to try and patch it, but it seems that the fix will be fairly involved and I am not familiar enough with the code. That said, it appears that the MethodParameter for the setter doesn't get passed along in TypeConverterDelegate. 
+One way to implement it might involve using the requiredType parameter in the function convertIfNecessary(String propertyName, Object oldValue, Object newValue, Class requiredType, PropertyDescriptor descriptor, MethodParameter methodParam). It appears that it might hold the "unwrapped type" that is needed to make and populate the map correctly. If convertToTypedMap took a Class instead of a MethodParameter, it might have the information necessary to make and populate the map as desired. 

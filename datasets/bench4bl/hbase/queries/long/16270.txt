@@ -1,0 +1,33 @@
+We have an HBase (1.1.2) production cluster with 58 region servers and a staging cluster with 6 region servers.
+For both clusters, we enabled region replicas with the following settings:
+hbase.regionserver.storefile.refresh.period = 0
+hbase.region.replica.replication.enabled = true
+hbase.region.replica.replication.memstore.enabled = true
+hbase.master.hfilecleaner.ttl = 3600000
+hbase.master.loadbalancer.class = org.apache.hadoop.hbase.master.balancer.StochasticLoadBalancer
+hbase.meta.replica.count = 3
+hbase.regionserver.meta.storefile.refresh.period = 30000
+hbase.region.replica.wait.for.primary.flush = true
+hbase.region.replica.storefile.refresh.memstore.multiplier = 4
+We then altered our HBase tables to have REGION_REPLICATION => 2
+Both clusters got into a state where a few region servers were spewing the following error below in the HBase logs.  In one instance the error occurred over 70K times.  At this time, these region servers would see 10x write traffic (the hadoop.HBase.RegionServer.Server.writeRequestCount metric) and in some instances would crash.
+At the same time, we would see secondary regions move and then go into the "reads are disabled" state for extended periods.  
+It appears there is a race condition where the DefaultMemStore::clearSnapshot method might be called more than once in succession. The first call would set snapshotId to -1, but the second call would throw an exception.  It seems the second call should just return if the snapshotId is already -1, rather than throwing an exception.
+Thu Jul 21 08:38:50 UTC 2016, RpcRetryingCaller
+{globalStartTime=1469090201543, pause=100, retries=35}
+, org.apache.hadoop.hbase.regionserver.UnexpectedStateException: org.apache.hadoop.hbase.regionserver.UnexpectedStateException: Current snapshot id is -1,passed 1469085004304
+        at org.apache.hadoop.hbase.regionserver.DefaultMemStore.clearSnapshot(DefaultMemStore.java:187)
+        at org.apache.hadoop.hbase.regionserver.HStore.updateStorefiles(HStore.java:1054)
+        at org.apache.hadoop.hbase.regionserver.HStore.access$500(HStore.java:128)
+        at org.apache.hadoop.hbase.regionserver.HStore$StoreFlusherImpl.replayFlush(HStore.java:2270)
+        at org.apache.hadoop.hbase.regionserver.HRegion.replayFlushInStores(HRegion.java:4487)
+        at org.apache.hadoop.hbase.regionserver.HRegion.replayWALFlushCommitMarker(HRegion.java:4388)
+        at org.apache.hadoop.hbase.regionserver.HRegion.replayWALFlushMarker(HRegion.java:4191)
+        at org.apache.hadoop.hbase.regionserver.RSRpcServices.doReplayBatchOp(RSRpcServices.java:776)
+        at org.apache.hadoop.hbase.regionserver.RSRpcServices.replay(RSRpcServices.java:1655)
+        at org.apache.hadoop.hbase.protobuf.generated.AdminProtos$AdminService$2.callBlockingMethod(AdminProtos.java:22255)
+        at org.apache.hadoop.hbase.ipc.RpcServer.call(RpcServer.java:2114)
+        at org.apache.hadoop.hbase.ipc.CallRunner.run(CallRunner.java:101)
+        at org.apache.hadoop.hbase.ipc.RpcExecutor.consumerLoop(RpcExecutor.java:130)
+        at org.apache.hadoop.hbase.ipc.RpcExecutor$1.run(RpcExecutor.java:107)
+        at java.lang.Thread.run(Thread.java:745)

@@ -1,0 +1,108 @@
+We have found out that online schema change and region merges may still cause issues about merged regions coming back online, and thus causing data loss. 
+Recently ITBLL failed reporting 800K missing rows out of 720M. We've been running this test for some extended period of time, and this is the first we are seeing it, meaning that it is more rare. But it is still concerning. 
+From master's log:
+The merge has happened:
+
+
+
+2014-04-16 18:26:37,247 INFO  [AM.ZK.Worker-pool2-t73] master.AssignmentManager: Handled MERGED event; merged=IntegrationTestBigLinkedList,\xB2\xFE\x03s,1397672795119.80159738a0167e20a2e29fb2c46702f2., 	
+
+	region_a=IntegrationTestBigLinkedList,\xB2\xFE\x03s,1397670978959.0ac116e4d7da87922d3a8f218ca21079., 
+
+	region_b=IntegrationTestBigLinkedList,\xB8\x03\x94\x15,1397672587456.1265d06478082ced65dd9a0c1c2b63c2., on hor13n03.gq1.ygridcore.net,60020,1397672668647
+
+
+
+The region server shows the merge is complete: 
+
+
+
+2014-04-16 18:26:37,352 INFO  [regionserver60020-merges-1397672794972] regionserver.RegionMergeRequest: Regions merged, hbase:meta updated, and report to master. region_a=IntegrationTestBigLinkedList,\xB2\xFE\x03s,1397670978959.0ac116e4d7da87922d3a8f218ca21079., region_b=IntegrationTestBigLinkedList,\xB8\x03\x94\x15,1397672587456.1265d06478082ced65dd9a0c1c2b63c2.. Region merge took 2sec
+
+
+
+The new region was online on the region server for some time: 
+
+
+
+2014-04-16 18:31:22,858 DEBUG [RS_OPEN_REGION-hor13n03:60020-1] handler.OpenRegionHandler: Opened IntegrationTestBigLinkedList,\xB2\xFE\x03s,1397672795119.80159738a0167e20a2e29fb2c46702f2. on hor13n03.gq1.ygridcore.net,60020,1397672668647
+
+
+
+Then the region server was killed around 2014-04-16 18:31:26,254. 
+The master started log splitting etc for the dead RS:
+
+
+
+2014-04-16 18:31:28,942 INFO  [MASTER_SERVER_OPERATIONS-hor13n02:60000-3] handler.ServerShutdownHandler: Splitting logs for hor13n03.gq1.ygridcore.net,60020,1397672668647 before assignment.
+
+..
+
+2014-04-16 18:31:40,887 INFO  [MASTER_SERVER_OPERATIONS-hor13n02:60000-3] master.RegionStates: Transitioned {80159738a0167e20a2e29fb2c46702f2 state=OPEN, ts=1397673082874, server=hor13n03.gq1.ygridcore.net,60020,1397672668647} to {80159738a0167e20a2e29fb
+
+2014-04-16 18:31:40,887 INFO  [MASTER_SERVER_OPERATIONS-hor13n02:60000-3] master.RegionStates: Offlined 80159738a0167e20a2e29fb2c46702f2 from hor13n03.gq1.ygridcore.net,60020,1397672668647
+
+
+
+But this region was not assigned again at all. Instead, the master restarted shortly after, and reassigned the regions that were merged already: 
+
+
+
+2014-04-16 18:34:02,569 INFO  [master:hor13n02:60000] master.ActiveMasterManager: Registered Active Master=hor13n02.gq1.ygridcore.net,60000,1397673241215
+
+...
+
+2014-04-16 18:34:10,412 INFO  [master:hor13n02:60000] master.AssignmentManager: Found regions out on cluster or in RIT; presuming failover
+
+2014-04-16 18:34:10,412 WARN  [master:hor13n02:60000] master.ServerManager: Expiration of hor13n03.gq1.ygridcore.net,60020,1397671753021 but server not online
+
+..
+
+2014-04-16 18:34:10,880 INFO  [MASTER_SERVER_OPERATIONS-hor13n02:60000-3] master.AssignmentManager: Bulk assigning 28 region(s) across 4 server(s), round-robin=true
+
+..
+
+2014-04-16 18:34:10,882 DEBUG [hor13n02.gq1.ygridcore.net,60000,1397673241215-GeneralBulkAssigner-1] zookeeper.ZKAssign: master:60000-0x2456a4863640255, quorum=hor13n04.gq1.ygridcore.net:2181,hor13n03.gq1.ygridcore.net:2181,hor13n20.gq1.ygridcore.net:2181, baseZNode=/hbase Async create of unassigned node 0ac116e4d7da8792..
+
+..
+
+2014-04-16 18:34:13,077 INFO  [AM.ZK.Worker-pool2-t7] master.RegionStates: Onlined 0ac116e4d7da87922d3a8f218ca21079 on hor13n04.gq1.ygridcore.net,60020,1397672685370
+
+
+
+Before the master went down, there were other logs that indicate something funky: 
+
+
+
+2014-04-16 18:32:42,113 DEBUG [hor13n02.gq1.ygridcore.net,60000,1397672191204-org.apache.hadoop.hbase.master.BulkReOpen-0] master.AssignmentManager: Starting unassign of IntegrationTestBigLinkedList,\xB2\xFE\x03s,1397670978959.0ac116e4d7da87922d3a8f218ca
+
+2014-04-16 18:32:42,113 INFO  [hor13n02.gq1.ygridcore.net,60000,1397672191204-org.apache.hadoop.hbase.master.BulkReOpen-0] master.AssignmentManager: Attempting to unassign {0ac116e4d7da87922d3a8f218ca21079 state=MERGED, ts=1397672797223, server=hor13n03.gq1.ygridcore.net,60020,1397672668647}, ignored
+
+
+
+This above log is due to bulk reopening because of online schema change: 
+
+
+
+2014-04-16 18:32:32,081 DEBUG [FifoRpcScheduler.handler1-thread-27] handler.TableEventHandler: Ignoring table not disabled exception for supporting online schema changes.
+
+2014-04-16 18:32:32,082 INFO  [FifoRpcScheduler.handler1-thread-27] handler.TableEventHandler: Handling table operation C_M_MODIFY_TABLE on table IntegrationTestBigLinkedList
+
+2014-04-16 18:32:32,150 DEBUG [FifoRpcScheduler.handler1-thread-27] util.FSTableDescriptors: Wrote descriptor into: hdfs://hor13n01.gq1.ygridcore.net:8020/apps/hbase/data/data/default/IntegrationTestBigLinkedList/.tabledesc/.tableinfo.0000000051
+
+2014-04-16 18:32:32,159 DEBUG [FifoRpcScheduler.handler1-thread-27] util.FSTableDescriptors: Deleted table descriptor at hdfs://hor13n01.gq1.ygridcore.net:8020/apps/hbase/data/data/default/IntegrationTestBigLinkedList/.tabledesc/.tableinfo.0000000050
+
+2014-04-16 18:32:32,159 INFO  [FifoRpcScheduler.handler1-thread-27] util.FSTableDescriptors: Updated tableinfo=hdfs://hor13n01.gq1.ygridcore.net:8020/apps/hbase/data/data/default/IntegrationTestBigLinkedList/.tabledesc/.tableinfo.0000000051
+
+2014-04-16 18:32:32,160 INFO  [FifoRpcScheduler.handler1-thread-27] handler.TableEventHandler: Bucketing regions by region server...
+
+2014-04-16 18:32:32,191 INFO  [FifoRpcScheduler.handler1-thread-27] handler.TableEventHandler: Skip {ENCODED => e81668b7b64a9c92dd3689db96a3adb0, NAME => 'IntegrationTestBigLinkedList,\xC0\x03O,1397669732121.e81668b7b64a9c92dd3689db96a3adb0.', STARTKEY =
+
+2014-04-16 18:32:32,191 INFO  [FifoRpcScheduler.handler1-thread-27] handler.TableEventHandler: Skip {ENCODED => a51376af5b2aaef5bde980d48b05d75d, NAME => 'IntegrationTestBigLinkedList,\xE8\x01\x99,,1397671676090.a51376af5b2aaef5bde980d48b05d75d.', STARTK
+
+2014-04-16 18:32:32,191 INFO  [FifoRpcScheduler.handler1-thread-27] handler.TableEventHandler: Reopening 51 regions on 5 region servers.
+
+
+
+My theory is that this may have left the regions in RIT state, and when the master was restarted it saw those in RIT and assigned. 
+Also notice that this is not an issue about a concurrent merge and online schema change that can be prevented with table locks. The merge happened minutes ago, however the online schema change still wanted to reassign the merged regions. 

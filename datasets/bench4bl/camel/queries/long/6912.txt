@@ -1,0 +1,88 @@
+I'm building my route like this:
+//context.setTracing(true);
+errorHandler(loggingErrorHandler("whatever").level(LoggingLevel.ERROR));
+from("direct:start").log("start:
+$
+{body}").to("seda:seda1?size=2&blockWhenFull=false").log("after: ${body}
+");
+When I run it and send it 3 messages the first 2 log ok (both "start" and
+"after"), but the 3rd message (which fills the seda queue and throws a
+"Queue full" exception) only shows up in a "start" log message, no
+exception is shown or delivered to my test code, and the route just shuts
+down with no ERROR log.
+However if I uncomment "context.setTracing(true)", then the 3rd message
+triggers my error handler and its "whatever" log message, along with a
+stack trace, etc.
+My understanding is that the "errorHandler(...)" call sets the error
+handler for the entire context.  So why doesn't it get triggered unless I
+turn on tracing?
+I've attached the entire junit-4 test.
+package xp;
+import static org.junit.Assert.*;
+import org.apache.camel.CamelContext;
+import org.apache.camel.LoggingLevel;
+import org.apache.camel.ProducerTemplate;
+import org.apache.camel.builder.ExchangeBuilder;
+import org.apache.camel.builder.RouteBuilder;
+import org.apache.camel.impl.DefaultCamelContext;
+import org.junit.After;
+import org.junit.Before;
+import org.junit.Test;
+public class ErrHandlingCamel
+{
+    private CamelContext context;
+    private ProducerTemplate template;
+    @Before
+    public void setUp() throws Exception
+    {
+        context = new DefaultCamelContext();
+        template = context.createProducerTemplate();
+        context.addRoutes(new RouteBuilder()
+        {
+            public void configure() throws Exception
+            {
+                // seda test, queue is full after 2 messages,
+                {
+                    //context.setTracing(true);
+                    errorHandler(loggingErrorHandler("whatever").level(LoggingLevel.ERROR));
+                    from("direct:start").log("start: $
+{body}").to("seda:seda1?size=2&blockWhenFull=false").log("after: ${body}
+");
+                }
+            }
+        });
+        context.start();
+    }
+    @After
+    public void tearDown() throws Exception
+    {
+
+        template.stop();
+
+        context.stop();
+
+    }
+
+    @Test
+    public void testErrHandling() throws Exception
+    {
+        try
+        {
+
+            for (int i = 0; i < 3; i++)
+
+                template.send("direct:start", ExchangeBuilder.anExchange(context).withBody("msg" + i).build());
+
+        }
+        catch (Exception ex)
+        {
+
+            System.err.println("test failed! caught exception:" + ex);
+
+            ex.printStackTrace(System.err);
+
+            fail();
+
+        }
+    }
+}

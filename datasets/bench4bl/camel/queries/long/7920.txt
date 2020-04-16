@@ -1,0 +1,94 @@
+I have a simple test case to demonstrate this issue. Here is the camel route:
+
+
+
+<camelContext xmlns="http://camel.apache.org/schema/blueprint">
+
+  <route id="testServiceRoute">
+
+      <from uri="cxf:bean:testServiceEndpoint"/>
+
+      <log message="Incoming Body:  ${body}"/>
+
+      <to uri="language:constant:classpath:OKResponse.xml"/>
+
+      <log message="Response Body before convert:  ${body}"/>
+
+      <convertBodyTo type="com.test.testservice.TestMessageResponse"/>
+
+      <log message="Response Body after convert:  ${body}"/>
+
+  </route>
+
+</camelContext>
+
+
+
+And the camel-cxf consumer endpoint:
+
+
+
+<cxf:cxfEndpoint id="testServiceEndpoint"
+
+                 address="/TestService/v1"
+
+                 wsdlURL="wsdl/TestService.wsdl"
+
+                 serviceName="s:TestServiceInterface"
+
+                 endpointName="s:TestServicePort"
+
+                 xmlns:s="http://test.com/TestService">
+
+        <cxf:properties>
+
+          <entry key="dataFormat" value="PAYLOAD"/>
+
+        </cxf:properties>
+
+</cxf:cxfEndpoint>
+
+
+
+I have explicitly set "dataFormat" to default PAYLOAD just for clarity purpose.
+In this simple camel route, I try to change the entire body to a String XML message. As a result, the client will get an empty response back (I mean an empty soap envelope). The reason is due to following method:
+org.apache.camel.component.cxf.DefaultCxfBinding.getBodyFromCamel:
+
+
+
+public static Object getBodyFromCamel(org.apache.camel.Message out,
+
+            DataFormat dataFormat) {
+
+        Object answer = null;
+
+        
+
+        if (dataFormat == DataFormat.POJO) {
+
+            answer = out.getBody();
+
+        } else if (dataFormat == DataFormat.PAYLOAD) {
+
+            answer = out.getBody(CxfPayload.class);
+
+        } else if (dataFormat.dealias() == DataFormat.RAW) {
+
+            answer = out.getBody(InputStream.class);
+
+        } else if (dataFormat.dealias() == DataFormat.CXF_MESSAGE) {
+
+            answer = out.getBody();
+
+        }
+
+        return answer;
+
+    }
+
+
+
+Obviously it will return a null object back because it tries to get a body of CxfPayload type. And I also know that above camel route will work fine if I use MESSAGE dataFormat instead.
+However, the strange behaviour aries if I refresh camel-jaxb bundle in Karaf container. The client will get a non-empty response from OKResponse.xml file and everything works fine now. It looks like that when I refreshed camel-jaxb bundle, camel-core's FallbackConverter kicked in and it helped CXF consumer to convert the payload object into POJO.
+If I refreshed camel-core bundle, then above test case would stop working and client would get an empty response (empty soap envelope) back, again. So it looks like that when camel-core bundle's was refreshed, it's new activator was not able to load converters from camel-jaxb bundle since the bundle was already there. So only refreshing of the camel-jaxb bundle would enable camel-core to load the FallbackConverter again, thus helps the test route to work. 
+I also tried to change "start-level" of the camel-jaxb bundle to a value much higher than '50', say '80', then it would work the most times. 

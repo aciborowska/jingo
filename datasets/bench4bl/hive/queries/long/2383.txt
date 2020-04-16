@@ -1,0 +1,605 @@
+The predicate pushdown optimizer starts at the topmost operators traverses the operator tree, at each stage collecting predicates to be pushed down.  At each operator, ive.ql.ppd.OpProcFactory.DefaultPPD.mergeWithChildrenPred is called, which merges the predicates of the children nodes into the current node.  The predicates are stored in hive.ql.ppd.ExprWalkerInfo.pushdownPreds as a map from the alias a predicate refers to (a predicate may only refer to one alias at a time as only such predicates can be pushed) to a list of such predicates.  Since at each stage the alias the predicate refers to may change (subqueries may change aliases), this is updated for each operator (hive.ql.ppd.ExprWalkerProcFactory.extractPushdownPreds is called which walks the ExprNodeDesc for each predicate). When a JoinOperator is encountered, mergeWithChildrenPred is passed an optional parameter "aliases" which contains a set of aliases that can be pushed per ansi semantics (see hive.ql.ppd.OpProcFactory.JoinPPD.getQualifiedAliases).  The part that is incorrect is that aliases are filtered in mergeWithChildrenPred before extractPushdownPreds is called, which associates the predicates with the correct alias in the current operator's context while the filtering should happen after.
+In test case Q2 below, when the predicate "a.bar=3" comes into the JoinOperator, the alias is "a" coming in so it is accepted for pushdown.  When brought into the JoinOperator's context, however, since the predicate refers to b.foo in the inner scope, we should not actually accept this for pushdown.
+With the test cases
+
+-- Q1: predicate should not be pushed on the right side of a left outer join (this is correct in trunk)
+
+explain
+
+SELECT a.foo as foo1, b.foo as foo2, b.bar
+
+FROM pokes a LEFT OUTER JOIN pokes2 b
+
+ON a.foo=b.foo
+
+WHERE b.bar=3;
+
+
+
+-- Q2: predicate should not be pushed on the right side of a left outer join (this is broken in trunk)
+
+explain
+
+SELECT * FROM
+
+    (SELECT a.foo as foo1, b.foo as foo2, b.bar
+
+    FROM pokes a LEFT OUTER JOIN pokes2 b
+
+    ON a.foo=b.foo) a
+
+WHERE a.bar=3;
+
+
+
+-- Q3: predicate should be pushed (this is correct in trunk)
+
+explain
+
+SELECT * FROM
+
+    (SELECT a.foo as foo1, b.foo as foo2, a.bar
+
+    FROM pokes a JOIN pokes2 b
+
+    ON a.foo=b.foo) a
+
+WHERE a.bar=3;
+
+
+
+The current output is
+
+hive> 
+
+    > -- Q1: predicate should not be pushed on the right side of a left outer join
+
+    > explain
+
+    > SELECT a.foo as foo1, b.foo as foo2, b.bar
+
+    > FROM pokes a LEFT OUTER JOIN pokes2 b
+
+    > ON a.foo=b.foo
+
+    > WHERE b.bar=3;
+
+OK
+
+ABSTRACT SYNTAX TREE:
+
+  (TOK_QUERY (TOK_FROM (TOK_LEFTOUTERJOIN (TOK_TABREF (TOK_TABNAME pokes) a) (TOK_TABREF (TOK_TABNAME pokes2) b) (= (. (TOK_TABLE_OR_COL a) foo) (. (TOK_TABLE_OR_COL b) foo)))) (TOK_INSERT (TOK_DESTINATION (TOK_DIR TOK_TMP_FILE)) (TOK_SELECT (TOK_SELEXPR (. (TOK_TABLE_OR_COL a) foo) foo1) (TOK_SELEXPR (. (TOK_TABLE_OR_COL b) foo) foo2) (TOK_SELEXPR (. (TOK_TABLE_OR_COL b) bar))) (TOK_WHERE (= (. (TOK_TABLE_OR_COL b) bar) 3))))
+
+
+
+STAGE DEPENDENCIES:
+
+  Stage-1 is a root stage
+
+  Stage-0 is a root stage
+
+
+
+STAGE PLANS:
+
+  Stage: Stage-1
+
+    Map Reduce
+
+      Alias -> Map Operator Tree:
+
+        a 
+
+          TableScan
+
+            alias: a
+
+            Reduce Output Operator
+
+              key expressions:
+
+                    expr: foo
+
+                    type: int
+
+              sort order: +
+
+              Map-reduce partition columns:
+
+                    expr: foo
+
+                    type: int
+
+              tag: 0
+
+              value expressions:
+
+                    expr: foo
+
+                    type: int
+
+        b 
+
+          TableScan
+
+            alias: b
+
+            Reduce Output Operator
+
+              key expressions:
+
+                    expr: foo
+
+                    type: int
+
+              sort order: +
+
+              Map-reduce partition columns:
+
+                    expr: foo
+
+                    type: int
+
+              tag: 1
+
+              value expressions:
+
+                    expr: foo
+
+                    type: int
+
+                    expr: bar
+
+                    type: int
+
+      Reduce Operator Tree:
+
+        Join Operator
+
+          condition map:
+
+               Left Outer Join0 to 1
+
+          condition expressions:
+
+            0 {VALUE._col0}
+
+            1 {VALUE._col0} {VALUE._col1}
+
+          handleSkewJoin: false
+
+          outputColumnNames: _col0, _col4, _col5
+
+          Filter Operator
+
+            predicate:
+
+                expr: (_col5 = 3)
+
+                type: boolean
+
+            Select Operator
+
+              expressions:
+
+                    expr: _col0
+
+                    type: int
+
+                    expr: _col4
+
+                    type: int
+
+                    expr: _col5
+
+                    type: int
+
+              outputColumnNames: _col0, _col1, _col2
+
+              File Output Operator
+
+                compressed: false
+
+                GlobalTableId: 0
+
+                table:
+
+                    input format: org.apache.hadoop.mapred.TextInputFormat
+
+                    output format: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
+
+
+
+  Stage: Stage-0
+
+    Fetch Operator
+
+      limit: -1
+
+
+
+
+
+Time taken: 0.113 seconds
+
+hive> 
+
+    > -- Q2: predicate should not be pushed on the right side of a left outer join
+
+    > explain
+
+    > SELECT * FROM
+
+    >     (SELECT a.foo as foo1, b.foo as foo2, b.bar
+
+    >     FROM pokes a LEFT OUTER JOIN pokes2 b
+
+    >     ON a.foo=b.foo) a
+
+    > WHERE a.bar=3;
+
+OK
+
+ABSTRACT SYNTAX TREE:
+
+  (TOK_QUERY (TOK_FROM (TOK_SUBQUERY (TOK_QUERY (TOK_FROM (TOK_LEFTOUTERJOIN (TOK_TABREF (TOK_TABNAME pokes) a) (TOK_TABREF (TOK_TABNAME pokes2) b) (= (. (TOK_TABLE_OR_COL a) foo) (. (TOK_TABLE_OR_COL b) foo)))) (TOK_INSERT (TOK_DESTINATION (TOK_DIR TOK_TMP_FILE)) (TOK_SELECT (TOK_SELEXPR (. (TOK_TABLE_OR_COL a) foo) foo1) (TOK_SELEXPR (. (TOK_TABLE_OR_COL b) foo) foo2) (TOK_SELEXPR (. (TOK_TABLE_OR_COL b) bar))))) a)) (TOK_INSERT (TOK_DESTINATION (TOK_DIR TOK_TMP_FILE)) (TOK_SELECT (TOK_SELEXPR TOK_ALLCOLREF)) (TOK_WHERE (= (. (TOK_TABLE_OR_COL a) bar) 3))))
+
+
+
+STAGE DEPENDENCIES:
+
+  Stage-1 is a root stage
+
+  Stage-0 is a root stage
+
+
+
+STAGE PLANS:
+
+  Stage: Stage-1
+
+    Map Reduce
+
+      Alias -> Map Operator Tree:
+
+        a:a 
+
+          TableScan
+
+            alias: a
+
+            Reduce Output Operator
+
+              key expressions:
+
+                    expr: foo
+
+                    type: int
+
+              sort order: +
+
+              Map-reduce partition columns:
+
+                    expr: foo
+
+                    type: int
+
+              tag: 0
+
+              value expressions:
+
+                    expr: foo
+
+                    type: int
+
+        a:b 
+
+          TableScan
+
+            alias: b
+
+            Filter Operator
+
+              predicate:
+
+                  expr: (bar = 3)
+
+                  type: boolean
+
+              Reduce Output Operator
+
+                key expressions:
+
+                      expr: foo
+
+                      type: int
+
+                sort order: +
+
+                Map-reduce partition columns:
+
+                      expr: foo
+
+                      type: int
+
+                tag: 1
+
+                value expressions:
+
+                      expr: foo
+
+                      type: int
+
+                      expr: bar
+
+                      type: int
+
+      Reduce Operator Tree:
+
+        Join Operator
+
+          condition map:
+
+               Left Outer Join0 to 1
+
+          condition expressions:
+
+            0 {VALUE._col0}
+
+            1 {VALUE._col0} {VALUE._col1}
+
+          handleSkewJoin: false
+
+          outputColumnNames: _col0, _col4, _col5
+
+          Select Operator
+
+            expressions:
+
+                  expr: _col0
+
+                  type: int
+
+                  expr: _col4
+
+                  type: int
+
+                  expr: _col5
+
+                  type: int
+
+            outputColumnNames: _col0, _col1, _col2
+
+            Select Operator
+
+              expressions:
+
+                    expr: _col0
+
+                    type: int
+
+                    expr: _col1
+
+                    type: int
+
+                    expr: _col2
+
+                    type: int
+
+              outputColumnNames: _col0, _col1, _col2
+
+              File Output Operator
+
+                compressed: false
+
+                GlobalTableId: 0
+
+                table:
+
+                    input format: org.apache.hadoop.mapred.TextInputFormat
+
+                    output format: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
+
+
+
+  Stage: Stage-0
+
+    Fetch Operator
+
+      limit: -1
+
+
+
+
+
+Time taken: 0.101 seconds
+
+hive> 
+
+    > -- Q3: predicate should be pushed
+
+    > explain
+
+    > SELECT * FROM
+
+    >     (SELECT a.foo as foo1, b.foo as foo2, a.bar
+
+    >     FROM pokes a JOIN pokes2 b
+
+    >     ON a.foo=b.foo) a
+
+    > WHERE a.bar=3;
+
+OK
+
+ABSTRACT SYNTAX TREE:
+
+  (TOK_QUERY (TOK_FROM (TOK_SUBQUERY (TOK_QUERY (TOK_FROM (TOK_JOIN (TOK_TABREF (TOK_TABNAME pokes) a) (TOK_TABREF (TOK_TABNAME pokes2) b) (= (. (TOK_TABLE_OR_COL a) foo) (. (TOK_TABLE_OR_COL b) foo)))) (TOK_INSERT (TOK_DESTINATION (TOK_DIR TOK_TMP_FILE)) (TOK_SELECT (TOK_SELEXPR (. (TOK_TABLE_OR_COL a) foo) foo1) (TOK_SELEXPR (. (TOK_TABLE_OR_COL b) foo) foo2) (TOK_SELEXPR (. (TOK_TABLE_OR_COL a) bar))))) a)) (TOK_INSERT (TOK_DESTINATION (TOK_DIR TOK_TMP_FILE)) (TOK_SELECT (TOK_SELEXPR TOK_ALLCOLREF)) (TOK_WHERE (= (. (TOK_TABLE_OR_COL a) bar) 3))))
+
+
+
+STAGE DEPENDENCIES:
+
+  Stage-1 is a root stage
+
+  Stage-0 is a root stage
+
+
+
+STAGE PLANS:
+
+  Stage: Stage-1
+
+    Map Reduce
+
+      Alias -> Map Operator Tree:
+
+        a:a 
+
+          TableScan
+
+            alias: a
+
+            Filter Operator
+
+              predicate:
+
+                  expr: (bar = 3)
+
+                  type: boolean
+
+              Reduce Output Operator
+
+                key expressions:
+
+                      expr: foo
+
+                      type: int
+
+                sort order: +
+
+                Map-reduce partition columns:
+
+                      expr: foo
+
+                      type: int
+
+                tag: 0
+
+                value expressions:
+
+                      expr: foo
+
+                      type: int
+
+                      expr: bar
+
+                      type: int
+
+        a:b 
+
+          TableScan
+
+            alias: b
+
+            Reduce Output Operator
+
+              key expressions:
+
+                    expr: foo
+
+                    type: int
+
+              sort order: +
+
+              Map-reduce partition columns:
+
+                    expr: foo
+
+                    type: int
+
+              tag: 1
+
+              value expressions:
+
+                    expr: foo
+
+                    type: int
+
+      Reduce Operator Tree:
+
+        Join Operator
+
+          condition map:
+
+               Inner Join 0 to 1
+
+          condition expressions:
+
+            0 {VALUE._col0} {VALUE._col1}
+
+            1 {VALUE._col0}
+
+          handleSkewJoin: false
+
+          outputColumnNames: _col0, _col1, _col4
+
+          Select Operator
+
+            expressions:
+
+                  expr: _col0
+
+                  type: int
+
+                  expr: _col4
+
+                  type: int
+
+                  expr: _col1
+
+                  type: int
+
+            outputColumnNames: _col0, _col1, _col2
+
+            Select Operator
+
+              expressions:
+
+                    expr: _col0
+
+                    type: int
+
+                    expr: _col1
+
+                    type: int
+
+                    expr: _col2
+
+                    type: int
+
+              outputColumnNames: _col0, _col1, _col2
+
+              File Output Operator
+
+                compressed: false
+
+                GlobalTableId: 0
+
+                table:
+
+                    input format: org.apache.hadoop.mapred.TextInputFormat
+
+                    output format: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
+
+
+
+  Stage: Stage-0
+
+    Fetch Operator
+
+      limit: -1
+
+
+
+Note that Q2 is incorrect because the predicate "bar = 3" is incorrectly pushed to the right side of the left outer join (Q1 and Q3 are correct).

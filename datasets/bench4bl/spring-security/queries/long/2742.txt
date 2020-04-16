@@ -1,0 +1,113 @@
+Hi
+I think I'm experiencing a race condition in HttpSessionSecurityContextRepository . I'm using Spring-Security in a Vaadin application, i.e. it produces a few concurrent request for one session. Sometimes a programmatic login gets lost in one session. The phenomen produces a log like this:
+
+
+
+
+
+
+[http-bio-8080-exec-1] DEBUG context.HttpSessionSecurityContextRepository  - HttpSession returned null object for SPRING_SECURITY_CONTEXT
+
+
+
+
+[http-bio-8080-exec-1] DEBUG context.HttpSessionSecurityContextRepository  - No SecurityContext was available from the HttpSession…
+
+
+
+
+[http-bio-8080-exec-2] Some Login messages
+
+
+
+
+[http-bio-8080-exec-2] DEBUG context.HttpSessionSecurityContextRepository  - SecurityContext stored to HttpSession…
+
+
+
+
+[http-bio-8080-exec-1] DEBUG context.HttpSessionSecurityContextRepository  - SecurityContext is empty or contents are anonymous - context will not be stored in HttpSession.
+
+
+
+
+[http-bio-8080-exec-9] DEBUG context.HttpSessionSecurityContextRepository  - HttpSession returned null object for SPRING_SECURITY_CONTEXT
+
+
+
+
+
+
+You can see here that thread 1 has an anonymous context. In between comes thread 2 which does a login on the same session (which doesn't affect the ThreadLocal context from thread 1). After thread 2 finished storing the context, thread 1 continues removing the valid context.
+I think the race condition comes from these lines in HttpSessionSecurityContextRepository.saveContext():
+
+
+
+
+
+
+ 
+
+
+
+
+if (authentication == null || trustResolver.isAnonymous(authentication)) {
+
+
+
+
+  if (logger.isDebugEnabled()) {
+
+
+
+
+    logger.debug("SecurityContext is empty or contents are anonymous - context will not be stored in HttpSession.");
+
+
+
+
+  }
+
+
+
+
+  if (httpSession != null && !contextObject.equals(contextBeforeExecution)) {
+
+
+
+
+    // SEC-1587 A non-anonymous context may still be in the session
+
+
+
+
+    // SEC-1735 remove if the contextBeforeExecution was not anonymous
+
+
+
+
+    httpSession.removeAttribute(springSecurityContextKey);
+
+
+
+
+  }
+
+
+
+
+  return;
+
+
+
+
+}
+
+
+
+
+
+
+I'm guessing that thread 1 yields somewhere before the session.remove(). Thread 2 runs until the context is stored in the session, and thread 1 continues with httpSession.removeAttribute(springSecurityContextKey);.
+If the code isn't threadsafe by design I'll repost the issue somewhere towards Vaadin.
+I'm using spring-security-3.2.3.RELEASE, but the code exists in master as well.

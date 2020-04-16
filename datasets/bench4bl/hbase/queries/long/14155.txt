@@ -1,0 +1,103 @@
+A stack overflow may occur when a reverse scan is done. To reproduce (on a Mac), use the following steps:
+
+Download the Phoenix 4.5.0 RC here: https://dist.apache.org/repos/dist/dev/phoenix/phoenix-4.5.0-HBase-1.1-rc0/bin/
+Copy the phoenix-4.5.0-HBase-1.1-server.jar into the HBase lib directory (removing any earlier Phoenix version if there was one installed)
+Stop and restart HBase
+From the bin directory of the Phoenix binary distribution, start sqlline like this: ./sqlline.py localhost
+Create a new table and populate it like this:
+
+
+
+create table desctest (k varchar primary key desc);
+
+upsert into desctest values ('a');
+
+upsert into desctest values ('ab');
+
+upsert into desctest values ('b');
+
+
+
+Note that the following query works fine at this point:
+
+
+
+select * from desctest order by k;
+
++------------------------------------------+
+
+|                    K                     |
+
++------------------------------------------+
+
+| a                                        |
+
+| ab                                       |
+
+| b                                        |
+
++------------------------------------------+
+
+
+
+Stop and start HBase
+Rerun the above query again and you'll get  a StackOverflowError at StoreFileScanner.seekToPreviousRow()
+
+
+
+select * from desctest order by k;
+
+java.lang.RuntimeException: org.apache.phoenix.exception.PhoenixIOException: org.apache.phoenix.exception.PhoenixIOException: org.apache.hadoop.hbase.DoNotRetryIOException: DESCTEST,,1437847235264.a74d70e6a8b36e24d1ea1a70edb0cdf7.: null
+
+	at org.apache.phoenix.util.ServerUtil.createIOException(ServerUtil.java:84)
+
+	at org.apache.phoenix.util.ServerUtil.throwIOException(ServerUtil.java:52)
+
+	at org.apache.phoenix.coprocessor.BaseScannerRegionObserver$2.nextRaw(BaseScannerRegionObserver.java:352)
+
+	at org.apache.phoenix.coprocessor.DelegateRegionScanner.nextRaw(DelegateRegionScanner.java:77)
+
+	at org.apache.hadoop.hbase.regionserver.RSRpcServices.scan(RSRpcServices.java:2393)
+
+	at org.apache.hadoop.hbase.protobuf.generated.ClientProtos$ClientService$2.callBlockingMethod(ClientProtos.java:32205)
+
+	at org.apache.hadoop.hbase.ipc.RpcServer.call(RpcServer.java:2112)
+
+	at org.apache.hadoop.hbase.ipc.CallRunner.run(CallRunner.java:101)
+
+	at org.apache.hadoop.hbase.ipc.RpcExecutor.consumerLoop(RpcExecutor.java:130)
+
+	at org.apache.hadoop.hbase.ipc.RpcExecutor$1.run(RpcExecutor.java:107)
+
+	at java.lang.Thread.run(Thread.java:745)
+
+Caused by: java.lang.StackOverflowError
+
+	at org.apache.hadoop.hbase.io.hfile.ChecksumUtil.numChunks(ChecksumUtil.java:201)
+
+	at org.apache.hadoop.hbase.io.hfile.ChecksumUtil.numBytes(ChecksumUtil.java:189)
+
+	at org.apache.hadoop.hbase.io.hfile.HFileBlock.totalChecksumBytes(HFileBlock.java:1826)
+
+	at org.apache.hadoop.hbase.io.hfile.HFileBlock.getBufferReadOnly(HFileBlock.java:356)
+
+	at org.apache.hadoop.hbase.io.hfile.HFileReaderV2$EncodedScannerV2.getEncodedBuffer(HFileReaderV2.java:1211)
+
+	at org.apache.hadoop.hbase.io.hfile.HFileReaderV2$EncodedScannerV2.getFirstKeyInBlock(HFileReaderV2.java:1307)
+
+	at org.apache.hadoop.hbase.io.hfile.HFileReaderV2$AbstractScannerV2.seekBefore(HFileReaderV2.java:657)
+
+	at org.apache.hadoop.hbase.io.hfile.HFileReaderV2$AbstractScannerV2.seekBefore(HFileReaderV2.java:646)
+
+	at org.apache.hadoop.hbase.regionserver.StoreFileScanner.seekToPreviousRow(StoreFileScanner.java:425)
+
+	at org.apache.hadoop.hbase.regionserver.StoreFileScanner.seekToPreviousRow(StoreFileScanner.java:449)
+
+	at org.apache.hadoop.hbase.regionserver.StoreFileScanner.seekToPreviousRow(StoreFileScanner.java:449)
+
+	at org.apache.hadoop.hbase.regionserver.StoreFileScanner.seekToPreviousRow(StoreFileScanner.java:449)
+
+
+
+
+I've attempted to reproduce this in a standalone HBase unit test, but have not been able to (but I'll attach my attempt which mimics what Phoenix is doing).

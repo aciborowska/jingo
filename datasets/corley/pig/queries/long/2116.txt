@@ -1,0 +1,109 @@
+the implementation of hashCode should not be assumed to be good.
+in particular, the hashCode of String and List (used by Tuple) are very bad for modulus 2^n.
+
+we propose to add an additional perturbation of the int before doing the "% reducers" bucketing.
+HashMap.java uses this to prevent the String.hashCode from causing massive bucket collisions etc. but that perturbation is targeted explicitly for a 2^n number of buckets, which Pig is not doing in general.
+
+we propose possibly using the final mixing step from murmur3.
+
+here is some discussion of this issue for context:
+
+This has some amusing implications: this hash is terrible for
+2,4,8,16,31, and 32 reducers, so even in normal situations that's pretty
+bad, especially if pig happens to pick 31 reducers because it has
+104-106 mappers * 0.3.
+
+31 is congruent to -1 mod 2^k for all 2 <= k <= 5, so in that case the hash is
+effectively:
+
+t[0](-1)(n-1) + t[1](-1)(n-2) + ... + t[n-2]*(-1) + t[n-1]
+
+= (for odd n) t[0] - t[1] + t[2] - t[3] + t[4] + ...
+
+So for example the string "mississippim" hashes to 0 (mod 2^32), as
+every even input character is cancelled out by an equal odd input
+elsewhere.
+
+H = 0
+for c in "mississippim":
+  H = H*31 + ord(c)
+  print "%c: H=%d (mod 32)" % (c, H%32)
+
+m: H=13 (mod 32)
+i: H=28 (mod 32)
+s: H=23 (mod 32)
+s: H=28 (mod 32)
+i: H=13 (mod 32)
+s: H=6 (mod 32)
+s: H=13 (mod 32)
+i: H=28 (mod 32)
+p: H=20 (mod 32)
+p: H=28 (mod 32)
+i: H=13 (mod 32)
+m: H=0 (mod 32)
+
+Similarly with exactly 31 reducers, the hash function cancels out
+entirely (31 is 0 mod 31, so everything but the last item is multiplied
+by 0^i) and the result is simply the value of the last item.
+
+A simple fix is to add a post-hash mixing step that nontrivially affects
+the bits in the state over all other bits in the hash output, ideally
+with probability 1/2 for all bits.  That way the modulo doesn't
+distribute across the whole function back to the input, and the internal
+state of the hash above whatever modulus has some effect.
+
+H = 0
+for c in "mississippim":
+  H = H*31 + ord(c)
+
+	these &0xffffffff ops are to simulate unsigned 32-bit math in python
+  H = H&0xffffffff
+  Hout = (H + (H<<3))&0xffffffff
+  Hout = Hout ^ (Hout>>11)
+  Hout = (Hout + (Hout<<15))&0xffffffff
+  print "%c: H=%08x === %d (mod 32)" % (c, Hout, Hout%32)
+
+
+
+m: H=01ea83d5 === 21 (mod 32)
+i: H=3d39fa73 === 19 (mod 32)
+s: H=6c78d8d4 === 20 (mod 32)
+s: H=3c76f555 === 21 (mod 32)
+i: H=0abb25ff === 31 (mod 32)
+s: H=40df81c9 === 9 (mod 32)
+s: H=cfc8a427 === 7 (mod 32)
+i: H=cea62c2b === 11 (mod 32)
+p: H=4594d493 === 19 (mod 32)
+p: H=f14b432a === 10 (mod 32)
+i: H=169be0b0 === 16 (mod 32)
+m: H=7d57b59c === 28 (mod 32)
+
+The mixing step only needs to be done once at the end.  The one I
+inserted was stolen from Bob Jenkins' hash site, which is required
+reading for anyone who decides to implement their own hashing.
+
+Or you could use a real (good, fast, tested) hash function like murmur3.
+
+-Andy
+
+
+On Thu, Jun 02, 2011 at 03:37:56PM -0700, Woody Anderson wrote:
+> This caught me off guard the other day, so i figured i'd pass it along:
+> 
+> the hashCode implementation of Tuple and String have very specific expansions which do not provide a lot of hashCode variance mod 2^k when the elements are all equal.
+> 
+> string:
+>  t[0]*31^(n-1) + t[1]*31^(n-2) + ... + t[n-1]
+> tuple:
+> ..(((31 + t[0])*31 + t[1])*31 + t[2])*31 + t[4]..
+> 
+> this expansion modulo powers of 2 is degenerate if t[i] are all equal.
+> eg. you group by (n0, n1) to do some work, and there are an unusually high number of tuples where n0 == n1, the value of n0/n1 makes no difference. this will equal 1 mod 16.
+> the same goes if you're grouping by strings, and have a lot of "a", "aa", "aaaa", "b", "bb", "bbb", etc. type data
+> this results in all the data ending up in a single reducer/part file. which is either a waste or going to kill your job.
+> so, if you use 2^k reducers then that's a terrible group-by. and it's not going to be good (in general) for any non-prime.
+> 
+> under 'normal' circumstances you probably won't notice this being a factor. I didn't notice until i used string.hashCode as part of a group-by to both group by my string an produce a semi-randomized output ordering (sherpa requirement); this completely blew up when simply grouping by the string hadn't.
+> 
+> so, if you have highly varied data elements, this this is less of an issue, though a prime will usually generalize better, and you won't suddenly wonder about the bad dispersal you're getting.
+> -w

@@ -1,0 +1,84 @@
+The following simple nested query with UDF returns Struct would fail on Hive 0.13.1 . The UDF java code is attached as SimpleStruct.java
+
+ADD JAR simplestruct.jar;
+
+CREATE TEMPORARY FUNCTION simplestruct AS 'test.SimpleStruct';
+
+
+
+SELECT *
+
+  FROM (
+
+    SELECT *
+
+    from mytest
+
+ ) subquery
+
+WHERE simplestruct(subquery.testStr).first
+
+
+
+The error message is 
+
+Caused by: org.apache.hadoop.hive.ql.metadata.HiveException: Hive Runtime Error while processing row {"testint":1,"testname":"haha","teststr":"hehe"}
+
+        at org.apache.hadoop.hive.ql.exec.MapOperator.process(MapOperator.java:549)
+
+        at org.apache.hadoop.hive.ql.exec.mr.ExecMapper.map(ExecMapper.java:177)
+
+        ... 8 more
+
+Caused by: java.lang.RuntimeException: cannot find field teststr from [0:_col0, 1:_col1, 2:_col2]
+
+        at org.apache.hadoop.hive.serde2.objectinspector.ObjectInspectorUtils.getStandardStructFieldRef(ObjectInspectorUtils.java:415)
+
+        at org.apache.hadoop.hive.serde2.objectinspector.StandardStructObjectInspector.getStructFieldRef(StandardStructObjectInspector.java:150)
+
+..............................
+
+
+
+The query works fine if we replace the UDF returns Boolean. By comparing the query plan, we note when using the SimpleStruct UDF, the query plan is 
+
+          TableScan
+
+            Select Operator
+
+              Filter Operator
+
+                Select Operator
+
+
+
+The first Select Operator would rename the columns to col_k, which cause this trouble. If we use some UDF returns Boolean, the query plan becomes 
+
+          TableScan
+
+            Filter Operator
+
+              Select Operator
+
+
+
+It looks like the Query Planner failed to push down the Filter Operator when the predicate is based on a UDF returns Struct. 
+This bug was fixed in Hive 1.2.1, but we cannot find the ticket to fix it.
+Appendix: 
+The table mytest is created in the following way
+
+CREATE TABLE mytest(testInt INT, testName STRING, testStr STRING) ROW FORMAT DELIMITED FIELDS TERMINATED BY ',' STORED AS TEXTFILE;
+
+
+
+LOAD DATA LOCAL INPATH 'test.txt' INTO TABLE mytest;
+
+
+
+The file test.txt is a simple CSV file.
+
+1,haha,hehe
+
+2,my,test
+
+

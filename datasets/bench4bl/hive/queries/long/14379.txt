@@ -1,0 +1,54 @@
+If a table has table/partition locations set to remote HDFS paths, querying them will cause the following IAException:
+
+2016-07-26 01:16:27,471 ERROR parse.CalcitePlanner (SemanticAnalyzer.java:getMetaData(1867)) - org.apache.hadoop.hive.ql.metadata.HiveException: Unable to deter
+
+mine if hdfs://foo.ygrid.yahoo.com:8020/projects/my_db/my_table is encrypted: java.lang.IllegalArgumentException: Wrong FS: hdfs://foo.ygrid.yahoo.com:8020/projects/my_db/my_table, expected: hdfs://bar.ygrid.yahoo.com:8020
+
+        at org.apache.hadoop.hive.ql.parse.SemanticAnalyzer.isPathEncrypted(SemanticAnalyzer.java:2204)
+
+        at org.apache.hadoop.hive.ql.parse.SemanticAnalyzer.getStrongestEncryptedTablePath(SemanticAnalyzer.java:2274)
+
+...
+
+
+
+This is because of the following code in SessionState:
+SessionState.java
+
+
+ public HadoopShims.HdfsEncryptionShim getHdfsEncryptionShim() throws HiveException {
+
+    if (hdfsEncryptionShim == null) {
+
+      try {
+
+        FileSystem fs = FileSystem.get(sessionConf);
+
+        if ("hdfs".equals(fs.getUri().getScheme())) {
+
+          hdfsEncryptionShim = ShimLoader.getHadoopShims().createHdfsEncryptionShim(fs, sessionConf);
+
+        } else {
+
+          LOG.debug("Could not get hdfsEncryptionShim, it is only applicable to hdfs filesystem.");
+
+        }
+
+      } catch (Exception e) {
+
+        throw new HiveException(e);
+
+      }
+
+    }
+
+
+
+    return hdfsEncryptionShim;
+
+  }
+
+
+
+When the FileSystem instance is created, using the sessionConf implies that the current HDFS is going to be used. This call should instead fetch the FileSystem instance corresponding to the path being checked.
+A fix is forthcoming...

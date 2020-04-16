@@ -1,0 +1,90 @@
+I have created a scenario which seems to exploit a bug in the HttpHelper createURL method.
+My use case:
+Using http4 component in an http proxy with bridgeEndpoint true
+Send a request such as http://somesite/contextpath
+Request is forwarded by my proxy to a tomcat server.  Tomcat will reply with a 302 and a new Location of http://somesite/contextpath/ as this is a built in behavior of tomcat to redirect the caller to the contextpath INCLUDING the trailing slash
+I have http client configured with httpClient.redirectsEnabled=false
+Therefore the 302 is sent back through my proxy to the caller.
+The caller then makes the call to http://somesite/contextpath/
+This is where the problem occurs,  within the createUrl method:
+
+
+
+        String path = exchange.getIn().getHeader(Exchange.HTTP_PATH, String.class);
+
+        // NOW the HTTP_PATH is just related path, we don't need to trim it
+
+        if (path != null) {
+
+            if (path.startsWith("/")) {
+
+                path = path.substring(1);
+
+            }
+
+            if (path.length() > 0) {
+
+                // make sure that there is exactly one "/" between HTTP_URI and
+
+                // HTTP_PATH
+
+                if (!uri.endsWith("/")) {
+
+                    uri = uri + "/";
+
+                }
+
+                uri = uri.concat(path);
+
+            }
+
+        }
+
+
+
+When the second request is made with the trailing slash, the string "path" is / (just a single forward slash)
+This hits the first conditional and results in true, which the following substring then removes this slash.
+Now path.length() is not > 0 so the second conditional evaluates false.
+And we end up with a uri returned that no longer has the trailing slash.
+This is sent to Tomcat, Tomcat then promptly returns another 302 and a redirect loop is created.
+I think the intent of this block of code is to combine the uri and path and make sure there isn't a duplicate forward slash?
+So the simplest fix I can suggest would be something like
+
+
+
+        String path = exchange.getIn().getHeader(Exchange.HTTP_PATH, String.class);
+
+        // NOW the HTTP_PATH is just related path, we don't need to trim it
+
+        if (path != null && ! path.equals("/")) {
+
+            if (path.startsWith("/")) {
+
+                path = path.substring(1);
+
+            }
+
+            if (path.length() > 0) {
+
+                // make sure that there is exactly one "/" between HTTP_URI and
+
+                // HTTP_PATH
+
+                if (!uri.endsWith("/")) {
+
+                    uri = uri + "/";
+
+                }
+
+                uri = uri.concat(path);
+
+            }
+
+        }
+
+
+
+Where we would just check for this case explicitly with:
+if (path != null && ! path.equals("/")) {
+Thoughts?
+I could probably put together a PR and add some test cases

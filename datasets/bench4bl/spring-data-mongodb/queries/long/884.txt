@@ -1,0 +1,83 @@
+Revised upon request by Thomas Darimont:
+NullPointerException occurs when calling overriden Object method of the field with "@DBRef(lazy=true)"
+Assume class B has override toString method as below:
+public class B
+{
+   @Id
+   private String id;
+   private String value;
+   @Override
+   public String toString()
+{
+      return String.format("B[id='%s', value='%s']",id,value);
+   }
+}
+
+Assume class A contains class B as a field with annotation "DBRef(lazy=true)" as below:
+
+public class A
+{
+   @Id
+   private String id;
+
+   @DBRef(lazy=true)
+   public B b;
+
+   @Override
+   public String toString()
+   {
+      return String.format("A[b='%s']",b);
+   }
+}
+
+When a class A object has queried from MongoTemplate and calls to println as below:
+A obj = mongoTemplate().findOne(new Query(...), A.class);
+System.out.println(obj);
+
+The above code raised exception in "LazyLoadingInterceptor" class within "DefaultDbRefResolver" class:
+@Override
+public Object intercept(Object obj, Method method, Object[] args, MethodProxy proxy) throws Throwable {
+   return ReflectionUtils.isObjectMethod(method) ? method.invoke(obj, args) : method.invoke(ensureResolved(), args);
+}
+
+It seems that ReflectionUtils.isObjectMethod(method) returns "true" for even the method is an overriden method, so results to call
+method.invoke(obj, args); // which result NullPointerException since obj is null.
+where it should actually call 
+method.invoke(ensureResolved(), args);
+
+p.s. It seems obj is always "null" within the function "DefaultDbRefResolver::LazyLoadingInterceptor::intercept()." I was wondering if there is any reason for checking if the method is an Object method  by "ReflectionUtils.isObjectMethod(method)," since whether it is object method or not, method.invoke(obj,args) will always result NullPointerException due to obj is "null."
+
+------------------------------------------------------------------------------------------------------------------------------------------------------------------
+Original Message:
+
+DefaultDbRefResolver.intercept function only check if the method is originally from Object class, but does not check if the method is an override method of Object. when the method is an override method of Object then it should call ensureResolved() instead of just calling method.invoke(obj,args).
+
+For example.
+
+When @DBRef(lazy=true) is used and toString method is override, it result NullPointerException.
+
+public class B
+{
+   @Id
+   private String id;
+   private String value;
+
+   @Override
+   public String toString(){      return String.format("B[id='%s', value='%s']",id,value);   }
+}
+public class A
+{
+   @DBRef(lazy=true)
+   public B b;
+   @Override
+   public String toString()
+   {
+      return String.format("A[b='%s']",b);
+   }
+}
+So in DefaultDbRefResolver.intercept method should change as below
+@Override
+public Object intercept(Object obj, Method method, Object[] args, MethodProxy proxy) throws Throwable 
+{
+   return ReflectionUtils.isObjectMethod(method) && method.getDeclaringClass()==Object.class ? method.invoke(obj, args) : method.invoke(ensureResolved(), args);
+		}

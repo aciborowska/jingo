@@ -1,0 +1,79 @@
+The QuorumPeer$QuorumServer.recreateSocketAddress()  is used to resolved the hostname to a new IP address(InetAddress) when any exception happens to the socket. It will be very useful when a hostname can be resolved to more than one IP address.
+But the problem is Java API InetAddress.getByName(String hostname) will always return the first IP address when the hostname can be resolved to more than one IP address, and the first IP address may be unreachable forever. For example, if a machine has two network interfaces: eth0, eth1, say eth0 has ip1, eth1 has ip2, the relationship between hostname and the IP addresses is set in /etc/hosts. When I "close" the eth0 by command "ifdown eth0", the InetAddress.getByName(String hostname)  will still return ip1, which is unreachable forever.
+
+So I think it will be better to check the IP address by InetAddress.isReachable(long) and choose the reachable IP address. 
+
+
+I have modified the ZooKeeper source code, and test the new code in my own environment, and it can work very well when I turn down some network interfaces using "ifdown" command.
+
+The original code is:
+QuorumPeer.java
+        public void recreateSocketAddresses() {
+            InetAddress address = null;
+            try {
+                address = InetAddress.getByName(this.hostname);
+                LOG.info("Resolved hostname: {} to address: {}", this.hostname, address);
+                this.addr = new InetSocketAddress(address, this.port);
+                if (this.electionPort > 0){
+                    this.electionAddr = new InetSocketAddress(address, this.electionPort);
+                }
+            } catch (UnknownHostException ex) {
+                LOG.warn("Failed to resolve address: {}", this.hostname, ex);
+                // Have we succeeded in the past?
+                if (this.addr != null) {
+                    // Yes, previously the lookup succeeded. Leave things as they are
+                    return;
+                }
+                // The hostname has never resolved. Create our InetSocketAddress(es) as unresolved
+                this.addr = InetSocketAddress.createUnresolved(this.hostname, this.port);
+                if (this.electionPort > 0){
+                    this.electionAddr = InetSocketAddress.createUnresolved(this.hostname,
+                                                                           this.electionPort);
+                }
+            }
+        }
+
+
+
+After my modification:
+QuorumPeer.java
+        public void recreateSocketAddresses() {
+            InetAddress address = null;
+            try {
+                address = getReachableAddress(this.hostname);
+                LOG.info("Resolved hostname: {} to address: {}", this.hostname, address);
+                this.addr = new InetSocketAddress(address, this.port);
+                if (this.electionPort > 0){
+                    this.electionAddr = new InetSocketAddress(address, this.electionPort);
+                }
+            } catch (UnknownHostException ex) {
+                LOG.warn("Failed to resolve address: {}", this.hostname, ex);
+                // Have we succeeded in the past?
+                if (this.addr != null) {
+                    // Yes, previously the lookup succeeded. Leave things as they are
+                    return;
+                }
+                // The hostname has never resolved. Create our InetSocketAddress(es) as unresolved
+                this.addr = InetSocketAddress.createUnresolved(this.hostname, this.port);
+                if (this.electionPort > 0){
+                    this.electionAddr = InetSocketAddress.createUnresolved(this.hostname,
+                                                                           this.electionPort);
+                }
+            }
+        }
+
+        public InetAddress getReachableAddress(String hostname) throws UnknownHostException {
+            InetAddress[] addresses = InetAddress.getAllByName(hostname);
+            for (InetAddress a : addresses) {
+                try {
+                    if (a.isReachable(5000)) {
+                        return a;
+                    } 
+                } catch (IOException e) {
+                    LOG.warn("IP address {} is unreachable", a);
+                }
+            }
+            // All the IP address is unreachable, just return the first one.
+            return addresses[0];
+        }
+

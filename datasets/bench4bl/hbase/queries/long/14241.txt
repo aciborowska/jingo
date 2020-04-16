@@ -1,0 +1,54 @@
+Caught while testing branch-1.0, shutting down TestMasterMetricsWrapper.
+Found one Java-level deadlock:
+=============================
+"MASTER_META_SERVER_OPERATIONS-ip-10-32-130-237:55342-0":
+  waiting to lock monitor 0x00007f2a040051c8 (object 0x00000007e36108a8, a org.apache.hadoop.hbase.util.PoolMap),
+  which is held by "M:0;ip-10-32-130-237:55342"
+"M:0;ip-10-32-130-237:55342":
+  waiting to lock monitor 0x00007f2a04005118 (object 0x00000007e3610b00, a org.apache.hadoop.hbase.ipc.RpcClientImpl$Connection),
+  which is held by "MASTER_META_SERVER_OPERATIONS-ip-10-32-130-237:55342-0"
+Full stack dump and deadlock debug output attached.
+Root cause:
+In RpcClientImpl#close(), we obtain lock on connections first:
+
+
+
+    synchronized (connections) {
+
+      for (Connection conn : connections.values()) {
+
+
+
+Then markClosed() tries to obtain lock on connection object:
+
+
+
+        if (!conn.isAlive()) {
+
+          conn.markClosed(new InterruptedIOException("RpcClient is closing"));
+
+          conn.close();
+
+
+
+Another thread, MetaServerShutdownHandler, calls RpcClientImpl$Connection#setupIOstreams() where :
+
+
+
+        markClosed(e);
+
+        close();
+
+
+
+Lock on connection object is obtained first, then lock on connections is attempted, leading to deadlock:
+
+
+
+      synchronized (connections) {
+
+        connections.removeValue(remoteId, this);
+
+      }
+
+

@@ -1,0 +1,68 @@
+While dealing with PIG-1870, I found that when using the HBaseStorage load/storefunc, which implements projection pushdown and has a custom Caster, the caster is not getting used when the following script is executed:
+
+a = load 'hbase://TESTTABLE_1' using 
+  org.apache.pig.backend.hadoop.hbase.HBaseStorage('TESTCOLUMN_A TESTCOLUMN_B TESTCOLUMN_C',
+                                                   '-loadKey -caster HBaseBinaryConverter') 
+  as (rowKey:chararray,col_a:int, col_b:double, col_c:chararray);
+
+b = FOREACH a GENERATE rowKey, col_a, col_b;
+
+STORE b into  'TESTTABLE_2' using 
+  org.apache.pig.backend.hadoop.hbase.HBaseStorage('TESTCOLUMN_A TESTCOLUMN_B','-caster HBaseBinaryConverter');
+
+
+
+If a is stored directly, without the FOREACH, the HBaseBinaryConverter methods are invoked to convert fields as appropriate. If b gets stored, HBaseBinaryConverter is completely ignored.  If newlogicalplan is turned off, everything works as expected.
+
+Further evidence that something odd as afoot – though possibly unrelated – note that the field aliases are messed up in the new logical plan if b is EXPLAINed (col_a is repeated twice, instead of the first column being called rowkey, in the new logical plan):
+
+
+
+#-----------------------------------------------
+# Logical Plan:
+#-----------------------------------------------
+fake: Store 1-18 Schema: {rowKey: chararray,col_a: int,col_b: double} Type: Unknown
+|
+|---b: ForEach 1-17 Schema: {rowKey: chararray,col_a: int,col_b: double} Type: bag
+    |   |
+    |   Project 1-14 Projections: [0] Overloaded: false FieldSchema: rowKey: chararray Type: chararray
+    |   Input: a: Load 1-9
+    |   |
+    |   Project 1-15 Projections: [1] Overloaded: false FieldSchema: col_a: int Type: int
+    |   Input: a: Load 1-9
+    |   |
+    |   Project 1-16 Projections: [2] Overloaded: false FieldSchema: col_b: double Type: double
+    |   Input: a: Load 1-9
+    |
+    |---a: Load 1-9 Schema: {rowKey: chararray,col_a: int,col_b: double,col_c: chararray} Type: bag
+
+
+
+#-----------------------------------------------
+# New Logical Plan:
+#-----------------------------------------------
+fake: (Name: LOStore Schema: col_a#12:chararray,col_a#13:int,col_b#14:double)ColumnPrune:InputUids=[12, 13, 14]ColumnPrune:OutputUids=[12, 13, 14]
+|
+|---b: (Name: LOForEach Schema: col_a#13:chararray,col_a#13:int,col_b#14:double)
+    |   |
+    |   (Name: LOGenerate[false,false,false] Schema: col_a#13:chararray,col_a#13:int,col_b#14:double)
+    |   |   |
+    |   |   (Name: Cast Type: chararray Uid: 13)
+    |   |   |
+    |   |   |---col_a:(Name: Project Type: bytearray Uid: 13 Input: 0 Column: 0)
+    |   |   |
+    |   |   (Name: Cast Type: int Uid: 13)
+    |   |   |
+    |   |   |---col_a:(Name: Project Type: bytearray Uid: 13 Input: 1 Column: 0)
+    |   |   |
+    |   |   (Name: Cast Type: double Uid: 14)
+    |   |   |
+    |   |   |---col_b:(Name: Project Type: bytearray Uid: 14 Input: 2 Column: 0)
+    |   |
+    |   |---(Name: LOInnerLoad[0] Schema: col_a#13:bytearray)
+    |   |
+    |   |---(Name: LOInnerLoad[0] Schema: col_a#13:bytearray)    |   |
+    |   |---(Name: LOInnerLoad[1] Schema: col_b#14:bytearray)
+    |
+    |---a: (Name: LOLoad Schema: col_a#13:bytearray,col_b#14:bytearray)ColumnPrune:RequiredColumns=[0, 1, 2]ColumnPrune:InputUids=[12, 13, 14]ColumnPrune:OutputUids=[12, 13, 14]RequiredFields:[1, 2]
+

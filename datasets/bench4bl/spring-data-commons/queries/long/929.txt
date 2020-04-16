@@ -1,0 +1,72 @@
+This is a bit subtle, and maybe it's more of a question than a bug, but I would like to know if this exception is expected or not.
+The JavaDocs from PageableHandlerMethodArgumentResolver say about setFallbackPageable(…):
+
+
+
+
+
+
+ * If you set this to {@literal null}, be aware that you controller methods will get {@literal null} handed into them
+
+
+
+
+ * in case no {@link Pageable} data can be found in the request. Note, that doing so will require you supply bot the
+
+
+
+
+ * page <em>and</em> the size parameter with the requests as there will be no default for any of the parameters
+
+
+
+
+ * available.
+
+
+
+
+
+
+
+And it confuses me, cause it's a contradiction, either the first part is true or the second one is true. In fact, it depends on the HandlerMethodArgumentResolver configured to resolve Pageable. I think the first one should always be true, but when using a MappingAwareDefaultedPageableArgumentResolver the second one is always true.
+I want to set fallbackPageable to null, so that when page and size are included in the request, I retrieve only the page requested, but when they are not it the request I receive a null parameter and then I can decide to retrieve all the records, for instance. This is what the first paragraph of that comment suggests.
+The thing is that MappingAwareDefaultedPageableArgumentResolver.resolveArgument(…) has code that also hints at an intention to allow for a null fallbackPageable and no page nor size in the request:
+
+
+
+
+
+
+Pageable pageable = delegate.resolveArgument(parameter, mavContainer, webRequest, binderFactory);
+
+
+
+
+ 
+
+
+
+
+if (pageable == null || pageable.getSort() == null) {
+
+
+
+
+	return new DefaultedPageable(pageable, delegate.isFallbackPageable(pageable));
+
+
+
+
+}
+
+
+
+
+
+
+
+So, in theory, pageable could be null and it would be sent to the controller. But, in practice, this code throws a NullPointerException when pageable is null, because PageableHandlerMethodArgumentResolver.isFallbackPageable(…) will always throw NullPointerException when pageable is null. Unless, of course, you are using a custom implementation that overrides that method (Something I haven't found in spring). I know I could use MappingAwarePageableArgumentResolver to avoid all this, but all the code suggests null should be allowed. For example, RepositoryEntityController.getCollectionResource(…) allows for DefaultedPageable.getPageable() to be null but, unless you implement a workaround, it will never be null.
+So I think that a fix is in order here. Either the documentation is fixed to explain the expected behavior and remove the contradiction (at least state what is the standard behavior unless it's overridden) or PageableHandlerMethodArgumentResolver.isFallbackPageable(…)) is modified to allow {{fallbackPageable to be null without throwing an exception. Please note that avoiding the exception when fallbackPageable is null would keep the standard behavior in all cases except in the cases when page and size are not included in the request.
+Also, FYI, I would need this to be fixed because when I use a PagingAndSortingRepository with spring-data-rest-webmvc the findAll(…) with a Pageable parameter is always invoked, and there seems to be no way to invoke the findAll(…) method  with a Sort parameter, even though there is a line that checks if Pageable is null and it should be possible.
+Maybe I'm missing something very obvious, if that is case, please excuse me for such a long description and just let me know. Thank you.

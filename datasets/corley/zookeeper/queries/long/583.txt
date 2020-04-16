@@ -1,0 +1,18 @@
+Both the c and java clients attempt to connect to a server in the cluster by iterating through
+a randomized list of servers as listed in the connect string passed to the zookeeper_init (c)
+or ZooKeeper constructor (java). The clients do this indefinitely, until successfully connecting
+to a server or until the client is close()ed. Additionally if a client is disconnected from a server
+it will attempt to reconnect to another server in the cluster, in this case it will only connect
+to a server that has the same, or higher, zxid as seen by the client on the previous server that
+it was connected to (this ensures that the client never sees old data).
+
+In some weird cases (in particular where operators reset the server database, clearing out the
+existing snapshots and txnlogs) existing clients will now see a much lower zxid (due to the
+epoch number being reset) regardless of the server that the client attempts to connect to. In this
+case the current client will iterate essentially forever.
+
+Instead the client should throw session expired in this case (notify any watchers). After iterating
+through all of the servers in the list, if none of the servers have an acceptable zxid the client
+should expire the session and shut down the handle. This will ensure that the client will eventually
+shutdown in this unusual, but possible (esp with server operators who don't also control the
+clients) situation.

@@ -1,0 +1,92 @@
+The following script fail:
+
+TEST_DATA = LOAD 'input' USING PigStorage() AS (c1:int);
+GR = FOREACH (GROUP TEST_DATA BY c1) GENERATE group as c1, COUNT_STAR(TEST_DATA) as count, TEST_DATA;
+ROWS_WITH_C1_EQUALS_ZERO = FILTER GR BY count > 1L;
+ROWS_WITH_C1_EQUALS_ZERO_FLATTENED = FOREACH ROWS_WITH_C1_EQUALS_ZERO GENERATE FLATTEN($0);
+-- Assert shouldn't fail as it should be applied after group by but because assert is getting pushed to mapper, it is failing.
+ASSERT ROWS_WITH_C1_EQUALS_ZERO_FLATTENED BY c1 == 0, 'Should have never seen this message, assert has a bug.';
+DUMP ROWS_WITH_C1_EQUALS_ZERO_FLATTENED;
+
+
+
+input:
+0
+0
+1
+
+The reason is assert is pushed before FILTER:
+
+ROWS_WITH_C1_EQUALS_ZERO_FLATTENED: (Name: LOStore Schema: c1#14:int)
+|
+|---ROWS_WITH_C1_EQUALS_ZERO_FLATTENED: (Name: LOForEach Schema: c1#14:int)
+    |   |
+    |   (Name: LOGenerate[true] Schema: c1#14:int)ColumnPrune:InputUids=[14]ColumnPrune:OutputUids=[14]
+    |   |   |
+    |   |   c1:(Name: Project Type: int Uid: 14 Input: 0 Column: (*))
+    |   |
+    |   |---(Name: LOInnerLoad[0] Schema: c1#14:int)
+    |
+    |---ROWS_WITH_C1_EQUALS_ZERO: (Name: LOFilter Schema: c1#14:int,count#31:long,ROWS_WITH_C1_EQUALS_ZERO_FLATTENED#29:bag{#30:tuple(c1#14:int)})
+        |   |
+        |   (Name: GreaterThan Type: boolean Uid: 33)
+        |   |
+        |   |---count:(Name: Project Type: long Uid: 31 Input: 0 Column: 1)
+        |   |
+        |   |---(Name: Constant Type: long Uid: 32)
+        |
+        |---GR: (Name: LOForEach Schema: c1#14:int,count#31:long,ROWS_WITH_C1_EQUALS_ZERO_FLATTENED#29:bag{#30:tuple(c1#14:int)})
+            |   |
+            |   (Name: LOGenerate[false,false,false] Schema: c1#14:int,count#31:long,ROWS_WITH_C1_EQUALS_ZERO_FLATTENED#29:bag{#30:tuple(c1#14:int)})ColumnPrune:InputUids=[29, 14]ColumnPrune:OutputUids=[14, 31]
+            |   |   |
+            |   |   group:(Name: Project Type: int Uid: 14 Input: 0 Column: (*))
+            |   |   |
+            |   |   (Name: UserFunc(org.apache.pig.builtin.COUNT_STAR) Type: long Uid: 31)
+            |   |   |
+            |   |   |---ROWS_WITH_C1_EQUALS_ZERO_FLATTENED:(Name: Project Type: bag Uid: 29 Input: 1 Column: (*))
+            |   |   |
+            |   |   ROWS_WITH_C1_EQUALS_ZERO_FLATTENED:(Name: Project Type: bag Uid: 29 Input: 2 Column: (*))
+            |   |
+            |   |---(Name: LOInnerLoad[0] Schema: group#14:int)
+            |   |
+            |   |---ROWS_WITH_C1_EQUALS_ZERO_FLATTENED: (Name: LOInnerLoad[1] Schema: c1#14:int)
+            |   |
+            |   |---ROWS_WITH_C1_EQUALS_ZERO_FLATTENED: (Name: LOInnerLoad[1] Schema: c1#14:int)
+            |
+            |---1-3: (Name: LOCogroup Schema: group#14:int,ROWS_WITH_C1_EQUALS_ZERO_FLATTENED#29:bag{#44:tuple(c1#14:int)})
+                |   |
+                |   c1:(Name: Project Type: int Uid: 14 Input: 0 Column: 0)
+                |
+                |---ROWS_WITH_C1_EQUALS_ZERO_FLATTENED: (Name: LOFilter Schema: c1#14:int)
+                    |   |
+                    |   (Name: UserFunc(org.apache.pig.builtin.Assert) Type: boolean Uid: 40)
+                    |   |
+                    |   |---(Name: BinCond Type: boolean Uid: 38)
+                    |   |   |
+                    |   |   |---(Name: Equal Type: boolean Uid: 35)
+                    |   |   |   |
+                    |   |   |   |---c1:(Name: Project Type: int Uid: 14 Input: 0 Column: 0)
+                    |   |   |   |
+                    |   |   |   |---(Name: Constant Type: int Uid: 34)
+                    |   |   |
+                    |   |   |---(Name: Constant Type: boolean Uid: 36)
+                    |   |   |
+                    |   |   |---(Name: Constant Type: boolean Uid: 37)
+                    |   |
+                    |   |---(Name: Constant Type: chararray Uid: 39)
+                    |
+                    |---TEST_DATA: (Name: LOForEach Schema: c1#14:int)
+                        |   |
+                        |   (Name: LOGenerate[false] Schema: c1#14:int)ColumnPrune:InputUids=[14]ColumnPrune:OutputUids=[14]
+                        |   |   |
+                        |   |   (Name: Cast Type: int Uid: 14)
+                        |   |   |
+                        |   |   |---c1:(Name: Project Type: bytearray Uid: 14 Input: 0 Column: (*))
+                        |   |
+                        |   |---(Name: LOInnerLoad[0] Schema: c1#14:bytearray)
+                        |
+                        |---TEST_DATA: (Name: LOLoad Schema: c1#14:bytearray)RequiredFields:null
+
+
+
+Runs fine by turning off PushUpFilter ("-t PushUpFilter").

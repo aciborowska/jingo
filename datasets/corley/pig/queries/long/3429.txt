@@ -1,0 +1,33 @@
+Pig's default tuple implementation is very memory inefficient for small tuples, as the minimum size of an empty tuple is 96 bytes. This leads to bags being spilled more often than they need to. SchemaTuple addresses this, but is not fully integrated into the PhysicalPlan pipeline (and seems like it would be difficult to do so). Furthermore, it is likely that almost all UDFs do not use SchemaTuple.
+
+This patch therefore provides some basic optimizations to reduce memory footprint of tuples by having BinSedesTupleFactory construct specialized tuple implementations in certain circumstances. This way, anything using BinSedesTupleFactory will reap the benefits, and since SchemaTuple uses a different factory, it will not be interfered with.
+
+There is a long description below, because this patch might break stuff. I tried to think through possible implementation hazards which I will list.
+
+The specialized tuple implementations are as follows:
+
+EmptyTuple          // no fields, just an object header = 8 bytes
+NullWrapperTuple    // wraps a single null field, 8 bytes
+CountingTuple       // replaces (1L) as initial output of COUNT, 8 bytes
+
+IntegerWrapperTuple // these all wrap a single primitive field
+LongWrapperTuple    // object header + rounded primitive size = 16 bytes
+FloatWrapperTuple
+DoubleWrapperTuple
+
+BinSedesTuple2      // these are pair/triples of fields with no ArrayList
+BinSedesTuple3      // 16/24 bytes of overhead as opposed to 80 from ArrayList
+
+The memory savings are greatest for the algebraic math functions COUNT, SUM, etc. For example, the size of an intermediate tuple for COUNT should go from 112 bytes to 8 bytes. The size of an intermediate tuple from SUM should go from 112 bytes to 16 bytes.
+
+I haven't finished running the full unit-tests, but TestAlgebraicEval passes so I'm hopeful it will be manageable to debug.
+
+The three concerns that I have are:
+1) Since TupleFactory now sometimes outputs non-appendable tuples, the isFixedSize() method had to be removed. A file search didn't show it being used anywhere though. I think appending to tuples instead of finding out the requisite size ahead of time is bad practice as well (I changed POForeach to do the latter so it can take advantage of the special tuple impls).
+2) Also since TupleFactory now has multiple tuple types, the tupleClass() method gets tricky. I made a superclass GenericBinSedesTuple that all the specialized classes inherit from, and it seems to work, but I'm not sure what the implications of this are. It breaks the inheritance tree of AbstractTuple <-- DefaultTuple <-- BinSedesTuple, so now "DefaultBinSedesTuple" inherits directly from GenericBinSedesTuple and DefaultTuple is left unused. In the patch, all the stuff for DefaultBinSedesTuple is just copied over from the old DefaultTuple.
+3) I tried to be careful not to break BinInterSedesTupleRawComparator, but this will need verification.
+
+Finally,
+4) For my personal use cases, I'd like to make custom tuple implementations like SparseMatrixTuple or FeatureVectorTuple. Would people be opposed to making some "hooks" in BinInterSedes for user-defined tuple types? I was thinking there could be some config which maps these hooks (data type bytes) to user-defined classes and uses reflection to instantiate and read them. Not sure if that would be performant though.
+
+Thanks for reading all that!

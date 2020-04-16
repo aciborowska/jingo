@@ -1,0 +1,26 @@
+I ran into a weird case where a Zookeeper server rejoins the cluster after missing several operations, and then a client creates a new sequential node that has a number earlier than the last node it created.  I don't have full logs, or a live system in this state, or any data directories, just some partial server logs and the evidence as seen by the client.  Haven't tried reproducing it yet, just wanted to see if anyone here had any ideas.  Here's the scenario (probably more info than necessary, but trying to be complete)
+
+1) Initially (5:37:20): 3 nodes up, with ids 215, 126, and 37 (called nodes #1, #2, and #3 below):
+2) Nodes periodically (and throughout this whole timeline) create sequential, non-ephemeral nodes under the /zkrsm parent node.
+3) 5:46:57: Node #1 gets notified of /zkrsm/0000000000000000_record0000002116
+4) 5:47:06: Node #1 restarts and rejoins
+5) 5:49:26: Node #2 gets notified of /zkrsm/0000000000000000_record0000002708
+6) 5:49:29: Node #2 restarts and rejoins
+7) 5:52:01: Node #3 gets notified of /zkrsm/0000000000000000_record0000003291
+8) 5:52:02: Node #3 restarts and begins the rejoining process
+9) 5:52:08: Node #1 successfully creates /zkrsm/0000000000000000_record0000003348
+10) 5:52:08: Node #2 dies after getting notified of /zkrsm/0000000000000000_record0000003348
+11) 5:52:10ish: Node #3 is elected leader (the ZK server log doesn't have wallclock timestamps, so not exactly sure on the ordering of this step)
+12) 5:52:15: Node #1 successfully creates /zkrsm/0000000000000000_record0000003292
+
+Note that the node created in step #12 is lower than the one created in step #9, and is exactly one greater than the last node seen by node #3 before it restarted.
+
+Here is the sequence of session establishments as seen from the C client of node #1 after its restart (the IP address of node #1=13.0.0.11, #2=13.0.0.12, #3=13.0.0.13):
+
+2011-03-18 05:46:59,838:17454(0x7fc57d3db710):ZOO_INFO@check_events@1632: session establishment complete on server [13.0.0.13:2888], sessionId=0x252ec780a3020000, negotiated timeout=6000
+2011-03-18 05:49:32,194:17454(0x7fc57cbda710):ZOO_INFO@check_events@1632: session establishment complete on server [13.0.0.13:2888], sessionId=0x252ec782f5100002, negotiated timeout=6000
+2011-03-18 05:52:02,352:17454(0x7fc57d3db710):ZOO_INFO@check_events@1632: session establishment complete on server [13.0.0.12:2888], sessionId=0x7e2ec782ff5f0001, negotiated timeout=6000
+2011-03-18 05:52:08,583:17454(0x7fc57d3db710):ZOO_INFO@check_events@1632: session establishment complete on server [13.0.0.11:2888], sessionId=0x7e2ec782ff5f0001, negotiated timeout=6000
+2011-03-18 05:52:13,834:17454(0x7fc57cbda710):ZOO_INFO@check_events@1632: session establishment complete on server [13.0.0.11:2888], sessionId=0xd72ec7856d0f0001, negotiated timeout=6000
+
+I will attach logs for all nodes after each of their restarts, and a partial log for node #3 from before its restart.

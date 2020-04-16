@@ -1,0 +1,49 @@
+Consider the following scenario:
+
+A relying party application is in a multi-JVM Tomcat cluster (we'll reference to these as instances A and B)
+A user initiates OpenID authentication on instance A and is redirected to the OpenID provider
+Before the user is returned to the relying party by the OpenID provider, instance A goes down and the load balancer begins sending all traffic to instance B
+The user authenticates and is returned to the relying party application (instance B)
+Final validation on instance B fails (in my case, direct verification of the signature failed) and the OpenID4JavaConsumer attempts to create a failed authentication response
+
+This breaks down because, in the beginConsumption() method, OpenID4JavaConsumer performs discovery and stores the resulting DiscoveryInformation object in the HttpSession object off of the current HttpServletRequest. When authentication fails, the following lines are executed in OpenID4JavaConsumer's endConsumption() method:
+
+
+
+
+
+
+        if (verified == null) {
+
+
+
+
+            Identifier id = discovered.getClaimedIdentifier();
+
+
+
+
+            return new OpenIDAuthenticationToken(OpenIDAuthenticationStatus.FAILURE,
+
+
+
+
+                    id == null ? "Unknown" : id.getIdentifier(),
+
+
+
+
+                    "Verification status message: [" + verification.getStatusMsg() + "]", attributes);
+
+
+
+
+        }
+
+
+
+
+
+
+The "discovered" object is a DiscoveryInformation object pulled from the HttpSession object off of the current HttpServletRequest object. In this event, it is null because it's a new session (difference Tomcat instance, in this case), and so the previously-stored DiscoveryInformation object was lost. The attempt, then, to pull the Identifier object off of the null DiscoveryInformation will throw an NPE at this point.
+My recommendation for fixing this would be to allow a consumer to inject (through, say, a DiscoveryInformationStorageStrategy interface) the means by which the DiscoveryInformation object is persisted. I've hacked around this using an HttpSession object that actually delegates to writing the serialized DiscoveryInformation to a cookie (and reading it from that same cookie), but, as I said, it's a hack, and I don't like hacks. 

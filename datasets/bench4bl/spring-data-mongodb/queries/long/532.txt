@@ -1,0 +1,77 @@
+I have come across an issue which results in the following exception to be thrown.
+
+
+
+
+
+
+java.lang.RuntimeException: org.springframework.data.mongodb.CannotGetMongoDbConnectionException: Failed to authenticate to database
+
+
+
+
+
+
+This appears to be caused by multiple threads trying to authenticate a single DB instance. The bug appears to be in MongoDbUtils in the doGetDB(…) method. The method retrieves the DB object for a given name and checks if it is authenticated, if it is not authenticated then it will authenticate it with the given username and password. However, if two threads check the same DB object they will both attempt to authenticate which leads to the exception being thrown. I have checked the latest source code in the git repository and the bug still appears to be present. To solve this issue I have replaced lines 109 - 118 with:
+
+
+
+
+
+
+if (credentialsGiven && !db.isAuthenticated()) {
+
+
+
+
+	String username = credentials.getUsername();
+
+
+
+
+	String password = credentials.hasPassword() ? credentials.getPassword() : null;
+
+
+
+
+	synchronized (db) {
+
+
+
+
+		if (!db.isAuthenticated() && !db.authenticate(username, password == null ? null : password.toCharArray())) {
+
+
+
+
+			throw new CannotGetMongoDbConnectionException("Failed to authenticate to database [" + databaseName
+
+
+
+
+					+ "], username = [" + username + "], password = [" + password + "]", databaseName, credentials);
+
+
+
+
+		}	
+
+
+
+
+	}
+
+
+
+
+}
+
+
+
+
+
+
+The synchronized block could be moved to include both if statements which would remove the need for the second call to isAuthenticated(…) but it would mean that each time the doGetDb(…) method is called the synchronized block will be entered. Whereas the above will only be synchronized on calls to doGetDb(…) when the db has not been authenticated, with the compromise that the isAuthenticated() method has to be called twice.
+I have run the above fix (well the same fix based on the 1.0.4.RELEASE code) and it appears to solve the issue.
+A second issue to be aware of is the pre version 2.9.0 of the java mongo driver has a multithreading bug described in the link below. I have had a look a the latest dev version of spring-mongo and it is still using 2.7.1 so it would be worth considering the upgrade.
+https://jira.mongodb.org/browse/JAVA-582

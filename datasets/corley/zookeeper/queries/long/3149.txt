@@ -1,0 +1,36 @@
+Steps to reproduce:
+
+	Have a 3 node cluster set up, with node 2 as the leader, and node 3 zxid ahead of node 1 such that node 3 will be the new leader when node 2 disappears.
+	Shut down node 2 such that it is unreachable and attempts to connect to it yield a socket timeout.
+	Have the remaining two nodes get "Connection refused" responses almost immediately if one tries to connect to the other on a port that isn't open.
+
+
+
+Expected behaviour:
+
+The remaining nodes reach quorum.
+
+Actual behaviour:
+
+The remaining nodes repeatedly fail to reach quorum, spinning and holding elections until node 2 is brought back.
+
+ 
+
+This is because:
+
+	An election for a new leader starts.
+	Both nodes broadcast notifications to all the other nodes
+	The notifications are sent to node 1 quickly, then it tries to send it to node 2, which takes cnxTimeout (default 5s) before timing out, then sends it to node 3. This results in all the notifications to node 3 taking 5 seconds to arrive.
+	Despite the delays, node 1 and node 3 agree that node 3 should be leader.
+	node 1 sends the message that it will follow node 3, then immediately tries to connect to it as leader.
+	Because of the delay, node 3 hasn't yet received the notification that node 1 is following it, so doesn't start accepting requests.
+	This causes the requests from node 1 to fail quickly with "Connection refused".
+	It retries 5 times (pausing a second between each)
+	Because these connection refused are happening at 1/5th of cnxTimeout, node 1 gives up trying to follow node 3 and starts a new election.
+	Node 3 times out waiting for node 1 to acknowledge it as leader, and starts a new election.
+
+
+
+ 
+
+We can work around the issue by decreasing cnxTimeout to be less than 5. However, it seems like a bad idea to rely on tweaking a value based on network performance, especially as the value is only configurable via JVM args rather than the conf files.

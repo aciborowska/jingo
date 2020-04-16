@@ -1,0 +1,37 @@
+The SnapshotHFileCleaner calls the SnapshotFileCache if a particular HFile in question is part of a snapshot.
+If the HFile is not in the cache, we then refresh the cache and check again.
+But the cache refresh checks to see if anything has been modified since the last cache refresh but this logic is incorrect in certain scenarios.
+The last modified time is done via this operation:
+
+
+
+this.lastModifiedTime = Math.min(dirStatus.getModificationTime(),
+
+                                     tempStatus.getModificationTime());
+
+
+
+and the check to see if the snapshot directories have been modified:
+
+
+
+// if the snapshot directory wasn't modified since we last check, we are done
+
+    if (dirStatus.getModificationTime() <= lastModifiedTime &&
+
+        tempStatus.getModificationTime() <= lastModifiedTime) {
+
+      return;
+
+    }
+
+
+
+Suppose the following happens:
+dirStatus modified 6-1-2014
+tempStatus modified 6-2-2014
+lastModifiedTime = 6-1-2014
+provided these two directories don't get modified again all subsequent checks wont exit early, like they should.
+In our cluster, this was a huge performance hit.  The cleaner chain fell behind, thus almost filling up dfs and our namenode heap.
+Its a simple fix, instead of Math.min we use Math.max for the lastModified, I believe that will be correct.
+I'll apply a patch for you guys.

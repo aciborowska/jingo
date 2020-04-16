@@ -1,0 +1,67 @@
+It seems that when a field enclosed by double-quotes contains a carriage return or linefeed, and the input file is bigger than the dfs blocksize, the input split does not honor CSVExcelStorage's treatment of newlines within fields.
+
+It seems that the input is split by the linefeed closest to the byte range defined for the split, and causes fields to become skewed.
+
+For example, 3190 Byte Text file containing 21 identical records such as the below:
+
+"John Doe""025719e8244c7c400b811ea349f2c18e""This is a multiline message:
+This is the second line.
+Thank you for listening."~"2012-08-24 09:16:02"
+
+Each line termination here is specified by a CRLF
+
+Run through a pig script:
+SET mapred.min.split.size 1024;
+SET mapred.max.split.size 1024;
+SET pig.noSplitCombination true;
+SET mapred.max.jobs.per.node 1;
+myinput_file = LOAD 's3://sourcebucket/inputfile.txt' USING org.apache.pig.piggybank.storage.CSVExcelStorage('~', 'YES_MULTILINE','WINDOWS')
+AS(
+  name:chararray,
+  sysid:chararray,
+  message:chararray,
+  messagedate:chararray
+);
+myinput_tuples = FOREACH myinput_file GENERATE name;
+STORE myinput_tuples INTO '/output052/' USING org.apache.pig.piggybank.storage.CSVExcelStorage(',');
+
+Results in 4 output files:
+
+rw-rr-   1 hadoop supergroup          0 2015-05-26 07:19 /output052/_SUCCESS
+rw-rr-   1 hadoop supergroup         63 2015-05-26 07:19 /output052/part-m-00000
+rw-rr-   1 hadoop supergroup         54 2015-05-26 07:19 /output052/part-m-00001
+rw-rr-   1 hadoop supergroup        769 2015-05-26 07:19 /output052/part-m-00002
+rw-rr-   1 hadoop supergroup         25 2015-05-26 07:19 /output052/part-m-00003
+[hadoop@master~]$ hadoop fs -cat /output052/part-m-00000
+John Doe
+John Doe
+John Doe
+John Doe
+John Doe
+John Doe
+John Doe
+[hadoop@master~]$ hadoop fs -cat /output052/part-m-00001
+John Doe
+John Doe
+John Doe
+John Doe
+John Doe
+John Doe
+[hadoop@master~]$ hadoop fs -cat /output052/part-m-00002
+This is the second line.
+"Thank you for listening.~2012-08-24 09:16:02""
+John Doe""~025719e8244c7c400b811ea349f2c18e""~This is a multiline message:"
+"Thank you for listening.~2012-08-24 09:16:02""
+John Doe""~025719e8244c7c400b811ea349f2c18e""~This is a multiline message:"
+"Thank you for listening.~2012-08-24 09:16:02""
+John Doe""~025719e8244c7c400b811ea349f2c18e""~This is a multiline message:"
+"Thank you for listening.~2012-08-24 09:16:02""
+John Doe""~025719e8244c7c400b811ea349f2c18e""~This is a multiline message:"
+"Thank you for listening.~2012-08-24 09:16:02""
+John Doe""~025719e8244c7c400b811ea349f2c18e""~This is a multiline message:"
+"Thank you for listening.~2012-08-24 09:16:02""
+John Doe""~025719e8244c7c400b811ea349f2c18e""~This is a multiline message:"
+[hadoop@master~]$ hadoop fs -cat /output052/part-m-00003
+This is the second line.
+
+Skewing occurs on the third part.

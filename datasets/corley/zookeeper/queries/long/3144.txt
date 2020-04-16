@@ -1,0 +1,11 @@
+Found this issue recently when checking another prod issue, the problem is that the current code will update lastProcessedZxid before it's actually making change for the global sessions in the DataTree.
+ 
+In case there is a snapshot taking in progress, and there is a small time stall between set lastProcessedZxid and update the session in DataTree due to reasons like thread context switch or GC, etc, then it's possible the lastProcessedZxid is actually set to the future which doesn't include the global session change (add or remove).
+ 
+When reload this snapshot and it's txns, it will replay txns from lastProcessedZxid + 1, so it won't create the global session anymore, which could cause data inconsistent.
+ 
+When global sessions are inconsistent, it might have ephemeral inconsistent as well, since the leader will delete all the ephemerals locally if there is no global sessions associated with it, and if someone have snapshot sync with it then that server will not have that ephemeral as well, but others will. It will also have global session renew issue for that problematic session.
+ 
+The same issue exist for the closeSession txn, we need to move these global session update logic before processTxn, so the lastProcessedZxid will not miss the global session here.
+ 
+ 

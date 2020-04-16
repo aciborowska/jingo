@@ -1,0 +1,39 @@
+It's an interesting issue. We found there's 1 HFile keeped changing its name all the time. After dig in more, we found one strange behavior in compaction flow.
+Here's the problem(We set the TTL property in our table):
+There were 10 HFiles and only 1 expired HFile when this problem occured:
+
+2012-09-07 02:21:05,298 DEBUG org.apache.hadoop.hbase.regionserver.Store: loaded hdfs://hacluster/hbase/fhtest/97ac7ea6f732b7c10fe504a54ab02441/value/221f56905cbd4bf09bd4d5d9dceb113a.3ed2e43476ca2c614e33d0e1255c79a9, isReference=true, isBulkLoadResult=false, seqid=118730, majorCompaction=false
+
+2012-09-07 02:21:05,309 DEBUG org.apache.hadoop.hbase.regionserver.Store: loaded hdfs://hacluster/hbase/fhtest/97ac7ea6f732b7c10fe504a54ab02441/value/297b45a6c5f541dca05105ab098dab8d, isReference=false, isBulkLoadResult=false, seqid=122018, majorCompaction=false
+
+2012-09-07 02:21:05,326 DEBUG org.apache.hadoop.hbase.regionserver.Store: loaded hdfs://hacluster/hbase/fhtest/97ac7ea6f732b7c10fe504a54ab02441/value/4a4a4598bc0443c9be087812052d6796.3ed2e43476ca2c614e33d0e1255c79a9, isReference=true, isBulkLoadResult=false, seqid=119850, majorCompaction=false
+
+2012-09-07 02:21:05,348 DEBUG org.apache.hadoop.hbase.regionserver.Store: loaded hdfs://hacluster/hbase/fhtest/97ac7ea6f732b7c10fe504a54ab02441/value/8c6d56c9bafb4b0eb0dd6e04e41ca5b7, isReference=false, isBulkLoadResult=false, seqid=123135, majorCompaction=false
+
+2012-09-07 02:21:05,357 DEBUG org.apache.hadoop.hbase.regionserver.Store: loaded hdfs://hacluster/hbase/fhtest/97ac7ea6f732b7c10fe504a54ab02441/value/a6c2873a646c425f87a6a8a271a9904e, isReference=false, isBulkLoadResult=false, seqid=76561, majorCompaction=false
+
+2012-09-07 02:21:05,370 DEBUG org.apache.hadoop.hbase.regionserver.Store: loaded hdfs://hacluster/hbase/fhtest/97ac7ea6f732b7c10fe504a54ab02441/value/a712a2f79bd247f48405d2c6a91757ab.3ed2e43476ca2c614e33d0e1255c79a9, isReference=true, isBulkLoadResult=false, seqid=120951, majorCompaction=false
+
+2012-09-07 02:21:05,381 DEBUG org.apache.hadoop.hbase.regionserver.Store: loaded hdfs://hacluster/hbase/fhtest/97ac7ea6f732b7c10fe504a54ab02441/value/a717c63214534cb0aaf8e695147fde46, isReference=false, isBulkLoadResult=false, seqid=122763, majorCompaction=false
+
+2012-09-07 02:21:05,431 DEBUG org.apache.hadoop.hbase.regionserver.Store: loaded hdfs://hacluster/hbase/fhtest/97ac7ea6f732b7c10fe504a54ab02441/value/c456f3831b094ac3a0590678acbf27a5.3ed2e43476ca2c614e33d0e1255c79a9, isReference=true, isBulkLoadResult=false, seqid=120579, majorCompaction=false
+
+2012-09-07 02:21:05,518 DEBUG org.apache.hadoop.hbase.regionserver.Store: loaded hdfs://hacluster/hbase/fhtest/97ac7ea6f732b7c10fe504a54ab02441/value/dde4e56b131a4ffdaec8f9574bffa5ab.3ed2e43476ca2c614e33d0e1255c79a9, isReference=true, isBulkLoadResult=false, seqid=121651, majorCompaction=false
+
+2012-09-07 02:21:05,593 DEBUG org.apache.hadoop.hbase.regionserver.Store: loaded hdfs://hacluster/hbase/fhtest/97ac7ea6f732b7c10fe504a54ab02441/value/ee62844594f2474e88186dbde673c802.3ed2e43476ca2c614e33d0e1255c79a9, isReference=true, isBulkLoadResult=false, seqid=119478, majorCompaction=false
+
+
+
+Compaction was triggered during Region-Opening . As we know, compaction should choose the expired HFiles to compact first, so that 1 expired HFile was choosed. 
+Since no KeyValue was there, compaction deleted the old HFile and created a new one with minimumTimestamp = -1 && maximumTimestamp = -1.
+So after the first compaction, there were still 10 HFiles. It triggered compaction again and again.....
+
+2012-09-07 02:21:06,079 INFO org.apache.hadoop.hbase.regionserver.compactions.CompactSelection: Deleting the expired store file by compaction: hdfs://hacluster/hbase/fhtest/97ac7ea6f732b7c10fe504a54ab02441/value/72468dff1cd94c4fb9cf9196cc3183b7 whose maxTimeStamp is -1 while the max expired timestamp is 1344824466079
+
+....
+
+2012-09-07 02:21:06,080 DEBUG org.apache.hadoop.hbase.regionserver.Store: Compacting hdfs://hacluster/hbase/fhtest/97ac7ea6f732b7c10fe504a54ab02441/value/72468dff1cd94c4fb9cf9196cc3183b7, keycount=0, bloomtype=NONE, size=558, encoding=NONE
+
+2012-09-07 02:21:06,082 DEBUG org.apache.hadoop.hbase.util.FSUtils: Creating file:hdfs://hacluster/hbase/fhtest/97ac7ea6f732b7c10fe504a54ab02441/.tmp/8239019ff92f49bfab26b02ca43bc26a with permission:rwxrwxrwx
+
+

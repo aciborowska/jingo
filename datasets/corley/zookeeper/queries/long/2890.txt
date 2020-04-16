@@ -1,0 +1,11 @@
+ZooKeeper C Client single thread build
+
+Function deserialize_response(), in case COMPLETION_STRING, uses local automatic variable struct CreateResponse res which is left uninitialized and passed to the function deserialize_GetACLResponse() and then to deallocate_GetACLResponse().
+
+The deserialize function, which is called the first, is expected to assign the res variable with a value from the parsed struct iarchive *ia. But, if ia contains for example insufficient amount of bytes the deserialize_String() function refuses of assigning a value to res, and res stays uninitialized (the true case is described below). Then, the deallocate function calls deallocate_String() passing uninitialized res with arguments. If incidentally the memory region in the program stack under the res was not equal to NULL, the last call leads to free() by invalid address.
+
+The true case: this happens when an active multi request with create sub-request is completed on call to zookeeper_close() with the so called "Fake response" which is fabricated by the function free_completions(). Such response includes only the header but zero bytes for the body. The significant condition is that the create request is not a stand-alone one, but namely a sub-request within the multi request. In this case the deserialize_response() is called recursively (for each sub-request), and when it is called for the create subrequest (from the nested deserialize_multi()) the failed parameter is assigned with false (0), so the if (failed) condition branches to the else part. Note that in the stand-alone create-request case this does not occur.
+
+I suspect this may happen not only due to call to zookeeper_close() but on reception of a true multi-response from the server containing insufficient number of bytes (I'm not sure if it can be a proper response from the server with an error overall status and empty or insufficient payload).
+
+This is a proposed fix: https://github.com/apache/zookeeper/pull/359

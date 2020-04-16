@@ -1,0 +1,33 @@
+NettyServerCnxnFactory.java
+
+    // Access to ipMap or to any Set contained in the map needs to be
+    // protected with synchronized (ipMap) { ... }
+    private final Map<InetAddress, Set<NettyServerCnxn>> ipMap = new HashMap<>();
+
+    private void addCnxn(NettyServerCnxn cnxn) {
+        cnxns.add(cnxn);
+        synchronized (ipMap){
+            InetAddress addr =
+                ((InetSocketAddress)cnxn.getChannel().remoteAddress()).getAddress();
+            Set<NettyServerCnxn> s = ipMap.get(addr);
+            if (s == null) {
+                s = new HashSet<>();
+                ipMap.put(addr, s);
+            }
+            s.add(cnxn);
+        }
+    }
+
+
+
+This can be done better (less code, less contention) with Java 8 Map API.  Although, as I look at this, the only thing this is used for is a count of the number of connections from each address.  Maybe this should just store a count instead of a collection.
+
+https://github.com/apache/zookeeper/blob/f69ad1b0fed88da3c1b67fd73031e7248c0564f7/zookeeper-server/src/main/java/org/apache/zookeeper/server/NettyServerCnxnFactory.java
+
+Also note that an exclusive lock is required with each interaction of the table.  By moving to a ConcurrentHashMap:
+
+Retrieval operations (including get) generally do not block, so may overlap with update operations (including put and remove).
+
+https://docs.oracle.com/javase/8/docs/api/java/util/concurrent/ConcurrentHashMap.html
+
+Removing this lock should improve ZK's performance for highly concurrent client workloads, especially since its Async Netty operations, unless of course there are other locks elsewhere.

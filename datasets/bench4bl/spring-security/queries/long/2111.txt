@@ -1,0 +1,131 @@
+Updated Description
+Previously Spring Security would disable automatically saving the SecurityContext when the Thread was different than the Thread that created the SaveContextOnUpdateOrErrorResponseWrapper. This worked for many cases, but could cause issues when a timeout occurred. The problem is that a Thread can be reused to process the timeout since the Threads are pooled. This means that a timeout of a request trigger an apparent logout as described in the following workflow:
+
+The SecurityContext was established on the SecurityContextHolder
+An Async request was made
+The SecurityContextHolder would be cleared out
+The Async request times out
+The Async request would be dispatched back to the container upon
+        timing out. If the container reused the same Thread to process the
+        timeout as the original request, Spring Security would attempt to
+        save the SecurityContext when the response was committed. Since the
+        SecurityContextHolder was still cleared out it removes the
+        SecurityContext from the HttpSession
+
+Spring Security should prevent the SecurityContext from automatically being saved when the response is committed as soon as ServletRequest#startAsync() or   ServletRequest#startAsync(ServletRequest,ServletResponse) is called as apposed to looking at the Thread equality.
+Original Description
+I still see the same behavior on DeferredResult controllers. (after some time there is an auto logout)
+It doesn't always happen as it used to before 3.2.0.M1 .
+Logs are just before logging out occurs and are related to an AJAX call to a deferredResult method.
+
+
+
+
+
+
+ 
+
+
+
+
+Logs:
+
+
+
+
+2013-01-01 16:20:08,019 DEBUG yContextPersistenceFilter:97 - SecurityContextHolder now cleared, as request processing completed
+
+
+
+
+...
+
+
+
+
+2013-01-01 16:21:32,649 DEBUG eToSessionResponseWrapper:140 - Skip saving SecurityContext since processing the HttpServletResponse on a different Thread than the original HttpServletRequest
+
+
+
+
+...
+
+
+
+
+2013-01-01 16:22:01,650 DEBUG SecurityContextRepository:269 - SecurityContext is empty or contents are anonymous - context will not be stored in HttpSession.
+
+
+
+
+...
+
+
+
+
+2013-01-01 16:22:03,660 DEBUG AntPathRequestMatcher :116 - Checking match of request : '/deferred'; against '/resources/**'
+
+
+
+
+...
+
+
+
+
+2013-01-01 16:22:03,661 DEBUG SecurityContextRepository:139 - HttpSession returned null object for SPRING_SECURITY_CONTEXT
+
+
+
+
+2013-01-01 16:22:03,661 DEBUG SecurityContextRepository:85 - No SecurityContext was available from the HttpSession: org.apache.catalina.session.StandardSessionFacade@5b3cc94b. A new one will be created.
+
+
+
+
+...
+
+
+
+
+2013-01-01 16:22:03,664 DEBUG ymousAuthenticationFilter:102 - Populated SecurityContextHolder with anonymous token: 'org.springframework.security.authentication.AnonymousAuthenticationToken@90541710: Principal: anonymousUser; Credentials: [PROTECTED]; Authenticated: true; Details: org.springframework.security.web.authentication.WebAuthenticationDetails@166c8: RemoteIpAddress: 0:0:0:0:0:0:0:1; SessionId: 6D46ACB5AEA101C58A838529A3F6ED1D; Granted Authorities: ROLE_ANONYMOUS'
+
+
+
+
+...
+
+
+
+
+2013-01-01 16:22:03,667 DEBUG FilterSecurityInterceptor:310 - Previously Authenticated: org.springframework.security.authentication.AnonymousAuthenticationToken@90541710: Principal: anonymousUser; Credentials: [PROTECTED]; Authenticated: true; Details: org.springframework.security.web.authentication.WebAuthenticationDetails@166c8: RemoteIpAddress: 0:0:0:0:0:0:0:1; SessionId: 6D46ACB5AEA101C58A838529A3F6ED1D; Granted Authorities: ROLE_ANONYMOUS
+
+
+
+
+...
+
+
+
+
+2013-01-01 16:22:03,668 DEBUG AffirmativeBased :65 - Voter: org.springframework.security.web.access.expression.WebExpressionVoter@52d9eb97, returned: -1
+
+
+
+
+...
+
+
+
+
+2013-01-01 16:22:03,668 DEBUG xceptionTranslationFilter:165 - Access is denied (user is anonymous); redirecting to authentication entry point
+
+
+
+
+org.springframework.security.access.AccessDeniedException: Access is denied
+
+
+
+
+

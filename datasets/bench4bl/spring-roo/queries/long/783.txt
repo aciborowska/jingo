@@ -1,0 +1,332 @@
+When I add a constructor with args to a Roo-managed entity, the project becomes unusable in two ways:
+1. If I have controller created through scaffolding, I get compilation errors
+2. If I execute integration tests for such a class, they fail
+Analysis and suggestion for the fix towards the end of this report...
+How to reproduce:
+1. Create a new project
+2. Run the following script
+
+
+
+
+
+
+project --topLevelPackage com.mycompany.hr
+
+
+
+
+persistence setup --provider HIBERNATE --database HYPERSONIC_PERSISTENT
+
+
+
+
+entity --class ~.domain.Employee
+
+
+
+
+field string --fieldName name
+
+
+
+
+
+
+3. Add the following constructor to Employee
+
+
+
+
+
+
+public Employee(String name) {
+
+
+
+
+	this.name = name;
+
+
+
+
+}
+
+
+
+
+
+
+Let Roo shell pick this change (which will add a private no-arg constructor in Employee_Roo_Entity)
+Then:
+
+
+
+
+
+
+roo> test integration --entity com.mycompany.hr.domain.Employee
+
+
+
+
+roo> exit
+
+
+
+
+
+
+
+
+
+
+
+
+$ mvn test
+
+
+
+
+...
+
+
+
+
+Tests in error: 
+
+
+
+
+  testCountEmployees(com.mycompany.hr.domain.EmployeeIntegrationTest)
+
+
+
+
+  testFindEmployee(com.mycompany.hr.domain.EmployeeIntegrationTest)
+
+
+
+
+  testFindAllEmployees(com.mycompany.hr.domain.EmployeeIntegrationTest)
+
+
+
+
+  testFindEmployeeEntries(com.mycompany.hr.domain.EmployeeIntegrationTest)
+
+
+
+
+  testFlush(com.mycompany.hr.domain.EmployeeIntegrationTest)
+
+
+
+
+  testMerge(com.mycompany.hr.domain.EmployeeIntegrationTest)
+
+
+
+
+  testPersist(com.mycompany.hr.domain.EmployeeIntegrationTest)
+
+
+
+
+  testRemove(com.mycompany.hr.domain.EmployeeIntegrationTest)
+
+
+
+
+ 
+
+
+
+
+Tests run: 9, Failures: 0, Errors: 8, Skipped: 0
+
+
+
+
+
+
+Test report details that it couldn't find a no-arg constructor 
+
+
+
+
+
+
+testCountEmployees(com.mycompany.hr.domain.EmployeeIntegrationTest)  Time elapsed: 0.35 sec  <<< ERROR!
+
+
+
+
+java.lang.NoSuchMethodError: com.mycompany.hr.domain.Employee: method <init>()V not found
+
+
+
+
+        at com.mycompany.hr.domain.EmployeeDataOnDemand_Roo_DataOnDemand.ajc$interMethod$com_mycompany_hr_domain_EmployeeDataOnDemand_Roo_DataOnDemand$com_mycompany_hr_domain_EmployeeDataOnDemand$getNewTransientEmployee(EmployeeDataOnDemand_Roo_DataOnDemand.aj:19)
+
+
+
+
+
+
+4. Add controllers
+
+
+
+
+
+
+roo> controller all --package ~.web
+
+
+
+
+roo> exit
+
+
+
+
+
+
+
+
+
+
+
+
+$ mvn compile
+
+
+
+
+...
+
+
+
+
+[ERROR] BUILD ERROR
+
+
+
+
+[INFO] ------------------------------------------------------------------------
+
+
+
+
+[INFO] Compiler errors : 
+
+
+
+
+error at modelMap.addAttribute("employee", new Employee());
+
+
+
+
+                                  ^^^^^
+
+
+
+
+/Users/rladdad/spring-dev/bar/src/main/java/com/mycompany/hr/web/EmployeeController_Roo_Controller.aj:33:0::0 The constructor Employee() is not visible
+
+
+
+
+ 
+
+
+
+
+
+
+Analysis
+Roo adds an ITD for a no-arg private constructor when it detects that an entity has a constructor with args.
+
+
+
+
+
+
+private Employee.new() {
+
+
+
+
+        super();
+
+
+
+
+}
+
+
+
+
+
+
+However, AspectJ goes out of its way to ensure that the constructor remains private (from the aspect's point of view). So it doesn't actually add a no-arg constructor, but rather one that takes an com.mycompany.hr.domain.Employee_Roo_Entity argument.
+
+
+
+
+
+
+$ javap target/classes/com/mycompany/hr/domain/Employee
+
+
+
+
+Compiled from "Employee.java"
+
+
+
+
+public class com.mycompany.hr.domain.Employee extends java.lang.Object implements org.springframework.beans.factory.aspectj.ConfigurableObject{
+
+
+
+
+    transient javax.persistence.EntityManager entityManager;
+
+
+
+
+    public com.mycompany.hr.domain.Employee(java.lang.String);
+
+
+
+
+    public com.mycompany.hr.domain.Employee(com.mycompany.hr.domain.Employee_Roo_Entity);
+
+
+
+
+    ...
+
+
+
+
+
+
+Then, of course, JPA implementation etc., can't have the no-arg constructor they so need.
+A solution is to simply add a public no-arg constructor. If we really want to be correct in not allowing public access to such a constructor, we could add a 'declare error' such as
+
+
+
+
+
+
+declare error: call(Employee.new()) && !within(*_Roo_*) : "Illegal access to semantically private constructor; if you must use a no-arg constructor, add one to the entity itself";
+
+
+
+
+
+

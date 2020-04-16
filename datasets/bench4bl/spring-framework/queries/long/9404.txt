@@ -1,0 +1,41 @@
+I have been migrating from hibernate 3.3.x to hibernate 4.1.3-final using Spring 3.1.1-release.
+Besides the hibernate specific refactorings (due to API changes) I thought the only changes for the Spring integration were changing packages names:
+
+Use the LocalSessionFactoryBean from the hibernate4 package
+Use the HibernateTransactionManger (which we only use for testing) from the hibernate4 package.
+
+As it turned out the migration when smooth and everything was working on a local tomcat.
+However, once we ran our app on glassfish with the JtaTransactionManager (I tested it on GF3.1.2) we got a "No Session found for current thread" when obtaining sessionFactory.currentSession().
+After checking SpringSessionContext, we learned that if TransactionSynchronizationManager does not return a existing session or SessionHolder, a check
+is performed for a jtaSessionContext, which was null.
+The fact that no SessionHolder is registered made also sense as this done by the HibernateTransactionManager and we are using the JtaTransactionManager.
+So then learned that in case of JTA you have to specify manually how the tx manager/user transaction can be found.
+This was done automatically for you in the hibernate3 LocalSessionFactoryBean, but no longer in the hibernate4 LocalSessionFactoryBean.
+So to solve this we configured: 
+hibernate.transaction.jta.platform and set it to SunOneJtaPlatform.
+This resolved the "No Session found for current thread" as it initialized the jtaSessionContext with the txmanager provided by the configured JtaPlatform.
+However, now it turns out that the hibernate session is not flushed before the transaction is commited and hence no modifications are written to database.
+In the supplied sample we have a basic hibernate setup with H2. Next we have a JtaTransactionManager and a transactional facade.
+Next we have a test entity having a single property. The facade has two methods, one to store the entity and one to retrieve the entity.
+They both marked as @Transactional and if called will run in there own transaction.
+The trigger is a plain JEE servlet which retrieves the facade from application context.
+First the store method is called (tx1) then the retrieve method is called (tx2).
+As you will see with the Spring hibernate4 integration there was nothing saved.
+With the hibernate3 integration everything works as expected and the record is saved 
+(it can be retrieved by the subsequent retrieval transaction)
+What is also bizarre is that in hibernate3 modus everything goes via the Spring TransactionSynchronizationManager (even in JTA mode).
+Also the current session is bound via a thread local referenced via the synchronization.
+This is bound using a SpringSessionSynchronization which will call flush before transaction completion.
+All of this is gone with the hibernate4 integration from the moment a JTA environment is detected.
+As of then everything goes via the JTA transaction manager, as there where no Spring Transacion management involved.
+This could be normal to a certain extend, but it feels odd compared to the way is was done with hibernate3.
+I supplied two samples:
+
+hibernate3.zip : this is the working one, deploy it on GF and goto "http://localhost:8080/hibernate3/Persist"
+You will see that it stores a record and is able to retrieve it again
+
+
+hibernate4.zip : the exact same sample as above, but now with hibernate4 and using LocalSessionFactoryBean from the hibernate4 package and the hibernate.transaction.jta.platform set.
+You will see that it stores a record and is NOT able to retrieve it.
+
+Both samples have a POM so it should be trivial to build them.

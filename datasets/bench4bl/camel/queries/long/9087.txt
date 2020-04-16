@@ -1,0 +1,109 @@
+(note, camel-pgevent doesn't seem to have a component listed in JIRA)
+Having the following reproducer
+
+
+
+@ContextName("myCdiCamelContext")
+
+public class MyRoutes extends RouteBuilder {
+
+
+
+    @Inject
+
+    @Uri("pgevent://localhost:5432/postgres/foobar?user=postgres&pass=mysecretpassword")
+
+    private Endpoint listenEndpoint;
+
+
+
+    @Inject
+
+    @Uri("pgevent://localhost:5432/postgres/foobar?user=postgres&pass=mysecretpassword")
+
+    private Endpoint notifyEndpoint;
+
+
+
+    @Inject
+
+    @Uri("timer:foo?period=5000")
+
+    private Endpoint timerEndpoint;
+
+
+
+    @Inject
+
+    @Uri("log:output")
+
+    private Endpoint resultEndpoint;
+
+
+
+    @Inject
+
+    private SomeBean someBean;
+
+
+
+    @Override
+
+    public void configure() throws Exception {
+
+        from(timerEndpoint)
+
+                .transform().simple("hello")
+
+                .to(notifyEndpoint);
+
+
+
+        from(listenEndpoint)
+
+            .to(resultEndpoint);
+
+    }
+
+}
+
+
+
+together with
+
+
+
+docker run --name some-postgres -p 5432:5432 -e POSTGRES_PASSWORD=mysecretpassword -d postgres
+
+
+
+the notify payload is always null
+
+2015-08-19 08:40:51,216 [0 - timer://foo] DEBUG SendProcessor                  - >>>> Endpoint[pgevent://localhost:5432/postgres/foobar?pass=mysecretpassword&user=postgres] Exchange[Message: hello]
+
+2015-08-19 08:40:51,227 [C EventLoop (2)] DEBUG SendProcessor                  - >>>> Endpoint[log://output] Exchange[Message: null]
+
+2015-08-19 08:40:51,228 [C EventLoop (2)] INFO  output                         - Exchange[ExchangePattern: InOnly, BodyType: null, Body: [Body is null]]
+
+2015-08-19 08:40:56,199 [0 - timer://foo] DEBUG SendProcessor                  - >>>> Endpoint[pgevent://localhost:5432/postgres/foobar?pass=mysecretpassword&user=postgres] Exchange[Message: hello]
+
+2015-08-19 08:40:56,200 [C EventLoop (2)] DEBUG SendProcessor                  - >>>> Endpoint[log://output] Exchange[Message: null]
+
+2015-08-19 08:40:56,201 [C EventLoop (2)] INFO  output                         - Exchange[ExchangePattern: InOnly, BodyType: null, Body: [Body is null]]
+
+2015-08-19 08:41:01,199 [0 - timer://foo] DEBUG SendProcessor                  - >>>> Endpoint[pgevent://localhost:5432/postgres/foobar?pass=mysecretpassword&user=postgres] Exchange[Message: hello]
+
+2015-08-19 08:41:01,201 [C EventLoop (2)] DEBUG SendProcessor                  - >>>> Endpoint[log://output] Exchange[Message: null]
+
+2015-08-19 08:41:01,201 [C EventLoop (2)] INFO  output                         - Exchange[ExchangePattern: InOnly, BodyType: null, Body: [Body is null]]
+
+
+
+It seems that the camel-pgevent consumer uses 
+outOnly.setOut(msg);
+instead of 
+outOnly.setIn(msg);
+and the producer
+exchange.getOut()
+instead of 
+exchange.getIn()

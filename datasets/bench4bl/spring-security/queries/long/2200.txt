@@ -1,0 +1,411 @@
+If a user is authenticated in a remember-me use case and trying to access an url which requires a full authentication (access=IS_FULLY_AUTHENTICATED), the AuthenticatedVoter throws an AccessDeniedException. That works fine.
+The ExceptionTranslationFilter catch the exception and instead of redirecting the user to the authentication strategy configured, the filter returns a 403 error. That doesn't work.
+Maybe it's a problem in my configuration, but I think the problem is here in the ExceptionTranslationFilter :
+
+
+
+
+
+
+    private void handleSpringSecurityException(HttpServletRequest request, HttpServletResponse response, FilterChain chain,
+
+
+
+
+            RuntimeException exception) throws IOException, ServletException {
+
+
+
+
+        if (exception instanceof AuthenticationException) {
+
+
+
+
+            logger.debug("Authentication exception occurred; redirecting to authentication entry point", exception);
+
+
+
+
+ 
+
+
+
+
+            sendStartAuthentication(request, response, chain, (AuthenticationException) exception);
+
+
+
+
+        }
+
+
+
+
+        else if (exception instanceof AccessDeniedException) {
+
+
+
+
+            if (authenticationTrustResolver.isAnonymous(SecurityContextHolder.getContext().getAuthentication())) {
+
+
+
+
+                logger.debug("Access is denied (user is anonymous); redirecting to authentication entry point",
+
+
+
+
+                            exception);
+
+
+
+
+ 
+
+
+
+
+                sendStartAuthentication(request, response, chain, new InsufficientAuthenticationException(
+
+
+
+
+                        "Full authentication is required to access this resource"));
+
+
+
+
+            }
+
+
+
+
+            // !!!! The remember-me should be handled here.
+
+
+
+
+            else {
+
+
+
+
+                logger.debug("Access is denied (user is not anonymous); delegating to AccessDeniedHandler", exception);
+
+
+
+
+ 
+
+
+
+
+                accessDeniedHandler.handle(request, response, (AccessDeniedException) exception);
+
+
+
+
+            }
+
+
+
+
+        }
+
+
+
+
+    }
+
+
+
+
+
+
+Here is my configuration :
+
+
+
+
+
+
+  <http authentication-manager-ref="authenticationManager"
+
+
+
+
+        access-decision-manager-ref="accessDecisionManager">
+
+
+
+
+    <anonymous username="anonymousUser" granted-authority="ROLE_ANONYMOUS" />
+
+
+
+
+    
+
+
+
+
+    <remember-me token-validity-seconds="604800" 
+
+
+
+
+                 key="thisisatestkey"
+
+
+
+
+                 use-secure-cookie="false" 
+
+
+
+
+                 remember-me-parameter="remember" />
+
+
+
+
+  
+
+
+
+
+    <intercept-url pattern="/home/**" access="IS_AUTHENTICATED_ANONYMOUSLY" />
+
+
+
+
+    <intercept-url pattern="/inventory/**" access="IS_AUTHENTICATED_ANONYMOUSLY" />
+
+
+
+
+    <intercept-url pattern="/security/login.htm" access="IS_AUTHENTICATED_ANONYMOUSLY" requires-channel="http" />
+
+
+
+
+    <intercept-url pattern="/sale/**" access="IS_AUTHENTICATED_FULLY" />
+
+
+
+
+        
+
+
+
+
+    <port-mappings>
+
+
+
+
+      <port-mapping http="8080" https="8443" />
+
+
+
+
+    </port-mappings> 
+
+
+
+
+    
+
+
+
+
+    <access-denied-handler error-page="/security/error.htm" />
+
+
+
+
+    
+
+
+
+
+    <form-login login-page="/security/login.htm"
+
+
+
+
+                login-processing-url="/security/authenticate"
+
+
+
+
+                username-parameter="username"
+
+
+
+
+                password-parameter="password" />
+
+
+
+
+                
+
+
+
+
+    <logout logout-success-url="/home/home.htm"
+
+
+
+
+            logout-url="/security/logout" />
+
+
+
+
+            
+
+
+
+
+    <expression-handler ref="webExpressionHandler" />
+
+
+
+
+            
+
+
+
+
+    <session-management invalid-session-url="/security/login.htm" session-fixation-protection="migrateSession">
+
+
+
+
+      <concurrency-control max-sessions="2" /> 
+
+
+
+
+    </session-management>
+
+
+
+
+  </http>
+
+
+
+
+  
+
+
+
+
+  <authentication-manager id="authenticationManager" erase-credentials="true">
+
+
+
+
+    <authentication-provider>
+
+
+
+
+      <!--password-encoder hash="bcrypt" /-->
+
+
+
+
+      <user-service>
+
+
+
+
+        <user name="admin" password="admin" authorities="ROLE_USER, ROLE_ADMIN" />
+
+
+
+
+        <user name="user" password="user" authorities="ROLE_USER" />
+
+
+
+
+      </user-service>
+
+
+
+
+    </authentication-provider>
+
+
+
+
+  </authentication-manager>  
+
+
+
+
+  
+
+
+
+
+  <beans:bean id="webExpressionHandler" class="org.springframework.security.web.access.expression.DefaultWebSecurityExpressionHandler" />
+
+
+
+
+  
+
+
+
+
+  <beans:bean id="accessDecisionManager" class="org.springframework.security.access.vote.AffirmativeBased">
+
+
+
+
+    <beans:constructor-arg>
+
+
+
+
+      <beans:list>
+
+
+
+
+        <beans:bean class="org.springframework.security.access.vote.RoleVoter" />
+
+
+
+
+        <beans:bean class="org.springframework.security.access.vote.AuthenticatedVoter" />
+
+
+
+
+      </beans:list>
+
+
+
+
+    </beans:constructor-arg>
+
+
+
+
+  </beans:bean>
+
+
+
+
+
+
+I've joined a fix proposal.

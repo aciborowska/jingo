@@ -1,0 +1,70 @@
+ToStringBuilder.reflectionToString() enters an infinite loop when used with the 
+following example:
+/////////////////////////////
+public class Outer {
+  Inner inner = new Inner();
+  class Inner {
+    public String toString() 
+{
+      return ToStringBuilder.reflectionToString(this);
+    }
+  }
+  public String toString() 
+{
+    return ToStringBuilder.reflectionToString(this);
+  }
+  public static void main(String[] args) 
+{
+    Outer outer = new Outer();
+    System.out.println(outer);
+  }
+}
+/////////////////////////////
+The reason is that the two classes refer to each other via the explicit field 
+inner and the implicit field Outer.this. 
+The bug can be resolved by skipping the implicit fields. Is there any good 
+reason for printing those anyway?
+I am not sure what is the best way to detect if a field is an implicit field. 
+But I patched the code myself in a way that seemed to work:
+/////////////////////////////
+public static String reflectionToString(Object object, ToStringStyle style, 
+        boolean outputTransients) {
+    if (object == null) 
+{
+        throw new IllegalArgumentException("The object must not be null");
+    }
+    if (style == null) 
+{
+        style = getDefaultStyle();
+    }
+    Field[] fields = object.getClass().getDeclaredFields();
+    Field.setAccessible(fields, true);
+    ToStringBuilder builder = new ToStringBuilder(object, style);
+    for (int i = 0; i < fields.length; ++i) {
+        Field f = fields[i];
+        if (!f.getName().startsWith("this$")) {
+          if (outputTransients || !Modifier.isTransient(f.getModifiers())) {
+              if (!Modifier.isStatic(f.getModifiers())) {
+                  try 
+{
+                      builder.append(f.getName(), f.get(object));
+                      
+                  }
+ catch (IllegalAccessException ex) 
+{
+                      //this can't happen. Would get a Security exception 
+instead
+                      //throw a runtime exception in case the impossible 
+happens.
+                      throw new InternalError("Unexpected 
+IllegalAccessException");
+                  }
+              }
+          }
+        }
+    }
+    return builder.toString();
+}
+/////////////////////////////
+Notice the extra if statement that tests for field names starting with "this$". 
+I don't know if this is guaranteed to work always, though.

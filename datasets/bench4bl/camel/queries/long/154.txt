@@ -1,0 +1,18 @@
+When using spring to wire camel components, the whole magic is driven by org.springframework.context.support.AbstractApplicationContext.refresh().
+At about line 327 the xml file is read and at some point AbstractApplicationContext.doParse is called.  What is notable is that we use parseUsingJaxb (line 135) instead of the spring way of doing things, and then we still use 
+BeanDefinitionParser(s) to build the BeanDefinition(s).
+On a sample context definition like the one in the unit tests:
+  <camelContext id="camel" xmlns="http://activemq.apache.org/camel/schema/spring">
+    <beanPostProcessor/>
+    <endpoint id="endpoint1" uri="direct:start"/>
+    <endpoint id="endpoint2" uri="mock:end"/>
+    <route>
+      <from ref="endpoint1"/>
+      <to ref="endpoint2"/>
+    </route>
+  </camelContext>
+The jaxb parser instantiates the BeanPostProcessor, endpoints, the RouteType, From/ToTypes properly, but the BeanPostProcessor is not injected with the camelContext and applicationContext, obviously.
+Later on in AbstractApplicationContext.refresh() during the registerBeanPostProcessors() call (line 337) spring figures out that it needs to instantiate the BeanPostProcessor first and use it before it initializes the other beans.  So far so good, but in doing so there are 2 major problems.
+1. It uses the BeanDefinition instead of the instance already created during jaxb parsing.
+2. There is a chicken and egg situation; while it initializes "camel:beanPostProcessor", it looks for a "camel" bean which isn't registered yet.  The model for it does exist though, so a new instance of the CamelContextFactoryBean gets instantiated (and the id now is null instead of "camel" as in the spring xml).
+I wrestled with this and couldn't figure out a solution.

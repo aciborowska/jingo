@@ -1,0 +1,49 @@
+A SOAP request is sent over JMS, the JMSReplyTo is set manually to an internal jms Queue.
+Both for normal responses and for soap faults, the produced response (TextMessage) has an empty soap body.
+The problem is coming from the following method in org.springframework.ws.transport.jms.JmsReceiverConnection
+    protected OutputStream getResponseOutputStream() throws IOException {
+        if (responseMessage instanceof BytesMessage) 
+{
+            return new BytesMessageOutputStream((BytesMessage) responseMessage);
+        }
+        else if (responseMessage instanceof TextMessage) {
+            return new ByteArrayOutputStream() {
+                public void close() throws IOException {
+                    String text = new String(toByteArray(), textMessageEncoding);
+                    try 
+{
+                        ((TextMessage) responseMessage).setText(text);
+                    }
+                    catch (JMSException ex) 
+{
+                        throw new JmsTransportException(ex);
+                    }
+                }
+            };
+        }
+        else 
+{
+            throw new IllegalStateException("Unknown request message type [" + responseMessage + "]");
+        }
+    }
+The close() on the private class set the text property of the TextMessage, but  the close() is called AFTER the message has been sent by the JMS message producer :
+See this method in the ancestor AbstractWebServiceConnection
+    public final void send(WebServiceMessage message) throws IOException {
+        onSendBeforeWrite(message);
+        tos = createTransportOutputStream();
+        if (tos == null) 
+{
+            return;
+        }
+        message.writeTo(tos);
+        tos.flush();
+        onSendAfterWrite(message);
+    }
+For a TextMessage the line : message.writeTo(tos) did not set yet the text property of the TextMessage, then the onSendAfterWrite(message) is called, which sends the JMS message to the destination ( see in JmsReceiverConnection).  
+Finally, a close() is performed in the caller bean ( a message listener) via a TransportUtils.closeConnection(connection) which closes also the private ByteArrayOutputStream, but a bit too late ...
+The JMS Specification says : 
+3.9 Access to Sent Messages
+After sending a message, a client may retain and modify it without affecting
+the message that has been sent. The same message object may be sent multiple
+times.
+I have triggered the 'set' of the text property with the flush() method instead of the close(). It solved the problem but it's not very proper because the flush() may be called multiple times when writing in a OutputStream

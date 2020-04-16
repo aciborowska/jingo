@@ -1,0 +1,52 @@
+Given the following entity:
+
+    @Entity
+    @EntityListeners(
+{Auditing.class}
+)
+    @Table(...)
+    public class A 
+{
+      ...
+    }
+
+and the following Auditing class:
+
+    public class Auditing {
+      @PreUpdate
+      public void preUpdate(Object entity) 
+{ // the provided object is supposed to be a PersistenceCapable
+        ...
+      }
+    }
+
+When using runtime enhancement, the PreUpdate event is raised and preUpdate(Object) is called when persisting a new entity: the call is not expected as the entity is not yet persisted (moreover, the entity passed in parameter is not an instance of PersistenceCapable). 
+
+This is due to StateManagerImpl.preFlush() lifecycle event firing conditions: 
+
+            // BEFORE_PERSIST is handled during Broker.persist and Broker.attach
+            if (isDeleted())
+                 fireLifecycleEvent(LifecycleEvent.BEFORE_DELETE);
+             else if (!(isNew() && !isFlushed())
+                                 && (ImplHelper.getUpdateFields(this) != null))
+                 fireLifecycleEvent(LifecycleEvent.BEFORE_UPDATE);
+
+When processing a PNewState, the condition for BEFORE_UPDATE event becomes simply: isFlushed(), i.e. the BEFORE_UPDATE event is raised for a new Entity!  (stuff below is supposed to be a boolean table, sorry for the loosy presentation):
+
+                                              isNew
+                                          true.....false
+    isFlushed.......true......fire.......fire
+                             false......X.........fire
+
+where X means "do nothing" and fire means "fire the BEFORE_UPDATE event".
+
+The correct full condition would include a condition to prevent raising BEFORE_UPDATE for new entities:
+
+                                              isNew
+                                          true.....false
+    isFlushed.......true........X.........fire
+                             false......X.........fire
+
+where X means "do nothing" and fire means "fire the BEFORE_UPDATE event", which finally gives:     
+
+      else if (!isNew() && (ImplHelper.getUpdateFields(this) != null))

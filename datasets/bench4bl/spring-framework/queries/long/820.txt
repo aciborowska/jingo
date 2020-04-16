@@ -1,0 +1,62 @@
+In the method registerSimpleBean there is a check to see if the mbean to register is an aop-proxy:
+    Class beanClass = (AopUtils.isAopProxy(bean) 
+        ? bean.getClass().getSuperclass() : bean.getClass());
+This check statement does not yield the target bean. 
+I have created around advice for a bean. The bean's class (in the above statement) is $Proxy9 containing a JdkDynamicAopProxy. 
+Here is the complete bean config (sorry, jira is going to mangle this  bad):
+<bean id="autoProxyCreator"
+    class="org.springframework.aop.framework.autoproxy.DefaultAdvisorAutoProxyCreator" />
+<bean id="model.shutdownExceptionHandler"
+    class="org.blackboxtrader.liquidityarbitrage.application.ModelShutdownExceptionHandler">
+    <property name="model">
+        <ref local="model" />
+    </property>
+</bean>
+public class ModelShutdownExceptionHandler extends StaticMethodMatcherPointcutAdvisor
+                                           implements InitializingBean {
+    private static final Logger log = Logger.getLogger(ModelShutdownExceptionHandler.class);
+    private Model model;
+    public void setModel(Model model) 
+{
+        this.model = model;
+    }
+
+    @Override
+    public void setAdvice(Advice advice) 
+{
+        throw new UnsupportedOperationException();
+    }
+
+    public void afterPropertiesSet() throws Exception {
+        if (model == null) 
+{
+            throw new IllegalArgumentException("Model not set");
+        }
+        super.setAdvice(new ShutdownModelAdvice());
+    }
+    public boolean matches(Method method, Class targetClass) 
+{
+        return matchesEventListenerOnEvent(method, targetClass);
+    }
+
+    private boolean matchesEventListenerOnEvent(Method method, Class targetClass) 
+{
+        return EventListener.class.isAssignableFrom(targetClass)
+                && method.getName().equals("onEvent");
+    }
+
+    private class ShutdownModelAdvice implements MethodInterceptor {
+        public Object invoke(MethodInvocation invocation) throws Throwable {
+            try 
+{
+                invocation.proceed();
+            }
+ catch (Throwable t) 
+{
+                log.fatal("Unandled exception, closing model", t);
+                model.close();
+            }
+            return null;
+        }
+    }
+}

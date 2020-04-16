@@ -1,0 +1,142 @@
+In one of our tests, we've seen this exception during server shutdown:
+
+
+
+
+
+
+2015-06-05 10:34:44,387 ERROR [org.xnio.listener] (XNIO-1 I/O-2) XNIO001007: A channel event listener threw an exception: java.util.concurrent.RejectedExecutionException: Task org.jboss.remoting3.remote.RemoteReadListener$1$1@5e7925db rejected from org.xnio.XnioWorker$TaskPool@3d00aa37[Shutting down, pool size = 7, active threads = 0, queued tasks = 0, completed tasks = 52]
+
+
+
+
+	at java.util.concurrent.ThreadPoolExecutor$AbortPolicy.rejectedExecution(ThreadPoolExecutor.java:2047)
+
+
+
+
+	at java.util.concurrent.ThreadPoolExecutor.reject(ThreadPoolExecutor.java:823)
+
+
+
+
+	at java.util.concurrent.ThreadPoolExecutor.execute(ThreadPoolExecutor.java:1369)
+
+
+
+
+	at org.xnio.XnioWorker.execute(XnioWorker.java:741)
+
+
+
+
+	at org.jboss.remoting3.remote.RemoteReadListener$1.handleEvent(RemoteReadListener.java:54)
+
+
+
+
+	...
+
+
+
+
+
+
+
+This is a very basic test that only starts the server and then shuts it down using :shutdown.
+After looking into this for a while, I believe that this is caused by the core management server (UndertowHttpManagementService) shutting down an XNIO worker (= thread pool) while the :shutdown management operation is still running (or, in fact, finishing, trying to close the network connection).
+I have a Byteman-based reproducer that inserts artifical pauses to certain well-defined places. I'm not sure if this has some connection to the graceful shutdown system, but I believe that even if it does, something like this shouldn't happen.
+Steps to reproduce:
+
+./bin/standalone.sh -c standalone-full-ha.xml and wait until it starts completely
+jps -v | grep "\-D\[Standalone\]" to figure out the PID of the newly started server
+bminstall.sh -b -Dorg.jboss.byteman.transform.all $PID
+bmsubmit.sh reproducer.btm, where reproducer.btm is a Byteman script reproduced below
+./bin/jboss-cli.sh -c
+:read-resource repeat few times
+:shutdown(timeout=1) (or plain :shutdown)
+
+The Byteman script:
+
+
+
+
+
+
+RULE XnioWorker.TaskPool/ThreadPoolExecutor shutdown
+
+
+
+
+CLASS java.util.concurrent.ThreadPoolExecutor
+
+
+
+
+METHOD shutdown()
+
+
+
+
+AFTER INVOKE advanceRunState
+
+
+
+
+IF TRUE
+
+
+
+
+DO Thread.sleep(10000)
+
+
+
+
+ENDRULE
+
+
+
+
+ 
+
+
+
+
+RULE Remoting onClose handler
+
+
+
+
+CLASS org.jboss.remoting3.remote.RemoteReadListener$1
+
+
+
+
+METHOD handleEvent(java.nio.channels.Channel)
+
+
+
+
+AT ENTRY
+
+
+
+
+IF TRUE
+
+
+
+
+DO Thread.sleep(5000)
+
+
+
+
+ENDRULE
+
+
+
+
+
+

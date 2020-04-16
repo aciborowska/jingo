@@ -1,0 +1,103 @@
+A customer reported a problem, wherein our product was catching and logging many IOExceptions.  Upon examining the logs I see:
+java.io.IOException: Attempted read on closed stream.
+	at org.apache.commons.httpclient.AutoCloseInputStream.isReadAllowed(AutoCloseInputStream.java:183)
+	at org.apache.commons.httpclient.AutoCloseInputStream.read(AutoCloseInputStream.java:107)
+	at java.io.FilterInputStream.read(FilterInputStream.java:116)
+	at com.acme.DocPusher$BigEmptyDocumentFilterInputStream.read(DocPusher.java:679)
+	at com.acme.CompressedFilterInputStream.fillbuff(CompressedFilterInputStream.java:96)
+	at com.acme.CompressedFilterInputStream.read(CompressedFilterInputStream.java:67)
+	at com.acme.Base64FilterInputStream.fillbuff(Base64FilterInputStream.java:138)
+	at com.acme.Base64FilterInputStream.read(Base64FilterInputStream.java:115)
+	at java.io.FilterInputStream.read(FilterInputStream.java:116)
+	at com.acme.DocPusher$AlternateContentFilterInputStream.read(DocPusher.java:609)
+        ...
+As you can see, this is a pipeline consisting of multiple FilterInputStream segments that process data flowing through the pipeline.  The source of the data is in InputStream provided by a third party plug-in component.  In our customer's situation, that InputStream is a AutoCloseInputStream returned by a Sharepoint API call.
+When I saw the "Attempted read on closed stream.", I was incredulous; "Reading from a closed stream - that's a rookie mistake."  However, when examining the JavaDoc for AutoCloseInputStream, I read:  [emphasis mine]
+"Proxy stream that closes and discards the underlying stream as soon as the end of input has been reached or when the stream is explicitly closed."
+Many of the FilterInputStream processors require a minimum amount of data from its input in order to function, so they typically have a method called fillbuff() that fills an I/O buffer with data from the input:
+
+
+
+  /**
+
+   * Try to fill up the buffer with data read from the input stream.
+
+   * This is tolerant of short reads - returning less than the requested
+
+   * amount of data, even if there is more available.
+
+   * 
+
+   * @param b buffer to fill
+
+   * @return number of bytes written to buffer, or -1 if EOF
+
+   */
+
+  private int fillbuff(byte b[]) throws IOException {
+
+    int bytesRead = 0;
+
+    while (bytesRead < b.length) {
+
+      int val = in.read(b, bytesRead, b.length - bytesRead);
+
+      if (val == -1) {
+
+        return (bytesRead > 0) ? bytesRead : val;
+
+      }
+
+      bytesRead += val;
+
+    }
+
+    return bytesRead;
+
+  }
+
+
+
+As you can see, this code assumes that a read when at end-of-stream will return -1.  Since this is called from a loop, we see that it may actually make two attempts to read from EOF: once after having read the last few bytes of the input stream, but not filling its buffer; and again after processing the partial buffer returned previously.  The second read from EOF then gets propagated upward.  This code (and much more like it) makes the entirely reasonable assumption that a read while at end of stream will return -1.
+I know the InputStream JavaDoc says:
+"If no byte is available because the stream is at end of file, the value -1 is returned; ..."
+and later:
+"If the first byte cannot be read for any reason other than end of file, then an IOException is thrown. In particular, an IOException is thrown if the input stream has been closed."
+So technically, AutoCloseInputStream is staying within the ambiguous definition of who should be in control of closing a stream.  However, it is behaving very poorly, in a "kick the chair out from under the guy about to sit down" sort of way.
+You are following the letter of the doc, returning IOException because the stream is closed, but the consumer of the stream has no idea that the stream has been closed, because the consumer did not explicitly close it, and had no real expectation that it would be closed by an outside agent while it was still in use.
+The work-around for our product involved changing dozens of FilterInputStream components, ensuring they do not attempt to read at EOF more than once.  Often it was as simple as:
+
+
+
+  private boolean atEOF = false;
+
+  ...
+
+  private int fillbuff(byte b[]) throws IOException {
+
+    if (atEOF) {
+
+      return -1;
+
+    }
+
+   ...
+
+    while (bytesRead < b.length) {
+
+      int val = in.read(b, bytesRead, b.length - bytesRead);
+
+      if (val == -1) {
+
+        atEOF = true;
+
+        return (bytesRead > 0) ? bytesRead : val;
+
+      }
+
+   ...
+
+
+
+But this added extra processing to every call to read() and read(byte[]...) to handle the possibility of encountering this ill-behaved InputStream.  Plus, I now had to override mark(), and reset() in all of them to clear the EOF state if the stream is rewound.
+I suggest that AutoCloseInputStream.read(...) return -1 if the underlying stream has been automatically closed at EOF.  You still get the advantage of your "helpful" resource management for lazy programmers, but don't penalize the traditional InputStream consumer with unexpected behaviour.  You should still throw IOException if read() is called after an explicit close(), as that would be a programming error. 

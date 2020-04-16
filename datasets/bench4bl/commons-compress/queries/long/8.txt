@@ -1,0 +1,123 @@
+--------------------------------------------------
+Summary
+--------------------------------------------------
+I am able to create TAR archive files using the org.apache.commons.compress code, however, when I go to extract the contents of TAR archive using that same code, it fails.
+I think that there must be a bug with org.apache.commons.compress because can use the program 7-zip to successfully extract the contents of the archive.
+--------------------------------------------------
+Background
+--------------------------------------------------
+I need Java TAR support for archiving purposes; see this forum thread if you want to know why:
+http://forum.java.sun.com/thread.jspa?threadID=757876
+The com.ice.tar library
+http://www.gjt.org/pkgdoc/com/ice/tar/index.html
+proved inadequate because it does not support long paths reliably (the GNU TAR extensions are essential).
+So, I am turning to this apache code, which does handle long paths and seems to be actively maintained.
+--------------------------------------------------
+Details of how the TAR archive was created
+--------------------------------------------------
+Because there appears to be no stable release for the org.apache.commons.compress code, I just grabbed the latest nightly build, commons-compress-20060814.  MAYBE THIS IS THE PROBLEM: if this is a known bad build and there is a better one, by all means please let me know and what build to use.  Also, somehow this info should be put as a comment for each nightly build.
+Assuming that the above is not the case, and that this is a new bug, here is how I stumbled across it.
+First, I construct a new TAR archive with code that ultimately boils down to this:
+		String path = fileParent.getRelativePath(file);	// Note: getRelativePath will ensure that directories end with a separator
+		if (File.separatorChar != '/') path = path.replace(File.separatorChar, '/');	// CRITICAL: handles bizarre systems like windoze which use other chars than / for directory separation; the TAR format requires / to be used
+		TarEntry entry = new TarEntry( file );
+		entry.setName( path );
+		out.putNextEntry( entry );
+		writeFileData(file, out);
+		out.closeEntry();
+		if ( file.isDirectory() ) {
+			for (File fileChild : DirUtil.getContents(file, null)) 
+{	// supply null, since we test at beginning of this method (supplying filter here which just add a redundant test)
+				archive( fileChild, fileParent, out, filter );
+			}
+		}
+Note that FileParent is my own class that I originally wrote for a ZIP archiver.  This class keeps track of the root directory that is being TARed because I want all of my paths to be stored as relative offsets from this root; I do NOT want any path elements above that root directory to be included.  The apache TarEntry class appears to me to include a lot of extraneous path elements (albeit it will strip off drive letters or an initial '/' char).
+In addition to controlling the paths, I also need to use low level classes like TarOutputStream to force the use of GNU long paths via a call like
+	tarOutputStream.setLongFileMode(TarOutputStream.LONGFILE_GNU);
+If I were to use the high level Archiver functionality that you document here
+http://wiki.apache.org/jakarta-commons/Compress
+(for ZIPs) or
+http://svn.apache.org/viewvc/jakarta/commons/sandbox/compress/trunk/src/examples/org/apache/commons/compress/examples/TarExample.java?view=markup
+(for TARs), then I would have no such control over relative paths or GNU TAR extensions.  There is also an efficient file filtering technique that I do that would not be supported if used an Archiver.
+--------------------------------------------------
+Error when extracting the TAR archive with org.apache.commons.compress
+--------------------------------------------------
+I think that the archive produced by the above code is legitimate, because I can successfully extract it using the program 7-zip.  As proof, I have a program called DirectoryComparer which compares 2 directories, notes any paths which are not in common, and for common paths examines every normal file byte-for-byte to find any discrepancies.  Running that program on the original directory and the archived/extracted one found zero differences.
+But, when I tried extracting the archive using the org.apache.commons.compress code, I got the following error:
+Exception in thread "main" org.apache.commons.compress.UnpackException: Exception while unpacking.
+        at org.apache.commons.compress.archivers.tar.TarArchive.doUnpack(TarArchive.java:110)
+        at org.apache.commons.compress.AbstractArchive.unpack(AbstractArchive.java:122)
+        at bb.io.TarUtil.extract(TarUtil.java:558)
+        at bb.io.TarUtil$Test.test_archive_extract_pathLengthLimit(TarUtil.java:725)
+        at bb.io.TarUtil$Test.main(TarUtil.java:598)
+Caused by: java.io.FileNotFoundException: F:\longPaths\2B6vLVrp4c (The system cannot find the path specified)
+        at java.io.FileOutputStream.open(Native Method)
+        at java.io.FileOutputStream.<init>(FileOutputStream.java:179)
+        at java.io.FileOutputStream.<init>(FileOutputStream.java:131)
+        at org.apache.commons.compress.archivers.tar.TarArchive.doUnpack(TarArchive.java:97)
+        ... 4 more
+--------------------------------------------------
+Details of how the TAR archive was extracted
+--------------------------------------------------
+The code that I used to do the extraction is
+		TarArchive archive = null;
+		try 
+{
+			Archive archiver = ArchiverFactory.getInstance(tarFile);
+			archiver.unpack(directoryToExtractInto);
+		}
+		finally 
+{
+			close(archive);
+		}
+Here, unlike archiving, I went ahead and used the convenient Archiver functionality because no low level control was needed.
+Also, the original target directory being archived is named longPaths and, as its name indicates, it has all kinds of super long path elements inside it.  (I wrote a program to auto generate really long subdirectory structures like this for torture testing my archiving programs.)
+--------------------------------------------------
+Where the bug lies
+--------------------------------------------------
+I THINK THAT THE PROBLEM WITH THE ORG.APACHE.COMMONS.COMPRESS EXTRACTION CODE IS THE FACT THAT IT EXTRACTS DIRECTORIES AS NORMAL FILES.
+I say this because there is a normal file left on my filesystem after doing the above that is named longPaths.  But longPaths should be a directory; since it was actually miscreated by the apache code as a file, then of course the subdirectory
+	longPaths\2B6vLVrp4c
+cannot be created as reported by the stacktrace above.
+Again, let me mention that 7-zip did sucessfully completely extract the complicated contents of longPaths, correctly recreating all of the subdirectories etc, so I do not suspect that my code for creating the TAR archive is wrong.
+Furthermore, when I tried abandoning the above TAR creation code and used your Archiver technique with code like
+	Archive archiver = ArchiverFactory.getInstance("tar");
+	for (File file : files) 
+{
+		archive(file, archiver, filter);
+	}
+	archiver.save(tarFile);
+		// this is the relevant code snippet from the archive method:
+	archiver.add( file );
+	if ( file.isDirectory() ) {
+		for (File fileChild : DirUtil.getContents(file, null)) 
+{
+			archive( fileChild, archiver, filter );
+		}
+	}
+then I still get an error:
+Exception in thread "main" java.io.FileNotFoundException: Z:\longPaths (Access is denied)
+        at java.io.FileInputStream.open(Native Method)
+        at java.io.FileInputStream.<init>(FileInputStream.java:106)
+        at org.apache.commons.compress.AbstractArchive.add(AbstractArchive.java:90)
+        at bb.io.TarUtil.archive(TarUtil.java:412)
+        at bb.io.TarUtil.archive(TarUtil.java:339)
+        at bb.io.TarUtil$Test.test_archive_extract_pathLengthLimit(TarUtil.java:711)
+        at bb.io.TarUtil$Test.main(TarUtil.java:594)
+--------------------------------------------------
+Misc issues
+--------------------------------------------------
+1) I am sorry if this is a known issue that has been beaten to death on the mailing list.  But I am a newcomer, and I was unable to figure out how to search the mailing list archives!
+Clicking on the "Search the mailing list archive" link on
+http://jakarta.apache.org/commons/sandbox/compress/issue-tracking.html
+brought me to
+http://mail-archives.apache.org/mod_mbox/jakarta-commons-dev/
+which only seems to offer manual browsing, which is a tedious and inefficient way to find issues with the compress code, especially as the mailing list seems to discuss every commons project.
+Is there a better way?
+2) there seem to be redundant TAR packages:
+	older one?:
+http://svn.apache.org/viewvc/jakarta/commons/sandbox/compress/trunk/src/java/org/apache/commons/compress/tar/
+	newer one?:
+http://svn.apache.org/viewvc/jakarta/commons/sandbox/compress/trunk/src/java/org/apache/commons/compress/archivers/tar/
+Which one am I supposed to use?
+3) GNU tar apparently supports unlimited path lengths, but what about file sizes?  Traditional TAR only support files up to 8 GB in size.  Does the org.apache.commons.compress TAR code have any file size limits?  Please add documentation about this.

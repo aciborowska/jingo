@@ -1,0 +1,22 @@
+SUMMARY:
+After an anonymous user authenticates in order to access a protected resource, the RequestCacheAwareFilter does not destroy the saved request. 
+After successfully replaying the original request for the protected resource, the saved request is no longer valid/useful and should be destroyed.
+BACKGROUND:
+I have a form handler registered at:
+http://foo.com/app/form
+A handler is defined with two methods (one for GET and one for POST). The form posts back to the same url as the GET request for the form (a relatively common practice?).
+So for example:
+GET: /app/form
+<form action="/app/form" method="POST"> ... </form>
+The URL "/app/form" is protected by Spring Security and requires "IS_AUTHENTICATED_FULLY".
+When an anonymous user  attempts to access the protected resource, they are correctly redirected to the login form. Once authentication is successful, the user is directed back to the protected resource.
+Upon submitting the form, though, the POST fails, because the session still contains a cached copy of the original GET request.
+Because the session still contains a copy of the original GET request, SavedRequest.doesRequestMatch (line 166) erroneously returns true. However, the requests do NOT match: the current request is a POST, whereas the saved request was a GET.
+Additionally, after successfully completing the saved request after authentication, RequestCacheAwareFilter.doFilter (line 36) does not remove the saved request from the cache.
+As a result, when the user attempts to POST the form, the result is the user being directed back to the GET view of the form, with no form-processing actions taking place. Debugging confirms that the requests are mapped to the handler's GET method.
+I would consider this a critical if not blocking issue, as it prevents normal form processing to occur after authenticating. 
+I am still looking, but I have not yet discovered a way to configure Spring Security to use a custom class in-place-of the RequestCacheAwareFilter - so I cannot easily extend or remove the Filter.
+As a work around, I can change the form handler's POST methods to map to a different URL than the GET method - however, this breaks any RESTful contracts I might have wished to adhere to.
+Additionally, I can configure a custom AuthenticationSuccessHandler (namely, using the SimpleUrlAuthenticationSuccessHandler instead of the SavedRequestAwareAuthenticationSuccessHandler). Doing so effectively stops the Security layer from trying to replay the original request, but this has a jarring impact on the user experience in that users always get redirected back to the default URL after authenticating.
+CONCLUSION
+Any other suggestions are welcome, and I am happy to provide more concrete code examples if necessary...

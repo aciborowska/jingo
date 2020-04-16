@@ -1,0 +1,90 @@
+The DefaultScriptExecutor seems to optimistically attempt to run the server-cached version of a script by passing the SHA1.  If any exception is thrown, it assumes that this is because the script does not exist on the server and attempts to send the script and run it.
+Here is the code in question:
+
+
+
+
+
+
+DefaultScriptExecutor.java
+
+
+
+
+
+
+protected <T> T eval(RedisConnection connection, RedisScript<T> script, ReturnType returnType, int numKeys,
+
+
+
+
+			byte[][] keysAndArgs, RedisSerializer<T> resultSerializer) {
+
+
+
+
+		Object result;
+
+
+
+
+		try {
+
+
+
+
+			result = connection.evalSha(script.getSha1(), returnType, numKeys, keysAndArgs);
+
+
+
+
+		} catch (Exception e) {
+
+
+
+
+			result = connection.eval(scriptBytes(script), returnType, numKeys, keysAndArgs);
+
+
+
+
+		}
+
+
+
+
+		if (script.getResultType() == null) {
+
+
+
+
+			return null;
+
+
+
+
+		}
+
+
+
+
+		return deserializeResult(resultSerializer, result);
+
+
+
+
+	}
+
+
+
+
+ 
+
+
+
+
+
+
+This means that ANY exception thrown by a script causes it to be run twice, and obviously any side affects of running the script (i.e. data insertions) which occur before the error are duplicated.
+I believe this is likely not the intended behaviour.  The DefaultScriptExecutor should verify the reason for the exception prior to re-attempting to run the script in every case.
+I have seen this behaviour in 1.3.4, 1.4.0 and as of writing, the source seems to be the same.

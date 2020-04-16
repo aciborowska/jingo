@@ -1,0 +1,25 @@
+@Entity
+public class Account {
+
+  @Id
+  @SequenceGenerator(name = "ACCOUNT_ID_SEQ", sequenceName = "ACCOUNT_ID_SEQ")
+  @GeneratedValue(strategy = GenerationType.SEQUENCE, generator = "ACCOUNT_ID_SEQ")
+  private Long accountId;
+....
+
+This mapping is causing an alter sequence statement to be issued when an Account entity is flushed for the first time since the container start up. 
+
+If I persist an account entity and an organisation entity in a single transaction, here is the sequence of SQL statements issued:
+
+1. ALTER SEQUENCE TESTSCHEMA.ACCOUNT_ID_SEQ INCREMENT BY 50; // Implicit commit
+2. SELECT TESTSCHEMA.ACCOUNT_ID_SEQ.NEXTVAL FROM DUAL;
+3. INSERT INTO TESTSCHEMA.ACCOUNT (ACCOUNT_ID, UUID) VALUES (?, ?);
+4. ALTER SEQUENCE TESTSCHEMA.ORG_ID_SEQ INCREMENT BY 50; // Implicit commit
+5. SELECT TESTSCHEMA.ORG_ID_SEQ.NEXTVAL FROM DUAL;
+6. INSERT INTO TESTSCHEMA.ORGANISATION (ORG_ID, ORG_NAME, ACCOUNT_ID)  VALUES (?, ?, ?);
+
+If the transaction then rolls back because of an unrelated issue, you would expect that the both inserts would be rolled back. However, Oracle is issuing an implicit commit at statement 4 because it is a DDL statement, resulting in a partial commit scenario. (Account committed, Organisation rolled back)
+
+I have narrowed it down to org.apache.openjpa.jdbc.kernel.NativeJDBCSeq.allocateInternal method. Surely this is not the intended behaviour.
+
+

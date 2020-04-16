@@ -1,0 +1,190 @@
+The Zookeeper quorum, containing 5 servers, didn't provide service when restart after an "Out of memory" crash. 
+
+It happened as following:
+1. we built  a Zookeeper quorum which contained  5 servers, say 1, 3, 4, 5, 6 (have no 2), and 6 was the leader.
+2. we created 18 threads on 6 different servers to set and get data from a znode in the Zookeeper at the same time.  The size of the data is 1MB. The test threads did their job as fast as possible, no pause between two operation, and they repeated the setting and getting 4000 times. 
+3. the Zookeeper leader crashed about 10 mins  after the test threads started. The leader printed out the log:
+
+2009-08-25 12:00:12,301 - WARN  [NIOServerCxn.Factory:2181:NIOServerCnxn@497] - Exception causing close of session 0x523
+4223c2dc00b5 due to java.io.IOException: Read error
+2009-08-25 12:00:12,318 - WARN  [NIOServerCxn.Factory:2181:NIOServerCnxn@497] - Exception causing close of session 0x523
+4223c2dc00b6 due to java.io.IOException: Read error
+2009-08-25 12:03:44,086 - WARN  [NIOServerCxn.Factory:2181:NIOServerCnxn@497] - Exception causing close of session 0x523
+4223c2dc00b8 due to java.io.IOException: Read error
+2009-08-25 12:04:53,757 - WARN  [NIOServerCxn.Factory:2181:NIOServerCnxn@497] - Exception causing close of session 0x523
+4223c2dc00b7 due to java.io.IOException: Read error
+2009-08-25 12:15:45,151 - FATAL [SyncThread:0:SyncRequestProcessor@131] - Severe unrecoverable error, exiting
+java.lang.OutOfMemoryError: Java heap space
+    at java.util.Arrays.copyOf(Arrays.java:2786)
+    at java.io.ByteArrayOutputStream.write(ByteArrayOutputStream.java:71)
+    at java.io.DataOutputStream.writeInt(DataOutputStream.java:180)
+    at org.apache.jute.BinaryOutputArchive.writeInt(BinaryOutputArchive.java:55)
+    at org.apache.zookeeper.txn.SetDataTxn.serialize(SetDataTxn.java:42)
+    at org.apache.zookeeper.server.persistence.Util.marshallTxnEntry(Util.java:262)
+    at org.apache.zookeeper.server.persistence.FileTxnLog.append(FileTxnLog.java:154)
+    at org.apache.zookeeper.server.persistence.FileTxnSnapLog.append(FileTxnSnapLog.java:268)
+    at org.apache.zookeeper.server.SyncRequestProcessor.run(SyncRequestProcessor.java:100)
+
+It is clear that the leader ran out of memory. then the server 4 was down almost at the same time, and printed out the log:
+2009-08-25 12:15:45,995 - ERROR [FollowerRequestProcessor:3:FollowerRequestProcessor@91] - Unexpected exception causing
+exit
+java.net.SocketException: Connection reset
+    at java.net.SocketOutputStream.socketWrite(SocketOutputStream.java:96)
+    at java.net.SocketOutputStream.write(SocketOutputStream.java:136)
+    at java.io.BufferedOutputStream.write(BufferedOutputStream.java:105)
+    at java.io.DataOutputStream.write(DataOutputStream.java:90)
+    at java.io.FilterOutputStream.write(FilterOutputStream.java:80)
+    at org.apache.jute.BinaryOutputArchive.writeBuffer(BinaryOutputArchive.java:119)
+    at org.apache.zookeeper.server.quorum.QuorumPacket.serialize(QuorumPacket.java:51)
+    at org.apache.jute.BinaryOutputArchive.writeRecord(BinaryOutputArchive.java:123)
+    at org.apache.zookeeper.server.quorum.Follower.writePacket(Follower.java:97)
+    at org.apache.zookeeper.server.quorum.Follower.request(Follower.java:399)
+    at org.apache.zookeeper.server.quorum.FollowerRequestProcessor.run(FollowerRequestProcessor.java:86)
+2009-08-25 12:15:45,996 - WARN  [NIOServerCxn.Factory:2181:NIOServerCnxn@497] - Exception causing close of session 0x423
+4ab894330075 due to java.net.SocketException: Broken pipe
+2009-08-25 12:15:45,996 - FATAL [SyncThread:3:SyncRequestProcessor@131] - Severe unrecoverable error, exiting
+java.net.SocketException: Broken pipe
+    at java.net.SocketOutputStream.socketWrite0(Native Method)
+    at java.net.SocketOutputStream.socketWrite(SocketOutputStream.java:92)
+    at java.net.SocketOutputStream.write(SocketOutputStream.java:136)
+    at java.io.BufferedOutputStream.flushBuffer(BufferedOutputStream.java:65)
+    at java.io.BufferedOutputStream.flush(BufferedOutputStream.java:123)
+    at org.apache.zookeeper.server.quorum.Follower.writePacket(Follower.java:100)
+    at org.apache.zookeeper.server.quorum.SendAckRequestProcessor.flush(SendAckRequestProcessor.java:52)
+    at org.apache.zookeeper.server.SyncRequestProcessor.flush(SyncRequestProcessor.java:147)
+    at org.apache.zookeeper.server.SyncRequestProcessor.run(SyncRequestProcessor.java:92)
+2009-08-25 12:15:45,995 - WARN  [QuorumPeer:/0.0.0.0:2181:Follower@309] - Exception when following the leader
+java.net.SocketException: Broken pipe
+    at java.net.SocketOutputStream.socketWrite0(Native Method)
+    at java.net.SocketOutputStream.socketWrite(SocketOutputStream.java:92)
+    at java.net.SocketOutputStream.write(SocketOutputStream.java:136)
+    at java.io.BufferedOutputStream.flushBuffer(BufferedOutputStream.java:65)
+    at java.io.BufferedOutputStream.flush(BufferedOutputStream.java:123)
+    at org.apache.zookeeper.server.quorum.Follower.writePacket(Follower.java:100)
+    at org.apache.zookeeper.server.quorum.Follower.followLeader(Follower.java:256)
+    at org.apache.zookeeper.server.quorum.QuorumPeer.run(QuorumPeer.java:498)
+2009-08-25 12:15:46,022 - WARN  [NIOServerCxn.Factory:2181:NIOServerCnxn@497] - Exception causing close of session 0x0 d
+ue to java.io.IOException: ZooKeeperServer not running
+2009-08-25 12:15:46,022 - WARN  [NIOServerCxn.Factory:2181:NIOServerCnxn@497] - Exception causing close of session 0x0 d
+ue to java.io.IOException: ZooKeeperServer not running
+2009-08-25 12:15:46,023 - WARN  [NIOServerCxn.Factory:2181:NIOServerCnxn@497] - Exception causing close of session 0x0 d
+ue to java.io.IOException: ZooKeeperServer not running
+
+It was really strange that when the 2 server down, the other three servers cannot provide service any more, the 'stat' command all leaded to "ZooKeeperServer not running".
+
+
+4. I restarted the server 6(the former leader) and the server 4. But the service didn't come back. All the five servers printed "ZookeeperServer not running". The server 6 printed the logs:
+
+2009-08-25 14:02:15,395 - WARN  [NIOServerCxn.Factory:2181:NIOServerCnxn@497] - Exception causing close of session 0x0 d
+ue to java.io.IOException: ZooKeeperServer not running 
+2009-08-25 14:02:27,703 - WARN  [NIOServerCxn.Factory:2181:NIOServerCnxn@497] - Exception causing close of session 0x0 d
+ue to java.io.IOException: Responded to info probe
+2009-08-25 14:02:28,733 - WARN  [NIOServerCxn.Factory:2181:NIOServerCnxn@497] - Exception causing close of session 0x0 d
+ue to java.io.IOException: ZooKeeperServer not running 
+2009-08-25 14:02:42,070 - WARN  [NIOServerCxn.Factory:2181:NIOServerCnxn@497] - Exception causing close of session 0x0 d
+ue to java.io.IOException: ZooKeeperServer not running 
+2009-08-25 14:02:55,407 - WARN  [NIOServerCxn.Factory:2181:NIOServerCnxn@497] - Exception causing close of session 0x0 d
+ue to java.io.IOException: ZooKeeperServer not running 
+2009-08-25 14:03:08,744 - WARN  [NIOServerCxn.Factory:2181:NIOServerCnxn@497] - Exception causing close of session 0x0 d
+ue to java.io.IOException: ZooKeeperServer not running 
+2009-08-25 14:03:22,080 - WARN  [NIOServerCxn.Factory:2181:NIOServerCnxn@497] - Exception causing close of session 0x0 d
+ue to java.io.IOException: ZooKeeperServer not running 
+2009-08-25 14:03:29,396 - ERROR [main:Util@238] - Last transaction was partial.
+2009-08-25 14:03:35,417 - WARN  [NIOServerCxn.Factory:2181:NIOServerCnxn@497] - Exception causing close of session 0x0 d
+ue to java.io.IOException: ZooKeeperServer not running 
+2009-08-25 14:03:48,761 - WARN  [NIOServerCxn.Factory:2181:NIOServerCnxn@497] - Exception causing close of session 0x0 d
+ue to java.io.IOException: ZooKeeperServer not running 
+
+The server 4 printed logs like:
+
+2009-08-25 14:03:48,747 - WARN  [NIOServerCxn.Factory:2181:NIOServerCnxn@497] - Exception causing close of session 0x0 d
+ue to java.io.IOException: ZooKeeperServer not running
+2009-08-25 14:04:02,091 - WARN  [NIOServerCxn.Factory:2181:NIOServerCnxn@497] - Exception causing close of session 0x0 d
+ue to java.io.IOException: ZooKeeperServer not running
+2009-08-25 14:04:15,427 - WARN  [NIOServerCxn.Factory:2181:NIOServerCnxn@497] - Exception causing close of session 0x0 d
+ue to java.io.IOException: ZooKeeperServer not running
+2009-08-25 14:04:17,816 - WARN  [QuorumPeer:/0.0.0.0:2181:Follower@164] - Unexpected exception, tries=0
+java.net.ConnectException: Connection refused
+    at java.net.PlainSocketImpl.socketConnect(Native Method)
+    at java.net.PlainSocketImpl.doConnect(PlainSocketImpl.java:333)
+    at java.net.PlainSocketImpl.connectToAddress(PlainSocketImpl.java:195)
+    at java.net.PlainSocketImpl.connect(PlainSocketImpl.java:182)
+    at java.net.SocksSocketImpl.connect(SocksSocketImpl.java:366)
+    at java.net.Socket.connect(Socket.java:525)
+    at org.apache.zookeeper.server.quorum.Follower.followLeader(Follower.java:156)
+    at org.apache.zookeeper.server.quorum.QuorumPeer.run(QuorumPeer.java:498)
+2009-08-25 14:04:18,820 - WARN  [QuorumPeer:/0.0.0.0:2181:Follower@164] - Unexpected exception, tries=1
+java.net.ConnectException: Connection refused
+    at java.net.PlainSocketImpl.socketConnect(Native Method)
+    at java.net.PlainSocketImpl.doConnect(PlainSocketImpl.java:333)
+    at java.net.PlainSocketImpl.connectToAddress(PlainSocketImpl.java:195)
+    at java.net.PlainSocketImpl.connect(PlainSocketImpl.java:182)
+    at java.net.SocksSocketImpl.connect(SocksSocketImpl.java:366)
+    at java.net.Socket.connect(Socket.java:525)
+    at org.apache.zookeeper.server.quorum.Follower.followLeader(Follower.java:156)
+    at org.apache.zookeeper.server.quorum.QuorumPeer.run(QuorumPeer.java:498)
+2009-08-25 14:04:19,823 - WARN  [QuorumPeer:/0.0.0.0:2181:Follower@164] - Unexpected exception, tries=2
+java.net.ConnectException: Connection refused
+    at java.net.PlainSocketImpl.socketConnect(Native Method)
+    at java.net.PlainSocketImpl.doConnect(PlainSocketImpl.java:333)
+    at java.net.PlainSocketImpl.connectToAddress(PlainSocketImpl.java:195)
+    at java.net.PlainSocketImpl.connect(PlainSocketImpl.java:182)
+    at java.net.SocksSocketImpl.connect(SocksSocketImpl.java:366)
+    at java.net.Socket.connect(Socket.java:525)
+    at org.apache.zookeeper.server.quorum.Follower.followLeader(Follower.java:156)
+    at org.apache.zookeeper.server.quorum.QuorumPeer.run(QuorumPeer.java:498)
+2009-08-25 14:04:28,764 - WARN  [NIOServerCxn.Factory:2181:NIOServerCnxn@497] - Exception causing close of session 0x0 d
+ue to java.io.IOException: ZooKeeperServer not running
+2009-08-25 14:04:42,101 - WARN  [NIOServerCxn.Factory:2181:NIOServerCnxn@497] - Exception causing close of session 0x0 d
+ue to java.io.IOException: ZooKeeperServer not running
+
+the server 1, 3, 5 printed out the logs like:
+
+2009-08-25 14:01:35,396 - WARN  [NIOServerCxn.Factory:2181:NIOServerCnxn@497] - Exception causing close of session 0x0 d
+ue to java.io.IOException: ZooKeeperServer not running
+2009-08-25 14:01:36,554 - WARN  [QuorumPeer:/0.0.0.0:2181:LeaderElection@194] - Ignoring exception while looking for lea
+der
+java.net.SocketTimeoutException: Receive timed out 
+    at java.net.PlainDatagramSocketImpl.receive0(Native Method)
+    at java.net.PlainDatagramSocketImpl.receive(PlainDatagramSocketImpl.java:136)
+    at java.net.DatagramSocket.receive(DatagramSocket.java:712)
+    at org.apache.zookeeper.server.quorum.LeaderElection.lookForLeader(LeaderElection.java:170)
+    at org.apache.zookeeper.server.quorum.QuorumPeer.run(QuorumPeer.java:488)
+2009-08-25 14:01:37,758 - WARN  [QuorumPeer:/0.0.0.0:2181:LeaderElection@194] - Ignoring exception while looking for lea
+der
+java.net.SocketTimeoutException: Receive timed out 
+    at java.net.PlainDatagramSocketImpl.receive0(Native Method)
+    at java.net.PlainDatagramSocketImpl.receive(PlainDatagramSocketImpl.java:136)
+    at java.net.DatagramSocket.receive(DatagramSocket.java:712)
+    at org.apache.zookeeper.server.quorum.LeaderElection.lookForLeader(LeaderElection.java:170)
+    at org.apache.zookeeper.server.quorum.QuorumPeer.run(QuorumPeer.java:488)
+2009-08-25 14:01:37,865 - WARN  [QuorumPeer:/0.0.0.0:2181:Follower@164] - Unexpected exception, tries=0
+java.net.ConnectException: Connection refused
+    at java.net.PlainSocketImpl.socketConnect(Native Method)
+    at java.net.PlainSocketImpl.doConnect(PlainSocketImpl.java:333)
+    at java.net.PlainSocketImpl.connectToAddress(PlainSocketImpl.java:195)
+    at java.net.PlainSocketImpl.connect(PlainSocketImpl.java:182)
+    at java.net.SocksSocketImpl.connect(SocksSocketImpl.java:366)
+    at java.net.Socket.connect(Socket.java:525)
+    at org.apache.zookeeper.server.quorum.Follower.followLeader(Follower.java:156)
+    at org.apache.zookeeper.server.quorum.QuorumPeer.run(QuorumPeer.java:498)
+2009-08-25 14:01:38,289 - WARN  [NIOServerCxn.Factory:2181:NIOServerCnxn@497] - Exception causing close of session 0x0 d
+ue to java.io.IOException: Responded to info probe
+
+
+my zoo.cfg is like:
+tickTime=2000
+dataDir=./status/
+clientPort=2181
+initLimit=10
+syncLimit=2
+server.1=10.81.11.107:2888:3888
+server.2=10.81.11.106:2888:3888
+server.3=10.81.11.89:2888:3888
+server.4=10.81.11.99:2888:3888
+server.5=10.81.11.79:2888:3888
+
+Several questions:
+1. Why the leader selection failed after the restart?
+2. Is the size of data too big to be processed properly?
+3. How can I recover from this situation? Can I just remove the version-2 directory on server 6(the former leader) and restart the server?

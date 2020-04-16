@@ -1,0 +1,80 @@
+I've got an app that I've been profiling, that is slowly using lots of memory. I've now reproduced what I think is the problem, using a simple test that sends loads of msgs over JMS. 
+The test replicates the way in which the JmsTemplate sends messages- by using a message producer. It uses memory at quite a rate (40MB in about 1m). 
+I took a look at the JmsTemplate codeand see the following: 
+Code:
+   protected void doSend(Session session, Destination destination, MessageCreator messageCreator) 
+         throws JMSException { 
+      MessageProducer producer = createProducer(session, destination); 
+      Message message = messageCreator.createMessage(session); 
+      if (logger.isDebugEnabled()) 
+{ 
+         logger.debug("Sending created message [" + message + "]"); 
+      }
+ 
+      doSend(producer, message); 
+      // Check commit - avoid commit call within a JTA transaction. 
+      if (session.getTransacted() && isSessionTransacted() && 
+            !TransactionSynchronizationManager.hasResource(getConnectionFactory())) 
+{ 
+         // Transacted session created by this template -> commit. 
+         commitIfNecessary(session); 
+      }
+ 
+   } 
+Should not the producer that is created be closed? 
+If I replicate this method in a test case, and run it repeatedly, I run out of memory quite quickly. If I close the producer, things seems stable. 
+Here is my 'test case equivalent': 
+Code:
+    public void testActiveMQMemoryUsage() throws JMSException, InterruptedException { 
+        ActiveMQ activeMQ = new ActiveMQ(); 
+        activeMQ.setPersistenceAdapter(new VMPersistenceAdapter()); 
+        activeMQ.start(); 
+        // Get a connection/topic, start firing messages at it 
+        ActiveMQConnectionFactory factory = new ActiveMQConnectionFactory(); 
+        TopicConnection topicConnection = factory.createTopicConnection(); 
+        TopicSession topicSession = topicConnection.createTopicSession(false, Session.AUTO_ACKNOWLEDGE); 
+        Topic topic = topicSession.createTopic("testTopic"); 
+        TopicPublisher topicPublisher = topicSession.createPublisher(topic); 
+        topicConnection.start(); 
+        int msgCount = 0; 
+        Runtime runtime = Runtime.getRuntime(); 
+        while (true) { 
+            MessageProducer producer = topicSession.createProducer(topic); 
+            TextMessage message = topicSession.createTextMessage("The time is now " + System.currentTimeMillis()); 
+            producer.send(message, DeliveryMode.NON_PERSISTENT, 5, 1000); 
+            msgCount++; 
+            if (msgCount % 1000 == 0) 
+{ 
+                monitorMemory(); 
+            }
+ 
+            producer.close(); 
+        } 
+    } 
+    private void monitorMemory() throws InterruptedException 
+{ 
+        Runtime runtime = Runtime.getRuntime(); 
+        System.out.println("Free: " + runtime.freeMemory() / 1024 / 1024 + "MB, total: " + runtime.totalMemory() / 1024 
+            / 1024 + "MB, max: " + runtime.maxMemory() / 1024 / 1024 + "MB"); 
+        Thread.sleep(1000); 
+    }
+ 
+With the producer.close() commented out, I see: 
+Quote:
+Free: 1MB, total: 4MB, max: 63MB 
+Free: 0MB, total: 4MB, max: 63MB 
+Free: 1MB, total: 6MB, max: 63MB 
+Free: 0MB, total: 6MB, max: 63MB 
+Free: 3MB, total: 10MB, max: 63MB 
+Free: 0MB, total: 10MB, max: 63MB 
+Free: 2MB, total: 14MB, max: 63MB 
+Free: 6MB, total: 16MB, max: 63MB
+With it in there, I see: 
+Quote:
+Free: 0MB, total: 2MB, max: 63MB 
+Free: 0MB, total: 2MB, max: 63MB 
+Free: 0MB, total: 2MB, max: 63MB 
+Free: 1MB, total: 2MB, max: 63MB 
+Free: 1MB, total: 2MB, max: 63MB 
+Free: 1MB, total: 2MB, max: 63MB 
+Free: 1MB, total: 2MB, max: 63MB 

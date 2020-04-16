@@ -1,0 +1,119 @@
+I am running script which contains two tables, one is dynamically partitioned and stored as RCFormat and the other is stored as TXT file.
+The TXT file has around 397MB in size and has around 24million rows.
+
+
+
+drop table joinquery;
+
+create external table joinquery (
+
+  id string,
+
+  type string,
+
+  sec string,
+
+  num string,
+
+  url string,
+
+  cost string,
+
+  listinfo array <map<string,string>>
+
+) 
+
+STORED AS TEXTFILE
+
+LOCATION '/projects/joinquery';
+
+
+
+CREATE EXTERNAL TABLE idtable20mil(
+
+id string
+
+)
+
+STORED AS TEXTFILE
+
+LOCATION '/projects/idtable20mil';
+
+
+
+insert overwrite table joinquery
+
+   select 
+
+      /*+ MAPJOIN(idtable20mil) */
+
+      rctable.id,
+
+      rctable.type,
+
+      rctable.map['sec'],
+
+      rctable.map['num'],
+
+      rctable.map['url'],
+
+      rctable.map['cost'],
+
+      rctable.listinfo
+
+    from rctable
+
+    JOIN  idtable20mil on (rctable.id = idtable20mil.id)
+
+    where
+
+    rctable.id is not null and
+
+    rctable.part='value' and
+
+    rctable.subpart='value'and
+
+    rctable.pty='100' and
+
+    rctable.uniqid='1000'
+
+order by id;
+
+
+
+Result:
+Possible error:
+  Data file split:string,part:string,subpart:string,subsubpart:string> is corrupted.
+Solution:
+  Replace file. i.e. by re-running the query that produced the source table / partition.
+
+If I look at mapper logs.
+{verbatim}
+Caused by: java.io.IOException: java.io.EOFException
+	at org.apache.hadoop.hive.ql.exec.persistence.MapJoinObjectValue.readExternal(MapJoinObjectValue.java:109)
+	at java.io.ObjectInputStream.readExternalData(ObjectInputStream.java:1792)
+	at java.io.ObjectInputStream.readOrdinaryObject(ObjectInputStream.java:1751)
+	at java.io.ObjectInputStream.readObject0(ObjectInputStream.java:1329)
+	at java.io.ObjectInputStream.readObject(ObjectInputStream.java:351)
+	at org.apache.hadoop.hive.ql.util.jdbm.htree.HashBucket.readExternal(HashBucket.java:284)
+	at java.io.ObjectInputStream.readExternalData(ObjectInputStream.java:1792)
+	at java.io.ObjectInputStream.readOrdinaryObject(ObjectInputStream.java:1751)
+	at java.io.ObjectInputStream.readObject0(ObjectInputStream.java:1329)
+	at java.io.ObjectInputStream.readObject(ObjectInputStream.java:351)
+	at org.apache.hadoop.hive.ql.util.jdbm.helper.Serialization.deserialize(Serialization.java:106)
+	at org.apache.hadoop.hive.ql.util.jdbm.helper.DefaultSerializer.deserialize(DefaultSerializer.java:106)
+	at org.apache.hadoop.hive.ql.util.jdbm.recman.BaseRecordManager.fetch(BaseRecordManager.java:360)
+	at org.apache.hadoop.hive.ql.util.jdbm.recman.BaseRecordManager.fetch(BaseRecordManager.java:332)
+	at org.apache.hadoop.hive.ql.util.jdbm.htree.HashDirectory.get(HashDirectory.java:195)
+	at org.apache.hadoop.hive.ql.util.jdbm.htree.HTree.get(HTree.java:155)
+	at org.apache.hadoop.hive.ql.exec.persistence.HashMapWrapper.get(HashMapWrapper.java:114)
+	... 11 more
+Caused by: java.io.EOFException
+	at java.io.DataInputStream.readInt(DataInputStream.java:375)
+	at java.io.ObjectInputStream$BlockDataInputStream.readInt(ObjectInputStream.java:2776)
+	at java.io.ObjectInputStream.readInt(ObjectInputStream.java:950)
+	at org.apache.hadoop.io.BytesWritable.readFields(BytesWritable.java:153)
+	at org.apache.hadoop.hive.ql.exec.persistence.MapJoinObjectValue.readExternal(MapJoinObjectValue.java:98)
+{verbatim}
+
+I am trying to create a testcase, which can demonstrate this error.

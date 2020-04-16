@@ -1,0 +1,34 @@
+ZooKeeperTokenStore looks as follows:
+
+
+
+@Override
+
+public DelegationTokenInformation getToken(DelegationTokenIdentifier tokenIdentifier) {
+
+  byte[] tokenBytes = zkGetData(getTokenPath(tokenIdentifier));
+
+  try {
+
+    return HiveDelegationTokenSupport.decodeDelegationTokenInformation(tokenBytes);
+
+  } catch (Exception ex) {
+
+    throw new TokenStoreException("Failed to decode token", ex);
+
+  }
+
+}
+
+
+
+which is slightly different from DBTokenStore implementation that is protected against tokenBytes==null because nullable tokenBytes causes NPE to be thrown in HiveDelegationTokenSupport#decodeDelegationTokenInformation
+Furthermore, NPE thrown here causes TokenStoreDelegationTokenSecretManager.ExpiredTokenRemover to catch it and exits MetaStore.
+null from zkGetData() is possible during ZooKeeper failure or (and that was our case) when another metastore instance removes tokens during ExpiredTokenRemover run. There were two solutions of this problem:
+
+distributed lock in ZooKeeper acquired during one metastore instance's ExpiredTokenRemover run,
+simple null check
+
+I think null check is sufficient if it is in DBTokenStore.
+Patch will be attached.
+Sorry for an edit but I think worth mentioning is a fact that possible workaround for this issue is setting hive.cluster.delegation.key.update-interval, hive.cluster.delegation.token.renew-interval and hive.cluster.delegation.token.max-lifetime to one year as described here. But in my opinion it is not an engineer-way of doing things 

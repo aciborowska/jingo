@@ -1,0 +1,22 @@
+when put/get from hbase, if we meet a temporary dns failure causes resolve RS's host, the error will never recovered. put/get will failed with UnknownHostException forever. 
+I checked the code, and the reason maybe:
+1. when RegionServerCallable or MultiServerCallable prepare(), it gets a  ClientService.BlockingInterface stub from Hconnection
+2. In HConnectionImplementation::getClient, it caches the stub with a BlockingRpcChannelImplementation
+3. In BlockingRpcChannelImplementation(), 
+     this.isa = new InetSocketAddress(sn.getHostname(), sn.getPort()); If we meet a  temporary dns failure then the "address" in isa will be null.
+4. then we launch the real rpc call, the following stack is:
+Caused by: java.net.UnknownHostException: unknown host: xxx.host2
+	at org.apache.hadoop.hbase.ipc.RpcClient$Connection.<init>(RpcClient.java:385)
+	at org.apache.hadoop.hbase.ipc.RpcClient.createConnection(RpcClient.java:351)
+	at org.apache.hadoop.hbase.ipc.RpcClient.getConnection(RpcClient.java:1523)
+	at org.apache.hadoop.hbase.ipc.RpcClient.call(RpcClient.java:1435)
+	at org.apache.hadoop.hbase.ipc.RpcClient.callBlockingMethod(RpcClient.java:1654)
+	at org.apache.hadoop.hbase.ipc.RpcClient$BlockingRpcChannelImplementation.callBlockingMethod(RpcClient.java:1712)
+Besides, i noticed there is a protection in RpcClient:
+if (remoteId.getAddress().isUnresolved()) 
+{
+
+        throw new UnknownHostException("unknown host: " + remoteId.getAddress().getHostName());
+
+      }
+shouldn't we do something when this situation occurred? 

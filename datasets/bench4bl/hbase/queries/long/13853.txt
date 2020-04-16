@@ -1,0 +1,77 @@
+After 2 days of log mining with ITBLL Search tool (thanks Stack, BTW for the tool), the sequence of events are like this: 
+One of mappers from Search reportedly finds missing keys in some WAL file:
+
+
+
+2015-06-07 06:49:24,573 INFO [main] org.apache.hadoop.mapred.MapTask: Processing split: hdfs://os-enis-dal-test-jun-4-1.openstacklocal:8020/apps/hbase/data/oldWALs/os-enis-dal-test-jun-4-4.openstacklocal%2C16020%2C1433636320201.default.1433637872643 (-9223372036854775808:9223372036854775807) length:132679657 2015-06-07 06:49:24,639 INFO [main] org.apache.hadoop.hbase.mapreduce.WALInputFormat: Opening reader for hdfs://os-enis-dal-test-jun-4-1.openstacklocal:8020/apps/hbase/data/oldWALs/os-enis-dal-test-jun-4-4.openstacklocal%2C16020%2C1433636320201.default.1433637872643 (-9223372036854775808:9223372036854775807) length:132679657
+
+2015-06-07 06:50:16,383 INFO [main] org.apache.hadoop.hbase.test.IntegrationTestBigLinkedList$Search: Loaded keys to find: count=2384870 2015-06-07 06:50:16,607 INFO [main] org.apache.hadoop.hbase.test.IntegrationTestBigLinkedList$Search: Found cell=!+\xF1CB\x08\x13\xA0W\x94\xC4\x1C\xDA\x1D\x0D\xBC/meta:prev/1433637873293/Put/vlen=16/seqid=0 2015-06-07 06:50:16,663 INFO [main] org.apache.hadoop.hbase.test.IntegrationTestBigLinkedList$Search: Found cell=!+\xF1CB\x08\x13\xA0W\x94\xC4\x1C\xDA\x1D\x0D\xBC/meta:count/1433637873293/Put/vlen=8/seqid=0
+
+2015-06-07 06:50:16,664 INFO [main] org.apache.hadoop.hbase.test.IntegrationTestBigLinkedList$Search: Found cell=!+\xF1CB\x08\x13\xA0W\x94\xC4\x1C\xDA\x1D\x0D\xBC/meta:client/1433637873293/Put/vlen=71/seqid=0 2015-06-07 06:50:16,671 INFO [main] org.apache.hadoop.hbase.test.IntegrationTestBigLinkedList$Search: Found cell=$\x1A\x99\x06\x86\xE7\x07\xA2\xA7\xB2\xFB\xCEP\x12"\x04/meta:prev/1433637873293/Put/vlen=16/seqid=0
+
+2015-06-07 06:50:16,672 INFO [main] org.apache.hadoop.hbase.test.IntegrationTestBigLinkedList$Search: Found cell=$\x1A\x99\x06\x86\xE7\x07\xA2\xA7\xB2\xFB\xCEP\x12"\x04/meta:count/1433637873293/Put/vlen=8/seqid=0 2015-06-07 06:50:16,678 INFO [main] org.apache.hadoop.hbase.test.IntegrationTestBigLinkedList$Search: Found cell=$\x1A\x99\x06\x86\xE7\x07\xA2\xA7\xB2\xFB\xCEP\x12"\x04/meta:client/1433637873293/Put/vlen=71/seqid=0
+
+2015-06-07 06:50:16,679 INFO [main] org.apache.hadoop.hbase.test.IntegrationTestBigLinkedList$Search: Found cell=\x1F\x80#\x95\xAE:i=)S\x01\x08 \xD6\xFF\xD5/meta:prev/1433637873293/Put/vlen=16/seqid=0
+
+
+
+hlog -p confirms the missing keys are there in the file: 
+
+
+
+Sequence=7276 , region=b086e29f909c9790446cd457c1ea7674 at write timestamp=Sun Jun 07 00:44:33 UTC 2015
+
+row=!+\xF1CB\x08\x13\xA0W\x94\xC4\x1C\xDA\x1D\x0D\xBC, column=meta:prev
+
+    value: \x1B\xF5\xF3^\x8D\xB4\x85\xE3\xF4wS\x9A]\x0D\xABe
+
+row=!+\xF1CB\x08\x13\xA0W\x94\xC4\x1C\xDA\x1D\x0D\xBC, column=meta:count
+
+    value: \x00\x00\x00\x00\x002\x87l
+
+row=!+\xF1CB\x08\x13\xA0W\x94\xC4\x1C\xDA\x1D\x0D\xBC, column=meta:client
+
+    value: Job: job_1433466891829_0002 Task: attempt_1433466891829_0002_m_000003_0
+
+
+
+When the RS gets killing from CM, master does WAL splitting: 
+
+
+
+./hbase-hbase-regionserver-os-enis-dal-test-jun-4-2.log:2015-06-07 00:46:12,581 INFO  [RS_LOG_REPLAY_OPS-os-enis-dal-test-jun-4-2:16020-0] wal.WALSplitter: Processed 2971 edits across 4 regions; edits skipped=740; log file=hdfs://os-enis-dal-test-jun-4-1.openstacklocal:8020/apps/hbase/data/WALs/os-enis-dal-test-jun-4-4.openstacklocal,16020,1433636320201-splitting/os-enis-dal-test-jun-4-4.openstacklocal%2C16020%2C1433636320201.default.1433637872643, length=132679657, corrupted=false, progress failed=false
+
+
+
+The edits with Sequence=7276 should be in this recovered.edits file: 
+
+
+
+2015-06-07 00:46:12,574 INFO  [split-log-closeStream-2] wal.WALSplitter: Closed wap hdfs://os-enis-dal-test-jun-4-1.openstacklocal:8020/apps/hbase/data/data/default/IntegrationTestBigLinkedList/b086e29f909c9790446cd457c1ea7674/recovered.edits/0000000000000007276.temp (wrote 739 edits in 3950ms)
+
+2015-06-07 00:46:12,580 INFO  [split-log-closeStream-2] wal.WALSplitter: Rename hdfs://os-enis-dal-test-jun-4-1.openstacklocal:8020/apps/hbase/data/data/default/IntegrationTestBigLinkedList/b086e29f909c9790446cd457c1ea7674/recovered.edits/0000000000000007276.temp to hdfs://os-enis-dal-test-jun-4-1.openstacklocal:8020/apps/hbase/data/data/default/IntegrationTestBigLinkedList/b086e29f909c9790446cd457c1ea7674/recovered.edits/0000000000000008752
+
+
+
+Notice that the file 0000000000000008752 should contain (wrote 739 edits in 3950ms). 
+When the region gets opened again, it replays the recovered.edits files:
+
+
+
+2015-06-07 00:46:17,764 DEBUG [RS_OPEN_REGION-os-enis-dal-test-jun-4-5:16020-0] regionserver.HRegion: Found 4 recovered edits file(s) under hdfs://os-enis-dal-test-jun-4-1.openstacklocal:8020/apps/hbase/data/data/default/IntegrationTestBigLinkedList/b086e29f909c9790446cd457c1ea7674
+
+
+
+However, it does not see ANY entry in the recovered.edits file  0000000000000008752: 
+
+
+
+2015-06-07 00:46:17,796 DEBUG [RS_OPEN_REGION-os-enis-dal-test-jun-4-5:16020-0] regionserver.HRegion: Applied 0, skipped 0, firstSequenceIdInLog=-1, maxSequenceIdInLog=-1, path=hdfs://os-enis-dal-test-jun-4-1.openstacklocal:8020/apps/hbase/data/data/default/IntegrationTestBigLinkedList/b086e29f909c9790446cd457c1ea7674/recovered.edits/0000000000000008752
+
+
+
+Looking at the length of the file, it is very small which means that the edits are not written. 
+Now, If you are still with me, I think the reason why we do not write any edit to 0000000000000008752 although we say we have written 739 edits is due to HBASE-12405. 
+Specifically, we pass FSHLog.getEarliestMemstoreSeqNum() - 1 as the stores flush seqId, which gets saved in the master and used with LastSequenceId.  
+The WALSplitter skips the cells per store using filterCellByStore() which is logical. However, the data loss happens, because   FSHLog.getEarliestMemstoreSeqNum() ignores flushing edits. For example, if we have seqId = 10 to 100 as flushing, and seqId 101 in the new memstore, and heartbeat to master during the flush will carry 101 as the earliest flush seqId. if the flush does not complete (due to RS getting killed) this results in incorrectly skipped edits. 
+The WAL replay code also uses this kind of filtering so this may also explain some of the failures with DLR. 

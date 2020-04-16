@@ -1,0 +1,110 @@
+There is a race condition in the Mina2Producer when trying to close connections after use by setting disconnect=true or
+setting CamelMina2CloseSessionWhenComplete=true. 
+Connections will not be fully closed in the method maybeDisconnectOnDone. 
+The call to session.close(true) returns a CloseFuture - one must await this to ensure the session is really closed.
+In the current implementation, there is no await on the CloseFuture. This means that the producer will be returned to the pool before the session is closed. If the next call comes right after, it is very likely that it will get the same producer and that the session will suddenly be closed while in use, leading to errors like 
+ExchangeTimedOutException: The OUT message was not received within 30000 ms
+or 
+java.lang.IllegalStateException: handler cannot be set while the service is active.
+The fix is trivial - just change line 221 in Mina2Producer.java from
+
+
+
+session.close(true);
+
+
+
+to 
+
+
+
+long timeout = getEndpoint().getConfiguration().getTimeout();          
+
+CloseFuture closeFuture = session.close(true);  
+
+closeFuture.awaitUninterruptibly(timeout, TimeUnit.MILLISECONDS);
+
+
+
+But the unit testing might be more complex.
+There might be a similar issue in Mina2Consumer - but I could not provoke it as easily.
+Here is a small program demonstrating the problem - on my system it will fail within the first 50 iterations. When looking at the debug log, it is clear that the connections are closed too late - after the next iteration has started.
+
+
+
+
+
+import org.apache.camel.*;
+
+import org.apache.camel.builder.RouteBuilder;
+
+import org.apache.camel.impl.DefaultCamelContext;
+
+import org.slf4j.*;
+
+
+
+/**
+
+ * Demonstrating race condition
+
+ */
+
+public class Main {
+
+    public static void main(String[] args) throws Exception {
+
+
+
+        System.setProperty("org.slf4j.simpleLogger.log.org.apache.camel.component.mina2.Mina2Producer", "trace");
+
+        System.setProperty("org.slf4j.simpleLogger.log.org.apache.mina.filter.logging.LoggingFilter", "trace");
+
+        
+
+        Logger logger = LoggerFactory.getLogger(Main.class);
+
+        CamelContext context = new DefaultCamelContext();
+
+        context.addRoutes(new RouteBuilder() {
+
+            @Override
+
+            public void configure() throws Exception {
+
+                from("mina2:tcp://localhost:20000?sync=true").setBody(simple("Hello ${in.body}"));
+
+            }
+
+        });
+
+
+
+        ProducerTemplate producerTemplate = context.createProducerTemplate();
+
+        context.start();
+
+        try {
+
+            for (int i = 0; i < 10000; i++) {
+
+                logger.info("---- Call # " + i);
+
+                String result = (String) producerTemplate.requestBody("mina2:tcp://localhost:20000?disconnect=true&timeout=1000&sync=true&minaLogger=true", "world " + i);
+
+                logger.info("---- End call # " + i + ": " + result);
+
+            }
+
+        } finally {
+
+            context.stop();
+
+        }
+
+    }
+
+}
+
+
+

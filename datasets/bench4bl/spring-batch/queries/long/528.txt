@@ -1,0 +1,194 @@
+I ran the schema creation script schema-mysql.sql found in the spring-batch-core-1.0.0.rc1.jar.
+It creates a table for the job parameters:
+
+
+
+
+
+
+CREATE TABLE BATCH_JOB_PARAMS  (
+
+
+
+
+	JOB_INSTANCE_ID BIGINT NOT NULL ,
+
+
+
+
+    TYPE_CD VARCHAR(6) NOT NULL ,
+
+
+
+
+	KEY_NAME VARCHAR(100) NOT NULL , 
+
+
+
+
+	STRING_VAL VARCHAR(250) , 
+
+
+
+
+	DATE_VAL TIMESTAMP NULL,
+
+
+
+
+	LONG_VAL BIGINT ,
+
+
+
+
+	DOUBLE_VAL DOUBLE PRECISION,
+
+
+
+
+	constraint JOB_INSTANCE_PARAMS_FK foreign key (JOB_INSTANCE_ID)
+
+
+
+
+	references BATCH_JOB_INSTANCE(JOB_INSTANCE_ID)
+
+
+
+
+) type=InnoDB;
+
+
+
+
+
+
+However, when starting a job with a single long parameter, the query fails. A java.sql.Timestamp with value 0L is created in JdbcJobInstanceDao:146 and inserted into the DATE_VAL column, which fails:
+
+
+
+
+
+
+org.springframework.jdbc.UncategorizedSQLException: PreparedStatementCallback; uncategorized SQLException for SQL [INSERT into BATCH_JOB_PARAMS(JOB_INSTANCE_ID, KEY_NAME, TYPE_CD, STRING_VAL, DATE_VAL, LONG_VAL, DOUBLE_VAL) values (?, ?, ?, ?, ?, ?, ?)]; SQL state [01004]; error code [0]; Data truncation: Incorrect datetime value: '1969-12-31 19:00:00' for column 'DATE_VAL' at row 1
+
+
+
+
+ 
+
+
+
+
+Query being executed when exception was thrown:
+
+
+
+
+ 
+
+
+
+
+com.mysql.jdbc.ServerPreparedStatement[6] - INSERT into BATCH_JOB_PARAMS(JOB_INSTANCE_ID, KEY_NAME, TYPE_CD, STRING_VAL, DATE_VAL, LONG_VAL, DOUBLE_VAL) values (1, 'batchSize', 'LONG', '', '1969-12-31 19:00:00', 1, 0.0); nested exception is java.sql.SQLException: Data truncation: Incorrect datetime value: '1969-12-31 19:00:00' for column 'DATE_VAL' at row 1
+
+
+
+
+        at org.springframework.jdbc.support.SQLStateSQLExceptionTranslator.translate(SQLStateSQLExceptionTranslator.java:121)
+
+
+
+
+        at org.springframework.jdbc.support.SQLErrorCodeSQLExceptionTranslator.translate(SQLErrorCodeSQLExceptionTranslator.java:322)
+
+
+
+
+        at org.springframework.jdbc.core.JdbcTemplate.execute(JdbcTemplate.java:582)
+
+
+
+
+        at org.springframework.jdbc.core.JdbcTemplate.update(JdbcTemplate.java:767)
+
+
+
+
+        at org.springframework.jdbc.core.JdbcTemplate.update(JdbcTemplate.java:825)
+
+
+
+
+        at org.springframework.jdbc.core.JdbcTemplate.update(JdbcTemplate.java:829)
+
+
+
+
+        at org.springframework.batch.core.repository.dao.JdbcJobInstanceDao.insertParameter(JdbcJobInstanceDao.java:155)
+
+
+
+
+        at org.springframework.batch.core.repository.dao.JdbcJobInstanceDao.insertJobParameters(JdbcJobInstanceDao.java:109)
+
+
+
+
+        at org.springframework.batch.core.repository.dao.JdbcJobInstanceDao.createJobInstance(JdbcJobInstanceDao.java:71)
+
+
+
+
+        at org.springframework.batch.core.repository.support.SimpleJobRepository.createJobExecution(SimpleJobRepository.java:179)
+
+
+
+
+        at org.springframework.batch.core.launch.support.SimpleJobLauncher.run(SimpleJobLauncher.java:83)
+
+
+
+
+
+
+Apparently MySQL has an issue with a timestamp in 1969:
+
+
+
+
+
+
+mysql> create table timestamper ( t timestamp null );
+
+
+
+
+Query OK, 0 rows affected (0.01 sec)
+
+
+
+
+mysql> insert into timestamper(t) values ('1969-12-31 19:00:00');
+
+
+
+
+ERROR 1292 (22007): Incorrect datetime value: '1969-12-31 19:00:00' for column 't' at row 1
+
+
+
+
+mysql> insert into timestamper(t) values ('1980-12-31 19:00:00');
+
+
+
+
+Query OK, 1 row affected (0.00 sec)
+
+
+
+
+
+
+As a workaround, I changed the column type of DATE_VAL to datetime rather than timestamp. I think datetime may be the more appropriate type for this column in mysql.

@@ -1,0 +1,34 @@
+ClientCnxn does not always propagate session expiration indication up to clients. If a reconnection attempt fails because the session has since expired, the KeeperCode is still Disconnected, but shouldn't it be set to Expired? Perhaps like so:
+
+
+--- a/src/java/main/org/apache/zookeeper/ClientCnxn.java
++++ b/src/java/main/org/apache/zookeeper/ClientCnxn.java
+@@ -1160,6 +1160,7 @@ public class ClientCnxn {
+                     clientCnxnSocket.doTransport(to, pendingQueue, outgoingQueue);
+ 
+                 } catch (Exception e) {
++                    Event.KeeperState eventState = Event.KeeperState.Disconnected;
+                     if (closing) {
+                         if (LOG.isDebugEnabled()) {
+                             // closing so this is expected
+@@ -1172,6 +1173,7 @@ public class ClientCnxn {
+                         // this is ugly, you have a better way speak up
+                         if (e instanceof SessionExpiredException) {
+                             LOG.info(e.getMessage() + ", closing socket connection");
++                            eventState = Event.KeeperState.Expired;
+                         } else if (e instanceof SessionTimeoutException) {
+                             LOG.info(e.getMessage() + RETRY_CONN_MSG);
+                         } else if (e instanceof EndOfStreamException) {
+@@ -1191,7 +1193,7 @@ public class ClientCnxn {
+                         if (state.isAlive()) {
+                             eventThread.queueEvent(new WatchedEvent(
+                                     Event.EventType.None,
+-                                    Event.KeeperState.Disconnected,
++                                    eventState,
+                                     null));
+                         }
+                         clientCnxnSocket.updateNow();
+
+
+
+This affects HBase. HBase master and region server processes will shut down by design if their session has expired, but will attempt to reconnect if they think they have been disconnected. The above prevents proper termination.

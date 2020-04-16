@@ -1,0 +1,38 @@
+JPA supports use cases where optimistic checking is not desired. The application need only avoid using a version field in the entity class.
+
+However, OpenJPA optimizes its writes on update to include only those fields that have changed. In cases, where optimistic checking is not used, OpenJPA does not currently provide a way to write out some or all of the non-dirty fields when writing an unchecked object with at least one dirty field. As a result, when a class of objects is not checked, the changes from multiple transactions are merged in the database.
+
+For example, consider the class FooBar which has no version field. It has three fields, id, mango and pommegranate. Assume there is a FooBar record that starts off as the tuple,
+
+<id = 100, mango = 'LARGE', pommegranate = 'LARGE'>. 
+
+With the current behavior, it would be changed to the tuple, 
+
+<id = 100, mango = 'SMALL', pommegranate = 'SMALL'>
+
+by the following transactional sequence:
+
+Tx A: tx.begin();
+Tx A: foobar = em.find(FooBar.class, 100);
+Tx B: tx.begin();
+Tx B: foobar = em.find(FooBar.class, 100);
+Tx A: foobar.mango = "SMALL";
+Tx B: foobar.pommegrante = "SMALL";
+Tx A: tx.commit();
+Tx B: tx.commit();
+
+Depending on the application's needs, this behavior might be acceptable, but it might not be. The desired behavior may be that the result should be one of the two following tuples.
+
+Either, 
+
+<id = 100, mango = 'LARGE', pommegranate = 'SMALL'>
+
+which is expected when Tx B commits last as shown above.
+
+Or, 
+
+<id = 100, mango = 'SMALL', pommegranate = 'LARGE'>
+
+if it happens that Tx A commits last.
+
+To effect this behavior, a new feature could be added to OpenJPA. The use of this feature would be triggered by a new, non-JPA annotation, perhaps called EasilyDirtied, which when applied to a persistent attribute, would instruct OpenJPA to write this attribute's value out on all updates to the object's state. This annotation would be subservient to the mappedBy attribute in relationship annotations. In other words, it has no effect if the annotaton is applied to the mappedBy side of a relationship.

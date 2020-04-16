@@ -1,0 +1,39 @@
+We have seen some sporadic issues with unexplained segfaults inside auth_completion_func. The interesting thing is we are not using any auth mechanism at all. This happened against this version of the code:
+
+svn.apache.org/repos/asf/zookeeper/trunk@1547702
+
+Here's the stacktrace we are seeing:
+
+
+Thread 1 (Thread 0x7f21d13ff700 ? (LWP 5230)):
+#0  0x00007f21efff42f0 in auth_completion_func (rc=0, zh=0x7f21e7470800) at src/zookeeper.c:1696
+#1  0x00007f21efff7898 in zookeeper_process (zh=0x7f21e7470800, events=2) at src/zookeeper.c:2708
+#2  0x00007f21f0006583 in do_io (v=0x7f21e7470800) at src/mt_adaptor.c:440
+#3  0x00007f21eeab7e9a in start_thread () from /lib/x86_64-linux-gnu/libpthread.so.0
+#4  0x00007f21ed1803fd in clone () from /lib/x86_64-linux-gnu/libc.so.6
+#5  0x0000000000000000 in ?? ()
+
+
+
+The offending line in our case is:
+
+1696            LOG_INFO(LOGCALLBACK(zh), "Authentication scheme %s succeeded", zh->auth_h.auth->scheme);
+
+It must be the case that zh->auth_h.auth is NULL for this to happen since the code path returns if zh is NULL.
+
+Interesting log messages around this time:
+
+
+Socket [10.170.243.7:2181] zk retcode=-2, errno=115(Operation now in progress): unexpected server response: expected 0xfffffff9, but received 0xfffffff8
+Priming connection to [10.170.243.4:2181]: last_zxid=0x370eb4d
+initiated connection to server [10.170.243.4:2181]
+Oct 13 12:03:21.273384 zookeeper - INFO  [NIOServerCxnFactory.AcceptThread:/10.170.243.4:2181:NIOServerCnxnFactory$AcceptThread@296] - Accepted socket connection from /10.170.243.4:48523
+Oct 13 12:03:21.274321 zookeeper - WARN  [NIOWorkerThread-24:ZooKeeperServer@822] - Connection request from old client /10.170.243.4:48523; will be dropped if server is in r-o mode
+Oct 13 12:03:21.274452 zookeeper - INFO  [NIOWorkerThread-24:ZooKeeperServer@869] - Client attempting to renew session 0x3000011596d004a at /10.170.243.4:48523; client last zxid is 0x30370eb4d; server last zxid is 0x30370eb4d
+Oct 13 12:03:21.274584 zookeeper - INFO  [NIOWorkerThread-24:Learner@115] - Revalidating client: 0x3000011596d004a
+session establishment complete on server [10.170.243.4:2181], sessionId=0x3000011596d004a, negotiated timeout=20000
+Oct 13 12:03:21.275693 zookeeper - INFO  [QuorumPeer[myid=1]/10.170.243.4:2181:ZooKeeperServer@611] - Established session 0x3000011596d004a with negotiated timeout 20000 for client /10.170.243.4:48523
+Oct 13 12:03:24.229590 zookeeper - WARN  [NIOWorkerThread-8:NIOServerCnxn@361] - Unable to read additional data from client sessionid 0x3000011596d004a, likely client has closed socket
+Oct 13 12:03:24.230018 zookeeper - INFO  [NIOWorkerThread-8:NIOServerCnxn@999] - Closed socket connection for client /10.170.243.4:48523 which had sessionid 0x3000011596d004a
+Oct 13 12:03:24.230257 zookeeper - WARN  [NIOWorkerThread-19:NIOServerCnxn@361] - Unable to read additional data from client sessionid 0x100002743aa0001, likely client has closed socket
+

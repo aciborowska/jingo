@@ -1,0 +1,151 @@
+FileSystemUtils.freeSpace fails its tests on Solaris.  The following patch fixes it, and with it all tests pass on:
+RedHat (FC7, EL3, EL4, CentOS4, CentOS5) and Solaris (8, 9-sparc, 9-i386, 10-sparc, 10-i386).
+The fix is to force the use of /usr/xpg4/bin/df on Solaris, which is the posix version.  This then means that the output-parsing works as expected.
+Index: src/java/org/apache/commons/io/FileSystemUtils.java
+===================================================================
+RCS file: /cvsroot/upstream/jpackage/jakarta-commons-io/src/java/org/apache/commons/io/FileSystemUtils.java,v
+retrieving revision 1.1.1.1
+retrieving revision 1.1.1.1.2.3
+diff -u -r1.1.1.1 -r1.1.1.1.2.3
+— src/java/org/apache/commons/io/FileSystemUtils.java 2 Mar 2007 06:31:03 -0000       1.1.1.1
++++ src/java/org/apache/commons/io/FileSystemUtils.java 28 Mar 2008 11:56:06 -0000      1.1.1.1.2.3
+@@ -64,6 +64,10 @@
+     /** The operating system flag. */
+     private static final int OS;
++
++    /** The path to df */
++    private static String dfPath = "df";
++
+     static {
+         int os = OTHER;
+         try {
+@@ -76,9 +80,6 @@
+             if (osName.indexOf("windows") != -1) 
+{
+                 os = WINDOWS;
+             }
+ else if (osName.indexOf("linux") != -1 ||
+
+osName.indexOf("sun os") != -1 ||
+osName.indexOf("sunos") != -1 ||
+osName.indexOf("solaris") != -1 ||
+                 osName.indexOf("mpe/ix") != -1 ||
+                 osName.indexOf("freebsd") != -1 ||
+                 osName.indexOf("irix") != -1 ||
+@@ -86,6 +87,11 @@
+                 osName.indexOf("unix") != -1 ||
+                 osName.indexOf("mac os x") != -1) 
+{
+                 os = UNIX;
++            }
+ else if (osName.indexOf("sun os") != -1 ||
++                osName.indexOf("sunos") != -1 ||
++                osName.indexOf("solaris") != -1) 
+{
++                os = POSIX_UNIX;
++                dfPath = "/usr/xpg4/bin/df";
+             }
+ else if (osName.indexOf("hp-ux") != -1 ||
+                 osName.indexOf("aix") != -1) {
+                 os = POSIX_UNIX;
+@@ -116,7 +122,7 @@
+
+
+of 
+{@link #freeSpaceKb(String)}
+ which returns a result in kilobytes.
+<p>
+Note that some OS's are NOT currently supported, including OS/390,
+
+
+* OpenVMS and and SunOS 5. (SunOS is supported by <code>freeSpaceKb</code>.)
++     * OpenVMS. 
+
+
+<pre>
+FileSystemUtils.freeSpace("C:");       // Windows
+FileSystemUtils.freeSpace("/volume");  // *nix
+@@ -317,14 +323,14 @@
+             flags += "P";
+         }
+         String[] cmdAttribs = 
+
+
+(flags.length() > 1 ? new String[] 
+{"df", flags, path}
+ : new String[] 
+{"df", path}
+);
++            (flags.length() > 1 ? new String[] 
+{dfPath, flags, path}
+ : new String[] 
+{dfPath, path}
+);
+
+         // perform the command, asking for up to 3 lines (header, interesting, overflow)
+         List lines = performCommand(cmdAttribs, 3);
+         if (lines.size() < 2) 
+{
+             // unknown problem, throw exception
+             throw new IOException(
+-                    "Command line 'df' did not return info as expected " +
++                    "Command line '" + dfPath + "' did not return info as expected " +
+                     "for path '" + path + "'- response was " + lines);
+         }
+         String line2 = (String) lines.get(1); // the line we're interested in
+@@ -338,7 +344,7 @@
+                 tok = new StringTokenizer(line3, " ");
+             } else 
+{
+                 throw new IOException(
+-                        "Command line 'df' did not return data as expected " +
++                        "Command line '" + dfPath + "' did not return data as expected " +
+                         "for path '" + path + "'- check path is valid");
+             }
+         } else {
+@@ -364,14 +370,14 @@
+             long bytes = Long.parseLong(freeSpace);
+             if (bytes < 0) 
+{
+                 throw new IOException(
+-                        "Command line 'df' did not find free space in response " +
++                        "Command line '" + dfPath + "' did not find free space in response " +
+                         "for path '" + path + "'- check path is valid");
+             }
+             return bytes;
+         } catch (NumberFormatException ex) 
+{
+             throw new IOException(
+-                    "Command line 'df' did not return numeric data as expected " +
++                    "Command line '" + dfPath + "' did not return numeric data as expected " +
+                     "for path '" + path + "'- check path is valid");
+         }
+     }
+Index: src/test/org/apache/commons/io/FileSystemUtilsTestCase.java
+===================================================================
+RCS file: /cvsroot/upstream/jpackage/jakarta-commons-io/src/test/org/apache/commons/io/FileSystemUtilsTestCase.java,v
+retrieving revision 1.1.1.1
+retrieving revision 1.1.1.1.2.6
+diff -u -r1.1.1.1 -r1.1.1.1.2.6
+— src/test/org/apache/commons/io/FileSystemUtilsTestCase.java 2 Mar 2007 06:30:58 -0000       1.1.1.1
++++ src/test/org/apache/commons/io/FileSystemUtilsTestCase.java 28 Mar 2008 15:26:43 -0000      1.1.1.1.2.6
+@@ -68,8 +68,13 @@
+             // have to figure out unix block size
+             String[] cmd = null;
+             String osName = System.getProperty("os.name");
++            osName = osName.toLowerCase();
++
+             if (osName.indexOf("hp-ux") >= 0 || osName.indexOf("aix") >= 0) {
+                 cmd = new String[] 
+{"df", "-P", "/"}
+;
++            } else if (osName.indexOf("sunos") >= 0 || osName.indexOf("sun os") >= 0
++                       || osName.indexOf("solaris") >= 0) {
++                cmd = new String[] 
+{"/usr/xpg4/bin/df", "-P", "/"}
+;
+             } else {
+                 cmd = new String[] 
+{"df", "/"}
+;
+             }

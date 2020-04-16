@@ -1,0 +1,98 @@
+PersistenceProviderImpl.createContainerEntityManagerFactory() doesn't work if you supply jdbc specific properties such as 
+
+                        <property name="openjpa.Sequence" value="table(Table=OPENJPASEQ, Increment=100)"/>
+
+(or rather its string equivalent in the map argument)
+
+The problem is that the ClassTransformerImpl creates a OpenJPAConfigurationImpl which doesn't know anything about jdbc configuration properties such as the sequence, but it gets fed all the properties you supply.
+
+Changing the code in PersistenceProviderImpl to create a JDBCConfigurationImpl makes everything work:  heres a patch to do this:
+
+Index: openjpa-persistence/src/main/java/org/apache/openjpa/persistence/PersistenceProviderImpl.java
+===================================================================
+— openjpa-persistence/src/main/java/org/apache/openjpa/persistence/PersistenceProviderImpl.java       (revision 469568)
++++ openjpa-persistence/src/main/java/org/apache/openjpa/persistence/PersistenceProviderImpl.java       (working copy)
+@@ -89,17 +89,17 @@
+             // add enhancer
+             String ctOpts = (String) Configurations.getProperty
+                 (CLASS_TRANSFORMER_OPTIONS, pui.getProperties());
+
+	pui.addTransformer(new ClassTransformerImpl(cp, ctOpts,
++            pui.addTransformer(new ClassTransformerImpl(cp, ctOpts,
+                 pui.getNewTempClassLoader()));
+
+
+
+
+	BrokerFactory factory = Bootstrap.newBrokerFactory(cp,
++            BrokerFactory factory = Bootstrap.newBrokerFactory(cp,
+                 pui.getClassLoader());
+             return OpenJPAPersistence.toEntityManagerFactory(factory);
+         } catch (Exception e) 
+{
+             throw PersistenceExceptions.toPersistenceException(e);
+         }
+     }
+	+
+     /**
+
+
+	Java EE 5 class transformer.
+      */
+@@ -108,10 +108,24 @@
+
+
+
+         private final ClassFileTransformer _trans;
+
+
+	private ClassTransformerImpl(ConfigurationProvider cp, String props,
++        private ClassTransformerImpl(ConfigurationProvider cp, String props,
+             final ClassLoader tmpLoader) {
+             // create an independent conf for enhancement
+	OpenJPAConfiguration conf = new OpenJPAConfigurationImpl();
++            OpenJPAConfiguration conf = null;
++            try 
+{
++                ClassLoader tccl = Thread.currentThread().getContextClassLoader();
++                Class clazz = Class.forName("org.apache.openjpa.jdbc.conf.JDBCConfigurationImpl", true, tccl);
++                conf = (OpenJPAConfiguration)clazz.newInstance();
++            }
+ catch (ClassNotFoundException e) 
+{
++                e.printStackTrace();
++            } catch (IllegalAccessException e) {+                e.printStackTrace();+            }
+ catch (InstantiationException e) 
+{
++                e.printStackTrace();
++            }
++            if (conf == null) 
+{
++                conf = new OpenJPAConfigurationImpl();
++            }
+             cp.setInto(conf);
+             // don't allow connections
+             conf.setConnectionUserName(null);
+
+
+
+
+It seems to me that using a JDBCConfiguration here is not needed: what is needed is to ignore properties that the OpenJPAConfigurationImpl doesn't understand, rather than throwing an exception.  We're only setting up the class transformer here, not the runtime configuration.
+
+I don't understand enough to suggest where to fix this, but given some hints I could make a try.
+
+
+The relevant parts of the stacktrace showing the original error is:
+
+Caused by: java.lang.IllegalArgumentException: java.lang.ClassNotFoundException: table in classloader org.apache.geronimo.configs/openjpa/1.2-SNAPSHOT/car
+        at serp.util.Strings.toClass(Strings.java:211)
+        at serp.util.Strings.toClass(Strings.java:140)
+        at org.apache.openjpa.lib.conf.Configurations.newInstance(Configurations.java:135)
+        ... 62 more
+
+        at org.apache.openjpa.lib.conf.ConfigurationImpl.instantiateAll(ConfigurationImpl.java:278)
+        at org.apache.openjpa.conf.OpenJPAConfigurationImpl.instantiateAll(OpenJPAConfigurationImpl.java:1400)
+        at org.apache.openjpa.persistence.PersistenceProviderImpl$ClassTransformerImpl.<init>(PersistenceProviderImpl.java:130)
+        at org.apache.openjpa.persistence.PersistenceProviderImpl$ClassTransformerImpl.<init>(PersistenceProviderImpl.java:106)
+        at org.apache.openjpa.persistence.PersistenceProviderImpl.createContainerEntityManagerFactory(PersistenceProviderImpl.java:92)
+        at org.apache.geronimo.persistence.PersistenceUnitGBean.<init>(PersistenceUnitGBean.java:91)

@@ -1,0 +1,290 @@
+I'm using 2-legged OAuth to connect to a RESTful web service. I do not use or need authentication tokens. I have a simple public/private key shared secret and authenticate using that. Here is my simple code example:
+
+
+
+
+
+
+RSAKeySecret signatureSecret = new RSAKeySecret(privateKey, publicKey);
+
+
+
+
+ 
+
+
+
+
+final BaseProtectedResourceDetails protectedResourceDetails = new BaseProtectedResourceDetails();
+
+
+
+
+protectedResourceDetails.setConsumerKey("myConsumerKey");
+
+
+
+
+protectedResourceDetails.setSharedSecret(signatureSecret);
+
+
+
+
+protectedResourceDetails.setSignatureMethod(RSA_SHA1SignatureMethod.SIGNATURE_NAME);
+
+
+
+
+protectedResourceDetails.setUse10a(true);
+
+
+
+
+protectedResourceDetails.setId("/check");
+
+
+
+
+ 
+
+
+
+
+CoreOAuthConsumerSupport consumerSupport = new CoreOAuthConsumerSupport();
+
+
+
+
+consumerSupport.setStreamHandlerFactory(new DefaultOAuthURLStreamHandlerFactory());
+
+
+
+
+consumerSupport.setProtectedResourceDetailsService(new ProtectedResourceDetailsService() {
+
+
+
+
+    @Override
+
+
+
+
+    public ProtectedResourceDetails loadProtectedResourceDetailsById(String s)
+
+
+
+
+    {
+
+
+
+
+        return protectedResourceDetails;
+
+
+
+
+    }
+
+
+
+
+});
+
+
+
+
+ 
+
+
+
+
+OAuthRestTemplate restTemplate = new OAuthRestTemplate(protectedResourceDetails);
+
+
+
+
+restTemplate.setSupport(consumerSupport);
+
+
+
+
+ 
+
+
+
+
+Set<HttpMethod> methods = restTemplate.optionsForAllow("http://nwilliams:8080/app/services/Rest/check");
+
+
+
+
+
+
+However, I was getting this exception:
+Exception in thread "main" java.lang.IllegalStateException: No OAuth security context has been established. Unable to access resource 'goodAuthenticationId'.
+    at org.springframework.security.oauth.consumer.client.OAuthClientHttpRequestFactory.createRequest(OAuthClientHttpRequestFactory.java:45)
+    at org.springframework.http.client.InterceptingClientHttpRequest$RequestExecution.execute(InterceptingClientHttpRequest.java:84)
+    at com.puresafety.oauth.test.ContentTypeHeaderInterceptor.intercept(ContentTypeHeaderInterceptor.java:40)
+    at org.springframework.http.client.InterceptingClientHttpRequest$RequestExecution.execute(InterceptingClientHttpRequest.java:81)
+    at org.springframework.http.client.InterceptingClientHttpRequest.executeInternal(InterceptingClientHttpRequest.java:67)
+    at org.springframework.http.client.AbstractBufferingClientHttpRequest.executeInternal(AbstractBufferingClientHttpRequest.java:46)
+    at org.springframework.http.client.AbstractClientHttpRequest.execute(AbstractClientHttpRequest.java:49)
+    at org.springframework.web.client.RestTemplate.doExecute(RestTemplate.java:446)
+    at org.springframework.web.client.RestTemplate.execute(RestTemplate.java:409)
+    at org.springframework.web.client.RestTemplate.optionsForAllow(RestTemplate.java:365)
+The solution turned out to be to change the last line of my code to:
+
+
+
+
+
+
+Map<String, OAuthConsumerToken> tokens = new Hashtable<>();
+
+
+
+
+tokens.put("/check", new OAuthConsumerToken());
+
+
+
+
+ 
+
+
+
+
+OAuthSecurityContextImpl securityContext = new OAuthSecurityContextImpl();
+
+
+
+
+securityContext.setAccessTokens(tokens);
+
+
+
+
+ 
+
+
+
+
+OAuthSecurityContextHolder.setContext(securityContext);
+
+
+
+
+Set<HttpMethod> methods = restTemplate.optionsForAllow("http://nwilliams:8080/app/services/Rest/check");
+
+
+
+
+OAuthSecurityContextHolder.setContext(null);
+
+
+
+
+
+
+But I was curious why this was necessary, so I took a look at the code (OAuthClientHttpRequestFactory#createRequest(...)):
+
+
+
+
+
+
+    OAuthSecurityContext context = OAuthSecurityContextHolder.getContext();
+
+
+
+
+    if (context == null) {
+
+
+
+
+      throw new IllegalStateException("No OAuth security context has been established. Unable to access resource '" + this.resource.getId() + "'.");
+
+
+
+
+    }
+
+
+
+
+ 
+
+
+
+
+    Map<String, OAuthConsumerToken> accessTokens = context.getAccessTokens();
+
+
+
+
+    OAuthConsumerToken accessToken = accessTokens == null ? null : accessTokens.get(this.resource.getId());
+
+
+
+
+    if (accessToken == null) {
+
+
+
+
+      throw new AccessTokenRequiredException("No OAuth security context has been established. Unable to access resource '" + this.resource.getId() + "'.", resource);
+
+
+
+
+    }
+
+
+
+
+
+
+And then I followed the access token to where it was being used (CoreOAuthConsumerSupport#loadOAuthParameters()):
+
+
+
+
+
+
+    String tokenSecret = requestToken == null ? null : requestToken.getSecret();
+
+
+
+
+    String nonce = getNonceFactory().generateNonce();
+
+
+
+
+    oauthParams.put(OAuthConsumerParameter.oauth_consumer_key.toString(), Collections.singleton((CharSequence) details.getConsumerKey()));
+
+
+
+
+    if ((requestToken != null) && (requestToken.getValue() != null)) {
+
+
+
+
+      oauthParams.put(OAuthConsumerParameter.oauth_token.toString(), Collections.singleton((CharSequence) requestToken.getValue()));
+
+
+
+
+    }
+
+
+
+
+
+
+The code allows the token to be null (and even anticipates that scenario). And my code, since it contains a null token value, is no different logically than if I had no token or OAuth security context at all. In a 2-legged OAuth scenario, it's completely valid for there to be no token (because you don't need one).
+It seems to me that the setting of an OAuth security context serves no actual purpose other than to bypass an error message that doesn't actually apply to my scenario. This code should be able to work without an OAuth security context and without an OAuthConsumerToken with a null, unused value.

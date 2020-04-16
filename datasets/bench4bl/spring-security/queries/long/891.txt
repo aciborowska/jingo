@@ -1,0 +1,30 @@
+SEC-363 was closed as Won't Fix, claiming that "The use of JSP parameter passing from one page to another via includes appears very non-MVC".
+The use of <jsp:include> to insert common elements into web pages (similar to what Tiles is all about), has nothing to do with MVC, but is purely a technique used in the JSP View layer.  It is perfectly valid to add arguments to such an include, so the common presentation elements can be adjusted for the web page using it.
+It is definitely not the responsibility of the controller to supply such arguments, as was indicated in SEC-363, since the arguments are there for presentation control only, i.e. purely View oriented.
+As for the request to "advise if Tomcat or a JSR states that JSP-populated parameters should be persisted", then definitely not.  The parameters did not come from the client, but are hard-coded (or filled by an expression) in the JSP page.  Only the original request from the client should be presisted, as is currently done.
+Ok, now that I've stated my case for re-opening this issue, here is the problem as far as I can see:
+The HttpServletRequest that is passed to the controller is a chain of wrappers around the actual Request object.  With Spring Security, the wrapper chain sent to the Controller is:
+   SavedRequestAwareWrapper   (Spring Security wrapper for providing saved request after login)
+   -> RequestFacade   (Wrapper hiding the actual request, to protect the actual values)
+   -> Request   (Object with original request values from client, e.g. "/myrequest.do?id=5")
+When the Spring Controller invokes the JSP View to render the output, a "forward" to the JSP is executed.  The forward operation wrappers the original request in order to handle the new request, but it inject the wrapper AFTER the Spring wrapper:
+   SavedRequestAwareWrapper   (Spring Security wrapper for providing saved request after login)
+   -> ApplicationHttpRequest   (Wrapper overriding/extending the original request with the new request, e.g. "/WEB-INF/jsp/myview.jsp")
+   -> RequestFacade   (Wrapper hiding the actual request, to protect the actual values)
+   -> Request   (Object with original request values from client, e.g. "/myrequest.do?id=5")
+When the JSP page includes another page, the request gets wrapped again:
+   SavedRequestAwareWrapper   (Spring Security wrapper for providing saved request after login)
+   -> ApplicationHttpRequest   ("/WEB-INF/jsp/myinclude.jspf?myparm=myvalue")
+   -> ApplicationHttpRequest   ("/WEB-INF/jsp/myview.jsp")
+   -> RequestFacade
+   -> Request   ("/myrequest.do?id=5")
+When the JSP then asks for a parameter, the parameters are essentially collected bottom-up and merged together, so that wrapper parameters override original parameters.
+The problem is that Tomcat injects the forward/include wrappers AFTER the SavedRequestAwareWrapper, so when SavedRequestAwareWrapper replaces the login request parameters with the original saved request parameters, the forward/include wrappers are not asked for parameters.
+I see two possible solutions:
+1) A quick fix is for SavedRequestAwareWrapper to request the underlying parameters and merge in the saved request parameters, instead of only returning the saved request parameters.  Disadvantage is that login parameters will be present, and that the forward/include parameters may be overridden by original request parameters.  Workaround is to ensure that forward/include parameters as well as login parameters don't clash with any other parameters.  Advantage is that it is easy to implement.
+2) The full fix is to understand how Tomcat's ApplicationDispatcher.wrapRequest(...) method works.  It injects the forward/include wrappers after any wrapper that extends ServletRequestWrapper, but will correctly wrap any class that implements HttpServletRequest.  The solution is to not extend ServletRequestWrapper, but to implement HttpServletRequest directly, which should cause the wrapper chain to look like this:
+   ApplicationHttpRequest   ("/WEB-INF/jsp/myinclude.jspf?myparm=myvalue")
+   -> ApplicationHttpRequest   ("/WEB-INF/jsp/myview.jsp")
+   -> SavedRequestAwareWrapper   (Spring Security wrapper for providing saved request after login)
+   -> RequestFacade
+   -> Request   ("/myrequest.do?id=5")

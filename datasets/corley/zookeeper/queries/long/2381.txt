@@ -1,0 +1,44 @@
+ReconfigTest.testPortChange has been failing intermittently:
+
+
+	Feb 12, 2016: https://builds.apache.org/job/PreCommit-ZOOKEEPER-Build/3045/
+	Feb 16, 2015: http://permalink.gmane.org/gmane.comp.java.zookeeper.devel/25521
+
+
+
+I can also locally reproduce with 40d0804c (Mar 3, 2016).
+
+
+The error message looks like as if it is a linearizability violation for sync+read operation, but I'm still not sure.
+
+stack trace:
+
+junit.framework.AssertionFailedError: expected:<test[1]> but was:<test[0]>
+	at org.apache.zookeeper.test.ReconfigTest.testNormalOperation(ReconfigTest.java:150)
+	at org.apache.zookeeper.test.ReconfigTest.testPortChange(ReconfigTest.java:598)
+	at org.apache.zookeeper.JUnit4ZKTestRunner$LoggedInvokeMethod.evaluate(JUnit4ZKTestRunner.java:79)
+
+
+
+test code: https://github.com/apache/zookeeper/blob/2cc945442e218d0757983ac42e2a5d86a94ccb30/src/java/test/org/apache/zookeeper/test/ReconfigTest.java#L150
+
+for (int j = 0; j < 30; j++) {
+     try {
+         ..
+         String data = "test" + j;
+         writer.setData("/test", data.getBytes(), -1);
+         reader.sync("/", null, null);
+         byte[] res = reader.getData("/test", null, new Stat());
+         Assert.assertEquals(data, new String(res));
+         break;
+     } catch (KeeperException.ConnectionLossException e) {
+         if (j < 29) {
+             Thread.sleep(1000);
+         } else {
+             // test fails if we still can't connect to the quorum after
+             // 30 seconds.
+             Assert.fail("client could not connect to reestablished quorum: giving up after 30+ seconds.");
+         }
+     }
+}
+

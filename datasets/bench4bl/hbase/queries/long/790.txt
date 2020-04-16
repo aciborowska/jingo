@@ -1,0 +1,27 @@
+During a batch import, I have two processes importing into a single region.
+The behavior I saw was a regionserver with 2 regions of the table in question on it.  The first region split, and the new regions were reassigned to another regionserver.
+Following that, inserting into the region that was left over began to block client requests.  I am attaching the regionserver log; below is the specific problem area:
+2008-07-31 15:38:24,190 DEBUG org.apache.hadoop.hbase.client.HConnectionManager$TableServers: Cache hit in table locations for row <> and tableName .META.: location server 72.34.249.217:60020, location region name .META.,,1
+2008-07-31 15:38:24,194 INFO org.apache.hadoop.hbase.regionserver.CompactSplitThread: region split, META updated, and report to master all successful. Old region=REGION => {NAME => 'items,01beddd6-813b-4f2b-ac48-a0cef395cb7e,12175434512
+2008-07-31 15:38:34,052 INFO org.apache.hadoop.hbase.regionserver.HRegion: Blocking updates for 'IPC Server handler 7 on 60020' on region items,8001eb31-98bb-4087-bd8d-e4b42805addb,1217543451296: Memcache size 64.0m is >= than blocking
+2008-07-31 15:39:00,270 INFO org.apache.hadoop.ipc.Server: IPC Server handler 8 on 60020, call batchUpdate([B@17b4239f, row => 02c241b4-9d32-452d-8dab-247f4af693eb, {column => content:title, value => '...', column => content:content, va
+org.apache.hadoop.hbase.NotServingRegionException: items,01beddd6-813b-4f2b-ac48-a0cef395cb7e,1217543451296
+        at org.apache.hadoop.hbase.regionserver.HRegionServer.getRegion(HRegionServer.java:1436)
+        at org.apache.hadoop.hbase.regionserver.HRegionServer.batchUpdate(HRegionServer.java:1147)
+        at sun.reflect.GeneratedMethodAccessor12.invoke(Unknown Source)
+        at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)
+        at java.lang.reflect.Method.invoke(Method.java:616)
+        at org.apache.hadoop.hbase.ipc.HbaseRPC$Server.call(HbaseRPC.java:473)
+        at org.apache.hadoop.ipc.Server$Handler.run(Server.java:896)
+2008-07-31 15:39:09,547 INFO org.apache.hadoop.hbase.regionserver.HRegion: Blocking updates for 'IPC Server handler 8 on 60020' on region items,8001eb31-98bb-4087-bd8d-e4b42805addb,1217543451296: Memcache size 64.0m is >= than blocking
+2008-07-31 15:39:44,079 INFO org.apache.hadoop.hbase.regionserver.HRegion: Blocking updates for 'IPC Server handler 9 on 60020' on region items,8001eb31-98bb-4087-bd8d-e4b42805addb,1217543451296: Memcache size 64.0m is >= than blocking
+2008-07-31 15:40:19,574 INFO org.apache.hadoop.hbase.regionserver.HRegion: Blocking updates for 'IPC Server handler 1 on 60020' on region items,8001eb31-98bb-4087-bd8d-e4b42805addb,1217543451296: Memcache size 64.0m is >= than blocking
+2008-07-31 15:49:09,130 INFO org.apache.hadoop.hbase.regionserver.LogRoller: Rolling hlog. Number of entries: 1
+2008-07-31 15:49:09,144 DEBUG org.apache.hadoop.hbase.regionserver.HLog: Closing current log writer /hbase/log_72.34.249.212_1217535541159_60020/hlog.dat.1217543884691
+2008-07-31 15:49:09,146 INFO org.apache.hadoop.hbase.regionserver.HLog: New log writer created at /hbase/log_72.34.249.212_1217535541159_60020/hlog.dat.1217544549145
+2008-07-31 16:03:09,060 DEBUG org.apache.hadoop.hbase.regionserver.HRegion: Started memcache flush for region items,8001eb31-98bb-4087-bd8d-e4b42805addb,1217543451296. Current region memcache size 64.0m
+2008-07-31 16:03:09,467 INFO org.apache.hadoop.hbase.regionserver.HRegion: Unblocking updates for region items,8001eb31-98bb-4087-bd8d-e4b42805addb,1217543451296 'IPC Server handler 5 on 60020'
+2008-07-31 16:03:09,478 INFO org.apache.hadoop.ipc.Server: Process Thread Dump: Discarding call batchUpdate([B@4e727e0e, row => c08408b4-b68c-433c-ba3f-d46d3ba73288, {column => content:title, value => '...', column => content:content, v
+As you can see there was a 14 minute delay between updates being blocked, and the unblocking occurring.
+All the pending batchUpdates were thrown out (too old) and then importing proceeded normally.
+The same behavior repeated itself later on a different regionserver, and again after a while it unfroze, kicked out pending updates, and continued.

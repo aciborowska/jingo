@@ -1,0 +1,55 @@
+In multi threaded application, I experienced getting a stale data from
+OpenJPA even right after updating it.  Let's say a thread (named T1)
+updates a data with a value (V0) to (V1), then retrieves it from
+OpenJPA.  An another thread also retrieves it in a same time.  Here,
+it is expected that T1 retrieves a value V1, but it may get old value
+V0, which is not expected behavior.
+
+The cause seems OpenJPA's putting a stale data in its cache.  It could
+occur in the following three cases in both OpenJPA 1.2.2 and 2.1.0.
+
+case 1:
+See org.apache.openjpa.datacache.DataCacheStoreManager.java#load method.
+Let's say a thread is going to acquire write lock at the Line 402.  At the same time, the other thread can cached the data out during its operation.  In such case, the data becomes null when it reaches the Line 404.
+404:data = cache.get(sm.getObjectId());
+It does not compare the data version, so stale data is cached in the following part even if data has been updated in other threads.
+405:if (data != null && compareVersion(sm, sm.getVersion(),
+406:                data.getVersion()) == VERSION_EARLIER)
+....
+410:            boolean isNew = data == null;
+411:            if (isNew)
+412:                data = newPCData(sm);
+413:            data.store(sm, fields);
+414:            if (isNew)
+415:                cache.put(data);
+
+case 2:
+See org.apache.openjpa.datacache.DataCacheStoreManager.java#initialize method.
+Let's say a thread is going to acquire write lock at the Line 358.  At the same time, the other thread can cached the data out during its operation.  In such case, the data becomes null when it reaches the Line 360.
+360:data = cache.get(sm.getObjectId());
+It does not compare the data version, so stale data is cached in the following part even if data has been updated in other threads.
+361:if (data != null && compareVersion(sm, sm.getVersion(),
+362:                data.getVersion()) == VERSION_EARLIER)
+....
+368:            if (data == null)
+369:                data = newPCData(sm);
+370:            data.store(sm);
+371:            cache.put(data);
+
+case 3:
+See org.apache.openjpa.datacache.DataCacheStoreManager.java#updateCaches.
+The cache was not locked during its access.  So it could cache a stale data in multithreaded application.  Here's a case:
+
+The thread1 gets the data from OpenJPA.
+The thread2 updates and gets the data from OpenJPA.
+
+thread2:gets the data from cache.
+thread2:sets something value to column.
+thread2:updates to database.
+thread2:flush
+thread2:gets data from cache.
+thread1:OpenJPA expires the cached data.
+thread1:creates cache data.
+thread2:sets something value different from previous set value to column.
+thread2:puts data in cache.
+thread1:puts data in cache. <= override by stale data.

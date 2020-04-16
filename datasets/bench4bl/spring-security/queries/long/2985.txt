@@ -1,0 +1,158 @@
+Hi team,
+Scanning my database I found a lot of persisted tokens for the same user. Digging this problem I found that the PersistentTokenBasedRememberMeServices doesn't remove previous tokens in the following cases.
+Let's suppose that we have a user that was authorized by username/login first time. In this case the onLoginSuccess method will be invoked and new token will be created and stored in PersistentTokenRepository. 
+After that in a few days, for example, the same user will by authorized by RememberMeAuthenticationFilter (we had valid token) and as result the processAutoLoginCookie method will be invoked and new token data will be generated and cookie and DB will be updated. 
+Now suppose that for any action full authentication is required. In this case the user will be forwarded to authorization form and as result onLoginSuccess method will be invoked. As result new token will be generated and stored in DB but please keep in mind that we already have valid token already in DB.
+At this moment I see two solutions:
+
+We can remove previous token from DB and store new one;
+If we already have token it must be updated instead of creating new one.
+
+I would preffer #2 so my code is:
+
+
+
+
+
+
+	@Override
+
+
+
+
+	protected void onLoginSuccess(HttpServletRequest request, HttpServletResponse response, Authentication successfulAuthentication) {
+
+
+
+
+		String username = successfulAuthentication.getName();
+
+
+
+
+		this.logger.debug("Creating new persistent login for user " + username);
+
+
+
+
+ 
+
+
+
+
+		try {
+
+
+
+
+			PersistentRememberMeToken token;
+
+
+
+
+			final String rememberMeCookie = extractRememberMeCookie(request);
+
+
+
+
+			if (rememberMeCookie != null) {
+
+
+
+
+				final String[] strings = decodeCookie(rememberMeCookie);
+
+
+
+
+				token = this.tokenRepository.getTokenForSeries(strings[0]);
+
+
+
+
+				if (token != null) {
+
+
+
+
+					token = new PersistentRememberMeToken(token.getUsername(), token.getSeries(), generateTokenData(), new Date());
+
+
+
+
+					tokenRepository.updateToken(token.getSeries(), token.getTokenValue(), token.getDate());
+
+
+
+
+				} else {
+
+
+
+
+					token = new PersistentRememberMeToken(username, this.generateSeriesData(), this.generateTokenData(), new Date());
+
+
+
+
+					this.tokenRepository.createNewToken(token);
+
+
+
+
+				}
+
+
+
+
+			} else {
+
+
+
+
+				token = new PersistentRememberMeToken(username, this.generateSeriesData(), this.generateTokenData(), new Date());
+
+
+
+
+				this.tokenRepository.createNewToken(token);
+
+
+
+
+			}
+
+
+
+
+ 
+
+
+
+
+			this.addCookie(token, request, response);
+
+
+
+
+		} catch (Exception var7) {
+
+
+
+
+			this.logger.error("Failed to save persistent token ", var7);
+
+
+
+
+		}
+
+
+
+
+	}
+
+
+
+
+

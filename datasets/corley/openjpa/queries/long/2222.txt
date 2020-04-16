@@ -1,0 +1,31 @@
+Working Jeremy Bauer, we discovered the following issue:
+
+I think I've figured out what is causing the transformer to return null in some (intermittent) cases.  I'm seeing multiple threads [Blueprint Extender: # ] calling into the same PCClassFileTransformer.  I've pasted the stack for thread 1 below.  I saw an identical instance for a thread 3 - operating on a different persistent class at the same time.   This resulted in one of the transforms (per transform method below) returned null.
+
+    public byte[] transform(ClassLoader loader, String className,
+        Class redef, ProtectionDomain domain, byte[] bytes)
+        throws IllegalClassFormatException {
+        if (loader == _tmpLoader)
+            return null;
+
+        // JDK bug – OPENJPA-1676
+        if (className == null) 
+{
+            return null;
+        }
+---------------------
+        // prevent re-entrant calls, which can occur if the enhancing
+        // loader is used to also load OpenJPA libraries; this is to prevent 
+        // recursive enhancement attempts for internal openjpa libraries
+        if (_transforming)
+            return null;
+---------------------
+
+        _transforming = true;
+
+        return transform0(className, redef, bytes);
+    }
+
+Since you use the same transformer on multiple threads we are hitting the condition where there is a transform in progress and you are trying to do another transform on a separate thread.
+
+I spent some time looking at the JPA spec to determine what it says about transformer concurrency and I can't find anything that says that you shouldn't be able to call a transformer in a concurrent manner, hence this defect.

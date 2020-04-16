@@ -1,0 +1,19 @@
+The patch is applied to the commit processor, and solves two problems:
+
+1. Stalling - once the commit processor encounters a local write request, it stalls local processing of all sessions until it receives a commit of that request from the leader. 
+In mixed workloads, this severely hampers performance as it does not allow read-only sessions to proceed at faster speed than read-write ones.
+2. Starvation - as long as there are read requests to process, older remote committed write requests are starved. 
+This occurs due to a bug fix (https://issues.apache.org/jira/browse/ZOOKEEPER-1505) that forces processing of local read requests before handling any committed write. The problem is only manifested under high local read load. 
+
+Our solution solves these two problems. It improves throughput in mixed workloads (in our tests, by up to 8x), and reduces latency, especially higher percentiles (i.e., slowest requests). 
+The main idea is to separate sessions that inherently need to stall in order to enforce order semantics, from ones that do not need to stall. To this end, we add data structures for buffering and managing pending requests of stalled sessions; these requests are moved out of the critical path to these data structures, allowing continued processing of unaffected sessions. 
+
+Please see the docs:  
+1) https://goo.gl/m1cINJ - includes a detailed description of the new commit processor algorithm.
+
+2) The attached patch implements our solution, and a collection of related unit tests (https://reviews.apache.org/r/25160)
+
+3) https://goo.gl/W0xDUP - performance results. 
+(See https://issues.apache.org/jira/browse/ZOOKEEPER-2023 for the corresponding new system test that produced these performance measurements)
+
+See also https://issues.apache.org/jira/browse/ZOOKEEPER-1609

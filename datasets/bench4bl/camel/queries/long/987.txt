@@ -1,0 +1,127 @@
+I use apache-camel-1.4.0 and apache-cxf-2.1.1 in my application. 
+My application is a web service application.Which receive a soap header + soap body, and then response a soap header + soap body. 
+I use WSDLToJava tool to create the java code from wsdl, it creates an interface for me as follow: 
+@WebService(targetNamespace = "http://com.aspire/", name = "SreServicePortType")
+@XmlSeeAlso(
+{aspire.com.xsd.ObjectFactory.class}
+)
+@SOAPBinding(parameterStyle = SOAPBinding.ParameterStyle.BARE)
+public interface SreServicePortType {
+/*
+
+ */
+
+    @SOAPBinding(parameterStyle = SOAPBinding.ParameterStyle.BARE)
+    @WebMethod
+    public void serviceContentFetchReq(
+        @WebParam(partName = "request", name = "serviceContentFetchReq", targetNamespace = "http://com.aspire/xsd")
+        aspire.com.xsd.ServiceContentFetchReq request,
+        @WebParam(partName = "requestHeader", name = "serviceHeader", targetNamespace = "http://com.aspire/xsd", header = true)
+        aspire.com.xsd.ServiceHeader requestHeader,
+        @WebParam(partName = "response", mode = WebParam.Mode.OUT, name = "serviceContentFetchReqResponse", targetNamespace = "http://com.aspire/xsd")
+        javax.xml.ws.Holder<aspire.com.xsd.ServiceContentFetchReqResponse> response,
+        @WebParam(partName = "responseHeader", mode = WebParam.Mode.OUT, name = "serviceHeader", targetNamespace = "http://com.aspire/xsd", header = true)
+        javax.xml.ws.Holder<aspire.com.xsd.ServiceHeader> responseHeader
+    );
+}
+Then, I implement the routing rules in the xml file:
+        <process ref="ipValidateProcessor" />
+        <choice>
+            <when>
+                 <!-- First predicate -->
+                 <el>$
+{in.headers.IP_VALIDATE_RESULT == 'true'}
+</el>
+                 <to uri="cxf:bean:serviceEndpoint" />
+                 <process ref="responseProcessor" />
+            </when>
+           <otherwise>
+                  <process ref="invalidIPProcessor" />
+           </otherwise>
+     </choice>
+In the ipValidateProcessor,  I set  in.headers.IP_VALIDATE_RESULT = false, so the invalidIPProcessor will run.In the invalidIPProcessor,  I only need set response body and response header.
+I have traced the exchange object in the processor, the exchange.out element is null, and the exchange.in element is a CxfMessage object. The exchange.in.body element is a MessageContentList object: Object[0] is a ServiceContentFetchReq , Object[1] is a ServiceHeader, Object[2] is a Holder<T>, Object[3] is a Holder<T>. 
+So i put response body into Object[2], and put response header into Object[3]: 
+               org.apache.camel.Message in = exchange.getIn(); 
+          List inBody = (List) in.getBody(); 
+          Holder holderBody = (Holder)inBody.get(2); 
+          holderBody .value = body;// body is a ServiceContentFetchReqResponse object 
+               Holder holderHeader = (Holder)inBody.get(3); 
+          holderHeader .value = header;//header is a ServiceHeader object 
+But, when I run the application, I got an Exception:java.lang.OutOfMemoryError: Java heap space. 
+I debuged into program, there is an Infinite Loop occured at the 
+org.apache.cxf.jaxws.interceptors.HolderOutInterceptor(72): 
+                for (int x = 0; x < inObjects.size(); x++) { 
+                    Object o = inObjects.get; 
+                    if (o instanceof Holder) 
+{ 
+                        outObjects.set(x + 1, o); 
+                    }
+ 
+                } 
+I have traced and found: inObjects == outObjects is true, which leads to an Infinite Loop. 
+Stack trace: 
+2008-10-14 9:40:19 sun.reflect.NativeMethodAccessorImpl invoke0 
+严重: EXCEPTION 
+java.lang.OutOfMemoryError: Java heap space 
+2008-10-14 9:40:19 org.apache.cxf.phase.PhaseInterceptorChain doIntercept 
+信息: Interceptor has thrown exception, unwinding now 
+org.apache.cxf.binding.soap.SoapFault: Error reading XMLStreamReader. 
+at org.apache.cxf.binding.soap.interceptor.ReadHeadersInterceptor.handleMessage(ReadHeadersInterceptor.java:183) 
+at org.apache.cxf.binding.soap.interceptor.ReadHeadersInterceptor.handleMessage(ReadHeadersInterceptor.java:54) 
+at org.apache.cxf.phase.PhaseInterceptorChain.doIntercept(PhaseInterceptorChain.java:221) 
+at org.apache.cxf.endpoint.ClientImpl.onMessage(ClientImpl.java:449) 
+at org.apache.cxf.transport.http.HTTPConduit$WrappedOutputStream.handleResponse(HTTPConduit.java:1996) 
+at org.apache.cxf.transport.http.HTTPConduit$WrappedOutputStream.close(HTTPConduit.java:1832) 
+at org.apache.cxf.transport.AbstractConduit.close(AbstractConduit.java:66) 
+at org.apache.cxf.transport.http.HTTPConduit.close(HTTPConduit.java:591) 
+at org.apache.cxf.interceptor.MessageSenderInterceptor$MessageSenderEndingInterceptor.handleMessage(MessageSenderInterceptor.java:62) 
+at org.apache.cxf.phase.PhaseInterceptorChain.doIntercept(PhaseInterceptorChain.java:221) 
+at org.apache.cxf.endpoint.ClientImpl.invoke(ClientImpl.java:296) 
+at org.apache.cxf.endpoint.ClientImpl.invoke(ClientImpl.java:242) 
+at org.apache.cxf.frontend.ClientProxy.invokeSync(ClientProxy.java:73) 
+at org.apache.cxf.jaxws.JaxWsClientProxy.invoke(JaxWsClientProxy.java:178) 
+at $Proxy48.serviceContentFetchReq(Unknown Source) 
+at com.aspire.archtype.camel.Client.invoke(Client.java:77) 
+at com.aspire.archtype.camel.spring.Main.main(Main.java:19) 
+Caused by: com.ctc.wstx.exc.WstxEOFException: Unexpected EOF in prolog 
+ at [row,col 
+{unknown-source}]: [1,0] 
+at com.ctc.wstx.sr.StreamScanner.throwUnexpectedEOF(StreamScanner.java:661) 
+at com.ctc.wstx.sr.BasicStreamReader.handleEOF(BasicStreamReader.java:2134) 
+at com.ctc.wstx.sr.BasicStreamReader.nextFromProlog(BasicStreamReader.java:2040) 
+at com.ctc.wstx.sr.BasicStreamReader.next(BasicStreamReader.java:1069) 
+at com.ctc.wstx.sr.BasicStreamReader.nextTag(BasicStreamReader.java:1095) 
+at org.apache.cxf.binding.soap.interceptor.ReadHeadersInterceptor.handleMessage(ReadHeadersInterceptor.java:83) 
+... 16 more 
+javax.xml.ws.soap.SOAPFaultException: Error reading XMLStreamReader. 
+at org.apache.cxf.jaxws.JaxWsClientProxy.invoke(JaxWsClientProxy.java:199) 
+at $Proxy48.serviceContentFetchReq(Unknown Source) 
+at com.aspire.archtype.camel.Client.invoke(Client.java:77) 
+at com.aspire.archtype.camel.spring.Main.main(Main.java:19) 
+Caused by: org.apache.cxf.binding.soap.SoapFault: Error reading XMLStreamReader. 
+at org.apache.cxf.binding.soap.interceptor.ReadHeadersInterceptor.handleMessage(ReadHeadersInterceptor.java:183) 
+at org.apache.cxf.binding.soap.interceptor.ReadHeadersInterceptor.handleMessage(ReadHeadersInterceptor.java:54) 
+at org.apache.cxf.phase.PhaseInterceptorChain.doIntercept(PhaseInterceptorChain.java:221) 
+at org.apache.cxf.endpoint.ClientImpl.onMessage(ClientImpl.java:449) 
+at org.apache.cxf.transport.http.HTTPConduit$WrappedOutputStream.handleResponse(HTTPConduit.java:1996) 
+at org.apache.cxf.transport.http.HTTPConduit$WrappedOutputStream.close(HTTPConduit.java:1832) 
+at org.apache.cxf.transport.AbstractConduit.close(AbstractConduit.java:66) 
+at org.apache.cxf.transport.http.HTTPConduit.close(HTTPConduit.java:591) 
+at org.apache.cxf.interceptor.MessageSenderInterceptor$MessageSenderEndingInterceptor.handleMessage(MessageSenderInterceptor.java:62) 
+at org.apache.cxf.phase.PhaseInterceptorChain.doIntercept(PhaseInterceptorChain.java:221) 
+at org.apache.cxf.endpoint.ClientImpl.invoke(ClientImpl.java:296) 
+at org.apache.cxf.endpoint.ClientImpl.invoke(ClientImpl.java:242) 
+at org.apache.cxf.frontend.ClientProxy.invokeSync(ClientProxy.java:73) 
+at org.apache.cxf.jaxws.JaxWsClientProxy.invoke(JaxWsClientProxy.java:178) 
+... 3 more 
+Caused by: com.ctc.wstx.exc.WstxEOFException: Unexpected EOF in prolog 
+ at [row,col {unknown-source}
+]: [1,0] 
+at com.ctc.wstx.sr.StreamScanner.throwUnexpectedEOF(StreamScanner.java:661) 
+at com.ctc.wstx.sr.BasicStreamReader.handleEOF(BasicStreamReader.java:2134) 
+at com.ctc.wstx.sr.BasicStreamReader.nextFromProlog(BasicStreamReader.java:2040) 
+at com.ctc.wstx.sr.BasicStreamReader.next(BasicStreamReader.java:1069) 
+at com.ctc.wstx.sr.BasicStreamReader.nextTag(BasicStreamReader.java:1095) 
+at org.apache.cxf.binding.soap.interceptor.ReadHeadersInterceptor.handleMessage(ReadHeadersInterceptor.java:83) 
+... 16 more 

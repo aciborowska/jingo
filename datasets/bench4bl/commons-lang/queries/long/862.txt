@@ -1,0 +1,57 @@
+When translating a string with unicode characters in, I've encountered an index exception:
+
+
+
+	java.lang.StringIndexOutOfBoundsException: String index out of range: 50
+
+	at java.lang.String.charAt(String.java:686)
+
+	at java.lang.Character.codePointAt(Character.java:2335)
+
+	at org.apache.commons.lang3.text.translate.CharSequenceTranslator.translate(CharSequenceTranslator.java:95)
+
+	at org.apache.commons.lang3.text.translate.CharSequenceTranslator.translate(CharSequenceTranslator.java:59)
+
+	at org.apache.commons.lang3.StringEscapeUtils.escapeCsv(StringEscapeUtils.java:556)
+
+	...
+
+
+
+The input string was from a twitter status:
+org.apache.commons.lang3.StringEscapeUtils.escapeCsv("pink & black adidas suit for this rainy weather \ud83d\udc4d");
+Both those characters are 'Invalid' unicode characters, so presumably there is a conversion error somewhere. However, this shouldn't cause the translator to crash.
+At line 94, the loop which generates the exception increments the position by the size of the codepoint, which seems to grow faster than the number of characters. I don't really know how codepoints work, but it looks to me like there are two indexes which are treated as if they are the same one by this loop:
+
+pt is incrementing by one character each iteration
+pos is incrementing by one or more characters each iteration
+pos is being used to index into the character array
+pt is the value actually being tested in the loop test, so pos can be bigger than pt, causing an index problem at the end of the array
+
+My guess would be that the loop should read something like:
+
+
+
+            for (int pt = 0; pt < consumed;) {
+
+                int count = Character.charCount(Character.codePointAt(input, pos));
+
+                pt += count;
+
+                pos += count;
+
+            }
+
+
+
+I'm not sure if that was the intention, hope it makes some sense!
+Stepping through that code with the input string " \ud83d\udc4d":
+
+the input string becomes " \ud83d\udc4d\u008d" (appended 'Reverse Line Feed' - no idea why)
+consumed == 4
+Iterating the loop gives pt=0, pos=0 -> pt=1, pos=1 -> pt=2, pos=3 -> pt-3, pos=4 (Index exception)
+
+So \ud83d\udc4d seems to be a codepoint with a width of 2, which puts the index off by one after that.
+Anyway, hope that helps,
+Regards,
+Mike.

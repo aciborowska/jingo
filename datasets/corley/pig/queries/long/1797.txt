@@ -1,0 +1,80 @@
+We defined a table at HBase and populated with some data:
+
+create 'tests', 
+{NAME => 'age'}
+, 
+{NAME => 'colour'}
+put 'tests', 'one', 'age', '22'
+put 'tests', 'one', 'colour', 'green'
+put 'tests', 'another', 'age', '439'
+put 'tests', 'another', 'colour', 'red'
+put 'tests', 'more', 'colour', 'grey'
+scan 'tests'                         
+ROW                          COLUMN+CELL                                                                      
+ another                     column=age:, timestamp=1294745175613, value=439                                  
+ another                     column=colour:, timestamp=1294745155873, value=red                               
+ more                        column=colour:, timestamp=1294745185331, value=grey                              
+ one                         column=age:, timestamp=1294745127129, value=22                                   
+ one                         column=colour:, timestamp=1294745144160, value=green
+
+We are using Pig on mapreduce mode to load data from HBase (recovering also the row key):
+
+> DATA = LOAD 'hbase://tests' USING org.apache.pig.backend.hadoop.hbase.HBaseStorage('age: colour:', '-loadKey') AS (row:chararray,age:int,colour:chararray);
+
+We make sure that data has been correcly loaded.
+> dump DATA;
+(another,439,red)
+(more,,grey)
+(one,22,green)
+
+> describe DATA;
+DATA: 
+{row: chararray,age: int,colour: chararray}
+
+We can see that we can get good results if we use the "FOREACH .. GENERATE" structure with all the columns ($0, $1 and $2) that were loaded before:
+> b= FOREACH DATA GENERATE $0, $1, $2;
+> dump b;
+(another,439,red)
+(more,,grey)
+(one,22,green)
+
+no matter the order...
+c= FOREACH DATA GENERATE $2, $0, $1;
+dump c;
+(red,another,439)
+(grey,more,)
+(green,one,22)
+
+but if we don't include some column (in our example, we don't use $2 column) in the "FOREACH .. GENERATE" structure, then we get the following bug:
+> d= FOREACH DATA GENERATE $0, $1;
+> dump d;
+(another,)
+(more,)
+(one,)
+> describe d;                     
+d: 
+{row: chararray,age: int}
+
+Here is another example of the bug:
+> e= FOREACH DATA GENERATE $1, $2;
+> dump e;
+(,439)
+(,)
+(,22)
+> describe e;
+e: 
+{age: int,colour: chararray}
+
+Here is one more example of the bug:
+> f= FOREACH DATA GENERATE $0, $2;
+> dump f;
+(another,another)
+(more,more)
+(one,one)
+> describe f;
+f: 
+{row: chararray,colour: chararray}
+
+Regards,
+
+Eduardo Galan Herrero

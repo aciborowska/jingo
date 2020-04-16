@@ -1,0 +1,95 @@
+
+set hive.mapred.mode=nonstrict;
+
+set hive.explain.user=false;
+
+set hive.exec.dynamic.partition.mode=nonstrict;
+
+set hive.fetch.task.conversion=none;
+
+
+
+drop table iow1; 
+
+create table iow1(key int) partitioned by (key2 int);
+
+
+
+select key, key + 1 as k1, key + 1 as k2 from src where key >= 0 order by k1 desc limit 1;
+
+
+
+explain
+
+insert overwrite table iow1 partition (key2)
+
+select key + 1 as k1, key + 1 as k2 from src where key >= 0 order by k1 desc limit 1;
+
+
+
+insert overwrite table iow1 partition (key2)
+
+select key + 1 as k1, key + 1 as k2 from src where key >= 0 order by k1 desc limit 1;
+
+
+
+The result of the select query has the column converted to double (because src.key is string). 
+The value is converted correctly to integer for the regular column, but not for partition column.
+
+498	499.0	499.0
+
+
+
+Explain for insert (extracted)
+
+    Map Reduce
+
+      Map Operator Tree:
+
+...
+
+              Select Operator
+
+                expressions: (UDFToDouble(key) + 1.0) (type: double)
+
+...
+
+                Reduce Output Operator
+
+                  key expressions: _col0 (type: double)
+
+                  sort order: -
+
+...
+
+      Reduce Operator Tree:
+
+        Select Operator
+
+          expressions: KEY.reducesinkkey0 (type: double), KEY.reducesinkkey0 (type: double)
+
+...
+
+            Select Operator
+
+              expressions: UDFToInteger(_col0) (type: int), _col1 (type: double)
+
+ .... followed by FSOP and load into table
+
+
+
+The result of the select from the resulting table is:
+
+POSTHOOK: query: select key, key2 from iow1
+
+...
+
+POSTHOOK: Input: default@iow1@key2=499.0
+
+...
+
+499	NULL
+
+
+
+Woops!

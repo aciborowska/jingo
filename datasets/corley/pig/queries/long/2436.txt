@@ -1,0 +1,39 @@
+I have a pig script that looks something like:
+
+REGISTER myjar.jar
+raw = LOAD 'mydata' USING myLoader();
+partial = FOREACH raw GENERATE Column0;
+streamed = stream partial through `/bin/echo` as (mySchema);
+STORE streamed INTO 'myFile';
+
+When I run this script (with pig 0.9.1) I see:
+
+Pig features used in the script: STREAMING
+2011-12-15 23:36:07,485 [main] INFO  org.apache.pig.newplan.logical.rules.ColumnPruneVisitor - Columns pruned for raw: $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12
+2011-12-15 23:36:07,575 [main] INFO  org.apache.hadoop.hdfs.DFSClient - Created HDFS_DELEGATION_TOKEN token...
+...
+
+and pruning works as expected.  But if I remove the schema specifier from the streaming operator:
+streamed = stream partial through `/bin/echo`;
+
+then I see:
+2011-12-15 23:43:07,706 [main] INFO  org.apache.pig.tools.pigstats.ScriptState - Pig features used in the script: STREAMING
+2011-12-15 23:43:07,765 [main] INFO  org.apache.hadoop.hdfs.DFSClient - Created HDFS_DELEGATION_TOKEN token...
+
+and pig tries to load the entire data set. 
+
+ColumnPruneHelper::check() is returning false because of a SchemaNotDefinedException here:
+
+128     ColumnDependencyVisitor v = new ColumnDependencyVisitor(currentPlan);
+129 	try 
+{
+130 	v.visit();
+131 	}
+catch(SchemaNotDefinedException e) 
+{
+132 	// if any operator has an unknown schema, just return false
+133 	clearAnnotation();
+134 	return false;
+135 	}
+
+Possibly the ColumnDependencyVisitor should be constructed with the subplan ending in foreach instead of the full plan.

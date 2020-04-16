@@ -1,0 +1,23 @@
+This bug is closely related to SEC-1587.
+I start at my log in screen, log into the system, see the logged in view and then the next navigation I make I end up being redirect back to the login screen.
+It happens periodly, not every time.  It happens the most when using Internet Explorer 6.
+After I debugged the problem I figured out that the httpSession.removeAttribute(SPRING_SECURITY_CONTEXT_KEY); call in HttpSessionSecurityContextRepository was destroying my newly created authentication object.
+Here's how it happens:
+1. Browser requests jsf.js.faces during the loading of the login screen.  This request passes through the httpSessionContextIntegrationFilter along with all .faces requests.
+2. Browser holds on to connection after getting the javascript file.  (Browsers do this as an optimization to prevent lots of new tcp connects)
+3. I log into my app from the login page.  This adds the security context to the session.
+4. Browser makes another javascript request from the open connection which causes the thread working on jsf.js.faces to finish up (come back out through the filters)
+5. On the request thread of jsf.js.faces the original security context had a null authenication so httpSession.removeAttribute(SPRING_SECURITY_CONTEXT_KEY); is called which wipes up the new authenication.
+I've worked around the problem by created my own version of HttpSessionSecurityContextRepository and just changing the lines:
+                if (httpSession != null) 
+{
+                    // SEC-1587 A non-anonymous context may still be in the session
+                    httpSession.removeAttribute(SPRING_SECURITY_CONTEXT_KEY);
+                }
+                return;
+
+to
+
+                if (httpSession != null && contextHashBeforeChainExecution != -1) {                    // SEC-1587 A non-anonymous context may still be in the session                    httpSession.removeAttribute(SPRING_SECURITY_CONTEXT_KEY);                }
+                return;
+This means that the security context is only reset if there was one at the beginning of the request. (Hash of -1 means no authenication)

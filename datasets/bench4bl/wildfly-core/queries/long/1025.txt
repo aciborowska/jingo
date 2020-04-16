@@ -1,0 +1,172 @@
+The impl of ManagementRequestContext executeAsync catches RejectedExecutionException and doesn't notify the calling thread. The handling itself seems ok (call failed on the result handler and send a failure response to the client), but not notifying the caller is problematic. There are a number of cases where the caller thread waits for a latch to be tripped, with the async task tripping. If the latch never trips, the caller thread will block forever. The testsuite hang at http://brontes.lab.eng.brq.redhat.com/viewLog.html?buildId=71233&buildTypeId=WildFlyCore_MasterLinux&tab=buildLog#_focus=13620 looks to be a case of this, with a server not stopping due to this:
+
+
+
+
+
+
+ 
+
+
+
+
+"Remoting "master:main-one:MANAGEMENT" task-13" #55 prio=5 os_prio=0 tid=0xc6c3bc00 nid=0x19d9 waiting on condition [0xc215c000]
+
+
+
+
+   java.lang.Thread.State: WAITING (parking)
+
+
+
+
+	at sun.misc.Unsafe.park(Native Method)
+
+
+
+
+	- parking to wait for  <0xddbb4aa0> (a java.util.concurrent.CountDownLatch$Sync)
+
+
+
+
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:175)
+
+
+
+
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer.parkAndCheckInterrupt(AbstractQueuedSynchronizer.java:836)
+
+
+
+
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer.doAcquireSharedInterruptibly(AbstractQueuedSynchronizer.java:997)
+
+
+
+
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer.acquireSharedInterruptibly(AbstractQueuedSynchronizer.java:1304)
+
+
+
+
+	at java.util.concurrent.CountDownLatch.await(CountDownLatch.java:231)
+
+
+
+
+	at org.jboss.as.controller.remote.TransactionalProtocolOperationHandler.sendResponse(TransactionalProtocolOperationHandler.java:540)
+
+
+
+
+	at org.jboss.as.controller.remote.TransactionalProtocolOperationHandler$ExecuteRequestContext.failed(TransactionalProtocolOperationHandler.java:377)
+
+
+
+
+	- locked <0xddbb2300> (a org.jboss.as.controller.remote.TransactionalProtocolOperationHandler$ExecuteRequestContext)
+
+
+
+
+	at org.jboss.as.protocol.mgmt.ActiveOperationSupport$ActiveOperationImpl$2.handleFailed(ActiveOperationSupport.java:350)
+
+
+
+
+	at org.jboss.threads.AsyncFutureTask$Reg.run(AsyncFutureTask.java:60)
+
+
+
+
+	at org.jboss.as.protocol.mgmt.ActiveOperationSupport$1.execute(ActiveOperationSupport.java:55)
+
+
+
+
+	at org.jboss.threads.AsyncFutureTask.safeExecute(AsyncFutureTask.java:169)
+
+
+
+
+	at org.jboss.threads.AsyncFutureTask.setFailed(AsyncFutureTask.java:162)
+
+
+
+
+	at org.jboss.as.protocol.mgmt.ActiveOperationSupport$ActiveOperationImpl.access$400(ActiveOperationSupport.java:295)
+
+
+
+
+	at org.jboss.as.protocol.mgmt.ActiveOperationSupport$ActiveOperationImpl$1.failed(ActiveOperationSupport.java:315)
+
+
+
+
+	at org.jboss.as.protocol.mgmt.AbstractMessageHandler$2.executeAsync(AbstractMessageHandler.java:333)
+
+
+
+
+	at org.jboss.as.protocol.mgmt.AbstractMessageHandler$2.executeAsync(AbstractMessageHandler.java:315)
+
+
+
+
+	at org.jboss.as.controller.remote.TransactionalProtocolOperationHandler$ExecuteRequestHandler.handleRequest(TransactionalProtocolOperationHandler.java:144)
+
+
+
+
+	at org.jboss.as.protocol.mgmt.AbstractMessageHandler.handleMessage(AbstractMessageHandler.java:270)
+
+
+
+
+	at org.jboss.as.protocol.mgmt.AbstractMessageHandler.handleMessage(AbstractMessageHandler.java:252)
+
+
+
+
+	at org.jboss.as.protocol.mgmt.AbstractMessageHandler.handleMessage(AbstractMessageHandler.java:123)
+
+
+
+
+	at org.jboss.as.protocol.mgmt.ManagementChannelReceiver$1.handleMessage(ManagementChannelReceiver.java:56)
+
+
+
+
+	at org.jboss.as.protocol.mgmt.ManagementChannelReceiver.handleMessage(ManagementChannelReceiver.java:85)
+
+
+
+
+	at org.jboss.remoting3.remote.RemoteConnectionChannel$5.run(RemoteConnectionChannel.java:463)
+
+
+
+
+	at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1142)
+
+
+
+
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:617)
+
+
+
+
+	at java.lang.Thread.run(Thread.java:745)
+
+
+
+
+
+
+
+The RejectedExecutionException indicates a thread pool has been shutdown before the response has gone out. Ideally we would prevent that (for which I've recently filed a JIRA) but in any case we should make this more robust.
+I think having executeAsync return a boolean should suffice.

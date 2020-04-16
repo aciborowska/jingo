@@ -1,0 +1,46 @@
+The attached patch provides an alternative way of doing paging in DB2.
+I made it hoping that it would improve the performance of paging queries
+but it didn't, at least not when the database and OpenJPA are co-located.
+There is probably no point in committing this patch unless someone
+proves it gives any advantages.
+I am however presenting it here, maybe some users will find it useful
+(it would be nice if someone could check timings with remote database).
+
+Attached are:
+
+	a patch which modifies DB2Dictionary and also adds a few tests to TestQueryPagination.
+	a standalone modified DB2Dictionary class.
+	a timer program which was supposed to prove the superior performance but failed 
+
+
+
+Some characteristics:
+
+	The idea is to limit the result set returned by SQL query instead of skipping rows
+  when traversing the result set in OpenJPA. A similar approach exists
+  in OracleDictionary.
+	If setMaxResulsts and setFirstResult were called on Query, the SQL query
+  [QUERY] is modified as follows:
+
+
+
+SELECT * FROM (
+  SELECT rr.*, ROW_NUMBER() OVER(ORDER BY ORDER OF rr) AS rn FROM (
+    [QUERY]
+    FETCH FIRST [m] ROWS ONLY
+  ) AS rr
+) AS r WHERE rn > [n] ORDER BY rn
+
+
+	The modified SQL query adds one column to the end of column list in the
+  result set. Luckily, I couldn't find any side effects of doing this.
+	If only setMaxResults was called on Query, only FETCH FIRST [m] ROWS ONLY
+  is appended to SQL query - this is how it works currently.
+	The new way of paging will be used only if the database is a UDB 8.1 or later
+  because of ORDER OF construct and FETCH FIRST [m] ROWS ONLY in a subselect.
+  Maybe some other DB2 flavours could also handle it but I have no access.
+	User can fall back to the old behaviour by setting supportsSelectStartIndex
+  Dictionary property to false.
+
+
+

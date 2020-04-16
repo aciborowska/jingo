@@ -1,0 +1,42 @@
+A failure during accepting an incoming connection results in the acceptor thread being caught in a tight-loop.  For example:
+
+
+13 Jun 2017 15:31:39 (zookeeper) [] Ignoring unexpected runtime exception
+java.lang.NullPointerException: null
+	at org.apache.zookeeper.server.ZooKeeperServer.processConnectRequest(ZooKeeperServer.java:864) ~[zookeeper-3.4.8.jar:3.4.8--1]
+	at org.apache.zookeeper.server.NIOServerCnxn.readConnectRequest(NIOServerCnxn.java:418) ~[zookeeper-3.4.8.jar:3.4.8--1]
+	at org.apache.zookeeper.server.NIOServerCnxn.readPayload(NIOServerCnxn.java:198) ~[zookeeper-3.4.8.jar:3.4.8--1]
+	at org.apache.zookeeper.server.NIOServerCnxn.doIO(NIOServerCnxn.java:244) ~[zookeeper-3.4.8.jar:3.4.8--1]
+	at org.apache.zookeeper.server.NIOServerCnxnFactory.run(NIOServerCnxnFactory.java:203) ~[zookeeper-3.4.8.jar:3.4.8--1]
+	at java.lang.Thread.run(Thread.java:748) [na:1.8.0_131]
+13 Jun 2017 15:31:39 (zookeeper) [] Ignoring unexpected runtime exception
+java.lang.NullPointerException: null
+	at org.apache.zookeeper.server.ZooKeeperServer.createSession(ZooKeeperServer.java:569) ~[zookeeper-3.4.8.jar:3.4.8--1]
+	at org.apache.zookeeper.server.ZooKeeperServer.processConnectRequest(ZooKeeperServer.java:902) ~[zookeeper-3.4.8.jar:3.4.8--1]
+	at org.apache.zookeeper.server.NIOServerCnxn.readConnectRequest(NIOServerCnxn.java:418) ~[zookeeper-3.4.8.jar:3.4.8--1]
+	at org.apache.zookeeper.server.NIOServerCnxn.readPayload(NIOServerCnxn.java:198) ~[zookeeper-3.4.8.jar:3.4.8--1]
+	at org.apache.zookeeper.server.NIOServerCnxn.doIO(NIOServerCnxn.java:244) ~[zookeeper-3.4.8.jar:3.4.8--1]
+	at org.apache.zookeeper.server.NIOServerCnxnFactory.run(NIOServerCnxnFactory.java:203) ~[zookeeper-3.4.8.jar:3.4.8--1]
+	at java.lang.Thread.run(Thread.java:748) [na:1.8.0_131]
+13 Jun 2017 15:31:40 (zookeeper) [] Ignoring unexpected runtime exception
+java.lang.NullPointerException: null
+	at org.apache.zookeeper.server.NIOServerCnxnFactory.run(NIOServerCnxnFactory.java:185) ~[zookeeper-3.4.8.jar:3.4.8--1]
+	at java.lang.Thread.run(Thread.java:748) [na:1.8.0_131]
+13 Jun 2017 15:31:40 (zookeeper) [] Ignoring unexpected runtime exception
+java.lang.NullPointerException: null
+	at org.apache.zookeeper.server.NIOServerCnxnFactory.run(NIOServerCnxnFactory.java:185) ~[zookeeper-3.4.8.jar:3.4.8--1]
+	at java.lang.Thread.run(Thread.java:748) [na:1.8.0_131]
+13 Jun 2017 15:31:40 (zookeeper) [] Ignoring unexpected runtime exception
+java.lang.NullPointerException: null
+	at org.apache.zookeeper.server.NIOServerCnxnFactory.run(NIOServerCnxnFactory.java:185) ~[zookeeper-3.4.8.jar:3.4.8--1]
+	at java.lang.Thread.run(Thread.java:748) [na:1.8.0_131]
+
+
+
+The first stack-trace is due to ZOOKEEPER-2810, the second is due to ZOOKEEPER-2812. 
+
+The other stack-traces (NPE from NIOServerCnxnFactory.java:185) are never-ending, as the service has been caught in a tight-loop.
+
+The reason is that the NIOServerCnxnFactory class fails to guarantee that `selected` variable is clearer, so the SelectionKey that triggered the bugs remains "live".  However, since there are no incoming connections, the call to `accept()` returns null, triggering the NPE.
+
+It appears this problem is fixed with 3.5.0 (with commit 6302d7a7).   If back-porting this patch is too invasive, another solution might be to place the `selected.clear()` statement inside the finally-clause of the try-statement.

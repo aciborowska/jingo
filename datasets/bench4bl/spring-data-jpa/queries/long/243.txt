@@ -1,0 +1,300 @@
+I have following code that was working perfectly with 1.1.0.RELEASE (I am using Querydsl 2.7.0):
+
+
+
+
+
+
+@Transactional(readOnly = true)
+
+
+
+
+@Override
+
+
+
+
+public List<Person> search(SearchDTO dto) {
+
+
+
+
+	//Gets predicate by using static method of the query builder class
+
+
+
+
+	Predicate predicate = firstOrLastNameStartsWith(dto.getSearchTerm());	
+
+
+
+
+	Pageable pageSpecification = buildPageSpecification(dto.getPageIndex(), dto.getPageSize());
+
+
+
+
+ 
+
+
+
+
+	Page<Person> page = repository.findAll(predicate, pageSpecification);
+
+
+
+
+ 
+
+
+
+
+	return page.getContent();
+
+
+
+
+}
+
+
+
+
+ 
+
+
+
+
+private Pageable buildPageSpecification(int pageIndex, int pageSize) {
+
+
+
+
+	return new PageRequest(pageIndex, pageSize, sortByLastNameAndFirstNameAsc());
+
+
+
+
+}
+
+
+
+
+ 
+
+
+
+
+private Sort sortByLastNameAndFirstNameAsc() {
+
+
+
+
+	return new Sort(new Sort.Order(Sort.Direction.ASC, "lastName"),
+
+
+
+
+	            new Sort.Order(Sort.Direction.ASC, "firstName")
+
+
+
+
+    );
+
+
+
+
+}
+
+
+
+
+
+
+After I updated to 1.2.0.M1, query results were no longer sorted. The problem is that the applySorting() method method of Querydsl class is never called when paginated queries are build by Spring Data JPA. The relevant methods of the Querydsl class are given in following (my comment in CAPS):
+
+
+
+
+
+
+public JPQLQuery applyPagination(Pageable pageable, JPQLQuery query) {
+
+
+
+
+ 
+
+
+
+
+	if (pageable == null) {
+
+
+
+
+		return query;
+
+
+
+
+	}
+
+
+
+
+ 
+
+
+
+
+	query.offset(pageable.getOffset());
+
+
+
+
+	query.limit(pageable.getPageSize());
+
+
+
+
+ 
+
+
+
+
+        //CALL TO applySorting(pageable.getSort(), query) IS MISSING?
+
+
+
+
+ 
+
+
+
+
+	return query;
+
+
+
+
+}
+
+
+
+
+ 
+
+
+
+
+public JPQLQuery applySorting(Sort sort, JPQLQuery query) {
+
+
+
+
+ 
+
+
+
+
+	if (sort == null) {
+
+
+
+
+		return query;
+
+
+
+
+	}
+
+
+
+
+ 
+
+
+
+
+	for (Order order : sort) {
+
+
+
+
+		query.orderBy(toOrder(order));
+
+
+
+
+	}
+
+
+
+
+ 
+
+
+
+
+	return query;
+
+
+
+
+}
+
+
+
+
+ 
+
+
+
+
+@SuppressWarnings({ "rawtypes", "unchecked" })
+
+
+
+
+private OrderSpecifier<?> toOrder(Order order) {
+
+
+
+
+ 
+
+
+
+
+	Expression<Object> property = builder.get(order.getProperty());
+
+
+
+
+ 
+
+
+
+
+	return new OrderSpecifier(order.isAscending() ? com.mysema.query.types.Order.ASC
+
+
+
+
+			: com.mysema.query.types.Order.DESC, property);
+
+
+
+
+}
+
+
+
+
+
+
+The original discussion about this problem is found at:
+http://forum.springsource.org/showthread.php?129211-Sorting-problem-with-paginated-query-results-%28Spring-Data-JPA-1-2-0-M1-and-Querydsl%29

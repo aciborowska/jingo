@@ -1,0 +1,52 @@
+I would like to use some Objects as simple property (a DateTime from joda time for example).
+If used as is, the DateTime object is serialized to DBObject with a ISOChronology and millis, but this one cannot be deserialized as the ISOChronology has no public constructor and must be used through statifc factory methods.
+Then I add some custom converters (one from DateTime to Date and the revert one for deserialization)
+When I add the Date to DateTime for deserialization, some strange behaviour happens as DateTime object seems to be given directly to mongodb driver (or perharps DateTime object is converted to Date the converted to DateTime)
+java.lang.IllegalArgumentException: can't serialize class org.joda.time.DateTime
+	at org.bson.BSONEncoder._putObjectField(BSONEncoder.java:213)
+	at org.bson.BSONEncoder.putObject(BSONEncoder.java:123)
+	at org.bson.BSONEncoder._putObjectField(BSONEncoder.java:173)
+	at org.bson.BSONEncoder.putObject(BSONEncoder.java:137)
+	at org.bson.BSONEncoder._putObjectField(BSONEncoder.java:173)
+	at org.bson.BSONEncoder.putObject(BSONEncoder.java:123)
+	at org.bson.BSONEncoder.putObject(BSONEncoder.java:69)
+	at com.mongodb.OutMessage.putObject(OutMessage.java:189)
+	at com.mongodb.DBApiLayer$MyCollection.insert(DBApiLayer.java:246)
+	at com.mongodb.DBApiLayer$MyCollection.insert(DBApiLayer.java:210)
+	at com.mongodb.DBCollection.insert(DBCollection.java:64)
+	at com.mongodb.DBCollection.save(DBCollection.java:622)
+	at com.mongodb.DBCollection.save(DBCollection.java:597)
+	at org.springframework.data.document.mongodb.MongoTemplate$11.doInCollection(MongoTemplate.java:891)
+	at org.springframework.data.document.mongodb.MongoTemplate.execute(MongoTemplate.java:363)
+	at org.springframework.data.document.mongodb.MongoTemplate.saveDBObject(MongoTemplate.java:886)
+	at org.springframework.data.document.mongodb.MongoTemplate.doSave(MongoTemplate.java:819)
+	at org.springframework.data.document.mongodb.MongoTemplate.save(MongoTemplate.java:808)
+	at org.springframework.data.document.mongodb.MongoTemplate.save(MongoTemplate.java:797)
+Adding a custom simple type to MongoMappingContext does not change this behaviour.
+As I can see, when a simple property is serialized, no targetType is defined, so the first converter found with the source type is used.
+I think this algorithm should be refined.
+In the getCustomTarget(Class<?>, Class<?>) of AbstractMongoConverter,
+when no targetType is defined, you should see first if a custom converter from the source type to one of the MONGO_TYPE element is defined, as below
+            if (expectedTargetType != null) {
+                for (ConvertiblePair typePair : customTypeMapping) {
+                    if (typePair.getSourceType().isAssignableFrom(source)) {
+                        Class<?> targetType = typePair.getTargetType();
+                        if (targetType.equals(expectedTargetType)) 
+{ 
+                            return targetType; 
+                        }
+                    }
+                }
+            } else {
+                for (Class<?> expectedType : MONGO_TYPES) {
+                    for (ConvertiblePair typePair : customTypeMapping) {
+                        if (typePair.getSourceType().isAssignableFrom(source)) {
+                            Class<?> targetType = typePair.getTargetType();
+                            if (targetType.equals(expectedType)) 
+{ 
+                                return targetType; 
+                            }
+                        }
+                    }
+                }
+            }

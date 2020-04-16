@@ -1,0 +1,69 @@
+
+After increasing the TTL value of a Hbase Table , table gets inaccessible. Scan table not working.
+Scan in hbase shell throws
+java.lang.IllegalStateException: Block index not loaded
+at com.google.common.base.Preconditions.checkState(Preconditions.java:145)
+at org.apache.hadoop.hbase.io.hfile.HFileReaderV1.blockContainingKey(HFileReaderV1.java:181)
+at org.apache.hadoop.hbase.io.hfile.HFileReaderV1$AbstractScannerV1.seekTo(HFileReaderV1.java:426)
+at org.apache.hadoop.hbase.regionserver.StoreFileScanner.seekAtOrAfter(StoreFileScanner.java:226)
+at org.apache.hadoop.hbase.regionserver.StoreFileScanner.seek(StoreFileScanner.java:145)
+at org.apache.hadoop.hbase.regionserver.StoreScanner.<init>(StoreScanner.java:131)
+at org.apache.hadoop.hbase.regionserver.Store.getScanner(Store.java:2015)
+at org.apache.hadoop.hbase.regionserver.HRegion$RegionScannerImpl.<init>(HRegion.java:3706)
+at org.apache.hadoop.hbase.regionserver.HRegion.instantiateRegionScanner(HRegion.java:1761)
+at org.apache.hadoop.hbase.regionserver.HRegion.getScanner(HRegion.java:1753)
+at org.apache.hadoop.hbase.regionserver.HRegion.getScanner(HRegion.java:1730)
+at org.apache.hadoop.hbase.regionserver.HRegionServer.openScanner(HRegionServer.java:2409)
+at sun.reflect.GeneratedMethodAccessor56.invoke(Unknown Source)
+at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:25)
+at java.lang.reflect.Method.invoke(Method.java:597)
+at org.apache.hadoop.hbase.ipc.WritableRpcEngine$Server.call(WritableRpcEngine.java:320)
+at org.apache.hadoop.hbase.ipc.HBaseServer$Handler.run(HBaseServer.java:1426)
+STEPS to Reproduce:
+ create 'debugger',
+{NAME => 'd',TTL => 15552000}
+ put 'debugger','jdb','d:desc','Java debugger',1399699792000
+ disable 'debugger'
+alter 'debugger',
+{NAME => 'd',TTL => 69120000}
+enable 'debugger'
+scan 'debugger'
+Reason for the issue:
+   When inserting already expired data in debugger table, hbase creates a hfile with empty data 
+block and index block. On scanning table, StoreFile.Reader checks whether the TimeRangeTracker's maximum timestamp is greater than ttl value, so it skips the empty file.
+  But when ttl is changed, the maximum timestamp will be lesser than ttl value, so StoreFile.Reader tries to read index block from HFile leading to java.lang.IllegalStateException: Block index not loaded.
+SOLUTION:
+StoreFile.java 
+       boolean passesTimerangeFilter(Scan scan, long oldestUnexpiredTS) {
+      if (timeRangeTracker == null) 
+{
+
+        return true;
+
+      } else {
+
+        return timeRangeTracker.includesTimeRange(scan.getTimeRange()) &&
+
+            timeRangeTracker.getMaximumTimestamp() >= oldestUnexpiredTS;
+
+      }
+    }
+
+In the above method, by checking whether there are entries in the hfile by using FixedFileTrailer
+block we can skip scanning the empty hfile.
+
+// changed code will solve the issue
+
+     boolean passesTimerangeFilter(Scan scan, long oldestUnexpiredTS) {
+      if (timeRangeTracker == null) {
+        return true;
+      }
+ else 
+{
+
+        return timeRangeTracker.includesTimeRange(scan.getTimeRange()) &&
+
+            timeRangeTracker.getMaximumTimestamp() >= oldestUnexpiredTS && reader.getEntries()>0;
+
+      }
+    }

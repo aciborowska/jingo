@@ -1,0 +1,39 @@
+ACID users can run into Lost Update problem.
+In Hive 1.2, Driver.recordValidTxns() (which records the snapshot to use for the query) is called in Driver.compile().
+Now suppose to concurrent "update T set x = x + 1" are executed.  (for simplicity assume there is exactly 1 row in T)
+What can happen is that both compile at the same time (more precisely before acquireLocksAndOpenTxn() in runInternal() is called) and thus will lock in the same snapshot, say the value of x = 7 in this snapshot.
+Now 1 will get the lock on the row, the second will block.  
+Now 1, makes x = 8 and commits.
+Now 2 proceeds and makes x = 8 again since in it's snapshot x is still 7.
+This specific issue is solved in Hive 1.3/2.0 (HIVE-11077 which is a large patch that deals with multi-statement txns) by moving recordValidTxns() after locks are acquired which reduces the likelihood of this but doesn't eliminate the problem.
+
+Even in 1.3 version of the code, you could have the same issue.  Assume the same 2 queries:
+Both start a txn, say txnid 9 and 10.  Say 10 gets the lock first, 9 blocks.
+10 updates the row (so x = 8) and thus ReaderKey.currentTransactionId=10.
+10 commits.
+Now 9 can proceed and it will get a snapshot that includes 10, i.e. it will see x = 8 and it will write x = 9, but it will set ReaderKey.currentTransactionId = 9.  Thus when merge logic runs, it will see x = 8 is the later version of this row, i.e. lost update.
+The problem is that locks alone are insufficient for MVCC architecture.  
+
+At lower level Row ID has (originalTransactionId, rowid, bucket id, currentTransactionId) and since on update/delete we do a table scan, we could check that we are about to write a row with currentTransactionId < (currentTransactionId of row we've read) and fail the query.  Currently, currentTransactionId is not surfaced at higher level where this check can be made.
+This would not work (efficiently) longer term where we want to support fast update on user defined PK vis streaming ingest.
+Also, this would not work with multi statement txns since in that case we'd lock in the snapshot at the start of the txn, but then 2nd, 3rd etc queries would use the same snapshot and the locks for these queries would be acquired after the snapshot is locked in so this would be the same situation as pre HIVE-11077.
+
+A more robust solution (commonly used with MVCC) is to keep track of start and commit time (logical counter) or each transaction to detect if two txns overlap.  The 2nd part is to keep track of write-set, i.e. which data (rows, partitions, whatever appropriate level of granularity is) were modified by any txn and if 2 txns overlap in time and wrote the same element, abort later one.  This is called first-committer-wins rule.  This requires a MS DB schema change
+It would be most convenient to use the same sequence for txnId, start and commit time (in which case txnid=start time).  In this case we'd need to add 1 filed to TXNS table.  The complication here is that we'll be using elements of the sequence faster and they are used as part of file name of delta and base dir and currently limited to 7 digits which can be exceeded.  So this would require some thought to handling upgrade/migration.
+Also, write-set tracking requires either additional metastore table or keeping info in HIVE_LOCKS around longer with new state.
+
+In the short term, on SQL side of things we could (in auto commit mode only)
+acquire the locks first and then open the txn AND update these locks with txn id.
+This implies another Thrift change to pass in lockId to openTxn.
+The same would not work for Streaming API since it opens several txns at once and then acquires locks for each.
+(Not sure if that's is an issue or not since Streaming only does Insert).
+Either way this feels hacky.
+
+Here is one simple example why we need Write-Set tracking for multi-statement txns
+Consider transactions T 1 and T 2:
+T 1: r 1[x] -> w 1[y] -> c 1 
+T 2: w 2[x] -> w 2[y] -> c 2 
+Suppose the order of operations is r 1[x] w 2[x].... then a conventional R/W lock manager w/o MVCSS will block the write from T 2 
+With MVCC we don't want readers to interfere with writers and so the following schedule is possible (because Hive's semi-shared (write) don't conflict with shared (read) locks) in Hive's current implementation.
+r 1[x] w 2[x] w 2[y] c 2 w 1[y] c 1
+By the time w 1[y] happens, T 2 has committed and released it's locks.  But this is a lost update if c 1 is allowed to commit.  That's where write-set tracking comes in.

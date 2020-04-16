@@ -1,0 +1,34 @@
+This is a do-over of SPR-2437, which was fixed but broken again by SPR-2614.  Please refer to these issues for background.  We are now experiencing the same behaviour as indicated in SPR-2437.
+The NullPointerException experienced in SPR-2614 appears to be a container problem; according to the J2EE 1.4 spec  http://java.sun.com/j2ee/1.4/docs/api/javax/servlet/jsp/JspContext.html#setAttribute(java.lang.String,%20java.lang.Object) : Register the name and value specified with page scope semantics. If the value passed in is null, this has the same effect as calling removeAttribute( name, PageContext.PAGE_SCOPE ).
+That aside, the fix for this problem changed the semantics of removing and restoring the prior 'messages' attribute; since removeAttribute is used with no scope (vs the previous setAttribute(messages,null), which uses page scope) - and exposeAttributes is only called when shouldRender() is true (in the case of errors), we end up with 'messages' being clobbered from all scopes when there are no error messages.
+The fix is simple; constrain everything to page scope, adding a flag to indicate if we exposed the messages (to deal with the case where there were previously page scoped messages):
+ private boolean exposedMessages;
+    @Override
+    protected void exposeAttributes() throws JspException
+    {
+        List errorMessages = new ArrayList();
+        errorMessages.addAll( Arrays.asList( getBindStatus().getErrorMessages() ) );
+        this.oldMessages = this.pageContext.getAttribute( MESSAGES_ATTRIBUTE,
+                PageContext.PAGE_SCOPE );
+        this.pageContext.setAttribute( MESSAGES_ATTRIBUTE, errorMessages, PageContext.PAGE_SCOPE );
+        this.exposedMessages = true;
+    }
+
+    @Override
+    protected void removeAttributes()
+    {
+        if( this.exposedMessages )
+        {
+            if( this.oldMessages != null )
+            {
+                this.pageContext.setAttribute( MESSAGES_ATTRIBUTE, this.oldMessages,
+                        PageContext.PAGE_SCOPE );
+                this.oldMessages = null;
+            }
+            else
+            {
+                this.pageContext.removeAttribute( MESSAGES_ATTRIBUTE, PageContext.PAGE_SCOPE );
+            }
+            this.exposedMessages = false;
+        }
+    }

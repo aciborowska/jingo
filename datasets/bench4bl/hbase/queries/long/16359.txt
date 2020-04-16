@@ -1,0 +1,56 @@
+I was investigating why some region failed to move out of transition within timeout 120000ms and found the following in region server log:
+
+
+
+2016-08-04 09:19:52,616 INFO  [B.priority.fifo.QRpcServer.handler=12,queue=0,port=16020] regionserver.RSRpcServices: Open hbck_table_772674,,1470302211047.                                da859880bb51bc0fd25979798a96c444.
+
+2016-08-04 09:19:52,620 ERROR [B.priority.fifo.QRpcServer.handler=12,queue=0,port=16020] ipc.RpcServer: Unexpected throwable object
+
+java.lang.NullPointerException
+
+  at org.apache.hadoop.hbase.regionserver.RSRpcServices.openRegion(RSRpcServices.java:1530)
+
+  at org.apache.hadoop.hbase.protobuf.generated.AdminProtos$AdminService$2.callBlockingMethod(AdminProtos.java:22737)
+
+  at org.apache.hadoop.hbase.ipc.RpcServer.call(RpcServer.java:2127)
+
+  at org.apache.hadoop.hbase.ipc.CallRunner.run(CallRunner.java:107)
+
+  at org.apache.hadoop.hbase.ipc.RpcExecutor.consumerLoop(RpcExecutor.java:133)
+
+
+
+Here is related code - NPE was thrown from the last line:
+
+
+
+        htd = htds.get(region.getTable());
+
+        if (htd == null) {
+
+          htd = regionServer.tableDescriptors.get(region.getTable());
+
+          htds.put(region.getTable(), htd);
+
+        }
+
+...
+
+          if (region.isMetaRegion()) {
+
+            regionServer.service.submit(new OpenMetaHandler(
+
+              regionServer, regionServer, region, htd, masterSystemTime, coordination, ord));
+
+          } else {
+
+            regionServer.updateRegionFavoredNodesMapping(region.getEncodedName(),
+
+              regionOpenInfo.getFavoredNodesList());
+
+            if (htd.getPriority() >= HConstants.ADMIN_QOS || region.getTable().isSystemTable()) {
+
+
+
+region.getTable() shouldn't be null since it is called via htds.get(region.getTable()) unconditionally.
+It seems htd was null.

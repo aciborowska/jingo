@@ -1,0 +1,90 @@
+I thought I had opened a JIRA for this dev forum discussion (http://n2.nabble.com/Sun-JDK-problem-with-duplicate-annotations-tt218302.html#a218302), but I guess not.
+
+I have been tracking this problem via a problem report with the IBM JDK team (since I was able to eventually reproduce the same problem with both the Sun JDK and IBM JDK).  So far, we have not determined a definite problem with the JDK processing of annotations and enums.
+
+Here's a summary of the basic problem (from the dev forum post):
+
+The scenario is that I have annotations doubly defined (ie. javax.persistence.OneToMany and alt.persistence.OneToMany).  A single entity might utilize both of them, like this:
+
+    @javax.persistence.OneToMany(cascade=javax.persistence.CascadeType.REMOVE)
+    @alt.persistence.OneToMany(cascade=alt.persistence.CascadeType.REMOVE)
+    Collection<Fill> buySideFills;
+
+This results in the following callstack snippet when running with the -javaagent version of enhancement and the Sun JDK (fixpack 15):
+
+java.lang.ArrayStoreException: sun.reflect.annotation.AnnotationTypeMismatchExceptionProxy
+    at sun.reflect.annotation.AnnotationParser.parseEnumArray(AnnotationParser.java:673)
+    at sun.reflect.annotation.AnnotationParser.parseArray(AnnotationParser.java:462)
+    at sun.reflect.annotation.AnnotationParser.parseMemberValue(AnnotationParser.java:286)
+    at sun.reflect.annotation.AnnotationParser.parseAnnotation(AnnotationParser.java:222)
+    at sun.reflect.annotation.AnnotationParser.parseAnnotations2(AnnotationParser.java:69)
+    at sun.reflect.annotation.AnnotationParser.parseAnnotations(AnnotationParser.java:52)
+    at java.lang.reflect.Field.declaredAnnotations(Field.java:1002)
+    at java.lang.reflect.Field.getDeclaredAnnotations(Field.java:995)
+    at java.lang.reflect.AccessibleObject.getAnnotations(AccessibleObject.java:179)
+    at org.apache.openjpa.lib.util.J2DoPriv5Helper$1.run(J2DoPriv5Helper.java:51)
+    at java.security.AccessController.doPrivileged(Native Method)
+    at org.apache.openjpa.persistence.PersistenceMetaDataDefaults.annotated(PersistenceMetaDataDefaults.java:293)
+    at org.apache.openjpa.persistence.PersistenceMetaDataDefaults.getAccessType(PersistenceMetaDataDefaults.java:262)
+    at org.apache.openjpa.persistence.PersistenceMetaDataDefaults.getAccessType(PersistenceMetaDataDefaults.java:250)
+    at org.apache.openjpa.meta.AbstractMetaDataDefaults.populate(AbstractMetaDataDefaults.java:155)
+    at org.apache.openjpa.persistence.PersistenceMetaDataDefaults.populate(PersistenceMetaDataDefaults.java:227)
+    at org.apache.openjpa.meta.MetaDataRepository.addMetaData(MetaDataRepository.java:794)
+    at org.apache.openjpa.meta.MetaDataRepository.addMetaData(MetaDataRepository.java:780)
+    at org.apache.openjpa.persistence.AnnotationPersistenceMetaDataParser.getMetaData(AnnotationPersistenceMetaDataParser.java:657)
+    at org.apache.openjpa.persistence.AnnotationPersistenceMetaDataParser.parseClassAnnotations(AnnotationPersistenceMetaDataParser.java:480)
+    at org.apache.openjpa.persistence.AnnotationPersistenceMetaDataParser.parse(AnnotationPersistenceMetaDataParser.java:352)
+    at org.apache.openjpa.persistence.PersistenceMetaDataFactory.load(PersistenceMetaDataFactory.java:229)
+    at org.apache.openjpa.meta.MetaDataRepository.getMetaDataInternal(MetaDataRepository.java:474)
+    at org.apache.openjpa.meta.MetaDataRepository.getMetaData(MetaDataRepository.java:294)
+    at org.apache.openjpa.enhance.PCEnhancer.<init>(PCEnhancer.java:248)
+    at org.apache.openjpa.enhance.PCEnhancer.<init>(PCEnhancer.java:219)
+    at org.apache.openjpa.enhance.PCClassFileTransformer.transform0(PCClassFileTransformer.java:139)
+    at org.apache.openjpa.enhance.PCClassFileTransformer.transform(PCClassFileTransformer.java:120)
+    at sun.instrument.TransformerManager.transform(TransformerManager.java:122)
+    at sun.instrument.InstrumentationImpl.transform(InstrumentationImpl.java:155)
+    at java.lang.ClassLoader.defineClass1(Native Method)
+    at java.lang.ClassLoader.defineClass(ClassLoader.java:620)
+    at java.security.SecureClassLoader.defineClass(SecureClassLoader.java:124)
+    at java.net.URLClassLoader.defineClass(URLClassLoader.java:260)
+    at java.net.URLClassLoader.access$100(URLClassLoader.java:56)
+    at java.net.URLClassLoader$1.run(URLClassLoader.java:195)
+    at java.security.AccessController.doPrivileged(Native Method)
+    at java.net.URLClassLoader.findClass(URLClassLoader.java:188)
+    at java.lang.ClassLoader.loadClass(ClassLoader.java:306)
+    at sun.misc.Launcher$AppClassLoader.loadClass(Launcher.java:268)
+    at java.lang.ClassLoader.loadClass(ClassLoader.java:251)
+    at java.lang.ClassLoader.loadClassInternal(ClassLoader.java:319)
+    at java.lang.Class.forName0(Native Method)
+    at java.lang.Class.forName(Class.java:242)
+    at org.apache.openjpa.meta.MetaDataRepository.classForName(MetaDataRepository.java:1298)
+    at org.apache.openjpa.meta.MetaDataRepository.loadPersistentTypes(MetaDataRepository.java:1280)
+    at org.apache.openjpa.jdbc.kernel.JDBCBrokerFactory.synchronizeMappings(JDBCBrokerFactory.java:138)
+    at org.apache.openjpa.jdbc.kernel.JDBCBrokerFactory.newBrokerImpl(JDBCBrokerFactory.java:119)
+    at org.apache.openjpa.kernel.AbstractBrokerFactory.newBroker(AbstractBrokerFactory.java:189)
+    at org.apache.openjpa.kernel.DelegatingBrokerFactory.newBroker(DelegatingBrokerFactory.java:142)
+    at org.apache.openjpa.persistence.EntityManagerFactoryImpl.createEntityManager(EntityManagerFactoryImpl.java:192)
+    at org.apache.openjpa.persistence.EntityManagerFactoryImpl.createEntityManager(EntityManagerFactoryImpl.java:145)
+    at org.apache.openjpa.persistence.EntityManagerFactoryImpl.createEntityManager(EntityManagerFactoryImpl.java:1)
+
+From working with the JDK team, the problem is surfacing because the ClassLoader (AppClassLoader) that is used to load the Enum type when the alt.persistence.OneToMany is loaded is not the same ClassLoader (TemporaryClassLoader) when the Enum type is loaded by our enhancement processing.  Thus, the AnnotationTypeMismatchExceptionProxy from the JDK.
+
+One way to workaround the problem is to add a test for Enum types in the TemporaryClassLoader and use the AppClassLoader in this case (much like we do for Annotation types):
+
+            if (isAnnotation(classBytes) || isEnum(classBytes))
+                return Class.forName(name, resolve, getClass().getClassLoader());
+
+The JDK team suggested removing the check for isAnnotation (and isEnum) altogether since that resolved the simple testcase that I had put together for their benefit.  Unfortunately, that doesn't work for our enhancement processing for a couple of reasons.  The _strats structure in PersistentMetaDataDefaults depended on the org.apache.openjpa.persistence.PersistentCollection class.  By removing the conditional above, then we had a mismatch in classloaders for this data structure, much like the jdk problem.
+
+I tried changing the key for this _strats structure to use the class name string instead of the actual class instance.  This got us around our immediate concern, but eventually I hit another JDK issue with mismatched classloaders when processing the annotations in AnnotationPersistentMetaDataParser:
+
+                    parsePersistentCollection(fmd, (PersistentCollection)
+                        el.getAnnotation(PersistentCollection.class));
+
+The loading of this PersistentCollection.class used the AppClassLoader, so the lookup via getAnnotation didn't find anything since the original annotation was loaded by the TemporaryClassLoader.  Trying to get around this situation was creating some pretty ugly code.
+
+So, I am leaning towards the original workaround as a "solution" with proper commenting.  By allowing the AppClassLoader to load enum types (vs the TemporaryClassLoader), we would "pollute" the AppClassLoader with left over enum classes.  This would seem to be a minor drawback.  Of course, if we ever need to allow for the enhancement of enum classes, then we're up a creek...
+
+Enough detail for now.  Comments and suggestions are welcome.
+
+Kevin

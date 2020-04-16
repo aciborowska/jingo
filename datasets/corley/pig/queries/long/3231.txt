@@ -1,0 +1,78 @@
+Hi there,
+
+we've got a strange issue after switching to a new cluster with cdh4.2 (from cdh3):
+Pig seems to create temporary avro files for its map reduce jobs, which it either deletes or never creates.
+
+Pig fails with the "no error returned by hadoop"-message, but in nn-logs I found something interesting.
+The actual exception from nn-log is:
+a
+
+2013-03-01 12:59:30,858 INFO org.apache.hadoop.ipc.Server: IPC Server handler 0 on 8020, call org.apache.hadoop.hdfs.protocol.ClientProtocol.addBlock from 192.168.1.28:37814: error: org.apache.hadoop.hdfs.server.namenode.LeaseExpiredException: No lease on /user/metrigo/event_logger/compact_log/2013/01/14/_temporary/1/_temporary/attempt_1362133122980_0017_m_000007_0/part-m-00007.avro File does not exist. Holder DFSClient_attempt_1362133122980_0017_m_000007_0_1992466008_1 does not have any open files.
+org.apache.hadoop.hdfs.server.namenode.LeaseExpiredException: No lease on /user/metrigo/event_logger/compact_log/2013/01/14/_temporary/1/_temporary/attempt_1362133122980_0017_m_000007_0/part-m-00007.avro File does not exist. Holder DFSClient_attempt_1362133122980_0017_m_000007_0_1992466008_1 does not have any open files.
+        at org.apache.hadoop.hdfs.server.namenode.FSNamesystem.checkLease(FSNamesystem.java:2396)
+        at org.apache.hadoop.hdfs.server.namenode.FSNamesystem.checkLease(FSNamesystem.java:2387)
+        at org.apache.hadoop.hdfs.server.namenode.FSNamesystem.getAdditionalBlock(FSNamesystem.java:2183)
+        at org.apache.hadoop.hdfs.server.namenode.NameNodeRpcServer.addBlock(NameNodeRpcServer.java:481)
+        at org.apache.hadoop.hdfs.protocolPB.ClientNamenodeProtocolServerSideTranslatorPB.addBlock(ClientNamenodeProtocolServerSideTranslatorPB.java:297)
+        at org.apache.hadoop.hdfs.protocol.proto.ClientNamenodeProtocolProtos$ClientNamenodeProtocol$2.callBlockingMethod(ClientNamenodeProtocolProtos.java:44080)
+        at org.apache.hadoop.ipc.ProtobufRpcEngine$Server$ProtoBufRpcInvoker.call(ProtobufRpcEngine.java:453)
+        at org.apache.hadoop.ipc.RPC$Server.call(RPC.java:1002)
+        at org.apache.hadoop.ipc.Server$Handler$1.run(Server.java:1695)
+        at org.apache.hadoop.ipc.Server$Handler$1.run(Server.java:1691)
+        at java.security.AccessController.doPrivileged(Native Method)
+        at javax.security.auth.Subject.doAs(Subject.java:416)
+        at org.apache.hadoop.security.UserGroupInformation.doAs(UserGroupInformation.java:1408)
+        at org.apache.hadoop.ipc.Server$Handler.run(Server.java:1689)
+
+
+
+
+Please note that we're analyzing a bunch of files (~200 files, we're using glob matchers), some of them are small.
+We made it work once without the small files.
+
+Update
+I found the following exception deep in the logs that seems to make the job fail:
+
+
+2013-03-03 19:51:06,169 ERROR [main] org.apache.hadoop.security.UserGroupInformation: PriviledgedActionException as:metrigo (auth:SIMPLE) cause:java.io.IOException: org.apache.avro.AvroRuntimeException: java.io.IOException: Filesystem closed
+2013-03-03 19:51:06,170 WARN [main] org.apache.hadoop.mapred.YarnChild: Exception running child : java.io.IOException: org.apache.avro.AvroRuntimeException: java.io.IOException: Filesystem closed
+        at org.apache.pig.piggybank.storage.avro.AvroStorage.getNext(AvroStorage.java:357)
+        at org.apache.pig.backend.hadoop.executionengine.mapReduceLayer.PigRecordReader.nextKeyValue(PigRecordReader.java:211)
+        at org.apache.hadoop.mapred.MapTask$NewTrackingRecordReader.nextKeyValue(MapTask.java:526)
+        at org.apache.hadoop.mapreduce.task.MapContextImpl.nextKeyValue(MapContextImpl.java:80)
+        at org.apache.hadoop.mapreduce.lib.map.WrappedMapper$Context.nextKeyValue(WrappedMapper.java:91)
+        at org.apache.hadoop.mapreduce.Mapper.run(Mapper.java:143)
+        at org.apache.hadoop.mapred.MapTask.runNewMapper(MapTask.java:756)
+        at org.apache.hadoop.mapred.MapTask.run(MapTask.java:338)
+        at org.apache.hadoop.mapred.YarnChild$2.run(YarnChild.java:157)
+        at java.security.AccessController.doPrivileged(Native Method)
+        at javax.security.auth.Subject.doAs(Subject.java:416)
+        at org.apache.hadoop.security.UserGroupInformation.doAs(UserGroupInformation.java:1408)
+        at org.apache.hadoop.mapred.YarnChild.main(YarnChild.java:152)
+Caused by: org.apache.avro.AvroRuntimeException: java.io.IOException: Filesystem closed
+        at org.apache.avro.file.DataFileStream.hasNextBlock(DataFileStream.java:275)
+        at org.apache.avro.file.DataFileStream.hasNext(DataFileStream.java:197)
+        at org.apache.pig.piggybank.storage.avro.PigAvroRecordReader.nextKeyValue(PigAvroRecordReader.java:180)
+        at org.apache.pig.piggybank.storage.avro.AvroStorage.getNext(AvroStorage.java:352)
+        ... 12 more
+Caused by: java.io.IOException: Filesystem closed
+        at org.apache.hadoop.hdfs.DFSClient.checkOpen(DFSClient.java:552)
+        at org.apache.hadoop.hdfs.DFSInputStream.readWithStrategy(DFSInputStream.java:648)
+        at org.apache.hadoop.hdfs.DFSInputStream.read(DFSInputStream.java:706)
+        at java.io.DataInputStream.read(DataInputStream.java:149)
+        at org.apache.pig.piggybank.storage.avro.AvroStorageInputStream.read(AvroStorageInputStream.java:43)
+        at org.apache.avro.file.DataFileReader$SeekableInputStream.read(DataFileReader.java:210)
+        at org.apache.avro.io.BinaryDecoder$InputStreamByteSource.tryReadRaw(BinaryDecoder.java:835)
+        at org.apache.avro.io.BinaryDecoder.isEnd(BinaryDecoder.java:440)
+        at org.apache.avro.file.DataFileStream.hasNextBlock(DataFileStream.java:261)
+        ... 15 more
+
+
+
+Any Idea on how to find the reason for this?
+
+Best,
+
+Tobias
+
+

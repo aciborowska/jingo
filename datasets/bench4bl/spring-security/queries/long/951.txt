@@ -1,0 +1,52 @@
+I found 2 bugs that cohere with a parent-child-structure of the acls.
+1. Bug
+the serialization problems occur because the object graph that is passed to the cache contains Objects the are not serializable:
+the error log contians the " 'org.springframework.security.acls.jdbc.BasicLookupStrategy' not serializable"- exception. so i wondered how this class can be part of the object graph. The answer is: The AclImpl still contains references to the private class StubAclParent that is an inner class of org.springframework.security.acls.jdbc.BasicLookupStrategy. That is the link between the serialization problems and the " 'org.springframework.security.acls.jdbc.BasicLookupStrategy' not serializable"- exception.
+How can that happen?
+It is the job of the convert method to replace the stubaclparents by real acls. But this method does not work properly:
+The acl-field of the aces still points to an unreal AclImpl.
+to fix this the convert method could be changed like this
+    private AclImpl convert(Map inputMap, Long currentIdentity) throws IllegalArgumentException, IllegalAccessException {
+        Assert.notEmpty(inputMap, "InputMap required");
+        Assert.notNull(currentIdentity, "CurrentIdentity required");
+        // Retrieve this Acl from the InputMap
+        Acl uncastAcl = (Acl) inputMap.get(currentIdentity);
+        Assert.isInstanceOf(AclImpl.class, uncastAcl, "The inputMap contained a non-AclImpl");
+        AclImpl inputAcl = (AclImpl) uncastAcl;
+        Acl parent = inputAcl.getParentAcl();
+        if ((parent != null) && parent instanceof StubAclParent) 
+{
+            // Lookup the parent
+            StubAclParent stubAclParent = (StubAclParent) parent;
+            parent = convert(inputMap, stubAclParent.getId());
+        }
+
+        // Now we have the parent (if there is one), create the true AclImpl
+        AclImpl result = new AclImpl(inputAcl.getObjectIdentity(), (Long) inputAcl.getId(), aclAuthorizationStrategy,
+                auditLogger, parent, null, inputAcl.isEntriesInheriting(), inputAcl.getOwner());
+        // Copy the "aces" from the input to the destination
+        Field fieldAces = FieldUtils.getField(AclImpl.class, "aces");
+        //try {
+         fieldAces.setAccessible(true);
+            List aces = (List) fieldAces.get(inputAcl);
+            List acesN = new Vector();
+            Iterator i = aces.iterator();
+// replace the old aclImpl (that contains StubAclParents) by the new one.
+            while(i.hasNext()) 
+{
+             AccessControlEntryImpl ace = (AccessControlEntryImpl) i.next();
+             Field fieldAcl = FieldUtils.getField(AccessControlEntryImpl.class, "acl");
+             fieldAcl.setAccessible(true);
+             fieldAcl.set(ace, result);
+             acesNew.add(ace);
+            }
+            fieldAces.set(result, acesNew);
+        //} catch (IllegalAccessException ex) 
+{
+            //throw new IllegalStateException("Could not obtain or set AclImpl.ace field");
+        //}
+
+        return result;
+    }
+2. Bug
+EhCacheBasedAclCache does not initialize the transient fields of the parent acls which causes nullpointerexceptions.

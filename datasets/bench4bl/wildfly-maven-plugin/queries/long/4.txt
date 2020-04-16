@@ -1,0 +1,243 @@
+In live environment it can be that you have started and stopped servers within a server group. (Peek Time Configuration, Dynamic RAM) ...
+During the validation of the domain deployment (org.wildfly.plugin.deployment.domain.DomainDeployment:199) the method should check, if each provided "server-group" has at least one server in ServerStatus.STARTED.
+What it currently does:
+1. check if servers are assigned to the server-group selected for deployment
+2. check if these servers are all started
+Therefore even if one server is started the method throws an DeploymentFailureException which is a different behavior compared to Management Console Deployments.
+It is also possible that the error is within, "client.getServerStatuses()" according to the documentation: (org.jboss.as.controller.client.helpers.domain.impl.DomainClientImpl:145)
+"Gets a list of all servers known to the domain, along with their current status. Servers associated with host controllers that are currently off line will not be included."
+The actual implementation returns all available servers within the host configuration including on and offline servers. CLI also returns on and offline servers. So maybe the behavior has changed.
+So where to fix?
+Best
+Jens
+org.jboss.as.controller.client.helpers.domain.impl.DomainClientImpl:145
+
+
+
+
+
+
+    @Override
+
+
+
+
+    public Map<ServerIdentity, ServerStatus> getServerStatuses() {
+
+
+
+
+        Map<ServerIdentity, ServerStatus> result = new HashMap<ServerIdentity, ServerStatus>();
+
+
+
+
+        List<String> hosts = getHostControllerNames();
+
+
+
+
+        for (String host : hosts) {
+
+
+
+
+            Set<String> servers = getServerNames(host);
+
+
+
+
+            for (String server : servers) {
+
+
+
+
+                ModelNode address = new ModelNode();
+
+
+
+
+                address.add("host", host);
+
+
+
+
+                address.add("server-config", server);
+
+
+
+
+                String group = readAttribute("group", address).asString();
+
+
+
+
+                ServerStatus status = Enum.valueOf(ServerStatus.class, readAttribute("status", address).asString());
+
+
+
+
+                ServerIdentity id = new ServerIdentity(host, group, server);
+
+
+
+
+                result.put(id, status);
+
+
+
+
+            }
+
+
+
+
+ 
+
+
+
+
+        }
+
+
+
+
+        return result;
+
+
+
+
+    }
+
+
+
+
+
+
+
+org.wildfly.plugin.deployment.domain.DomainDeployment:199
+
+
+
+
+
+
+    void validate() throws DeploymentFailureException {
+
+
+
+
+        final Map<ServerIdentity, ServerStatus> statuses = client.getServerStatuses();
+
+
+
+
+        // Check for NPE
+
+
+
+
+        final List<String> serverGroups = domain.getServerGroups();
+
+
+
+
+        for (String serverGroup : serverGroups) {
+
+
+
+
+            boolean notFound = true;
+
+
+
+
+            // Check the servers
+
+
+
+
+            for (ServerIdentity serverId : statuses.keySet()) {
+
+
+
+
+                if (serverGroup.equals(serverId.getServerGroupName())) {
+
+
+
+
+                    ServerStatus currentStatus = statuses.get(serverId);
+
+
+
+
+                    if (currentStatus != ServerStatus.STARTED) {
+
+
+
+
+                        throw new DeploymentFailureException("Status of server group '%s' is '%s', but is required to be '%s'.",
+
+
+
+
+                                serverGroup, currentStatus, ServerStatus.STARTED);
+
+
+
+
+                    }
+
+
+
+
+                    notFound = false;
+
+
+
+
+                    break;
+
+
+
+
+                }
+
+
+
+
+            }
+
+
+
+
+            if (notFound) {
+
+
+
+
+                throw new DeploymentFailureException("Server group '%s' does not exist on the server.", serverGroup);
+
+
+
+
+            }
+
+
+
+
+        }
+
+
+
+
+    }
+
+
+
+
+
+
+
+Previous reference https://github.com/wildfly/wildfly-maven-plugin/issues/12

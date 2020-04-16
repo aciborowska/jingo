@@ -1,0 +1,42 @@
+code like this:
+
+zoo_op_t ops[2];
+zoo_op_result_t results[2];
+zoo_create_op_init(ops, "test", "1", 1, &ZOO_OPEN_ACL_UNSAFE, 0, NULL, 0);
+zoo_create_op_init(ops+1, "/test/1", "2", 1, &ZOO_OPEN_ACL_UNSAFE, 0, NULL, 0);
+zoo_multi(zkhandle, 2, ops, results);
+
+
+The ops->path is invalid, and it will cause double free in the line 3136 of zookeeper.c.
+
+for (index=0; index < count; index++) {
+        const zoo_op_t *op = ops+index;
+        zoo_op_result_t *result = results+index;
+        completion_list_t *entry = NULL;
+
+        struct MultiHeader mh = { STRUCT_INITIALIZER(type, op->type), STRUCT_INITIALIZER(done, 0),    STRUCT_INITIALIZER(err, -1) };
+        rc = rc < 0 ? rc : serialize_MultiHeader(oa, "multiheader", &mh);
+
+        switch(op->type) {
+            case ZOO_CREATE_OP: {
+                struct CreateRequest req;
+
+                rc = rc < 0 ? rc : CreateRequest_init(zh, &req,
+                                        op->create_op.path, op->create_op.data,
+                                        op->create_op.datalen, op->create_op.acl,
+                                        op->create_op.flags);
+                rc = rc < 0 ? rc : serialize_CreateRequest(oa, "req", &req);
+                result->value = op->create_op.buf;
+                result->valuelen = op->create_op.buflen;
+
+                enter_critical(zh);
+                entry = create_completion_entry(h.xid, COMPLETION_STRING, op_result_string_completion, result, 0, 0);
+                leave_critical(zh);
+-->             free_duplicate_path(req.path, op->create_op.path);
+                break;
+            }
+
+
+This problem will happen when the 'rc' of last op is less than 0(maybe ZBADARGUMENTS or ZINVALIDSTATE).
+In my case, rc of op[0] is  ZBADARGUMENTS, and the req.path of the ‘free_duplicate_path’ is still 'test' when execute op[1]. 
+I‘m confused about why not break the for-loop  when the 'rc' is  less than 0?

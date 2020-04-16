@@ -1,0 +1,18 @@
+We have a table which is concurrently accessed (read/write) from many threads and we make use of row locks. Under heavy load we regularly get NPE while obtaining row locks. An example stack trace looks as follows:
+java.lang.NullPointerException
+      at org.apache.hadoop.hbase.regionserver.HRegionServer.convertThrowableToIOE(HRegionServer.java:986)
+      at org.apache.hadoop.hbase.regionserver.HRegionServer.lockRow(HRegionServer.java:2008)
+      at sun.reflect.GeneratedMethodAccessor20.invoke(Unknown Source)
+      at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:25)
+      at java.lang.reflect.Method.invoke(Method.java:597)
+      at org.apache.hadoop.hbase.ipc.HBaseRPC$Server.call(HBaseRPC.java:570)
+      at org.apache.hadoop.hbase.ipc.HBaseServer$Handler.run(HBaseServer.java:1039)
+Caused by: java.lang.NullPointerException
+      at java.util.concurrent.ConcurrentHashMap.put(ConcurrentHashMap.java:881)
+      at org.apache.hadoop.hbase.regionserver.HRegionServer.addRowLock(HRegionServer.java:2018)
+      at org.apache.hadoop.hbase.regionserver.HRegionServer.lockRow(HRegionServer.java:2004)
+      ... 5 more 
+After checking the source code I've noticed that the value which is going to be put into the HashMap can be null in the case where the waitForLock flag is true or the rowLockWaitDuration is expired (HRegion#internalObtainRowLock, line 2111ff). The latter I think happens in our case as we have heavy load hitting the server.
+IMHO this case should be handled somehow and must not lead to a NPE.
+-
+Yves

@@ -1,0 +1,35 @@
+Hi,
+
+In KAFKA-7898, a NullPointerException in a MultiCallback caused a Kafka cluster to become unhealthy in such a way that manual intervention was needed to recover. The cause of this particular NullPointerException is fixed in Kafka 2.2.x (with a proposed documentation update in ZOOKEEPER-3314), but I am interested in improving the resiliency of Kafka (and by extension the Zookeeper client library) against such bugs.
+
+Quoting the stack trace from KAFKA-7898:
+
+
+
+[2019-02-05 14:28:12,525] ERROR Caught unexpected throwable (org.apache.zookeeper.ClientCnxn)
+java.lang.NullPointerException
+at kafka.zookeeper.ZooKeeperClient$$anon$8.processResult(ZooKeeperClient.scala:217)
+at org.apache.zookeeper.ClientCnxn$EventThread.processEvent(ClientCnxn.java:633)
+at org.apache.zookeeper.ClientCnxn$EventThread.run(ClientCnxn.java:508)
+
+
+
+The "caught unexpected throwable" message comes from within the Zookeeper client library. I think that try/catch is pointless, because removing it causes the message to instead be logged here, with no discernable change in behaviour otherwise. Explicitly exiting the EventThread when this happens does not help (I don't think it gets restarted).
+
+This is especially problematic with distributed applications, since they are generally designed to tolerate the loss of a node, so it is preferable to have the application be allowed to terminate itself rather than risk inconsistent state.
+
+I am attaching a simple Zookeeper client which does nothing except throw a NullPointerException as soon as it receives a callback, to illustrate the problem. Running this results in:
+
+
+
+232 [main-EventThread] ERROR org.apache.zookeeper.ClientCnxn  - Error while calling watcher 
+java.lang.NullPointerException
+        at ExceptionTest.process(ExceptionTest.java:31)
+        at org.apache.zookeeper.ClientCnxn$EventThread.processEvent(ClientCnxn.java:539)
+        at org.apache.zookeeper.ClientCnxn$EventThread.run(ClientCnxn.java:514)
+
+
+
+This comes from here, which simply logs the occurrence but provides no way for my application to handle the failure.
+
+I suspect the best approach here might be to allow the application to register a callback to notify it of unhandlable exceptions within the Zookeeper library, since Zookeeper has no way of knowing what approach makes sense for the application. Of course, this is already technically possible in this case by having the application catch all exceptions in every callback, but that doesn't seem very practical.

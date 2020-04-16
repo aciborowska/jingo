@@ -1,0 +1,10 @@
+Reverse scans do not work if an HFile contains inline bloom blocks or leaf level index blocks.  The reason is because the seekBefore() call calculates the previous data block’s size by assuming data blocks are contiguous which is not the case in HFile V2 and beyond.
+Attached is a first cut patch (targeting bcef28eefaf192b0ad48c8011f98b8e944340da5 on trunk) which includes:
+(1) a unit test which exposes the bug and demonstrates failures for both inline bloom blocks and inline index blocks
+(2) a proposed fix for inline index blocks that does not require a new HFile version change, but is only performant for 1 and 2-level indexes and not 3+.  3+ requires an HFile format update for optimal performance.    
+This patch does not fix the bloom filter blocks bug.  But the fix should be similar to the case of inline index blocks.  The reason I haven’t made the change yet is I want to confirm that you guys would be fine with me revising the HFile.Reader interface.
+Specifically, these 2 functions (getGeneralBloomFilterMetadata and getDeleteBloomFilterMetadata) need to return the BloomFilter.  Right now the HFileReader class doesn’t have a reference to the bloom filters (and hence their indices) and only constructs the IO streams and hence has no way to know where the bloom blocks are in the HFile.  It seems that the HFile.Reader bloom method comments state that they “know nothing about how that metadata is structured” but I do not know if that is a requirement of the abstraction (why?) or just an incidental current property. 
+We would like to do 3 things with community approval:
+(1) Update the HFile.Reader interface and implementation to contain and return BloomFilters directly rather than unstructured IO streams
+(2) Merge the fixes for index blocks and bloom blocks into open source
+(3) Create a new Jira ticket for open source HBase to add a ‘prevBlockSize’ field in the block header in the next HFile version, so that seekBefore() calls can not only be correct but performant in all cases.

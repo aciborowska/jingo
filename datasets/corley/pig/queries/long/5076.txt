@@ -1,0 +1,65 @@
+I am using Pig 0.15.0 and have found that maybe it does not support STOREing an alias onto HDFS and Mysql both. the question is simplified as follows:
+
+first, I have a data file on hdfs://tmp/file, which contains:
+
+	1046074327,40986
+	1473299786,1
+
+then, I created a Mysql table db_test, whose schema is:
+
+	CREATE TABLE `db_test` (
+  		`id` bigint(20) NOT NULL,
+  		`cnt` bigint(20) NOT NULL
+	) ENGINE=InnoDB DEFAULT CHARSET=utf8;
+
+then I have written a Pig script which runs in mapreduce mode on Hadoop 2.7.1, and the script contains:
+
+    REGISTER '/path/to/mysql-connector-java-5.1.38-bin.jar';
+
+	%declare DBHOST '127.0.0.1'
+	%declare DBPORT '3306'
+	%declare DATABASE 'test'
+	%declare USERNAME 'root'
+	%declare PASSWORD 'toor'
+
+	a = load '/tmp/file' USING PigStorage(',') AS (id:long, cnt:long);
+
+	STORE a INTO '/tmp/db_test2' USING PigStorage(',');
+
+	STORE a INTO 'db_test' USING org.apache.pig.piggybank.storage.DBStorage('com.mysql.jdbc.Driver', 
+    	'jdbc:mysql://$DBHOST:$DBPORT/$DATABASE?useUnicode=true&characterEncoding=utf-8',
+    	'$USERNAME', '$PASSWORD', 
+    	'REPLACE INTO db_test (id, cnt) VALUES (?,?)');
+
+however, the second STORE will never work, without any error reported. However, if I comment the first STORE line, the second STORE will work! What a magic!
+
+I have tried to use Pig 0.16.0 in local mode on my own host and it can even not instantiate mysql:
+
+	Caused by: java.lang.RuntimeException: could not instantiate 'org.apache.pig.piggybank.storage.DBStorage' with arguments '[com.mysql.jdbc.Driver, jdbc:mysql://127.0.0.1:3306/test?useUnicode=true&characterEncoding=utf-8, root, toor, REPLACE INTO db_test (app_id, cnt) VALUES (?,?)]'
+	at org.apache.pig.impl.PigContext.instantiateFuncFromSpec(PigContext.java:770)
+	at org.apache.pig.parser.LogicalPlanBuilder.buildStoreOp(LogicalPlanBuilder.java:988)
+	... 17 more
+	Caused by: java.lang.reflect.InvocationTargetException
+	at sun.reflect.NativeConstructorAccessorImpl.newInstance0(Native Method)
+	at sun.reflect.NativeConstructorAccessorImpl.newInstance(NativeConstructorAccessorImpl.java:62)
+	at sun.reflect.DelegatingConstructorAccessorImpl.newInstance(DelegatingConstructorAccessorImpl.java:45)
+	at java.lang.reflect.Constructor.newInstance(Constructor.java:422)
+	at org.apache.pig.impl.PigContext.instantiateFuncFromSpec(PigContext.java:738)
+	... 18 more
+	Caused by: java.lang.RuntimeException: Can't load DB Driver
+	at org.apache.pig.piggybank.storage.DBStorage.<init>(DBStorage.java:82)
+	at org.apache.pig.piggybank.storage.DBStorage.<init>(DBStorage.java:71)
+	... 23 more
+	Caused by: java.lang.ClassNotFoundException: com.mysql.jdbc.Driver
+	at java.net.URLClassLoader.findClass(URLClassLoader.java:381)
+	at java.lang.ClassLoader.loadClass(ClassLoader.java:424)
+	at sun.misc.Launcher$AppClassLoader.loadClass(Launcher.java:331)
+	at java.lang.ClassLoader.loadClass(ClassLoader.java:357)
+	at java.lang.Class.forName0(Native Method)
+	at java.lang.Class.forName(Class.java:264)
+	at org.apache.pig.piggybank.storage.DBStorage.<init>(DBStorage.java:79)
+	... 24 more
+
+The 'instantiate' problem may be due to my environment settings, and I will keep trying.
+
+And can somebody help me with the 'two STORE' problem? Could it possibly be a bug? 

@@ -1,0 +1,55 @@
+Every several rounds of TestMasterReplication#testHFileCyclicReplication, we could observe below NPE in UT log:
+
+java.lang.NullPointerException
+
+    at org.apache.hadoop.hbase.ipc.RpcServer.call(RpcServer.java:2257)
+
+    at org.apache.hadoop.hbase.ipc.CallRunner.run(CallRunner.java:118)
+
+    at org.apache.hadoop.hbase.ipc.RpcExecutor$Handler.run(RpcExecutor.java:189)
+
+    at org.apache.hadoop.hbase.ipc.RpcExecutor$Handler.run(RpcExecutor.java:169)
+
+
+
+And related codes at RpcServer line 2257 are:
+
+
+
+      if (e instanceof ServiceException) {
+
+        e = e.getCause();
+
+      }
+
+
+
+      // increment the number of requests that were exceptions.
+
+      metrics.exception(e);
+
+
+
+      if (e instanceof LinkageError) throw new DoNotRetryIOException(e);
+
+      if (e instanceof IOException) throw (IOException)e;
+
+
+
+And after some debugging, we could find several places that constructing ServiceException with no cause, such as in RsRpcServices#replicateWALEntry:
+
+
+
+      if (regionServer.replicationSinkHandler != null) {
+
+        ...
+
+      } else {
+
+        throw new ServiceException("Replication services are not initialized yet");
+
+      }
+
+
+
+So we should firstly check and only reset e=e.getCause() when the cause is not null

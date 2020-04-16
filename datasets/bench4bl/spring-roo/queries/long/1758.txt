@@ -1,0 +1,382 @@
+Currently when using the @RooJson annotation the json create method @RequestMapping headers in the Controller aspect are set as headers = "Accept=application/json" and are returning new ResponseEntity<String>("myThing created", HttpStatus.CREATED).
+I believe this is incorrect and that the @RequestMapping headers should be headers = "Accept=text/plain".
+This however will probably clash with the default create method for the aspect so it may be better to change the method to return the json format of the created object e.g.
+
+
+
+
+
+
+createFromJson
+
+
+
+
+
+
+@RequestMapping(method = RequestMethod.POST, headers = "Accept=application/json")
+
+
+
+
+@ResponseBody
+
+
+
+
+public String MyThingController.createFromJson(@RequestBody final String json) {
+
+
+
+
+    MyThing myThing = MyThing.fromJsonToMyThing(json);
+
+
+
+
+    myThing.persist();
+
+
+
+
+    return myThing.toJson();
+
+
+
+
+}
+
+
+
+
+
+
+I believe it will work to change the headers for the createFromJsonArray method as it is the only method mapped to path /jsonArray. You could of course also change this method to return the json format of the created objects e.g.
+
+
+
+
+
+
+createFromJsonArray
+
+
+
+
+
+
+@RequestMapping(value = "/jsonArray", method = RequestMethod.POST, headers = "Accept=application/json")
+
+
+
+
+@ResponseBody
+
+
+
+
+public final String MyThingController.createFromJsonArray(@RequestBody final String json) {
+
+
+
+
+    List<MyThing> myThings = new ArrayList<MyThing>();
+
+
+
+
+    for (MyThing myThing : MyThing.fromJsonArrayToMyThing(json)) {
+
+
+
+
+        myThing.persist();
+
+
+
+
+        myThings.add(myThing);
+
+
+
+
+    }
+
+
+
+
+    return MyThing.toJsonArray(myThings);
+
+
+
+
+}
+
+
+
+
+
+
+I have had a quick look at the code for WebScaffoldMetadata.java in the mvc controller addon and believe this issue could be resolved by changing the 
+
+
+
+
+
+
+WebScaffoldMetadata.java
+
+
+
+
+
+
+    private MethodMetadata getJsonCreateMethod() {
+
+
+
+
+        JavaSymbolName fromJsonMethodName = jsonMetadata.getFromJsonMethodName();
+
+
+
+
+        if (fromJsonMethodName == null) {
+
+
+
+
+            return null;
+
+
+
+
+        }
+
+
+
+
+        
+
+
+
+
+        JavaSymbolName toJsonMethodName = jsonMetadata.getToJsonMethodName();
+
+
+
+
+        if (toJsonMethodName == null) {
+
+
+
+
+            return null;
+
+
+
+
+        }
+
+
+
+
+ 
+
+
+
+
+        JavaSymbolName methodName = new JavaSymbolName("createFromJson");
+
+
+
+
+ 
+
+
+
+
+        List<AnnotationMetadata> parameters = new ArrayList<AnnotationMetadata>();
+
+
+
+
+        AnnotationMetadataBuilder requestBodyAnnotation = new AnnotationMetadataBuilder(new JavaType("org.springframework.web.bind.annotation.RequestBody"));
+
+
+
+
+        parameters.add(requestBodyAnnotation.build());
+
+
+
+
+ 
+
+
+
+
+        List<AnnotatedJavaType> paramTypes = new ArrayList<AnnotatedJavaType>();
+
+
+
+
+        paramTypes.add(new AnnotatedJavaType(JavaType.STRING_OBJECT, parameters));
+
+
+
+
+        
+
+
+
+
+        MethodMetadata jsonCreateMethod = methodExists(methodName, paramTypes);
+
+
+
+
+        if (jsonCreateMethod != null) return jsonCreateMethod;
+
+
+
+
+ 
+
+
+
+
+        List<JavaSymbolName> paramNames = new ArrayList<JavaSymbolName>();
+
+
+
+
+        paramNames.add(new JavaSymbolName("json"));
+
+
+
+
+ 
+
+
+
+
+        List<AnnotationAttributeValue<?>> requestMappingAttributes = new ArrayList<AnnotationAttributeValue<?>>();
+
+
+
+
+        requestMappingAttributes.add(new EnumAttributeValue(new JavaSymbolName("method"), new EnumDetails(new JavaType("org.springframework.web.bind.annotation.RequestMethod"), new JavaSymbolName("POST"))));
+
+
+
+
+        requestMappingAttributes.add(new StringAttributeValue(new JavaSymbolName("headers"), "Accept=application/json"));
+
+
+
+
+        AnnotationMetadataBuilder requestMapping = new AnnotationMetadataBuilder(new JavaType("org.springframework.web.bind.annotation.RequestMapping"), requestMappingAttributes);
+
+
+
+
+        List<AnnotationMetadataBuilder> annotations = new ArrayList<AnnotationMetadataBuilder>();
+
+
+
+
+        annotations.add(requestMapping);
+
+
+
+
+        annotations.add(new AnnotationMetadataBuilder(new JavaType("org.springframework.web.bind.annotation.ResponseBody")));
+
+
+
+
+        
+
+
+
+
+        InvocableMemberBodyBuilder bodyBuilder = new InvocableMemberBodyBuilder();
+
+
+
+
+        bodyBuilder.appendFormalLine(beanInfoMetadata.getJavaBean().getNameIncludingTypeParameters(false, builder.getImportRegistrationResolver()) + " " + entityName + " = " + beanInfoMetadata.getJavaBean().getNameIncludingTypeParameters(false, builder.getImportRegistrationResolver()) + "." + fromJsonMethodName.getSymbolName() + "(json);");
+
+
+
+
+        bodyBuilder.appendFormalLine(entityName + "." + entityMetadata.getPersistMethod().getMethodName().getSymbolName() + "();");
+
+
+
+
+ 
+
+
+
+
+        bodyBuilder.appendFormalLine("return " + entityName + "." +  toJsonMethodName.getSymbolName() + "();");
+
+
+
+
+ 
+
+
+
+
+        MethodMetadataBuilder methodBuilder = new MethodMetadataBuilder(getId(), Modifier.PUBLIC, methodName, JavaType.STRING_OBJECT, bodyBuilder);
+
+
+
+
+        
+
+
+
+
+        methodBuilder.setAnnotations(annotations);
+
+
+
+
+        return methodBuilder.build();
+
+
+
+
+    }
+
+
+
+
+
+
+... and changing the Accept in getCreateFromJsonArrayMethod:
+
+
+
+
+
+
+WebScaffoldMetadata.java
+
+
+
+
+
+
+        requestMappingAttributes.add(new StringAttributeValue(new JavaSymbolName("headers"), "Accept=text/plain"));
+
+
+
+
+
+
+NOTE: the code/attached has not been tested as I have had an issue building locally and have not had the time to investigate

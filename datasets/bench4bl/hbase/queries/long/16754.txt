@@ -1,0 +1,98 @@
+Running a mixed read write workload on a recent build off branch-1.3, we are seeing compactions occasionally fail with errors like the following (actual filenames replaced with placeholders):
+
+16/09/27 16:57:28 ERROR regionserver.CompactSplitThread: Compaction selection failed Store = XXX, pri = 116
+
+java.io.FileNotFoundException: File does not exist: hdfs://.../hbase/data/ns/table/region/cf/XXfilenameXX
+
+        at org.apache.hadoop.hdfs.DistributedFileSystem$22.doCall(DistributedFileSystem.java:1309)
+
+        at org.apache.hadoop.hdfs.DistributedFileSystem$22.doCall(DistributedFileSystem.java:1301)
+
+        at org.apache.hadoop.fs.FileSystemLinkResolver.resolve(FileSystemLinkResolver.java:81)
+
+        at org.apache.hadoop.hdfs.DistributedFileSystem.getFileStatus(DistributedFileSystem.java:1317)
+
+        at org.apache.hadoop.fs.FilterFileSystem.getFileStatus(FilterFileSystem.java:421)  
+
+        at org.apache.hadoop.hbase.regionserver.StoreFileInfo.getReferencedFileStatus(StoreFileInfo.java:342)
+
+        at org.apache.hadoop.hbase.regionserver.StoreFileInfo.getFileStatus(StoreFileInfo.java:355)  
+
+        at org.apache.hadoop.hbase.regionserver.StoreFileInfo.getModificationTime(StoreFileInfo.java:360)
+
+        at org.apache.hadoop.hbase.regionserver.StoreFile.getModificationTimeStamp(StoreFile.java:321)  
+
+        at org.apache.hadoop.hbase.regionserver.StoreUtils.getLowestTimestamp(StoreUtils.java:63)
+
+        at org.apache.hadoop.hbase.regionserver.compactions.RatioBasedCompactionPolicy.shouldPerformMajorCompaction(RatioBasedCompactionPolicy.java:63)
+
+        at org.apache.hadoop.hbase.regionserver.compactions.SortedCompactionPolicy.selectCompaction(SortedCompactionPolicy.java:82)  
+
+        at org.apache.hadoop.hbase.regionserver.DefaultStoreEngine$DefaultCompactionContext.select(DefaultStoreEngine.java:107)  
+
+        at org.apache.hadoop.hbase.regionserver.HStore.requestCompaction(HStore.java:1644)
+
+        at org.apache.hadoop.hbase.regionserver.CompactSplitThread.selectCompaction(CompactSplitThread.java:373)
+
+        at org.apache.hadoop.hbase.regionserver.CompactSplitThread.access$100(CompactSplitThread.java:59)
+
+        at org.apache.hadoop.hbase.regionserver.CompactSplitThread$CompactionRunner.doCompaction(CompactSplitThread.java:498)
+
+        at org.apache.hadoop.hbase.regionserver.CompactSplitThread$CompactionRunner.run(CompactSplitThread.java:568)
+
+        at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1142)
+
+        at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:617)
+
+        at java.lang.Thread.run(Thread.java:745)
+
+16/09/27 17:01:31 ERROR regionserver.CompactSplitThread: Compaction selection failed Store = XXX, pri = 115
+
+java.io.FileNotFoundException: File does not exist: hdfs://.../hbase/data/ns/table/region/cf/XXfilenameXX
+
+        at org.apache.hadoop.hdfs.DistributedFileSystem$22.doCall(DistributedFileSystem.java:1309)
+
+        at org.apache.hadoop.hdfs.DistributedFileSystem$22.doCall(DistributedFileSystem.java:1301)
+
+        at org.apache.hadoop.fs.FileSystemLinkResolver.resolve(FileSystemLinkResolver.java:81)
+
+        at org.apache.hadoop.hdfs.DistributedFileSystem.getFileStatus(DistributedFileSystem.java:1317)
+
+        at org.apache.hadoop.fs.FilterFileSystem.getFileStatus(FilterFileSystem.java:421)  
+
+        at org.apache.hadoop.hbase.regionserver.StoreFileInfo.getReferencedFileStatus(StoreFileInfo.java:342)
+
+        at org.apache.hadoop.hbase.regionserver.StoreFileInfo.getFileStatus(StoreFileInfo.java:355)  
+
+        at org.apache.hadoop.hbase.regionserver.StoreFileInfo.getModificationTime(StoreFileInfo.java:360)
+
+        at org.apache.hadoop.hbase.regionserver.StoreFile.getModificationTimeStamp(StoreFile.java:321)  
+
+        at org.apache.hadoop.hbase.regionserver.StoreUtils.getLowestTimestamp(StoreUtils.java:63)
+
+        at org.apache.hadoop.hbase.regionserver.compactions.RatioBasedCompactionPolicy.shouldPerformMajorCompaction(RatioBasedCompactionPolicy.java:63)
+
+        at org.apache.hadoop.hbase.regionserver.compactions.SortedCompactionPolicy.selectCompaction(SortedCompactionPolicy.java:82)  
+
+        at org.apache.hadoop.hbase.regionserver.DefaultStoreEngine$DefaultCompactionContext.select(DefaultStoreEngine.java:107)  
+
+        at org.apache.hadoop.hbase.regionserver.HStore.requestCompaction(HStore.java:1644)
+
+        at org.apache.hadoop.hbase.regionserver.CompactSplitThread.selectCompaction(CompactSplitThread.java:373)
+
+        at org.apache.hadoop.hbase.regionserver.CompactSplitThread.access$100(CompactSplitThread.java:59)
+
+        at org.apache.hadoop.hbase.regionserver.CompactSplitThread$CompactionRunner.doCompaction(CompactSplitThread.java:498)
+
+        at org.apache.hadoop.hbase.regionserver.CompactSplitThread$CompactionRunner.run(CompactSplitThread.java:568)
+
+        at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1142)
+
+        at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:617)
+
+        at java.lang.Thread.run(Thread.java:745)
+
+
+
+It looks like we somehow deleted the underlying store file from HDFS (probably after it was compacted away), after the path was loaded into the list of store files for the region.
+For two cases of this that I looked into, in both cases the region in question was previously hosted by a regionserver that stalled, then aborted after its zk session expired.  In both cases it looked like a compaction was also in progress.  So it's possible that the compacted files are being deleted from HDFS by the stalled regionserver before it aborts, but after the region has been opened by a new regionserver.  That's speculation though and needs to be substantiated.

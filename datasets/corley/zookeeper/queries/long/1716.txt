@@ -1,0 +1,35 @@
+I was trying to use org.apache.zookeeper.server.LogFormatter to analyze the access pattern of a particular application.  As part of this I wanted to get the size of the data that was being written into ZK.
+
+I ran into an issue where in some cases the hex data had an odd length.  I looked into it and found that the buffer is being written out using Integer.toHexString(barr[idx])
+
+Looking at the javadoce for toHexString it indicates that it does not pad the bits at all, and will output the twos compliment of the number if it is negative.  I then looked at how the data was being parsed and it assumed that every byte consisted of exactly two characters, which is not true.
+
+Utils.toCSVBuffer(new byte[] {0xff}) returns "#ffffffff"
+Utils.toCSVBuffer(new byte[] {0x01}) returns "#1"
+
+If I combine those 
+Utils.fromCSVBuffer(Utils.toCSVBuffer(new byte[] {0xff, 0x01, 0xff})) will return {0xff, 0xff, 0xff, 0xff, 0x1f, 0xff, 0xff, 0xff}
+
+
+
+I think what we want is something like
+
+static final char[] NIBBLE_TO_HEX = {
+  '0', '1', '2', '3', '4', '5', '6', '7',
+  '8', '9', 'a', 'b', 'c', 'd', 'e', 'f'
+};
+
+static String toCSVBuffer(byte barr[]) {
+    if (barr == null || barr.length == 0) {
+        return "";
+    }
+    StringBuilder sb = new StringBuilder(barr.length + 1);
+    sb.append('#');
+    for(int idx = 0; idx < barr.length; idx++) {
+        byte b = barr[idx];
+        sb.append(NIBBLE_TO_HEX[b&0x0f]);
+        sb.append(NIBBLE_TO_HEX[(b&0xf0)>>4]);
+    }
+    return sb.toString();
+}
+

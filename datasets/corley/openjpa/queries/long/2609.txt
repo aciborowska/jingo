@@ -1,0 +1,104 @@
+HI!  I have a customer hitting the following (root) exception:
+
+Caused by: java.lang.ClassCastException: java.lang.String incompatible with java.lang.Integer
+	at org.apache.openjpa.jdbc.kernel.PreparedSQLStoreQuery$PreparedSQLExecutor.toParameterArray(PreparedSQLStoreQuery.java:160)
+	at org.apache.openjpa.kernel.QueryImpl.execute(QueryImpl.java:857)
+	... 23 more
+
+For the reader's convenience, here is the 'PreparedSQLStoreQuery$PreparedSQLExecutor.toParameterArray':
+
+public synchronized Object[] toParameterArray(StoreQuery q, Map userParams) {
+........
+        Set<Map.Entry<Object,Object>> userSet = userParams.entrySet();
+            for (Map.Entry<Object,Object> userEntry : userSet) {
+                int idx = ((Integer)userEntry.getKey()).intValue();  <----- line 160
+
+This exception only occurs sporadically, and typically under a heavy load (many threads).  After many days of heads down debug with a debugger (and LOTS of luck), I was able to recreate (simulate) the issue by placing strategic break points in my test.....in other words it is a manual recreate and not one I can automate.  Let me take you on my debug journey for posterity sake.
+
+The first question to ask ourselves is: "how do we get into the PreparedSQLStoreQuery$PreparedSQLExecutor.toParameterArray code".  The second question to ask is:  "how do we get a String when an Integer is expect (i.e. incorrect 'userParams')".  The first question isn't too hard to answer, the second question is the very hard, time consuming part.  To get a PreparedSQLStoreQuery$PreparedSQLExecutor, we must execute a query at least twice where query SQL caching (QuerySQLCache) is enabled.  In other words, lets take this query from my test:
+
+q = em.createQuery("select o from MyEntity o where upper(o.comment) like :mrn");
+q.setParameter("mrn", "test");
+q.getResultList();
+
+The first time we execute this query the "store query" will be 'ExpressionStoreQuery$DataStoreExecutor', the second time it will be a 'PreparedSQLStoreQuery$PreparedSQLExecutor.  This is only the case when QuerySQLCache=true (which is the default).  Set it to false and query SQL cache is disabled and we'd only see a 'ExpressionStoreQuery$DataStoreExecutor'.  Consequently to resolve the ClassCastException simply disable the query SQL cache (not a great option I realize, but a work around nonetheless.)
+
+Now that we understand how to repeatedly invoke the 'PreparedSQLStoreQuery$PreparedSQLExecutor.toParameterArray', lets move on to the more daunting task: determining the circumstances under which the 'userParams' contains a set of Strings rather than Integers.  To start, if we put a breakpoint in 'toParameterArray' we see this stack in the debugger:
+
+PreparedSQLStoreQuery$PreparedSQLExecutor.toParameterArray(StoreQuery, Map) line: 165	
+QueryImpl.execute(int, Map) line: 862	
+QueryImpl.execute(Map) line: 794	
+DelegatingQuery.execute(Map) line: 542	
+QueryImpl<X>.execute() line: 286	
+QueryImpl<X>.getResultList() line: 302	
+.......
+
+Using this info we can walk the stack to determine where the 'params' come from.  Walking down the stack to QueryImpl.execute, line 286, we can see the 'params' are created/manipulated here:
+
+private Object execute() {
+.......
+	    lock();
+            Map params = getParameterValues();
+            boolean registered = preExecute(params);
+            Object result = _query.execute(params);
+            if (registered) {
+                postExecute(result);
+
+As you can see, 'params' is created and then passed to 'preExecute' and 'execute' (take it on faith that nothing relevant happens in getParameterValues).  The real interesting operations occur in 'preExecute', and then later in 'postExecute'.  In 'preExecute', a call is made to PreparedQueryCacheImpl.register:
+
+    public Boolean register(String id, Query query, FetchConfiguration hints) {
+.........
+        PreparedQuery cached = get(id);
+        if (cached != null)
+            return null; // implies that it is already cached
+
+        PreparedQuery newEntry = new PreparedQueryImpl(id, query); 
+        return cache(newEntry);
+
+But a breakpoint on 'return' and notice here that two threads can each create a PreparedQuery (pq).  Next, allow both threads to move in lock-step.  Doing this you will see that in the 'cache' method both threads go after a lock:
+
+public boolean cache(PreparedQuery q) {
+lock(false);
+try {
+String id = q.getIdentifier();
+.....
+
+_delegate.put(id, q);
+.....
+
+return true;
+} finally {
+unlock(false);
+
+One thread wins and get the lock, adds to the cache (_delegate) and then returns 'true' (i.e. indicating that the register occurred).  Once the first thread gives up the lock, obviously the waiting thread gets the lock and notice that it is going to blindly add its pq to the cache.  So we have a classic race condition and this is the first problem (note I said FIRST problem).  Solution: we need to check the cache and simply return (and return false) if there already exists and entry for the given id.  Despite what I'm about to say, we need this solution no matter what.  
+The fun doesn't end here, we still haven't figured out how/where/why the 'params' are messed up, so lets continue.  At this point, the last thread added its pq into the cache and again, true is returned.  The fact that true is returned for both threads sets in motion state which can effect down stream operations.  That is, look again at the 'execute' method listed above.  Notice that when 'registered' is true, we take the 'postExecute' method.  I think the intentions are to take 'postExecute' only once, and only for the thread that actually 'registered' (put into the cache) a pq.  Clearly though at this point we have two threads taking 'postExecute' for what should be the same id/pq.  Here is where things get interesting w.r.t the 'params'.  In 'postExecute' we are going to 'initialize' the pq and in so doing we make our way to PreparedQueryImpl.setUserParameterPositions:
+
+void setUserParameterPositions(List list) {
+    _userParamPositions = new HashMap<Object, Integer[]>();
+    List<Integer> positions = new ArrayList<Integer>();
+    for (int i = 1; list != null && i < list.size(); i += 2) {
+........
+    _userParamPositions.put(key, positions.toArray(new Integer[positions.size()]));
+
+
+Uh oh!!  Red flag!!  Notice here that both threads can (and do) operated on '_userParamPositions', and notice '_userParamPosistion' is a (non-threadsafe) HashMap!  Obviously multiple threads can stomp on each other with the use of '_userParamPositions''.  Enough said.
+Now, we are closer to understand where the 'params' get messed up, but I still haven't shown how the CCEx can occur.  For that, we need to let the above query run to completion, and then run it a second time (with the same EMF/EM of course).  When it is executed a second time, the above 'preExecute' method is called and this time it finds a cached pq (rather than registering one as was done in the first iteration).  Furthermore, in 'preExecute' we take this block of code:
+
+if (pq.isInitialized()) {
+try {
+Map rep = pq.reparametrize(params, _em.getBroker());
+params.clear();
+params.putAll(rep);
+} catch (UserException ue) {
+invalidatePreparedQuery();
+return false;
+
+Notice that 'reparametrize' operates on 'params', and notice that there is a try/catch bock around this code because 'reparametrize' can throw a UserEx for a multitude of reasons.....see the method code for details, but note that it uses '_userParamPositions'.  Now, imagine a case where many threads are using HashMap '_userParamPositions'.  A situation can occur where the HashMap gets messed up to the point it causes 'reparametrize' to throw a UserEx!  In this case, you can see that params.clear() and params.putAll(rep) above are skipped!  Effectively we have a case where the params may not get "reparametrize" as expected.  
+For those still with me I have now demonstrated how/why/where 'params' can get messed up.  As one can hopefully see, there is a lot going on here and many things have to aline just right for the CCEx to occur.  To round this out, if we assume that 'reparametrize' causes a UserEx (I've "simulated" it using a debugger), when the execution of the query occurs the second time, and when query SQL cache is enabled, the 'params' passed to 'PreparedSQLStoreQuery$PreparedSQLExecutor.toParameterArray' have effectively not been 'reparametrize' (i.e. they contain a map of String->Object, rather than Integer->Object), hence the CCEx!
+
+Having said all of that, I don't have a clear fix to this.  I've spoken with Jody Grassel about this and he is at the same point as I.  Ultimately code needs to be added to make '_userParamPositions' thread safe.  However, this could be a really large undertaking and not a change I would want to add in service.  We definitely know that we need to make the PreparedQueryCacheImpl.cache method avoid a race condition as I mentioned above.  To do this, we need to check the cache for an existing pq as I mentioned above.  Doing this would ensure that only one thread would register and initialize a pq instance for a given id (query).  My feeling is this will fix the CCEx as we will not have multiple threads creating/initializing a pq, and thus not creating, and adding to the, '_userParamPositions'.  I know I'm kicking the can down the road a bit, but like I said I'm not comfortable with reworking the PreparedQueryImpl in service, especially when we haven't seen other issues in this area (tick tick tick........
+If you have thoughts or if I'm missing something obvious please let me know.
+
+Thanks,
+
+Heath Thomann

@@ -1,0 +1,22 @@
+SAMPLER job requires a parameter that needs to be equal to number of reducers used by ORDER_BY job. This is done by getting successor of SAMPLER job and estimating reducers for it in the following code. However, job (conf) passed to calculateRuntimeReducers is corresponding to SAMPLER job instead of ORDER_BY job which causes problems in some custom reducer estimators that depend on the configuration.
+
+// inside org.apache.pig.backend.hadoop.executionengine.mapReduceLayer.JobControlCompiler
+    public void adjustNumReducers(MROperPlan plan, MapReduceOper mro,
+            org.apache.hadoop.mapreduce.Job nwJob) throws IOException {
+        int jobParallelism = calculateRuntimeReducers(mro, nwJob);
+
+        if (mro.isSampler() && plan.getSuccessors(mro) != null) {
+            // We need to calculate the final number of reducers of the next job (order-by or skew-join)
+            // to generate the quantfile.
+            MapReduceOper nextMro = plan.getSuccessors(mro).get(0);
+
+            // Here we use the same conf and Job to calculate the runtime #reducers of the next job
+            // which is fine as the statistics comes from the nextMro's POLoads
+            int nPartitions = calculateRuntimeReducers(nextMro, nwJob);
+
+            // set the runtime #reducer of the next job as the #partition
+            ParallelConstantVisitor visitor =
+                    new ParallelConstantVisitor(mro.reducePlan, nPartitions);
+            visitor.visit();
+        }
+

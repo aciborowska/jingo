@@ -1,0 +1,16 @@
+A JdbcTemplate constructed with a TransactionAwareDataSourceProxy as its dataSource may cause a premature connection close if it is used in a connection-based transaction where the transaction's connection belongs to the data source that the proxy wraps and that transaction is suspended.
+That's a mouthful. Let me give an example (pardon the psuedocode, I'll provide real code if requested). I use HibernateTransactionManager (since that's where I'm seeing the problem personally), but I suspect this would also occur with a DataSourceTransactionManager:
+HibernateTransactionManager hibTxnMgr;
+LocalSessionFactoryBean sesFactory;
+BasicDataSource dataSource;
+TransactionAwareDataSourceProxy txnAwareDataSource;
+sesFactory.setDataSource(dataSource);
+hibTxnMgr.setSessionFactory(sesFactory);
+txnAwareDataSource.setTargetDataSource(dataSource);
+hibTxnMgr.getTransaction(REQUIRED); // creates new txn with connection from dataSource
+new JdbcTemplate(txnAwareDataSource).execute("update something");
+hibTxnMgr.getTransaction(REQUIRED_NEW); // outer txn suspended, but its connection is closed!
+What happens is this: when the JdbcTemplate calls DataSourceUtils.getConnection(txnAwareDataSource), the DataSourceUtils doesn't find a thread-bound ConnectionHolder for the txnAwareDataSource (since the transaction is based on dataSource), so it registers a new ConnectionSynchronization with a Connection wrapper around the transaction's connection. When the transaction is suspended, all synchronizations are also suspended, and as of 1.2.6, the ConnectionSynchronization closes its connection. This, unfortunately, also closes the underlying transaction connection. When the outer transaction is resumed, the first attempt to use the database fails with a "Connection is closed" message.
+I don't think this is a major bug, since there is nothing in the documentation that indicates a JdbcTemplate can be used with a TransactionAwareDataSourceProxy, so doing so may be considered inappropriate use. Of course, there's nothing that explicitly forbids it, either. The closest I could find was from the TransactionAwareDataSourceProxy javadoc:
+"Note that the transaction manager, for example DataSourceTransactionManager, still needs to work with underlying DataSource, not with this proxy."
+Perhaps this guideline can be expanded from just transaction managers to include JdbcTemplate? (and anything else that calls DataSourceUtils.getConnection() ?)

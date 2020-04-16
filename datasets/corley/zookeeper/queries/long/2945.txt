@@ -1,0 +1,159 @@
+Synchronization code in the syncWithLeader function of Learner.java doesn't seems to truncate uncommitted writes properly when the follower receives SNAP msg from the leader. This results in data inconsistency in the in-memory data tree across nodes. Here is one procedure to reproduce the inconsistency. (Actually, this seems similar to my previous report on ZOOKEEPER-2832, but it was for 3.4.10 and this one is for 3.4.11 and later)
+
+Initially:
+
+	Start the ensemble with three nodes: node 0, 1 and 2 (the node 2 is the leader)
+	Create 5 znodes with initial values as follow (key = value)
+
+/testDivergenceResync0 = 0
+/testDivergenceResync1 = 1
+/testDivergenceResync2 = 2
+/testDivergenceResync3 = 3
+/testDivergenceResync4 = 4
+
+
+
+
+
+To Reproduce:
+
+	Diverge the node 2
+a. Shutdown the node 0 and 1
+b. Async setData to the node 2 writing 1000 to the key ‘/testDivergenceResync0’
+c. Shutdown the node 2
+	Restart the node 0 and 1 (let them finish with resync)
+	Diverge the node 1
+a. Shutdown the node 0
+b. Async setData to the node 1 writing 1001 to the key ‘/testDivergenceResync1’
+c. Shutdown the node 1
+	Restart the node 0 and 1 (let them finish with resync)
+	Diverge the node 1
+a. Shutdown the node 0
+b. Async setData to the node 1 writing 1002 to the key ‘/testDivergenceResync2’
+c. Shutdown the node 1
+	Restart the node 0 and 2 (let them finish with resync)
+	Diverge the node 0
+a. Shutdown the node 2
+b. Async setData to the node 0 writing 1003 to the key ‘/testDivergenceResync3’
+c. Shutdown the node 0
+	Restart the node 1 and 2 (let them finish with resync)
+	Diverge the node 2
+a. Shutdown the node 1
+b. Async setData to the node 2 writing 1004 to the key ‘/testDivergenceResync4’
+c. Shutdown the node 2
+	Restart the node 1 and 2 (let them finish with resync)
+	Restart the node 0 (let it finish with resync)
+
+
+
+Reading each key from each node directly will give us the output:
+
+/testDivergenceResync0 on the node 0 = 0
+/testDivergenceResync0 on the node 1 = 0
+/testDivergenceResync0 on the node 2 = 0
+/testDivergenceResync1 on the node 0 = 1001
+/testDivergenceResync1 on the node 1 = 1001
+/testDivergenceResync1 on the node 2 = 1001
+/testDivergenceResync2 on the node 0 = 2
+/testDivergenceResync2 on the node 1 = 1002
+/testDivergenceResync2 on the node 2 = 2
+/testDivergenceResync3 on the node 0 = 3
+/testDivergenceResync3 on the node 1 = 3
+/testDivergenceResync3 on the node 2 = 3
+/testDivergenceResync4 on the node 0 = 1004
+/testDivergenceResync4 on the node 1 = 1004
+/testDivergenceResync4 on the node 2 = 1004
+
+
+The value of key /testDivergenceResync2 is inconsistent across nodes – node 1 has a new value that will never be replicated to the other nodes.
+
+What seems to happen:
+
+	At the step 5, setData (at zxid 0x300000001) writing the value 1002 is committed on the node 1.
+Log from the node 1:
+...
+2017-11-16 03:02:19,964 [myid:1] - DEBUG [ProcessThread(sid:1 cport:-1)::CommitProcessor@174] - Processing request:: sessionid:0x100011108080000 type:setData cxid:0x4 zxid:0x300000001 txntype:5 reqpath:n/a
+2017-11-16 03:02:19,964 [myid:1] - DEBUG [ProcessThread(sid:1 cport:-1)::Leader@787] - Proposing:: sessionid:0x100011108080000 type:setData cxid:0x4 zxid:0x300000001 txntype:5 reqpath:n/a
+2017-11-16 03:02:19,965 [myid:1] - INFO  [SyncThread:1:FileTxnLog@209] - Creating new log file: log.300000001
+2017-11-16 03:02:20,016 [myid:1] - DEBUG [SyncThread:1:Leader@600] - Count for zxid: 0x300000001 is 1
+2017-11-16 03:02:21,173 [myid:1] - INFO  [QuorumPeer[myid=1]/0:0:0:0:0:0:0:0:11224:Leader@512] - Shutting down
+2017-11-16 03:02:21,173 [myid:1] - INFO  [QuorumPeer[myid=1]/0:0:0:0:0:0:0:0:11224:Leader@518] - Shutdown called
+java.lang.Exception: shutdown Leader! reason: Not sufficient followers synced, only synced with sids: [ 1 ]
+...
+
+	At the step 8, the node 1 is restarted and supposed to be properly resync’ed with the node 2 which is the leader.
+    a. The node 2 sends SNAP msg so that the node 1 can restore its in-memory data tree from the snapshot of the in-memory data tree on the node 2. 
+    b. On the other hand, the node 1 will clear its in-memory data tree and restore it with the snapshot from the node 2. Then, it takes its own snapshot at zxid 0x200000001. 
+    c. However, this does not remove the setData at zxid 0x300000001 from the transaction log on the node 1.
+Log from the node 2:
+...
+2017-11-16 03:02:37,470 [myid:2] - INFO  [QuorumPeer[myid=2]/0:0:0:0:0:0:0:0:11227:Leader@372] - LEADING - LEADER ELECTION TOOK - 232
+2017-11-16 03:02:37,479 [myid:2] - INFO  [LearnerHandler-/127.0.0.1:46899:LearnerHandler@346] - Follower sid: 1 : info : org.apache.zookeeper.server.quorum.QuorumPeer$QuorumServer@46cc2846
+2017-11-16 03:02:37,626 [myid:2] - INFO  [LearnerHandler-/127.0.0.1:46899:LearnerHandler@401] - Synchronizing with Follower sid: 1 maxCommittedLog=0x0 minCommittedLog=0x0 peerLastZxid=0x300000001
+2017-11-16 03:02:37,626 [myid:2] - DEBUG [LearnerHandler-/127.0.0.1:46899:LearnerHandler@472] - proposals is empty
+2017-11-16 03:02:37,626 [myid:2] - INFO  [LearnerHandler-/127.0.0.1:46899:LearnerHandler@475] - Sending SNAP
+2017-11-16 03:02:37,626 [myid:2] - INFO  [LearnerHandler-/127.0.0.1:46899:LearnerHandler@499] - Sending snapshot last zxid of peer is 0x300000001  zxid of leader is 0x500000000sent zxid of db as 0x200000001
+2017-11-16 03:02:37,701 [myid:2] - INFO  [LearnerHandler-/127.0.0.1:46899:LearnerHandler@535] - Received NEWLEADER-ACK message from 1
+2017-11-16 03:02:37,702 [myid:2] - INFO  [QuorumPeer[myid=2]/0:0:0:0:0:0:0:0:11227:Leader@962] - Have quorum of supporters, sids: [ 1,2 ]; starting up and setting last processed zxid: 0x500000000
+...
+
+Log from the node 1:
+...
+2017-11-16 03:02:37,473 [myid:1] - INFO  [QuorumPeer[myid=1]/0:0:0:0:0:0:0:0:11224:Follower@65] - FOLLOWING - LEADER ELECTION TOOK - 218
+2017-11-16 03:02:37,475 [myid:1] - INFO  [QuorumPeer[myid=1]/0:0:0:0:0:0:0:0:11224:QuorumPeer$QuorumServer@184] - Resolved hostname: 
+127.0.0.1 to address: /127.0.0.1
+2017-11-16 03:02:37,593 [myid:1] - INFO  [NIOServerCxn.Factory:0.0.0.0/0.0.0.0:11224:NIOServerCnxnFactory@215] - Accepted socket connection from /127.0.0.1:57338
+2017-11-16 03:02:37,626 [myid:1] - INFO  [QuorumPeer[myid=1]/0:0:0:0:0:0:0:0:11224:Learner@336] - Getting a snapshot from leader 0x200000001
+2017-11-16 03:02:37,627 [myid:1] - WARN  [NIOServerCxn.Factory:0.0.0.0/0.0.0.0:11224:NIOServerCnxn@383] - Exception causing close of 
+session 0x0: ZooKeeperServer not running
+2017-11-16 03:02:37,627 [myid:1] - DEBUG [NIOServerCxn.Factory:0.0.0.0/0.0.0.0:11224:NIOServerCnxn@386] - IOException stack trace
+java.io.IOException: ZooKeeperServer not running
+        at org.apache.zookeeper.server.NIOServerCnxn.readLength(NIOServerCnxn.java:977)
+        at org.apache.zookeeper.server.NIOServerCnxn.doIO(NIOServerCnxn.java:257)
+        at org.apache.zookeeper.server.NIOServerCnxnFactory.run(NIOServerCnxnFactory.java:226)
+        at java.lang.Thread.run(Thread.java:745)
+2017-11-16 03:02:37,627 [myid:1] - INFO  [NIOServerCxn.Factory:0.0.0.0/0.0.0.0:11224:NIOServerCnxn@1040] - Closed socket connection f
+or client /127.0.0.1:57338 (no session established for client)
+2017-11-16 03:02:37,629 [myid:1] - INFO  [QuorumPeer[myid=1]/0:0:0:0:0:0:0:0:11224:FileTxnSnapLog@248] - Snapshotting: 0x200000001 to /home/ben/project/strata/test-5-3-ZooKeeper-3.4.11-strata-0.1/data/1/version-2/snapshot.200000001
+...
+
+	At the step 10, the node 1 is restarted again and supposed to be properly resync’ed with the node 2 which is the leader again.
+a. When the node 1 is restarted, it restores its in-memory data tree from the snapshot at zxid 0x200000001 and replay setData at zxid 0x300000001 (which actually needed to be truncated)
+b. However, the node 2 just sends DIFF containing setData written at 9th path, and no truncation will be occurred.
+c. As a result, the node 1 still has the value 1002 while other nodes will have the value 2 for the same key
+
+Log from the node 2:
+…
+2017-11-16 03:03:21,033 [myid:2] - INFO  [QuorumPeer[myid=2]/0:0:0:0:0:0:0:0:11227:Leader@372] - LEADING - LEADER ELECTION TOOK - 217
+2017-11-16 03:03:21,038 [myid:2] - INFO  [LearnerHandler-/127.0.0.1:46967:LearnerHandler@346] - Follower sid: 1 : info : org.apache.zookeeper.server.quorum.QuorumPeer$QuorumServer@1e1cf18c
+2017-11-16 03:03:21,103 [myid:2] - INFO  [LearnerHandler-/127.0.0.1:46967:LearnerHandler@401] - Synchronizing with Follower sid: 1 maxCommittedLog=0x500000004 minCommittedLog=0x500000001 peerLastZxid=0x500000003
+2017-11-16 03:03:21,103 [myid:2] - DEBUG [LearnerHandler-/127.0.0.1:46967:LearnerHandler@415] - proposal size is 4
+2017-11-16 03:03:21,103 [myid:2] - DEBUG [LearnerHandler-/127.0.0.1:46967:LearnerHandler@418] - Sending proposals to follower
+2017-11-16 03:03:21,103 [myid:2] - INFO  [LearnerHandler-/127.0.0.1:46967:LearnerHandler@475] - Sending DIFF
+2017-11-16 03:03:21,156 [myid:2] - INFO  [NIOServerCxn.Factory:0.0.0.0/0.0.0.0:11227:NIOServerCnxnFactory@215] - Accepted socket connection from /127.0.0.1:49611
+2017-11-16 03:03:21,178 [myid:2] - INFO  [LearnerHandler-/127.0.0.1:46967:LearnerHandler@535] - Received NEWLEADER-ACK message from 1
+2017-11-16 03:03:21,178 [myid:2] - INFO  [QuorumPeer[myid=2]/0:0:0:0:0:0:0:0:11227:Leader@962] - Have quorum of supporters, sids: [ 1,2 ]; starting up and setting last processed zxid: 0x600000000
+2017-11-16 03:03:21,196 [myid:2] - WARN  [NIOServerCxn.Factory:0.0.0.0/0.0.0.0:11227:NIOServerCnxn@383] - Exception causing close of session 0x0: ZooKeeperServer not running
+2017-11-16 03:03:21,196 [myid:2] - DEBUG [NIOServerCxn.Factory:0.0.0.0/0.0.0.0:11227:NIOServerCnxn@386] - IOException stack trace
+java.io.IOException: ZooKeeperServer not running
+        at org.apache.zookeeper.server.NIOServerCnxn.readLength(NIOServerCnxn.java:977)
+        at org.apache.zookeeper.server.NIOServerCnxn.doIO(NIOServerCnxn.java:257)
+        at org.apache.zookeeper.server.NIOServerCnxnFactory.run(NIOServerCnxnFactory.java:226)
+        at java.lang.Thread.run(Thread.java:745)
+2017-11-16 03:03:21,196 [myid:2] - INFO  [NIOServerCxn.Factory:0.0.0.0/0.0.0.0:11227:NIOServerCnxn@1040] - Closed socket connection for client /127.0.0.1:49611 (no session established for client)
+2017-11-16 03:03:21,237 [myid:2] - DEBUG [LearnerHandler-/127.0.0.1:46967:Leader@579] - outstanding is 0
+...
+
+
+Log from the node 1:
+…
+2017-11-16 03:03:21,034 [myid:1] - INFO  [QuorumPeer[myid=1]/0:0:0:0:0:0:0:0:11224:Follower@65] - FOLLOWING - LEADER ELECTION TOOK - 222
+2017-11-16 03:03:21,035 [myid:1] - INFO  [QuorumPeer[myid=1]/0:0:0:0:0:0:0:0:11224:QuorumPeer$QuorumServer@184] - Resolved hostname: 127.0.0.1 to address: /127.0.0.1
+2017-11-16 03:03:21,104 [myid:1] - INFO  [QuorumPeer[myid=1]/0:0:0:0:0:0:0:0:11224:Learner@332] - Getting a diff from the leader 0x500000004
+2017-11-16 03:03:21,105 [myid:1] - WARN  [QuorumPeer[myid=1]/0:0:0:0:0:0:0:0:11224:Learner@387] - Got zxid 0x500000004 expected 0x1
+2017-11-16 03:03:21,189 [myid:1] - INFO  [SyncThread:1:FileTxnLog@209] - Creating new log file: log.500000004
+2017-11-16 03:03:21,189 [myid:1] - DEBUG [QuorumPeer[myid=1]/0:0:0:0:0:0:0:0:11224:CommitProcessor@164] - Committing request:: sessionid:0x2000111082b0000 type:setData cxid:0x4 zxid:0x500000004 txntype:5 reqpath:n/a
+2017-11-16 03:03:21,189 [myid:1] - DEBUG [CommitProcessor:1:FinalRequestProcessor@89] - Processing request:: sessionid:0x2000111082b0000 type:setData cxid:0x4 zxid:0x500000004 txntype:5 reqpath:n/a
+...
+
+

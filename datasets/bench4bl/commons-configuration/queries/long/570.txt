@@ -1,0 +1,41 @@
+This was encountered in a release of Accumulo. I'm not sure if this is in the realm of commons configuration, but I figured I should put in a ticket-
+A. just in case it is or
+B. So others can be aware of this issue
+We had a piece of code which interpolates java properties (SystemConfiguration) with other variables. This code worked as follows
+
+
+
+      PropertiesConfiguration pconf = new PropertiesConfiguration();
+
+      pconf.append(new SystemConfiguration());
+
+      pconf.addProperty("hack_default_value", this.defaultValue);
+
+      String v = pconf.getString("hack_default_value");
+
+
+
+However, after we added a monitor thread which calls System.setProperty before this code is hit, we would occasionally get a ConcurrentModificationException.
+I traced it down to pconf.append doing an iteration over the Configuration (AbstractConfiguration, line 1233 in 1.6). The configuration being passed in, SystemConfiguration, is just a MapConfiguration from the result of System.getProperties. This is an exact copy of the map the System maintains.
+There are two accessors to that map, setProperty and setProperties in System. Set property basically just falls to Properties.setProperty, while setProperties will copy the existing properties, add new ones, and then replace the object. We are using setProperty in our code.
+Properties.setProperty is a synchronized call, so we resolved it by replacing our code with
+
+
+
+      PropertiesConfiguration pconf = new PropertiesConfiguration();
+
+      Properties systemProperties = System.getProperties();
+
+      synchronized (systemProperties) {
+
+        pconf.append(new MapConfiguration(systemProperties));
+
+      }
+
+      pconf.addProperty("hack_default_value", this.defaultValue);
+
+      String v = pconf.getString("hack_default_value");
+
+
+
+I'm not quite sure if/how it should be handled in commons configuration. I'm thinking if it IS in the scope of this project, then SystemConfiguration should create a snapshot of System.getProperties. Or a new Configuration/configuration flag should be added to create a snapshot of it instead of the map directly.

@@ -1,0 +1,28 @@
+Let me preface this by saying I know my use case is an edge case.  However, the logging produced at WARN level by DispatcherServlet.noHandlerFound is incorrect for this case and is very confusing.  Let me just start by saying what the fix is, and then come back to how the problem can be duplicated.
+The current code for the method is:
+	protected void noHandlerFound(HttpServletRequest request, HttpServletResponse response) throws IOException {
+		if (pageNotFoundLogger.isWarnEnabled()) 
+{
+			pageNotFoundLogger.warn("No mapping for [" + request.getRequestURI() +
+					"] in DispatcherServlet with name '" + getServletName() + "'");
+		}
+		response.sendError(HttpServletResponse.SC_NOT_FOUND);
+	}
+In the case of a include done with <c:import>, request.getRequestURI() returns the wrong path.  UrlPathHelper.getLookupPathForRequest needs to be used to get the correct path.
+Here is my log output from a valid request.  In this case, in a JSP called closeDialogRefreshPane.jsp I correctly did a <c:import> to one of my controllers called '/dashboardsNav'
+DEBUG [http-80-Processor24] (DispatcherServlet:doService) - DispatcherServlet with name 'spring' received request for [/scoreboard/common/closeDialogRefreshPane.jsp]
+DEBUG [http-80-Processor24] (DispatcherServlet:doService) - Taking snapshot of request attributes before include
+DEBUG [http-80-Processor24] (DispatcherServlet:doDispatch) - Bound request context to thread: org.apache.catalina.core.ApplicationHttpRequest@1f489d9
+DEBUG [http-80-Processor24] (DispatcherServlet:getHandler) - Testing handler map [org.springframework.web.servlet.handler.BeanNameUrlHandlerMapping@16a346a] in DispatcherServlet with name 'spring'
+DEBUG [http-80-Processor24] (BeanNameUrlHandlerMapping:getHandlerInternal) - Looking up handler for [/dashboardsNav]
+DEBUG [http-80-Processor24] (DispatcherServlet:getHandlerAdapter) - Testing handler adapter [org.springframework.web.servlet.mvc.HttpRequestHandlerAdapter@1bd871]
+DEBUG [http-80-Processor24] (DispatcherServlet:getHandlerAdapter) - Testing handler adapter [org.springframework.web.servlet.mvc.SimpleControllerHandlerAdapter@1ba0609]
+DEBUG [http-80-Processor24] (DispatcherServlet:render) - Rendering view [org.springframework.web.servlet.view.InternalResourceView: name 'dashboardsNavView'; URL [/dashboards/dashboardsNav.jsp]] in DispatcherServlet with name 'spring'
+Here is my log output from an invalid request.  I accidentally tried to do a <c:import> from closeDialogRefreshPane.jsp to the view '/calendarsNavView' instead of to my controller called '/calendarsNav':
+DEBUG [http-80-Processor24] (DispatcherServlet:doService) - DispatcherServlet with name 'spring' received request for [/scoreboard/common/closeDialogRefreshPane.jsp]
+DEBUG [http-80-Processor24] (DispatcherServlet:doService) - Taking snapshot of request attributes before include
+DEBUG [http-80-Processor24] (DispatcherServlet:doDispatch) - Bound request context to thread: org.apache.catalina.core.ApplicationHttpRequest@1a34544
+DEBUG [http-80-Processor24] (DispatcherServlet:getHandler) - Testing handler map [org.springframework.web.servlet.handler.BeanNameUrlHandlerMapping@16a346a] in DispatcherServlet with name 'spring'
+DEBUG [http-80-Processor24] (BeanNameUrlHandlerMapping:getHandlerInternal) - Looking up handler for [/calendarsNavView]
+ WARN [http-80-Processor24] (PageNotFound:noHandlerFound) - No mapping for [/scoreboard/common/closeDialogRefreshPane.jsp] in DispatcherServlet with name 'spring'
+As you can see, the the PageNotFound logger says /common/closeDialogRefreshPane could not be found, when in fact it was already found and dispatched to, at which point an invalid <c:import> call is what's actually screwing things up.

@@ -1,0 +1,21 @@
+On disk txn sync could cause data inconsistency if the current leader just had a snap sync before it became leader, and then having diff sync with its followers may synced the txns gap on disk. Here is scenario: 
+
+Let's say S0 - S3 are followers, and S4 is leader at the beginning:
+
+1. Stop S2 and send one more request
+2. Stop S3 and send more requests to the quorum to let S3 have a snap sync with S4 when it started up
+3. Stop S4 and S3 became the new leader
+4. Start S2 and had a diff sync with S3, now there are gaps in S2
+
+Attached the test case to verify the issue. Currently, there is no efficient way to check the gap in txn files is a real gap or due to Epoch change. We need to add that support, but before that, it would be safer to disable the on disk txn leader-follower sync.
+
+Another two scenarios which could cause the same issue:
+
+(Scenario 1) Server A, B, C, A is leader, the others are followers:
+
+  1). A synced to disk, but the other 2 restarted before receiving the proposal
+  2). B and C formed quorum, B is leader, and committed some requests
+  3). A looking again, and sync with B, B won't able to trunc A but send snap instead, and leaves the extra txn in A's txn file
+  4). A became new leader, and someone else has a diff sync with A it will have the extra txn 
+
+(Scenario 2) Diff sync with committed txn, will only apply to data tree but not on disk txn file, which will also leave hole in it and lead to data inconsistency issue when syncing with learners.

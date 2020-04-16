@@ -1,0 +1,59 @@
+Hi,
+I am encountering a performance problem in ListOrderedMap.remove().
+It appears in version 3.2.1 and also in revision 1365132.  I attached
+a test that exposes this problem and a simple patch that fixes it.  On
+my machine, for this test, the patch provides a 213X speedup.
+To run the test, just do:
+$ java Test
+The output for the un-patched version is:
+Time is 1497
+The output for the patched version is:
+Time is 7
+The patch changes the "ListOrderedMap.remove(Object key)" code from:
+
+
+Object result = getMap().remove(key);
+insertOrder.remove(key);
+
+
+to:
+
+
+if (decorated().containsKey(key)) {
+    result = decorated().remove(key);
+    insertOrder.remove(key);
+}
+
+
+If "decorated()" does not contain the key, there is no need to remove
+it.  This change significantly speeds up the code by avoiding the call
+to "insertOrder.remove(key)", which is very expensive because
+"insertOrder" is an ArrayList, and removing from an ArrayList is a
+linear time operation.
+It may appear that the check "if (decorated().containsKey(key))" may
+slow down the code when "decorated()" contains the key, because it
+adds a new operation "decorated().containsKey(key)", without avoiding
+the calls to "getMap().remove(key)" and "insertOrder.remove(key)".
+I attached a test, TestWorstCase.java, that show that, even when
+removing only existing keys (i.e., "decorated().containsKey(key)"
+always returns "true"), the patched version takes almost the same time
+as the un-patched version.
+To run TestWorstCase, just do:
+$ java TestWorstCase
+The output for the un-patched version for TestWorstCase is:
+Time is 96
+The output for the patched version for TestWorstCase is:
+Time is 97
+The reason why the patch does not slow down the code, even for this
+worst case, is because "decorated().containsKey(key)" is a
+"containsKey()" on a HashMap (very fast, constant time operation),
+whereas "insertOrder.remove(key);" is a "remove()" on an ArrayList
+(very slow, linear time operation).  So the time taken by
+"decorated().containsKey(key)" is negligible compared to the time
+taken by "insertOrder.remove(key);".  In other words, most of the time
+is spent inside "insertOrder.remove(key)", and performing one
+additional fast operation cannot be noticed.
+Is this truly a bug? If so, can you please confirm if the patch is
+correct?
+Thanks,
+Adrian

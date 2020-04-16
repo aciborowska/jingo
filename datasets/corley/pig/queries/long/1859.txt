@@ -1,0 +1,93 @@
+Posted this to the pig-users list, and another user indicated he had seen it too, so I thought I'd open a ticket. Adding as major because I can't workaround the projection issue even with numbered $n column names.
+
+I have a log file with events on pages, and the id of the event can be a users login or a users numeric id:
+
+2010-05-14,james
+2010-05-15,123
+2010-05-15,23
+2010-05-15,456
+2010-05-15,notjames
+
+So i want to join a set of users on either the login or user id.
+
+Here's my users:
+
+123,james,11
+234,notjames,11
+456,someoneelse,11
+
+
+So I thought I would be clever and load the user list, union it with itself to generate a relation where each user is represented twice, once by login, once by id:
+
+logins = FOREACH users GENERATE LOWER(login) as matching_id, user_id as actual_user_id; 
+user_ids = FOREACH users GENERATE user_id as matching_id, user_id as actual_user_id;
+user_id_or_login_lookup = UNION logins, user_ids;
+
+
+
+user_id_or_login_lookup: 
+{matching_id: chararray,actual_user_id: chararray}
+(123,123)
+(234,234)
+(456,456)
+(james,123)
+(notjames,234)
+(someoneelse,456)
+
+Then join on that, by the first column, and project that away, leaving just the event info and the numeric id.
+
+views_with_id = JOIN profile_views by viewed_user_id, user_id_or_login_lookup by matching_id;
+
+That is not working however. My joined relation looks like this (which is what I expect)
+
+views_with_id: 
+{profile_views::date: chararray,profile_views::viewed_user_id: chararray,user_id_or_login_lookup::matching_id: chararray,user_id_or_login_lookup::actual_user_id: chararray}
+
+(2010-05-15,123,123,123)
+(2010-05-15,456,456,456)
+(2010-05-14,james,james,123)
+(2010-05-15,notjames,notjames,234)
+
+But when I project as follows: views_with_id_projected = FOREACH views_with_id GENERATE date, viewed_user_id, user_id_or_login_lookup::actual_user_id;
+
+The result is not what I expect
+
+(2010-05-15,123,123)
+(2010-05-15,456,456)
+(2010-05-14,james,james)
+(2010-05-15,notjames,notjames)
+
+To be clear, I expect
+
+(2010-05-15,123,123)
+(2010-05-15,456,456)
+(2010-05-14,james,123)
+(2010-05-15,notjames,456)
+
+Here's my full pig script:
+
+users = LOAD 'patients-test.txt' USING PigStorage(',') AS (user_id:chararray, login:chararray, disease_id: chararray);
+profile_views = LOAD 'patient-views-test.txt' USING PigStorage(',') AS(date: chararray, viewed_user_id:chararray);
+
+dump users;
+dump profile_views;
+
+– build a relation so that users are present to join by login or user_id
+logins = FOREACH users GENERATE LOWER(login) as matching_id, user_id as actual_user_id; 
+user_ids = FOREACH users GENERATE user_id as matching_id, user_id as actual_user_id;
+user_id_or_login_lookup = UNION logins, user_ids;
+
+dump user_id_or_login_lookup;
+describe user_id_or_login_lookup;
+
+views_with_id = JOIN profile_views by viewed_user_id, user_id_or_login_lookup by matching_id;
+
+describe views_with_id;
+--STORE views_with_id into 'ep-views.txt';
+
+dump views_with_id;
+
+views_with_id_projected = FOREACH views_with_id GENERATE date, viewed_user_id, user_id_or_login_lookup::actual_user_id;
+
+
+dump views_with_id_projected;

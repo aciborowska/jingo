@@ -1,0 +1,133 @@
+BZip2CompressorInputStream always treats 0x177245385090 as EOF, but should treat this as EOS
+This error occurs mostly on large size files as sudden EOF somwere in the middle of the file.
+An example of data from archived file:
+$ cat fastq.ax.bz2 | od -t x1 | grep -A 1 '17 72 45'
+22711660 d0 ff b6 01 20 10 ff ff 17 72 45 38 50 90 2e ff
+22711700 b2 d3 42 5a 68 39 31 41 59 26 53 59 84 3c 41 75
+–
+24637020 c5 49 ff 19 80 49 20 7f ff 17 72 45 38 50 90 a4
+24637040 a8 ac bd 42 5a 68 39 31 41 59 26 53 59 0d 9a b4
+–
+40302720 ff b1 24 80 10 ff ff 17 72 45 38 50 90 24 cb c5
+40302740 90 42 5a 68 39 31 41 59 26 53 59 42 05 ae 5e 05
+.....
+Suggested solution:
+    private void initBlock() throws IOException {
+        char magic0 = bsGetUByte();
+        char magic1 = bsGetUByte();
+        char magic2 = bsGetUByte();
+        char magic3 = bsGetUByte();
+        char magic4 = bsGetUByte();
+        char magic5 = bsGetUByte();
+        if( magic0 == 0x17 && magic1 == 0x72 && magic2 == 0x45
+            && magic3 == 0x38 && magic4 == 0x50 && magic5 == 0x90 ) 
+        {
+        	if( complete() ) // end of file);
+
+{
+
+        		return;
+
+        	}
+ else
+        	{
+
+        		magic0 = bsGetUByte();
+
+                magic1 = bsGetUByte();
+
+                magic2 = bsGetUByte();
+
+                magic3 = bsGetUByte();
+
+                magic4 = bsGetUByte();
+
+                magic5 = bsGetUByte();
+
+        	}
+        } 
+        if (magic0 != 0x31 || // '1'
+                   magic1 != 0x41 || // 'A'
+                   magic2 != 0x59 || // 'Y'
+                   magic3 != 0x26 || // '&'
+                   magic4 != 0x53 || // 'S'
+                   magic5 != 0x59 // 'Y'
+                   ) 
+{
+
+            this.currentState = EOF;
+
+            throw new IOException("bad block header");
+
+        }
+ else {
+            this.storedBlockCRC = bsGetInt();
+            this.blockRandomised = bsR(1) == 1;
+            /**
+
+Allocate data here instead in constructor, so we do not allocate
+it if the input file is empty.
+             */
+            if (this.data == null) 
+{
+
+                this.data = new Data(this.blockSize100k);
+
+            }
+
+            // currBlockNo++;
+            getAndMoveToFrontDecode();
+            this.crc.initialiseCRC();
+            this.currentState = START_BLOCK_STATE;
+        }
+    }
+    private boolean 
+    complete() throws IOException 
+    { 
+    	boolean result = false;
+        this.storedCombinedCRC = bsGetInt();
+        try
+        {
+            if (in.available() == 0 ) 
+            {
+
+                throw new IOException( "EOF" );
+
+            }
+            checkMagicChar('B', "first");
+            checkMagicChar('Z', "second");
+            checkMagicChar('h', "third");
+            int blockSize = this.in.read();
+            if ((blockSize < '1') || (blockSize > '9')) 
+{
+
+                throw new IOException("Stream is not BZip2 formatted: illegal "
+
+                                      + "blocksize " + (char) blockSize);
+
+            }
+
+            this.blockSize100k = blockSize - '0';
+            this.bsLive = 0;
+            this.bsBuff = 0;
+        } catch( IOException e )
+        {
+
+        	this.currentState = EOF;
+
+        	
+
+        	result = true;
+
+        }
+
+        this.data = null;
+        if (this.storedCombinedCRC != this.computedCombinedCRC) 
+{
+
+            throw new IOException("BZip2 CRC error");
+
+        }
+        this.computedCombinedCRC = 0;    
+        return result;
+    }

@@ -1,0 +1,106 @@
+We propose to add network level resiliency to Zookeeper. The ideas that we have on the topic have been discussed on the mailing list and via a specification document that is located at https://docs.google.com/document/d/1iGVwxeHp57qogwfdodCh9b32P2_kOQaJZ2GDo7j36fI/edit?usp=sharing
+
+That document is copied to this issue which is being created to report the results of experimental implementations.
+Zookeeper Network Resilience
+Background
+
+Zookeeper is designed to help in building distributed systems. It provides a variety of operations for doing this and all of these operations have rather strict guarantees on semantics. Zookeeper itself is a distributed system made up of cluster containing a leader and a number of followers. The leader is designated in a process known as leader election in which a majority of all nodes in the cluster must agree on a leader. All subsequent operations are initiated by the leader and completed when a majority of nodes have confirmed the operation. Whenever an operation cannot be confirmed by a majority or whenever the leader goes missing for a time, a new leader election is conducted and normal operations proceed once a new leader is confirmed.
+
+ 
+
+The details of this are not important relative to this discussion. What is important is that the semantics of the operations conducted by a Zookeeper cluster and the semantics of how client processes communicate with the cluster depend only on the basic fact that messages sent over TCP connections will never appear out of order or missing. Central to the design of ZK is that a server to server network connection is used as long as it works to use it and a new connection is made when it appears that the old connection isn't working.
+
+ 
+
+As currently implemented, however, each member of a Zookeeper cluster can have only a single address as viewed from some other process. This means, absent network link bonding, that the loss of a single switch or a few network connections could completely stop the operations of a the Zookeeper cluster. It is the goal of this work to address this issue by allowing each server to listen on multiple network interfaces and to connect to other servers any of several addresses. The effect will be to allow servers to communicate over redundant network paths to improve resiliency to network failures without changing any core algorithms.
+Proposed Change
+
+Interestingly, the correct operations of a Zookeeper cluster do not depend on how a TCP connection was made. There is no reason at all not to advertise multiple addresses for members of a Zookeeper cluster. 
+
+ 
+
+Connections between members of a Zookeeper cluster and between a client and a cluster member are established by referencing a configuration file (for cluster members) that specifies the address of all of the nodes in a cluster or by using a connection string containing possible addresses of Zookeeper cluster members. As soon as a connection is made, any desired authentication or encryption layers are added and the connection is handed off to the client communications layer or the server to server logic. 
+
+This means that the only thing that actually needs to change to allow Zookeeper servers to be accessible on multiple networks is a change in the server configuration file format to allow the multiple addresses to be specified and to update the code that establishes the TCP connection to make use of these multiple addresses. No code changes are actually needed on the client since we can simply supply all possible server addresses. The client already has logic for selecting a server address at random and it doesn’t really matter if these addresses represent synonyms for the same server. All that matters is that some connection to a server is established.
+Configuration File Syntax Change
+
+The current Zookeeper syntax looks like this:
+
+ 
+
+tickTime=2000
+dataDir=/var/zookeeper
+clientPort=2181
+initLimit=5
+syncLimit=2
+server.1=zoo1:2888:3888
+server.2=zoo2:2888:3888
+server.3=zoo3:2888:3888
+
+ 
+
+The only lines that matter for this discussion are the last three. These specify the addresses for each of the servers that are part of the Zookeeper cluster as well as the port numbers used for the servers to talk to each other.
+
+ 
+
+I propose that the current syntax of these lines be augmented to allow a comma delimited list of addresses. For the current example, we might have this:
+
+ 
+
+server.1=zoo1-net1:2888:3888,zoo1-net2:2888:3888
+server.2=zoo2-net1:2888:3888,zoo2-net2:2888:3888
+server.3=zoo3-net1:2888:3888
+
+ 
+
+The first two servers are available via two different addresses, presumably on separate networks while the third server only has a single address. In practice, we would probably specify multiple addresses for all the servers, but that isn’t necessary for this proposal. There is work ongoing to improve and generalize the syntax for configuring Zookeeper clusters. As that work progresses, it will be necessary to figure out appropriate extensions to allow multiple addresses in the new and improved syntax. Nothing blocks the current proposal from being implemented in current form and adapted later for the new syntax.
+
+ 
+
+When a server tries to connect to another server, it would simply shuffle the available addresses at random and try to connect using successive addresses until a connection succeeds or all addresses have been tried. 
+
+ 
+
+The complete syntax for server lines in a Zookeeper configuration file in BNF is
+
+ 
+
+<server-line> ::= "server."<integer> "=" <address-spec>
+
+<address-spec> ::= <server-address>[<client-address>]
+
+<server-address> ::= <address>:<port1>:<port2>[:<role>]
+
+<client-address> ::= [;[<client address>:]<client port>
+
+ 
+
+After this change, the syntax would look like this:
+
+ 
+
+<server-line> ::= "server."<integer> "=" <address-list>
+
+<address-list> ::= <address-spec>[,<address-list>]
+
+<address-spec> ::= <server-address>[<client-address>]
+
+<server-address> ::= <address>:<port1>:<port2>[:<role>]
+
+<client-address> ::= [;[<client address>:]<client port>
+
+ 
+Dynamic Reconfiguration
+
+From version 3.5, Zookeeper has the ability to change the configuration of the cluster dynamically. This can involve the atomic change of any of the configuration parameters that are dynamically configurable. These include, notably for the purposes here, the addresses of the servers in the cluster. In order to simplify this, the configuration file post 3.5 is split into static configuration that cannot be changed on the fly and dynamic configuration that can be changed. When a new configuration is committed by the cluster, the dynamic configuration file is simply over-written and used.
+
+ 
+
+This means that extending the configuration file syntax to support multiple addresses is sufficient to support dynamic reconfiguration.
+Client Connections
+
+When client connections are initially made, the client library is given a list of servers to contact. Servers are selected at random until a connection is made or the patience of the library implementers is exhausted. This requires no changes to support multiple network links per server except insofar that servers with more network connections will wind up with more client connections unless some action is taken. What will be done is to find the server with the most addresses and add duplicates of some address for every other server until every server is mentioned the same number of times. For cases where all servers have identical numbers of network connections, this will cause no change. It is expected that this will only arise in normal situations as a transient condition while a cluster is being reconfigured or if some servers are added to a cluster temporarily during maintenance operations. 
+
+ 
+
+More interesting is the fact that when a connection is made to a Zookeeper cluster, the server responds with a list of the servers in the cluster. We will need to arrange that the list contains all available address in the Zookeeper cluster, but will not need to make any other changes. As mentioned before, some addresses might be duplicated to make sure that all servers have equal probability of being selected by a server.

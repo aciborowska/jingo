@@ -1,0 +1,102 @@
+Take the following sample servlet:
+
+
+
+
+
+
+@Override
+
+
+
+
+protected void doGet(final HttpServletRequest req, final HttpServletResponse resp) throws ServletException, IOException {
+
+
+
+
+	req.startAsync();
+
+
+
+
+	new Thread("AsyncThread") {
+
+
+
+
+		@Override
+
+
+
+
+		public void run() {
+
+
+
+
+			try {
+
+
+
+
+				TimeUnit.SECONDS.sleep(1);
+
+
+
+
+				resp.getOutputStream().flush();
+
+
+
+
+			} catch (Exception e) {
+
+
+
+
+				e.printStackTrace();
+
+
+
+
+			}
+
+
+
+
+		}
+
+
+
+
+	}.start();
+
+
+
+
+}
+
+
+
+
+
+
+As you can see it does nothing except flushing after one second in a separate thread. However this servlet is secured by Spring Security so the resp.getOutputStream() stream is actually an instance of org.springframework.security.web.context.SaveContextOnUpdateOrErrorResponseWrapper.SaveContextServletOutputStream.
+This class calls org.springframework.security.web.context.HttpSessionSecurityContextRepository.SaveToSessionResponseWrapper.saveContext() on flush(). That's where the bug is  This method under certain conditions removes security context from session:
+
+
+
+
+
+
+httpSession.removeAttribute(springSecurityContextKey)
+
+
+
+
+
+
+This method was heavily rewritten lately (see: See SEC-776, SEC-1587 and SEC-1735) so I can't tell where the actually bug lies. All I see is that since it can't find security context in thread local holder (we are flushing from a different thread), it removes the context from the session as well. Basically asynchronous servlet logs me out from the application.
+I extracted the error and prepared sample, simplistic application exposing that bug (attached). I actually run into it when using Atmosphere Comet library together with Spring Security, but this application shows exact same error.
+Extract and call mvn tomcat7:run. Only one Java class, browse to localhost:8080, login using admin/admin and follow instructions to reproduce.

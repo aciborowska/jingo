@@ -1,0 +1,46 @@
+With newer ZK C Client (3.5.) and older ZK server(3.4.), recv_buffer() could potentially return 0 continuously on non-blocking socket.
+
+Following in the recv_buffer() snippet:-
+Here, should  the check be:
+if (buff == &zh->primer_buffer && buff->curr_offset + rc == buff->len + sizeof(buff->len)  - 1) ++rc;
+instead of
+if (buff == &zh->primer_buffer && rc == buff->len - 1) ++rc;
+
+snippet :-
+
+  if (buff->buffer) {
+        /* want off to now represent the offset into the buffer */
+        off = sizeof(buff>len);
+
+        rc = recv(zh->fd, buff->buffer+off, buff->len-off, 0);
+
+        /* dirty hack to make new client work against old server
+
+	old server sends 40 bytes to finish connection handshake,
+	while we're expecting 41 (1 byte for read-only mode data) */
+      if (buff == &zh->primer_buffer && rc == buff->len - 1) ++rc;  <====== Problem Line
+
+
+
+        switch(rc) {
+        case 0:
+            errno = EHOSTDOWN;
+        case -1:
+#ifdef _WIN32
+            if (WSAGetLastError() == WSAEWOULDBLOCK) {
+#else
+            if (errno == EAGAIN) 
+{
+#endif
+                break;
+            }
+            return -1;
+        default:
+            buff->curr_offset += rc;
+        }
+    }
+    return buff->curr_offset == buff->len + sizeof(buff->len);
+
+
+Probably the given code assumes that recv() operation will read in one go.
+But on non-blocking socket, that assumption doesn't hold true.

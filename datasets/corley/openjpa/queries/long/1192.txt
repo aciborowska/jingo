@@ -1,0 +1,158 @@
+There is a bug in OpenJPA is the implementation of  EntityManager.lock(READ).  
+
+First,  if users use JPA "out of the box" in WebSphere,  they might think that they are getting optimistic locking by default – but in fact they are not.  The reason is the default isolation level on a data source in Websphere is REPEATABLE READ.  This gives pessimistic, not optimistic locking.  Optimistic locking defines that locks are not held on data that is read by the application.
+
+A knowledgeable user can of course remember to change the isolation level on the datasource to READ COMMITTED and then s/he will get optimistic locking behavior. 
+
+However, if s/he uses the EntityManager.lock(READ) to get REPEATABLE READ on selected instances of entities, it does not work 100% correctly.
+
+During commit, the implementaiton of lock(READ) requires that the version id of the locked entity be re-read and verified that it is same value as the entity instance.  However this re-read MUST BE DONE WITH REPEATABLE READ isolation.  If not,  there is a window (small yes, but a window none the less) between the time of the re-read and the time of commit where another transaction could change the data.   lock(READ) must guarantee AT THE TIME OF COMMIT  that the entity still has the same verion id.   If the datasource is configured for READ COMMITTED isolation,  the sql executed by openJPA does not do this.
+
+Here is the test case that shows the error .  Thread 2 and thread 1 both start at about the same time.
+
+  Thread 2
+  ut.begin();
+         LockBean l = em.find(LockBean.class, 1);
+         LockBean2 l2 = em.find(LockBean2.class, 2);
+    em.lock(l, LockModeType.READ);
+    l2.setName(l2.getName()+"U");
+    Thread.sleep(30000);  // thread 1 gets an X lock on l2.
+    ut.commit(); // reread l1 and update l2.  Since thread 1
+                // has an X lock on l2, this thread will block until thread 1 commits.
+
+                 Thread 1 
+  ut.begin();
+         LockBean l = em.find(LockBean.class, 1);
+         LockBean2 l2 = em.find(LockBean2.class, 2);
+    l2.setName(l2.getName()+"U");
+    em.flush();  // write l2 to database and get X lock on l2.
+    Thread.sleep(30000);
+    l.setName(l.getName()+"U");
+    ut.commit();
+
+
+This test requires that LockBean have a @Version column and LockBean2 not have a @Version column.
+
+The trace below shows how the 2 threads interleave to produce the problem.
+
+   thread 2 starts,  finds  lockbean 1,   getLock(READ) on lockbean 1
+
+00000015 SystemErr     R 4985  locktest  TRACE  [WebContainer : 2] 
+openjpa.jdbc.SQL - <t 1679582236, conn 185731858> 
+executing prepstmnt 192482169 
+
+SELECT t0.version, t0.name FROM LockBean t0 
+WHERE t0.id = ?  optimize for 1 row [params=(int) 1]
+
+  select is done with READ COMMITTED, no lock held on row.
+  lock bean 1, version = 8
+
+  thread 2 find lockbean 2,  updates lockbean 2 name.
+
+ 00000015 SystemErr     R 4985  locktest  TRACE  [WebContainer : 2] 
+openjpa.jdbc.SQL - <t 1679582236, conn 817574075> 
+executing prepstmnt 821899517 
+SELECT t0.name FROM LockBean2 t0 WHERE t0.id = ?  
+optimize for 1 row [params=(int) 2]
+
+  select is done with READ COMMITTED, no lock held on row.
+
+  thread 2 now pauses, while thread 1 processes.	thread 1 starts  finds lockBean 1
+
+	00000014 SystemErr     R 7922  locktest  TRACE  [WebContainer : 1] 
+	openjpa.jdbc.SQL - <t 1930851094, conn 1685283955> 
+	executing prepstmnt 1692034266 
+	SELECT t0.version, t0.name FROM LockBean t0 WHERE t0.id = ?  
+	optimize for 1 row [params=(int) 1]
+
+	select is done with READ COMMITTED, no lock held on row.
+
+
+	thread 1 finds lockbean 2
+
+	00000014 SystemErr     R 7922  locktest  TRACE  [WebContainer : 1] 
+	openjpa.jdbc.SQL - <t 1930851094, conn 139593810> 
+	executing prepstmnt 161024409 
+	SELECT t0.name FROM LockBean2 t0 WHERE t0.id = ?  
+	optimize for 1 row [params=(int) 2]
+
+	select is done with READ COMMITTED, no lock held on row.
+
+	thread 1 updates lockbean2 and flushes to database (not commit)
+
+	00000014 SystemErr     R 7922  locktest  TRACE  [WebContainer : 1] 
+	openjpa.jdbc.SQL - <t 1930851094, conn 755641610> 
+	executing prepstmnt 786444000 
+	UPDATE LockBean2 SET name = ? WHERE id = ? 
+	[params=(String) LockBeanTwoU, (int) 2]
+
+	    thread 1 now hold X lock on lockBean 2.
+
+
+
+
+   thread 2 starts commit.
+
+   this does a reread of lockbean 1 to verify version
+    because lockbean 1 was locked for READ.
+
+   this SHOULD get a READ lock on lockbean 1 (BUT DOES NOT because isolation level = READ COMMIT).
+
+
+ 00000015 SystemErr     R 35000  locktest  TRACE  [WebContainer : 2] 
+ openjpa.jdbc.SQL - <t 1679582236, conn 343151732> 
+ executing prepstmnt 385750782 
+ SELECT t0.version FROM LockBean t0 WHERE t0.id = ?  
+ [params=(int) 1]
+
+   version=8 is returned for lockbean 1.
+   this agrees with value read previously, commit contiue.
+
+
+	  thread 1 now pauses while thread 2 processes.
+   the update of lockbean 2 is blocked 
+   waiting for thread 1 (which is holding X lock
+   on lockbean2) to finish. 
+
+ 35000  locktest  TRACE  [WebContainer : 2] 
+ openjpa.jdbc.SQL - <t 1679582236, conn 343151732> 
+ executing prepstmnt 950876333 
+ UPDATE LockBean2 SET name = ? WHERE id = ? 
+ [params=(String) LockBeanTwoU, (int) 2]    	
+	 thread 1 updates lockbean 1 
+
+	 thread 1 start of commit.
+	  flush update of lockbean 1 
+
+
+	   37938  locktest  TRACE  [WebContainer : 1] 
+	openjpa.jdbc.SQL - <t 1930851094, conn 755641610> 
+	executing prepstmnt 1588813491 
+	UPDATE LockBean SET name = ?, version = ? 
+	WHERE id = ? AND version = ? [params=(String) LockBeanOneUUUUUUUU, 
+	 (int) 9, (int) 1, (int) 8] 
+
+
+    thread 2 is now unblocked and finished the update of lockbean 2
+   NOTE the elapsed time of the update from the trace due to the lock wait.
+
+ [2938 ms] spent
+
+	thread 1 commit complete.
+   thread 2 commit complete.
+
+
+    at the time of commit, the value of lockBean 1 was version = 9 (from the commit of thread 1)
+    but getLock READ must guarantee that version =8.
+
+   Optimistic Locking with Lock=READ has failed to guarantee repeatable read integrity.
+
+
+
+
+
+The problem can be fixed in DB2 either by changed the isolation level on the connection to READ COMMITTED before doing the re-read during the final commit phase  or by using the USE AND KEEP READ LOCKS on the select statement issued. 
+
+For other databases such as Oracle, Sybase, Informix, Derby, SQLServer, etc.  it would have to investigated whether this same problem exists ( I am not sure about Oracle)  and how it can be solved.  It may be necessary to use FOR UPDATE syntax on the re-read select sql in order to acquire AND HOLD some kind of lock unless the dbms supports syntax similar to DB2.  
+
+

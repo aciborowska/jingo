@@ -1,0 +1,142 @@
+Take the following query, which can be found in TestLogicalPlanBuilder.java method testQuery80();
+a = load 'input1' as (name, age, gpa);
+b = filter a by age < '20';");
+c = group b by (name,age);
+d = foreach c 
+{
+            cf = filter b by gpa < '3.0';
+            cp = cf.gpa;
+            cd = distinct cp;
+            co = order cd by gpa;
+            generate group, flatten(co);
+            }
+;
+
+The filter statement 'cf = filter b by gpa < '3.0'' is not accessible via the LogicalPlan::getPredecessor method. Here is the explan plan print out of the inner foreach plan:
+
+
+
+
+---SORT Test-Plan-Builder-17 Schema: 
+{gpa: bytearray}
+ Type: bag
+
+
+ 
+
+
+   Project Test-Plan-Builder-16 Projections: [0] Overloaded: false FieldSchema: gpa: bytearray cn: 2 Type: bytearray
+
+
+   Input: Distinct Test-Plan-Builder-1
+
+
+
+
+---Distinct Test-Plan-Builder-15 Schema: 
+{gpa: bytearray}
+ Type: bag
+
+
+
+
+---Project Test-Plan-Builder-14 Projections: [2] Overloaded: false FieldSchema: gpa: bytearray cn: 2 Type: bytearray
+            Input: Project Test-Plan-Builder-13 Projections:  [*]  Overloaded: false
+
+
+---Project Test-Plan-Builder-13 Projections:  [*]  Overloaded: false FieldSchema: cf: tuple(
+{name: bytearray,age: bytearray,gpa: bytearray}
+) Type: tuple
+                Input: Filter Test-Plan-Builder-12OPERATOR PROJECT SCHEMA 
+{name: bytearray,age: bytearray,gpa: bytearray}
+
+
+
+
+
+As you can see the filter is only accessible via the LOProject::getExpression() method. It is not showing up as an input operator. Focus on the projection immediately following the filter. If I remove this projection then I get a correct plan. For example, let the inner foreach plan be as follows:
+
+d = foreach c 
+{
+            cf = filter b by gpa < '3.0';
+            cd = distinct cf;
+            co = order cd by gpa;
+            generate group, flatten(co);
+            }
+;
+
+Then I get the following (correct) explan plan output.
+
+
+
+
+
+---SORT Test-Plan-Builder-15 Schema: 
+{name: bytearray,age: bytearray,gpa: bytearray}
+ Type: bag
+
+
+ 
+
+
+   Project Test-Plan-Builder-14 Projections: [2] Overloaded: false FieldSchema: gpa: bytearray cn: 2 Type: bytearray
+
+
+   Input: Distinct Test-Plan-Builder-1
+
+
+
+
+---Distinct Test-Plan-Builder-13 Schema: 
+{name: bytearray,age: bytearray,gpa: bytearray}
+ Type: bag
+
+
+
+
+---Filter Test-Plan-Builder-12 Schema: 
+{name: bytearray,age: bytearray,gpa: bytearray}
+ Type: bag
+
+
+ 
+
+
+   LesserThan Test-Plan-Builder-11 FieldSchema: null Type: Unknown
+
+
+ 
+
+
+ 
+---Project Test-Plan-Builder-9 Projections: [2] Overloaded: false FieldSchema:  Type: Unknown
+
+
+ 
+   Input: CoGroup Test-Plan-Builder-7
+
+
+ 
+
+
+ 
+---Const Test-Plan-Builder-10 FieldSchema: chararray Type: chararray
+
+
+
+
+---Project Test-Plan-Builder-8 Projections: [1] Overloaded: false FieldSchema: b: bag(
+{name: bytearray,age: bytearray,gpa: bytearray}
+) Type: bag
+                Input: CoGroup Test-Plan-Builder-7OPERATOR PROJECT SCHEMA 
+{name: bytearray,age: bytearray,gpa: bytearray}
+
+
+
+
+
+
+Alan said that the problem is we don't generate a foreach operator for the 'cp = cf.gpa' statement. Please let me know if this can be resolved.
+
+Thanks,
+Tyson

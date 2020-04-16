@@ -1,0 +1,74 @@
+I have implemented a custom PropertiesParser which allows me to use system property placeholders in propertyPrefix and propertySuffix.
+In my use case the propertyPrefix is defined as "${container.stage}.", where container.stage is a jvm option defined at container creation. The value is one of dev, test and prod.
+This works fine in Java DSL world (SCR bundle), but custom parser is ignored in Blueprint. Here is sample of my blueprint xml:
+
+
+
+ <cm:property-placeholder id="integration" persistent-id="org.apache.camel.sample.temp" placeholder-prefix="[[" placeholder-suffix="]]">
+
+    <cm:default-properties>
+
+        <cm:property name="example" value="this value is the default"/>
+
+        <cm:property name="dev.example" value="this value is used in development environment"/>
+
+        <cm:property name="test.example" value="this value is used in test environment"/>
+
+        <cm:property name="prod.example" value="this value is used in production environment"/>
+
+    </cm:default-properties>
+
+</cm:property-placeholder>
+
+
+
+<bean id="parser" class="org.apache.camel.sample.MyCustomPropertiesParser"/>
+
+
+
+<!-- Load properties for current container stage -->
+
+<bean id="properties" class="org.apache.camel.component.properties.PropertiesComponent">
+
+    <property name="propertiesParser" ref="parser"/>
+
+    <property name="propertyPrefix" value="${container.stage}."/>
+
+    <property name="fallbackToUnaugmentedProperty" value="true"/>
+
+    <property name="location" value="blueprint:integration,classpath:properties/temp.properties"/></bean>
+
+
+
+<camelContext id="temp" xmlns="http://camel.apache.org/schema/blueprint">
+
+    <route id="exampleRoute">
+
+        <from uri="timer:foo?period=5000"/>
+
+        <transform>
+
+            <simple>{{example}}</simple>
+
+        </transform>
+
+        <to uri="log:something"/>
+
+    </route>
+
+</camelContext>
+
+
+
+The reason it did not work was because by default, it uses blueprint property resolver (useBlueprintPropertyResolver="true") to bridge PropertiesComponent to blueprint in order to support looking up property placeholders from the Blueprint Property Placeholder Service. Then it always creates a BlueprintPropertiesParser object and set it to PropertiesComponent. 
+The customer Property Parser I created was only set into the BlueprintPropertiesParser object as a delegate Property Parser. Therefore, it was always the method parseUri() from the BlueprintPropertiesParser object got invoked. The same method from your custom parser was ignored. 
+For more detail, please take a look at org.apache.camel.blueprint.CamelContextFactoryBean.initPropertyPlaceholder() function.
+The only workaround is to add the attribute useBlueprintPropertyResolver="false" to <camelContext> element to disable default blueprint property resolver. However, I will have to change PropertiesComponent's "location" property to remove blueprint "blueprint:integration" from the comma separated value list:
+
+
+
+ <property name="location" value="classpath:properties/temp.properties"/> 
+
+
+
+Because once I set it to false, I will no longer be able to lookup from blueprint property service.

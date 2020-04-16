@@ -1,0 +1,22 @@
+Hello,
+
+When entities are retrieved from a class loaded dynamically (ie by a [new] ClassLoader), OpenJPA will trigger a memory leak that will prevent the JVM to GC the loaded classes.
+
+An simple example can be easily reproduced and is attached to the ticket. Further explanations are provided in the README.
+
+The main steps are the following:
+1) When a query comes, create a new ClassLoader (see ch.astorm.ejb.facade.EntryPointBean and ch.astorm.ejb.system.ClassLoaderManager)
+2) Load dynamically a new instance of a class in the ClassLoader of step (1). This class should not be included in the EJB (see ch.astorm.apis.SimpleProcessor).
+3) Invoke a method on it that will retrieve some data, using JPA (a getResultList) injecting the arguments directly in the query string (not using the Query.setParameter method).
+
+In the sample project provided, there are 8 queries asking for one instance of Person each. The class asked to do this job is ch.astorm.apis.SimpleProcessor which extends ch.astorm.ejb.system.AbstractProcessor (actually doing the job).
+One over two of thoses requests asks to reset the classloader (ie to drop all the current loaded classes and create a new one).
+
+After thoses requests, if one looks in a heap dump, he will see 4 instances of MyClassLoader (which is an internal class of ch.astorm.ejb.system.ClassLoaderManager). Of course there should be only one instance of the latter...
+What is surprisingly weird is that 3 of those instances have no GC root, meaning they should be collected but actually never will, even if the PermGen space is full.
+
+It looks like a bug in the JVM, but if the JPA implementation is changed to EclipseLink in the persistence.xml, then there is no more leak. That drives me to say that OpenJPA could make something the JVM doesn't like...
+
+The problem arises on Linux/Windows, Glassfish-3.1.2.2/Weblogic-12c, MySQL/Oracle.
+
+Thansk for your help !

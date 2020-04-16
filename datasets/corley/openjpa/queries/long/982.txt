@@ -1,0 +1,132 @@
+ I created a simple project with two persistent classes that extends from
+ the same abstract class (inheritance strategy='new-table').
+
+ ii) I run the enhancer and then the mapping tool (target db is oracle). The
+ schema is then created accordingly: a table called INSTANCEIMPL1 and a table
+ called INSTANCEIMPL2.
+
+ The column FIELDIMPL2 type in the table INSTANCEIMPL2 is CLOB.
+
+ In the MAPPING table, the field _fieldImpl2 corresponds to FIELDIMPL2 of
+ type CLOB:
+
+ <field name='_fieldImpl2'><column name='FIELDIMPL2' jdbc-type='clob'/>
+
+ So far all works as expected.
+
+ iii) Then I seeded the db with some dummy data and I tried to perform a
+ query as follow:
+
+ Query newQuery = pm.newQuery(AbstractInstance.class);
+
+ newQuery.execute();
+
+ iv) Here I got the following exception:
+
+ Exception in thread 'main' <1.0.0-SNAPSHOT-SNAPSHOT nonfatal store error>
+ kodo.jdo.DataStoreException: ORA-01790: expression must have same datatype
+ as corresponding expression
+
+ {prepstmnt 17824568 SELECT 0, t0.ID, t0.TYP, t0.VERSN, t0.STATUS,
+ t0.FIELDIMPL1, '' FROM INSTANCEIMPL1 t0 UNION ALL SELECT 1, t0.ID, t0.TYP,
+ t0.VERSN, t0.STATUS, '', t0.FIELDIMPL2 FROM INSTANCEIMPL2 t0 [reused=0]}
+ [code=1790, state=42000]
+
+ at
+ org.apache.openjpa.jdbc.sql.DBDictionary.newStoreException(DBDictionary.java:3
+ 784)
+
+ at org.apache.openjpa.jdbc.sql.SQLExceptions.getStore(SQLExceptions.java:97)
+
+  ...
+
+ This query fails because t0.FIELDIMPL2 is CLOB whereas '' (the last column
+ before 'FROM' in the first SELECT) is implicitly VARCHAR2.
+
+ As I'm querying the super class, the persistent layer needs to gather column
+ from its subclasses (which are mapped in their own tables). To do this, Kodo
+ (or openJPA under the hood) has to 'merge' the two tables through an sql
+ union. A constraint with unions is that the select on the left and the one
+ on the right must return the same number of column with compatible type.
+ Now, the field called FIELDIMPL1 (of type VARCHAR2) is only defined in
+ INSTANCEIMPL1. So the select statement on INSTANCEIMPL2 is filled with a
+ constant column ''. So far so good.
+
+ The problem is with FIELDIMPL1 (of type CLOB) which is combined with ''.
+ Matter of fact CLOB are objects and not strings.
+
+This works:
+
+ SELECT 0, t0.ID, t0.TYP, t0.VERSN, t0.STATUS, t0.FIELDIMPL1, TO_CLOB('')
+ FROM INSTANCEIMPL1 t0
+ UNION ALL
+ SELECT 1, t0.ID, t0.TYP, t0.VERSN, t0.STATUS, '', t0.FIELDIMPL2 FROM
+ INSTANCEIMPL2 t0
+
+
+   I suggest (and have tested) we supply the Oracle-specific conversion
+function, TO_CLOB(''). This requires the Oracle-specific subclass of
+DBDictionary to override this generic method to provide the Oracle SQL
+where necessary.
+   Attached are the two files changed and tested as I would recommend.
+These are at the 645589 revision, plus the fix.
+
+The diffs are:
+
+DBDictionary.java: (three private constants made protected
+                   so OracleDictionary can use them in the
+                   same way DBDictionary does)
+
+152c152
+<     private static final String ZERO_DATE_STR =
+—
+>     protected static final String ZERO_DATE_STR =
+154,155c154,155
+<     private static final String ZERO_TIME_STR = "'" + new Time(0) + "'";
+<     private static final String ZERO_TIMESTAMP_STR =
+—
+>     protected static final String ZERO_TIME_STR = "'" + new Time(0) + "'";
+>     protected static final String ZERO_TIMESTAMP_STR =
+
+OracleDictionary.java: (A straight copy of the DBDictionary method except
+                        for the CLOB case)
+1103a1104,1138
+>
+>     /**
+>      * Return a SQL string to act as a placeholder for the given column.
+>      */
+>     public String getPlaceholderValueString(Column col) {
+>         switch (col.getType()) 
+{
+>             case Types.BIGINT:
+>             case Types.BIT:
+>             case Types.INTEGER:
+>             case Types.NUMERIC:
+>             case Types.SMALLINT:
+>             case Types.TINYINT:
+>                 return "0";
+>             case Types.CHAR:
+>                 return (storeCharsAsNumbers) ? "0" : "' '";
+>             case Types.LONGVARCHAR:
+>             case Types.VARCHAR:
+>                 return "''";
+>             case Types.CLOB:
+>                 return "TO_CLOB('')";  // Oracle-specific
+>             case Types.DATE:
+>                 return ZERO_DATE_STR;
+>             case Types.DECIMAL:
+>             case Types.DOUBLE:
+>             case Types.FLOAT:
+>             case Types.REAL:
+>                 return "0.0";
+>             case Types.TIME:
+>                 return ZERO_TIME_STR;
+>             case Types.TIMESTAMP:
+>                 return ZERO_TIMESTAMP_STR;
+>             default:
+>                 return "NULL";
+>         }
+>     }
+
+Thanks,
+Joe

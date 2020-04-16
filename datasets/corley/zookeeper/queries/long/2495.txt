@@ -1,0 +1,28 @@
+ZooKeeper cluster completely stalls with no transactions making progress when a storage related error (such as ENOSPC, EDQUOT, EIO) is encountered by the current leader. 
+
+Surprisingly, the same errors in some circumstances cause the node to completely crash and therefore allowing other nodes in the cluster to become the leader and make progress with transactions. Interestingly, the same errors if encountered while initializing a new log file causes the current leader to go to weird state (but does not crash) where it thinks it is the leader (and so does not allow others to become the leader). *This causes the entire cluster to freeze. *
+
+Here is the stacktrace of the leader:
+
+------------------------------------------------
+
+2016-07-11 15:42:27,502 [myid:3] - INFO  [SyncThread:3:FileTxnLog@199] - Creating new log file: log.200000001
+2016-07-11 15:42:27,505 [myid:3] - ERROR [SyncThread:3:ZooKeeperCriticalThread@49] - Severe unrecoverable error, from thread : SyncThread:3
+java.io.IOException: Disk quota exceeded
+	at java.io.FileOutputStream.writeBytes(Native Method)
+	at java.io.FileOutputStream.write(FileOutputStream.java:345)
+	at java.io.BufferedOutputStream.flushBuffer(BufferedOutputStream.java:82)
+	at java.io.BufferedOutputStream.flush(BufferedOutputStream.java:140)
+	at org.apache.zookeeper.server.persistence.FileTxnLog.append(FileTxnLog.java:211)
+	at org.apache.zookeeper.server.persistence.FileTxnSnapLog.append(FileTxnSnapLog.java:314)
+	at org.apache.zookeeper.server.ZKDatabase.append(ZKDatabase.java:476)
+	at org.apache.zookeeper.server.SyncRequestProcessor.run(SyncRequestProcessor.java:140)
+
+------------------------------------------------
+
+From the trace and the code, it looks like the problem happens only when a new log file is initialized and only when there are errors in two cases:
+
+1. Error during the append of log header.
+2. Error during padding zero bytes to the end of the log.
+
+If similar errors happen when writing some other blocks of data, then the node just completely crashes allowing others to be elected as a new leader. These two blocks of the newly created log file are special as they take a different error recovery code path – the node does not completely crash but rather certain threads are killed but supposedly the quorum holding thread stays up thereby preventing others to become the new leader.  This causes the other nodes to think that there is no problem with the leader but the cluster just becomes unavailable for any subsequent operations such as read/write. 

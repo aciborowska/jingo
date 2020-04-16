@@ -1,0 +1,114 @@
+I use the sql endpoint against oracle, however the DefaultSqlPrepareStatementStrategy uses PreparedStatement.setObject to set all the named parameters. With most jdbc drives this works fine except for oracle. Oracle throws an ORA-17004 exception stating an invalid column type. 
+My route looks like this
+
+
+
+from("{{ktn.stkbal.in")
+
+                .routeId("KTN.StkBal")
+
+                .onCompletion().onCompleteOnly()
+
+                    .to("seda:generatestockbalancereport")
+
+                .end()
+
+                .setHeader("ts",constant(new Timestamp(new Date().getTime())))
+
+                .split().tokenizeXML("product","stockPicture").streaming()
+
+                    .setHeader("ean",xpath("/st:product/@ean").resultType(String.class).namespaces(KTNConstants.STOCK_NAMESPACES))
+
+                    .setHeader("available", xpath("/st:product/st:available").resultType(Integer.class).namespaces(KTNConstants.STOCK_NAMESPACES))
+
+                    .setHeader("blocked",xpath("/st:product/st:blocked").resultType(Integer.class).namespaces(KTNConstants.STOCK_NAMESPACES))
+
+                    .to("sql:insert into stockbalance(ean,available,blocked,picturets) values (:#ean,:#available,:#blocked,:#ts)?dataSourceRef=hybrisDataSource");
+
+
+
+And from our dear oracle i get
+
+
+
+23:34:20,821 | TRACE | 2/STKBAL/inbound | faultSqlPrepareStatementStrategy | 286 - org.apache.camel.camel-sql - 2.12.0.redhat-610379 | Prepared query: insert into stockbalance(ean,available,blocked,picturets) values (?,?,?,?)
+
+23:34:20,824 | TRACE | 2/STKBAL/inbound | faultSqlPrepareStatementStrategy | 286 - org.apache.camel.camel-sql - 2.12.0.redhat-610379 | Setting parameter #1 with value: 10000000000001
+
+23:34:20,825 | TRACE | 2/STKBAL/inbound | faultSqlPrepareStatementStrategy | 286 - org.apache.camel.camel-sql - 2.12.0.redhat-610379 | Setting parameter #2 with value: 2
+
+23:34:20,826 | TRACE | 2/STKBAL/inbound | faultSqlPrepareStatementStrategy | 286 - org.apache.camel.camel-sql - 2.12.0.redhat-610379 | Setting parameter #3 with value: 5
+
+23:34:20,828 | TRACE | 2/STKBAL/inbound | faultSqlPrepareStatementStrategy | 286 - org.apache.camel.camel-sql - 2.12.0.redhat-610379 | Setting parameter #4 with value: Wed Jul 30 23:33:18 CEST 2014
+
+23:34:20,831 | ERROR | 2/STKBAL/inbound | DefaultErrorHandler              | 142 - org.apache.camel.camel-core - 2.12.0.redhat-610379 | Failed delivery for (MessageId: ID-tst-esb-inno1-41429-1406755976005-6-7 on ExchangeId: ID-tst-esb-inno1-41429-1406755976005-6-9). Exha
+
+usted after delivery attempt: 1 caught: org.springframework.jdbc.UncategorizedSQLException: PreparedStatementCallback; uncategorized SQLException for SQL [insert into stockbalance(ean,available,blocked,picturets) values (?,?,?,?)]; SQL state [99999]; error code [17004];
+
+Invalid column type; nested exception is java.sql.SQLException: Invalid column type
+
+
+
+Message History
+
+---------------------------------------------------------------------------------------------------------------------------------------
+
+RouteId              ProcessorId          Processor                                                                        Elapsed (ms)
+
+[KTN.StkBal        ] [KTN.StkBal        ] [sftp://TSTKATOEN2341@<edited>/STKBAL/inbound?antExcl] [        21]
+
+[KTN.StkBal        ] [setHeader69       ] [setHeader[ean]                                                                ] [         2]
+
+[KTN.StkBal        ] [setHeader70       ] [setHeader[available]                                                          ] [         1]
+
+[KTN.StkBal        ] [setHeader71       ] [setHeader[blocked]                                                            ] [         1]
+
+[KTN.StkBal        ] [to107             ] [sql:insert into stockbalance(ean,available,blocked,picturets) values (:#ean,:#] [         9]
+
+
+
+Stacktrace
+
+---------------------------------------------------------------------------------------------------------------------------------------
+
+org.springframework.jdbc.UncategorizedSQLException: PreparedStatementCallback; uncategorized SQLException for SQL [insert into stockbalance(ean,available,blocked,picturets) values (?,?,?,?)]; SQL state [99999]; error code [17004]; Invalid column type; nested exception is
+
+ java.sql.SQLException: Invalid column type
+
+        at org.springframework.jdbc.support.AbstractFallbackSQLExceptionTranslator.translate(AbstractFallbackSQLExceptionTranslator.java:83)[285:org.apache.servicemix.bundles.spring-jdbc:3.2.8.RELEASE_1]
+
+        at org.springframework.jdbc.support.AbstractFallbackSQLExceptionTranslator.translate(AbstractFallbackSQLExceptionTranslator.java:80)[285:org.apache.servicemix.bundles.spring-jdbc:3.2.8.RELEASE_1]
+
+        at org.springframework.jdbc.support.AbstractFallbackSQLExceptionTranslator.translate(AbstractFallbackSQLExceptionTranslator.java:80)[285:org.apache.servicemix.bundles.spring-jdbc:3.2.8.RELEASE_1]
+
+
+
+
+
+As workaround i extended the DefaultSqlPrepareStatementStrategy and override populateStatement. It leverages springs ArgumentPreparedStatementSetter to do the right thing.  
+
+
+
+    @Override
+
+    public void populateStatement(PreparedStatement ps, Iterator<?> iterator, int expectedParams) throws SQLException {
+
+        final Object[] args = new Object[expectedParams];
+
+        int i = 0 ;
+
+        while (iterator != null && iterator.hasNext()) {
+
+            args[i]=iterator.next();
+
+            i++;
+
+        }
+
+        final ArgumentPreparedStatementSetter setter = new ArgumentPreparedStatementSetter(args);
+
+        setter.setValues(ps);
+
+    }
+
+

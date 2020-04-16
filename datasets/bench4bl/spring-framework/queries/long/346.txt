@@ -1,0 +1,54 @@
+Hi, I think the nullSafeSet and nullSafeGet implementation in class org.springframework.orm.hibernate.support.BlobSerializableType does not handle the NULL value correctly.
+Right now the implementation doesn't set the BLOB column in table to NULL if the persist object is null. This makes it impossible to use HQL "IS NULL" to test the column in a query, because the column will always have something even when the object passed in is a null.
+I think the above 2 methods should be change to:
+	protected Object nullSafeGetInternal(
+		ResultSet rs,
+		int index,
+		LobHandler lobHandler)
+		throws SQLException, IOException
+	{
+		InputStream is = lobHandler.getBlobAsBinaryStream(rs, index);
+		if (is.available() <= 0)
+			return null;
+		ObjectInputStream ois = new ObjectInputStream(is);
+		try
+		{
+			return ois.readObject();
+		}
+		catch (ClassNotFoundException ex)
+		{
+			throw new IOException(
+				"Could not deserialize BLOB contents: " + ex.getMessage());
+		}
+		finally
+		{
+			ois.close();
+		}
+	}
+	protected void nullSafeSetInternal(
+		PreparedStatement ps,
+		int index,
+		Object value,
+		LobCreator lobCreator)
+		throws SQLException, IOException
+	{
+		if (value == null)
+		{
+			lobCreator.setBlobAsBytes(ps, index, null);
+		}
+		else
+		{
+			ByteArrayOutputStream baos = new ByteArrayOutputStream();
+			ObjectOutputStream oos = new ObjectOutputStream(baos);
+			try
+			{
+				oos.writeObject(value);
+				oos.flush();
+				lobCreator.setBlobAsBytes(ps, index, baos.toByteArray());
+			}
+			finally
+			{
+				oos.close();
+			}
+		}
+	}

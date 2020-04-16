@@ -1,0 +1,117 @@
+Trying to execute management requests against a managed domain server that is unresponsive due to OOME results in threads on the HC in stuck permanently in a state like this:
+
+
+
+
+
+
+"Host Controller Service Threads - 48" #91 prio=5 os_prio=31 tid=0x00007fbbf0039800 nid=0x3d33 in Object.wait() [0x0000700003c42000]
+
+
+
+
+   java.lang.Thread.State: WAITING (on object monitor)
+
+
+
+
+	at java.lang.Object.wait(Native Method)
+
+
+
+
+	- waiting on <0x00000007b64842d0> (a org.jboss.as.protocol.mgmt.ActiveOperationImpl)
+
+
+
+
+	at java.lang.Object.wait(Object.java:502)
+
+
+
+
+	at org.jboss.threads.AsyncFutureTask.awaitUninterruptibly(AsyncFutureTask.java:221)
+
+
+
+
+	- locked <0x00000007b64842d0> (a org.jboss.as.protocol.mgmt.ActiveOperationImpl)
+
+
+
+
+	at org.jboss.as.controller.client.impl.BasicDelegatingAsyncFuture.awaitUninterruptibly(BasicDelegatingAsyncFuture.java:57)
+
+
+
+
+	at org.jboss.as.controller.client.impl.AbstractDelegatingAsyncFuture.awaitUninterruptibly(AbstractDelegatingAsyncFuture.java:35)
+
+
+
+
+	at org.jboss.as.controller.client.impl.BasicDelegatingAsyncFuture.cancel(BasicDelegatingAsyncFuture.java:74)
+
+
+
+
+	at org.jboss.as.controller.client.impl.AbstractDelegatingAsyncFuture.cancel(AbstractDelegatingAsyncFuture.java:35)
+
+
+
+
+	at org.jboss.as.controller.remote.RemoteProxyController.execute(RemoteProxyController.java:173)
+
+
+
+
+	at org.jboss.as.controller.TransformingProxyController$Factory$TransformingProxyControllerImpl.execute(TransformingProxyController.java:203)
+
+
+
+
+	at org.jboss.as.controller.ProxyStepHandler.execute(ProxyStepHandler.java:170)
+
+
+
+
+
+
+
+The RemoteProxyController code looks like this:
+
+
+
+
+
+
+                long timeout = blockingTimeout.getProxyBlockingTimeout(targetAddress, this);
+
+
+
+
+                prepared = queue.poll(timeout, TimeUnit.MILLISECONDS);
+
+
+
+
+                if (prepared == null) {
+
+
+
+
+                    blockingTimeout.proxyTimeoutDetected(targetAddress);
+
+
+
+
+                    futureResult.cancel(true);
+
+
+
+
+
+
+
+The problem is that "cancel" call will block, uninterruptibly, until the remote process responds to the cancel message. Which it won't do, as it's all messed up from the OOME condition.
+Hopefully this can be simply fixed by converting that call to asyncCancel.

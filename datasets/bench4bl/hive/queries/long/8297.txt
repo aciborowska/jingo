@@ -1,0 +1,67 @@
+For the case:
+SELECT * FROM [table]
+JDBC direct reads the table backing data, versus cranking up a MR and creating a result set.  Where table format is RCFile or ORC, incorrect results are delivered by JDBC direct read for TIMESTAMP columns.  If you force a result set, correct data is returned.
+To reproduce using beeline:
+1) Create this file as follows in HDFS.
+$ cat > /tmp/ts.txt
+2014-09-28 00:00:00
+2014-09-29 00:00:00
+2014-09-30 00:00:00
+<ctrl-D>
+$ hadoop fs -copyFromLocal /tmp/ts.txt /tmp/ts.txt
+2) In beeline load above HDFS data to a TEXTFILE table, and verify ok:
+$ beeline
+> !connect jdbc:hive2://<host>:<port>/<db> hive pass org.apache.hive.jdbc.HiveDriver
+> drop table `TIMESTAMP_TEXT`;
+> CREATE TABLE `TIMESTAMP_TEXT` (`ts` TIMESTAMP) ROW FORMAT DELIMITED FIELDS TERMINATED BY '\001'
+LINES TERMINATED BY '\012' STORED AS TEXTFILE;
+> LOAD DATA INPATH '/tmp/ts.txt' OVERWRITE INTO TABLE
+`TIMESTAMP_TEXT`;
+> select * from `TIMESTAMP_TEXT`;
+3) In beeline create and load an RCFile from the TEXTFILE:
+> drop table `TIMESTAMP_RCFILE`;
+> CREATE TABLE `TIMESTAMP_RCFILE` (`ts` TIMESTAMP) stored as rcfile;
+> INSERT INTO TABLE `TIMESTAMP_RCFILE` SELECT * FROM `TIMESTAMP_TEXT`;
+4) Demonstrate incorrect direct JDBC read versus good read by inducing result set creation:
+> SELECT * FROM `TIMESTAMP_RCFILE`;
+------------------------
+
+
+  timestamp_rcfile.ts   
+
+
+------------------------
+
+
+ 2014-09-30 00:00:00.0  
+
+
+ 2014-09-30 00:00:00.0  
+
+
+ 2014-09-30 00:00:00.0  
+
+
+------------------------
+>  SELECT * FROM `TIMESTAMP_RCFILE` where ts is not NULL;
+------------------------
+
+
+  timestamp_rcfile.ts   
+
+
+------------------------
+
+
+ 2014-09-28 00:00:00.0  
+
+
+ 2014-09-29 00:00:00.0  
+
+
+ 2014-09-30 00:00:00.0  
+
+
+------------------------
+Note 1: The incorrect conduct demonstrated above replicates with a standalone Java/JDBC program.
+Note 2: Don't know if this is an issue with any other data types, also don't know what releases affected, however this occurs in Hive 13.  Direct JDBC read of TEXTFILE and SEQUENCEFILE work fine.  As above for RCFile and ORC wrong results are delivered, did not test any other file types.

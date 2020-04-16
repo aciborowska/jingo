@@ -1,0 +1,179 @@
+When using @Query in a JPA repository along with Pageable and attempting to sort on a field in a joined fetch entity, the from entity gets prepended to the sort field. Because the alias got a bad result. For example, if I do the following query:
+
+
+
+
+
+
+@Query(value = "SELECT DISTINCT user FROM User user LEFT JOIN FETCH user.authorities authority")
+
+
+
+
+
+
+
+ if I simply decide to sort by a field in the Authority entity with this PageRequest:
+
+
+
+
+
+
+new PageRequest(0, 10, Direction.DESC, "authority.name");
+
+
+
+
+
+
+
+The query run is:
+
+
+
+
+
+
+SELECT DISTINCT user FROM com.admtl.model.user.User user LEFT JOIN FETCH user.authorities authority  order by user.authority.name asc
+
+
+
+
+
+
+
+And I got :
+
+
+
+
+
+
+SEVERE: Servlet.service() for servlet [SpringWeb] in context with path [/path] threw exception [Request processing failed; nested exception is org.springframework.dao.InvalidDataAccessApiUsageException: org.hibernate.QueryException: could not resolve property: authority of: com.admtl.model.user.User [SELECT DISTINCT user FROM com.admtl.model.user.User user LEFT JOIN FETCH user.authorities authority  order by user.authority.name asc]; nested exception is java.lang.IllegalArgumentException: org.hibernate.QueryException: could not resolve property: authority of: com.admtl.model.user.User [SELECT DISTINCT user FROM com.admtl.model.user.User user LEFT JOIN FETCH user.authorities authority  order by user.authority.name asc]] with root cause
+
+
+
+
+
+
+
+Normal because authorities is property of User not authority
+But If I remove the FETCH
+
+
+
+
+
+
+@Query(value = "SELECT DISTINCT user FROM User user LEFT JOIN user.authorities authority")
+
+
+
+
+
+
+
+With the same PageRequest, my query run is:
+
+
+
+
+
+
+SELECT DISTINCT user FROM com.admtl.model.user.User user LEFT JOIN FETCH user.authorities authority  order by authority.name asc
+
+
+
+
+
+
+
+Perfect!
+I look a bit on the code of org.springframework.data.jpa.repository.query.QueryUtils
+for method getOuterJoinAliases
+
+
+
+
+
+
+    static Set<String> getOuterJoinAliases(String query) {
+
+
+
+
+ 
+
+
+
+
+		Set<String> result = new HashSet<String>();
+
+
+
+
+		Matcher matcher = JOIN_PATTERN.matcher(query);
+
+
+
+
+ 
+
+
+
+
+		while (matcher.find()) {
+
+
+
+
+ 
+
+
+
+
+			String alias = matcher.group(QUERY_JOIN_ALIAS_GROUP_INDEX);
+
+
+
+
+			if (StringUtils.hasText(alias)) {
+
+
+
+
+				result.add(alias);
+
+
+
+
+			}
+
+
+
+
+		}
+
+
+
+
+ 
+
+
+
+
+		return result;
+
+
+
+
+	}
+
+
+
+
+
+
+
+The FETCH put the mess with the QUERY_JOIN_ALIAS_GROUP_INDEX

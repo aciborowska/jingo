@@ -1,0 +1,322 @@
+We currently have a problem with the transitive ehcache dependency in the WidFly integration testsuite.
+The dependency comes from:
+
+
+
+
+
+
+[INFO] +- org.wildfly:wildfly-testsuite-shared:jar:10.0.0.Alpha6-SNAPSHOT:test
+
+
+
+
+...
+
+
+
+
+[INFO] |  +- org.apache.directory.server:apacheds-core-annotations:jar:2.0.0-M15:test
+
+
+
+
+[INFO] |  |  +- org.apache.directory.server:apacheds-core:jar:2.0.0-M15:test
+
+
+
+
+[INFO] |  |  |  +- org.apache.directory.server:apacheds-core-shared:jar:2.0.0-M15:test
+
+
+
+
+[INFO] |  |  |  +- org.apache.directory.server:apacheds-interceptors-admin:jar:2.0.0-M15:test
+
+
+
+
+[INFO] |  |  |  +- org.apache.directory.server:apacheds-interceptors-authn:jar:2.0.0-M15:test
+
+
+
+
+[INFO] |  |  |  +- org.apache.directory.server:apacheds-interceptors-authz:jar:2.0.0-M15:test
+
+
+
+
+[INFO] |  |  |  +- org.apache.directory.server:apacheds-interceptors-changelog:jar:2.0.0-M15:test
+
+
+
+
+[INFO] |  |  |  +- org.apache.directory.server:apacheds-interceptors-collective:jar:2.0.0-M15:test
+
+
+
+
+[INFO] |  |  |  +- org.apache.directory.server:apacheds-interceptors-event:jar:2.0.0-M15:test
+
+
+
+
+[INFO] |  |  |  +- org.apache.directory.server:apacheds-interceptors-exception:jar:2.0.0-M15:test
+
+
+
+
+[INFO] |  |  |  +- org.apache.directory.server:apacheds-interceptors-journal:jar:2.0.0-M15:test
+
+
+
+
+[INFO] |  |  |  +- org.apache.directory.server:apacheds-interceptors-normalization:jar:2.0.0-M15:test
+
+
+
+
+[INFO] |  |  |  +- org.apache.directory.server:apacheds-interceptors-operational:jar:2.0.0-M15:test
+
+
+
+
+[INFO] |  |  |  +- org.apache.directory.server:apacheds-interceptors-referral:jar:2.0.0-M15:test
+
+
+
+
+[INFO] |  |  |  +- org.apache.directory.server:apacheds-interceptors-schema:jar:2.0.0-M15:test
+
+
+
+
+[INFO] |  |  |  +- org.apache.directory.server:apacheds-interceptors-subtree:jar:2.0.0-M15:test
+
+
+
+
+[INFO] |  |  |  +- org.apache.directory.server:apacheds-interceptors-trigger:jar:2.0.0-M15:test
+
+
+
+
+[INFO] |  |  |  |  \- org.apache.directory.api:api-ldap-extras-trigger:jar:1.0.0-M20:test
+
+
+
+
+[INFO] |  |  |  +- org.apache.directory.api:api-ldap-extras-util:jar:1.0.0-M20:test
+
+
+
+
+[INFO] |  |  |  \- bouncycastle:bcprov-jdk15:jar:140:test
+
+
+
+
+[INFO] |  |  +- org.apache.directory.server:apacheds-core-api:jar:2.0.0-M15:test
+
+
+
+
+[INFO] |  |  |  +- org.apache.directory.server:apacheds-core-constants:jar:2.0.0-M15:test
+
+
+
+
+[INFO] |  |  |  +- org.apache.directory.api:api-ldap-client-api:jar:1.0.0-M20:test
+
+
+
+
+[INFO] |  |  |  +- org.apache.directory.api:api-ldap-extras-aci:jar:1.0.0-M20:test
+
+
+
+
+[INFO] |  |  |  \- net.sf.ehcache:ehcache-core:jar:2.4.4:test
+
+
+
+
+...
+
+
+
+
+
+
+
+Now, the issue is that Apache CXF needs EHCache 2.7.1 or greater for WS-Security functionalites. Alternatively, it can properly work without EHCache, but in that case EHCache must not be available in the test classpath.
+I tried upgrading the ehcache dependency, but I could not find a version that actually works. Version 2.7.1 is not usable because it pulls a bunch of terracotta components that are not on the jboss maven repository.
+With more recent versions, instead, it looks like some ldap / login functionality do not work; the following tests fail:
+org.jboss.as.test.integration.security.loginmodules.LdapLoginModuleTestCase
+org.jboss.as.test.integration.security.loginmodules.LdapExtLikeAdvancedLdapLMTestCase
+org.jboss.as.test.integration.security.loginmodules.LdapExtLoginModuleTestCase
+org.jboss.as.test.integration.security.loginmodules.LdapExtPasswordCachingTestCase
+with an error message saying
+
+
+
+
+
+
+16:49:58,610 ERROR [org.jboss.as.arquillian.container.ServerSetupObserver] (main) Setup task failed during setup. Offending class 'org.jboss.as.test.integration.security.loginmodules.LdapExtLDAPServerSetupTask@5871a482': net.sf.ehcache.CacheException: Another unnamed CacheManager already exists in the same VM. Please provide unique names for each CacheManager in the config or do one of following:
+
+
+
+
+1. Use one of the CacheManager.create() static factory methods to reuse same CacheManager with same name or create one if necessary
+
+
+
+
+2. Shutdown the earlier cacheManager before creating new one with same name.
+
+
+
+
+The source of the existing CacheManager is: [Programmatically configured]
+
+
+
+
+        at net.sf.ehcache.CacheManager.assertNoCacheManagerExistsWithSameName(CacheManager.java:628)
+
+
+
+
+        at net.sf.ehcache.CacheManager.init(CacheManager.java:392)
+
+
+
+
+        at net.sf.ehcache.CacheManager.<init>(CacheManager.java:270)
+
+
+
+
+        at org.jboss.as.test.integration.ldap.InMemoryDirectoryServiceFactory.init(InMemoryDirectoryServiceFactory.java:119)
+
+
+
+
+        at org.apache.directory.server.core.factory.DSAnnotationProcessor.createDS(DSAnnotationProcessor.java:87)
+
+
+
+
+        at org.apache.directory.server.core.factory.DSAnnotationProcessor.getDirectoryService(DSAnnotationProcessor.java:318)
+
+
+
+
+        at org.jboss.as.test.integration.security.loginmodules.LdapExtLDAPServerSetupTask.createLdap2(LdapExtLDAPServerSetupTask.java:238)
+
+
+
+
+        at org.jboss.as.test.integration.security.loginmodules.LdapExtLDAPServerSetupTask.setup(LdapExtLDAPServerSetupTask.java:125)
+
+
+
+
+        at org.jboss.as.arquillian.container.ServerSetupObserver.handleBeforeDeployment(ServerSetupObserver.java:116)
+
+
+
+
+        at sun.reflect.NativeMethodAccessorImpl.invoke0(Native Method)
+
+
+
+
+        at sun.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:62)
+
+
+
+
+        at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)
+
+
+
+
+        at java.lang.reflect.Method.invoke(Method.java:497)
+
+
+
+
+        at org.jboss.arquillian.core.impl.ObserverImpl.invoke(ObserverImpl.java:94)
+
+
+
+
+        at org.jboss.arquillian.core.impl.EventContextImpl.invokeObservers(EventContextImpl.java:99)
+
+
+
+
+        at org.jboss.arquillian.core.impl.EventContextImpl.proceed(EventContextImpl.java:81)
+
+
+
+
+        at org.jboss.arquillian.core.impl.ManagerImpl.fire(ManagerImpl.java:145)
+
+
+
+
+        at org.jboss.arquillian.core.impl.ManagerImpl.fire(ManagerImpl.java:116)
+
+
+
+
+        at org.jboss.arquillian.core.impl.EventImpl.fire(EventImpl.java:67)
+
+
+
+
+        at org.jboss.arquillian.container.impl.client.container.ContainerDeployController$3.call(ContainerDeployController.java:155)
+
+
+
+
+        at org.jboss.arquillian.container.impl.client.container.ContainerDeployController$3.call(ContainerDeployController.java:128)
+
+
+
+
+        at org.jboss.arquillian.container.impl.client.container.ContainerDeployController.executeOperation(ContainerDeployController.java:271)
+
+
+
+
+        at org.jboss.arquillian.container.impl.client.container.ContainerDeployController.deploy(ContainerDeployController.java:127)
+
+
+
+
+        at sun.reflect.NativeMethodAccessorImpl.invoke0(Native Method)
+
+
+
+
+        at sun.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:62)
+
+
+
+
+        at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)
+
+
+
+
+...
+
+
+
+
+
+

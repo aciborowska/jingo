@@ -1,0 +1,57 @@
+At the startup of bookie,   the bookie constructor would call setLastLogId() as this trace:
+	Bookie() -> InterleavedLedgerStorage() -> EntryLogger() -> Initialize() - >createNewLog() -> allocateNewLog() -> setLastLogId().  
+
+If "bw.write() and bw.flush()" in setLastLogId() failed, an IOException would throw and not catch, and cause Bookie constructor fail. 
+	
+	    private void setLastLogId(File dir, long logId) throws IOException {
+	        FileOutputStream fos;
+	        fos = new FileOutputStream(new File(dir, "lastId"));
+	        BufferedWriter bw = new BufferedWriter(new OutputStreamWriter(fos, UTF_8));
+	        try {     // < ==== original: if write fail in this try, IOException thrown but not catch, and cause bookie startup fail.
+	            bw.write(Long.toHexString(logId) + "\n");
+	            bw.flush();
+	        } finally {
+	            try {
+	                bw.close();
+	            } catch (IOException e) {
+	                LOG.error("Could not close lastId file in {}", dir.getPath());
+	            }
+	        }
+	    }
+	
+
+
+But failing setLastLogId() could be tolerated, and will not cause any problem in next time Bookie startup.  
+Next time, when calling EntryLogger constructor again, in getLastLogId(), if read ledgerDir.lastId fail, it will walk through all log files to get LastLogID; If reading an old ledgerDir.lastId, which caused by last failure of setLastLogId(), and it happened to be the largest logId, then allocateNewLog() will find the file already exist, and will allocate newlogfile with bigger ID.
+
+       BufferedLogChannel allocateNewLog() throws IOException {
+            List<File> list = ledgerDirsManager.getWritableLedgerDirs();
+            Collections.shuffle(list);
+            // It would better not to overwrite existing entry log files
+            File newLogFile = null;
+            do {
+                String logFileName = Long.toHexString(++preallocatedLogId) + ".log";
+                for (File dir : list) {
+                    newLogFile = new File(dir, logFileName);
+                    currentDir = dir;
+                    if (newLogFile.exists()) {  < === this will handle last set fail issue, in which LastId update fail, and get a wrong preallocatedLogId.
+                        LOG.warn("Found existed entry log " + newLogFile
+                               + " when trying to create it as a new log.");
+                        newLogFile = null;
+                        break;
+                    }
+                }
+            } while (newLogFile == null);
+
+            FileChannel channel = new RandomAccessFile(newLogFile, "rw").getChannel();
+            BufferedLogChannel logChannel = new BufferedLogChannel(channel,
+                    conf.getWriteBufferBytes(), conf.getReadBufferBytes(), preallocatedLogId);
+            logChannel.write((ByteBuffer) LOGFILE_HEADER.clear());
+
+            for (File f : list) {
+                setLastLogId(f, preallocatedLogId);
+            }
+            LOG.info("Preallocated entry logger {}.", preallocatedLogId);
+            return logChannel;
+        }
+

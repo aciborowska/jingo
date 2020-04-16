@@ -1,0 +1,79 @@
+Using SecurityMockMvcRequestPostProcessors like authentication(), securityContext(), testSecurityContext(), user(), etc. in unit tests might cause side effects on other tests in the same application context.
+SecurityMockMvcRequestPostProcessors.SecurityContextRequestPostProcessorSupport.save(SecurityContext, HttpServletRequest) calls WebTestUtils.setSecurityContextRepository(HttpServletRequest, SecurityContextRepository) to set a TestSecurityContextRepository in the SecurityContextPersistenceFilter registered in the application context. This dirties the context, because a registered bean (SecurityContextPersistenceFilter) is modified such that it causes side effects.
+Since the side effects are rather rare and seem to show up randomly, it took me a while to track down the issue.
+Here is an example of two unit tests where the first unit test influences the second:
+
+
+
+
+
+
+	@Test
+
+
+
+
+	@WithMockUser
+
+
+
+
+	public void test1() throws Exception {
+
+
+
+
+		mvc.perform(get("/"))//
+
+
+
+
+				.andExpect(authenticated().withRoles("USER"));
+
+
+
+
+	}
+
+
+
+
+	
+
+
+
+
+	// fails if executed after test1 in the same context
+
+
+
+
+	@Test
+
+
+
+
+	public void test2() throws Exception {
+
+
+
+
+		mvc.perform(get("/"))//
+
+
+
+
+			.andExpect(unauthenticated());
+
+
+
+
+	}
+
+
+
+
+
+
+
+If test2() is executed in its own application context it succeeds, since the default HttpSessionSecurityContexRepository used by the SecurityContextPersistenceFilter does not store anonymous authentication tokens. However, if test2() is executed after test1() in the same context it fails, because @WithMocUser caused the TestSecurityContextRepository to be registered which stores anonymous authentication tokens.

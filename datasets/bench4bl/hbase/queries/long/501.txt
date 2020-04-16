@@ -1,0 +1,52 @@
+Manufactured a region empty server address and a startcode of -1 when a regionserver was slow to open a region and the alternative regionserver that had been asked open the region fails and reports CLOSE to the master.
+Here's long version of story:
+Region is enwiki_080103,CzQ7UPCw-AoIn2JzSEN_pV==.  Was originally on XX.XX.XX.184:60020 but this node ran out of memory (though it had 2G).
+
+2008-03-08 00:29:39,472 INFO org.apache.hadoop.ipc.Server: IPC Server handler 0 on 60020, call batchUpdate(enwiki_071018,6q_ORe3mPzBTOnenVGS6zk==,1204860472398, 9223372036854775807, org.apache.hadoop.hbase.io.BatchUpdate@126d2380) from XX.XX.XX.233:54292: error: java.io.IOException: java.lang.OutOfMemoryError: Java heap space
+java.io.IOException: java.lang.OutOfMemoryError: Java heap space
+        at java.lang.Object.clone(Native Method)
+        at java.lang.reflect.Method.getParameterTypes(Unknown Source)
+        at java.lang.Class.searchMethods(Unknown Source)
+        at java.lang.Class.getMethod0(Unknown Source)
+        at java.lang.Class.getMethod(Unknown Source)
+        at org.apache.hadoop.hbase.ipc.HbaseRPC$Server.call(HbaseRPC.java:408)
+        at org.apache.hadoop.ipc.Server$Handler.run(Server.java:910)
+2008-03-08 00:29:39,472 WARN org.apache.hadoop.ipc.Server: Out of Memory in server select
+java.lang.OutOfMemoryError: Java heap space
+        at java.util.HashMap.newKeyIterator(Unknown Source)
+        at java.util.HashMap$KeySet.iterator(Unknown Source)
+        at java.util.HashSet.iterator(Unknown Source)
+        at sun.nio.ch.SelectorImpl.processDeregisterQueue(Unknown Source)
+        at sun.nio.ch.PollSelectorImpl.doSelect(Unknown Source)
+        at sun.nio.ch.SelectorImpl.lockAndDoSelect(Unknown Source)
+        at sun.nio.ch.SelectorImpl.select(Unknown Source)
+        at sun.nio.ch.SelectorImpl.select(Unknown Source)
+        at org.apache.hadoop.ipc.Server$Listener.run(Server.java:323)
+2008-03-08 00:31:15,300 INFO org.apache.hadoop.ipc.Server: IPC Server handler 2 on 60020, call batchUpdate(enwiki_080103_meta,,1204867086244, 9223372036854775807, org.apache.hadoop.hbase.io.BatchUpdate@2d13981b) from XX.XX.XX.233:54810: error: java.io.IOException: java.lang.OutOfMemoryError: Java heap space
+java.io.IOException: java.lang.OutOfMemoryError: Java heap space
+        at java.lang.String.<init>(Unknown Source)
+        at java.lang.StringBuilder.toString(Unknown Source)
+        at org.apache.hadoop.hbase.ipc.HbaseRPC$Server.call(HbaseRPC.java:415)
+        at org.apache.hadoop.ipc.Server$Handler.run(Server.java:910)
+
+
+Was given to XX.XX.XX.227 at 00:36:20 but this server is crazy replaying a bunch of edits (Need to stop emitting edits in HStore – 496 removed outputting skipped edits).  It can't put the region up immediately.  Takes a long time. 
+Then given to XX.XX.XX.183 at 00:37:26. It fails to open with:
+
+2008-03-08 00:37:29,827 INFO org.apache.hadoop.hbase.HRegion: compaction completed on region enwiki_071018,AYtsfKtThdIJkVLUSKipA-==,1204860383810. Took 5sec
+2008-03-08 00:37:29,943 ERROR org.apache.hadoop.hbase.HRegionServer: error opening region enwiki_080103,CzQ7UPCw-AoIn2JzSEN_pV==,1204865434985
+org.apache.hadoop.ipc.RemoteException: java.io.IOException: Could not complete write to file /hbase/aa0-005-2.u.powerset.com/enwiki_080103/1578810967/page/mapfiles/5679937491167886060/data by DFSClient_-540201177
+        at org.apache.hadoop.dfs.NameNode.complete(NameNode.java:341)
+        at sun.reflect.GeneratedMethodAccessor19.invoke(Unknown Source)
+        at sun.reflect.DelegatingMethodAccessorImpl.invoke(Unknown Source)
+        at java.lang.reflect.Method.invoke(Unknown Source)
+...
+
+
+Sends a CLOSE to the master.
+Then 227 says its successfully opened region.
+Master says region server XX.XX.XX.227:60020 should not have opened region enwiki_080103,CzQ7UPCw-AoIn2JzSEN_pV==,1204865434985
+Now the server field in META is empty.
+
+ 59 2008-03-08 00:38:09,167 DEBUG org.apache.hadoop.hbase.HMaster: HMaster.metaScanner regioninfo: {regionname: enwiki_080103,CzQ7UPCw-AoIn2JzSEN_pV==,1204865434985, startKey: <CzQ7UPCw-AoIn2JzSEN_pV==>, endKey: <DUwzKe-niVjzlXs1SvrvVk==>, encodedName: 1578810967, offline: true, tableDesc: {name: enwiki_080103,         families: {anchor:={name: anchor, max versions: 3, compression: NONE, in memory: false, max length: 2147483647, bloom filter: none}, misc:={name: misc, max versions: 3, compression: NONE, in memory: false, max length: 2147483647, bloom filter: none}, page:={name: page, max versions: 3, compression: NONE, i        n memory: false, max length: 2147483647, bloom filter: none}, redirect:={name: redirect, max versions: 3, compression: NONE, in memory: false, max length: 2147483647, bloom filter: none}}}}, server: , startCode: -1
+

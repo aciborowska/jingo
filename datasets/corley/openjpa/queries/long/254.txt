@@ -1,0 +1,77 @@
+I have an entity that is mapped to two tables:
+@Entity(name="Dog2Table")
+@Table(name="DOG1TABLE")
+@SecondaryTable(name="DOG2TABLE",pkJoinColumns=
+{
+		@PrimaryKeyJoinColumn(name="DOG_STORE", referencedColumnName="datastoreid"),
+		@PrimaryKeyJoinColumn(name="DOG_ID", referencedColumnName="id2")}
+)
+
+@Id
+private int id2;
+@Id
+  private int datastoreid;
+private String name;
+ private float price;
+ @Column(table="DOG2TABLE")
+private boolean domestic;
+
+I experienced two issues in the bulk updates:
+(1)  If I only updated the name, the bulk updates worked. The sql statement was generated as: 
+UPDATE DOG1TABLE SET name = ? [params=(String) UpdateDog]
+However, when I try to query the updates back in a new transaction, the old dog names were returned (Dog1 and Dog2). I looked at the database, the names were updated with "UpdateDog" correclty. 
+
+Here is the bulk Update code:
+em.getTransaction().begin();
+Query updateqry = em.createQuery("Update Dog2Table d Set d.name = :dogname");  
+ updateqry.setParameter("dogname", "UpdateDog");
+int updates = updateqry.executeUpdate();
+em.getTransaction().commit();
+
+em.getTransaction().begin();
+  em.flush();
+   Query qryx = em.createQuery("select d from Dog2Table d where d.datastoreid=12"); // same result if I didn't use the wehre clause)
+    List resultx = qryx.getResultList();
+   for (int index = 0; index < resultx.size(); index++)
+	         {
+	             Dog2Table dog4 = (Dog2Table)resultx.get(index);
+	             System.out.println("Dog"+index+" name = " +dog4.getName());
+	         }
+ em.getTransaction().commit();
+
+If I created a new EntityManager to do the query, then it returned the "UpdateDog" names. I don't think this behavior is correct. I should be able to query the updated value in a new transaction. I looked at  the trace output, the select statement was executed in database, but somehow, the getResultList ()retrieved the old values – may be from the cache??. 
+
+3406  TestDog  TRACE  [main] openjpa.Query - Executing query: select d from Dog2Table d where d.datastoreid=12
+3406  TestDog  TRACE  [main] openjpa.jdbc.SQL - <t 1094861122, conn 246288046> executing prepstmnt 1041645078 SELECT t0.datastoreid, t0.id2, t1.domestic, t0.name, t0.price FROM DOG1TABLE t0 INNER JOIN DOG2TABLE t1 ON t0.datastoreid = t1.DOG_STORE AND t0.id2 = t1.DOG_ID WHERE (CAST(t0.datastoreid AS BIGINT) = CAST(? AS BIGINT))  [params=(long) 12]
+3422  TestDog  TRACE  [main] openjpa.jdbc.SQL - <t 1094861122, conn 246288046> [16 ms] spent
+
+(2) If I updated the name and domestic fields, then I got the sqlcode -204 because the sql statement was generated incorrectly. The bulk updates statements were:
+
+Query updateqry = em.createQuery("Update Dog2Table d Set d.name = :dogname, d.domestic=:dom");
+         updateqry.setParameter("dogname", "UpdateDog");
+         updateqry.setParameter("dom",true);
+         int updates = updateqry.executeUpdate();
+
+The sql statement was generated:
+3219  TestDog  TRACE  [main] openjpa.Query - Executing query: [Update Dog2Table d Set d.name = :dogname, d.domestic=:dom] with parameters: 
+{dogname=UpdateDog, dom=true}
+3234  TestDog  TRACE  [main] openjpa.jdbc.SQL - <t 1094861122, conn 1860202208> executing prepstmnt 1168917932 UPDATE DOG1TABLE SET domestic = ?, name = ? [params=(int) 1, (String) UpdateDog]
+3234  TestDog  TRACE  [main] openjpa.jdbc.SQL - <t 1094861122, conn 1860202208> [0 ms] spent
+
+Therefore, I got the sqlcode -204:
+Caused by: org.apache.openjpa.lib.jdbc.ReportingSQLException: DB2 SQL error: SQLCODE: -206, SQLSTATE: 42703, SQLERRMC: DOMESTIC 
+{prepstmnt 1168917932 UPDATE DOG1TABLE SET domestic = ?, name = ? [params=(int) 1, (String) UpdateDog]}
+ [code=-206, state=42703]
+	at org.apache.openjpa.lib.jdbc.LoggingConnectionDecorator.wrap(LoggingConnectionDecorator.java:191)
+
+Beacuse the domestic field was not on the DOG1TABLE, it was on the DOG2TABLE.
+
+I expected two SQL statements to be generated:
+UPDATE DOG1TABLE SET name = ? [params=(String) UpdateDog]
+UPDATE DOG2TABLE SET domestic = ? [params=(int) 1]
+
+
+
+
+
+

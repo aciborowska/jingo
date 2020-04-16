@@ -1,0 +1,39 @@
+Script below was working fine, but when i added the skewed join it began to give errors.
+ERROR: java.lang.Long cannot be cast to org.apache.pig.data.Tuple
+
+
+
+SET  mapred.job.queue.name marathon;
+SET pig.maxCombinedSplitSize 2147483648;
+SET default_parallel 500;
+
+dim_member_skill_final_opp_1 = LOAD '/user/username/SkillsDashboardUS/OPP-JOIN' USING LiAvroStorage();
+
+top_skills_1 = LOAD '/user/username/SkillsDashboardUS/Top_Skills_Only' using LiAvroStorage();
+
+----------------------------------------------------------------------------
+dim_member_skill_final_opp = GROUP dim_member_skill_final_opp_1 by (country_sk,skill);
+
+top_skills = GROUP top_skills_1 by (country_sk,skill);
+
+opp_country = JOIN dim_member_skill_final_opp BY (group), top_skills BY (group) using 'skewed';
+
+opp_country_generate = FOREACH opp_country GENERATE
+FLATTEN(top_skills::group) as (country_sk,skill),
+FLATTEN(top_skills::top_skills_1) as (country_sk2,title_sk,skill2,sum_of_members),
+FLATTEN(dim_member_skill_final_opp::dim_member_skill_final_opp_1) as (member_sk,country_sk1,skill1);
+
+opp_generate = FOREACH opp_country_generate GENERATE
+country_sk,
+title_sk,
+member_sk;
+
+opp_distinct = DISTINCT opp_generate;
+
+opp_grouping = GROUP opp_distinct BY (country_sk,title_sk);
+
+opp_count = FOREACH opp_grouping GENERATE
+FLATTEN(group) AS (country_sk,title_sk),
+COUNT(opp_distinct) AS sum_of_members;
+
+store opp_count into '/user/username/update/OPP-Index-US-skewed' using LiAvroStorage();

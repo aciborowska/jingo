@@ -1,0 +1,51 @@
+With reduce-side vectorization enabled, round UDF taking a decimal value and a negative argument fails. It passes when there is no reducer or when vectorization is turned off.
+Simulated with:
+create table decimal_tbl (dec decimal(10,0));
+Data: just one record, "101"
+Query: select dec, round(dec, -1) from decimal_tbl order by dec;
+This query fails with text and rcfile with IndexOutOfBoundsException in Decimal128.toFormalString(), but returns "101 101" with orc. When order by is removed, it returns "101 100" with orc and rc. When "order by dec" is replaced with "order by round(dec, -1) it fails with the same exception with orc too.
+Following is the exception thrown:
+Caused by: org.apache.hadoop.hive.ql.metadata.HiveException: Hive Runtime Error while processing vector batch (tag=0) [Error getting row data with exception java.lang.IndexOutOfBoundsException: start 0, end 3, s.length() 2
+	at java.lang.AbstractStringBuilder.append(AbstractStringBuilder.java:476)
+	at java.lang.StringBuilder.append(StringBuilder.java:191)
+	at org.apache.hadoop.hive.common.type.Decimal128.toFormalString(Decimal128.java:1858)
+	at org.apache.hadoop.hive.common.type.Decimal128.toBigDecimal(Decimal128.java:1733)
+	at org.apache.hadoop.hive.ql.exec.vector.expressions.VectorExpressionWriterFactory$1.writeValue(VectorExpressionWriterFactory.java:469)
+	at org.apache.hadoop.hive.ql.exec.vector.expressions.VectorExpressionWriterFactory$VectorExpressionWriterDecimal.writeValue(VectorExpressionWriterFactory.java:310)
+	at org.apache.hadoop.hive.ql.exec.vector.VectorizedRowBatch.toString(VectorizedRowBatch.java:159)
+	at org.apache.hadoop.hive.ql.exec.tez.ReduceRecordSource.processVectors(ReduceRecordSource.java:371)
+	at org.apache.hadoop.hive.ql.exec.tez.ReduceRecordSource.pushRecord(ReduceRecordSource.java:250)
+	at org.apache.hadoop.hive.ql.exec.tez.ReduceRecordProcessor.run(ReduceRecordProcessor.java:168)
+	at org.apache.hadoop.hive.ql.exec.tez.TezProcessor.initializeAndRunProcessor(TezProcessor.java:164)
+	at org.apache.hadoop.hive.ql.exec.tez.TezProcessor.run(TezProcessor.java:142)
+	at org.apache.tez.runtime.LogicalIOProcessorRuntimeTask.run(LogicalIOProcessorRuntimeTask.java:324)
+	at org.apache.tez.runtime.task.TezTaskRunner$TaskRunnerCallable$1.run(TezTaskRunner.java:176)
+	at org.apache.tez.runtime.task.TezTaskRunner$TaskRunnerCallable$1.run(TezTaskRunner.java:168)
+	at java.security.AccessController.doPrivileged(Native Method)
+	at javax.security.auth.Subject.doAs(Subject.java:415)
+	at org.apache.hadoop.security.UserGroupInformation.doAs(UserGroupInformation.java:1637)
+	at org.apache.tez.runtime.task.TezTaskRunner$TaskRunnerCallable.call(TezTaskRunner.java:168)
+	at org.apache.tez.runtime.task.TezTaskRunner$TaskRunnerCallable.call(TezTaskRunner.java:163)
+	at java.util.concurrent.FutureTask$Sync.innerRun(FutureTask.java:334)
+	at java.util.concurrent.FutureTask.run(FutureTask.java:166)
+	at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1145)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:615)
+	at java.lang.Thread.run(Thread.java:722)
+ ]
+	at org.apache.hadoop.hive.ql.exec.tez.ReduceRecordSource.processVectors(ReduceRecordSource.java:376)
+	at org.apache.hadoop.hive.ql.exec.tez.ReduceRecordSource.pushRecord(ReduceRecordSource.java:250)
+	... 16 more
+Caused by: java.lang.IndexOutOfBoundsException: start 0, end 3, s.length() 2
+	at java.lang.AbstractStringBuilder.append(AbstractStringBuilder.java:476)
+	at java.lang.StringBuilder.append(StringBuilder.java:191)
+	at org.apache.hadoop.hive.common.type.Decimal128.toFormalString(Decimal128.java:1858)
+	at org.apache.hadoop.hive.common.type.Decimal128.toBigDecimal(Decimal128.java:1733)
+	at org.apache.hadoop.hive.ql.exec.vector.expressions.VectorExpressionWriterFactory$1.writeValue(VectorExpressionWriterFactory.java:469)
+	at org.apache.hadoop.hive.ql.exec.vector.expressions.VectorExpressionWriterFactory$VectorExpressionWriterDecimal.writeValue(VectorExpressionWriterFactory.java:310)
+	at org.apache.hadoop.hive.ql.exec.vector.expressions.VectorExpressionWriterFactory$VectorExpressionWriterSetter.writeValue(VectorExpressionWriterFactory.java:1153)
+	at org.apache.hadoop.hive.ql.exec.vector.VectorFileSinkOperator.getRowObject(VectorFileSinkOperator.java:76)
+	at org.apache.hadoop.hive.ql.exec.vector.VectorFileSinkOperator.processOp(VectorFileSinkOperator.java:63)
+	at org.apache.hadoop.hive.ql.exec.Operator.forward(Operator.java:799)
+	at org.apache.hadoop.hive.ql.exec.vector.VectorSelectOperator.processOp(VectorSelectOperator.java:139)
+	at org.apache.hadoop.hive.ql.exec.tez.ReduceRecordSource.processVectors(ReduceRecordSource.java:360)
+	... 17 more

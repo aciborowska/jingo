@@ -1,0 +1,42 @@
+HBASE-13082 changed the way that compacted files are archived from being done inline on compaction completion to an async cleanup by the CompactedHFilesDischarger chore.  It looks like the changes to HStore to support this introduced a race condition in the compacted HFile archiving.
+In the following sequence, we can wind up with two separate threads trying to archive the same HFiles, causing a regionserver abort:
+
+compaction completes normally and the compacted files are added to compactedfiles in HStore's DefaultStoreFileManager
+threadA: CompactedHFilesDischargeHandler runs in a RS executor service, calling closeAndArchiveCompactedFiles()
+	
+obtains HStore readlock
+gets a copy of compactedfiles
+releases readlock
+
+
+threadB: calls HStore.close() as part of region close
+	
+obtains HStore writelock
+calls DefaultStoreFileManager.clearCompactedfiles(), getting a copy of same compactedfiles
+
+
+threadA: calls HStore.removeCompactedfiles(compactedfiles)
+	
+archives files in 
+{compactedfiles}
+ in HRegionFileSystem.removeStoreFiles()
+call HStore.clearCompactedFiles()
+waits on write lock
+
+
+threadB: continues with close()
+	
+calls removeCompactedfiles(compactedfiles)
+calls HRegionFIleSystem.removeStoreFiles() -> HFileArchiver.archiveStoreFiles()
+receives FileNotFoundException because the files have already been archived by threadA
+throws IOException
+
+
+RS aborts
+
+I think the combination of fetching the compactedfiles list and removing the files needs to be covered by locking.  Options I see are:
+
+Modify HStore.closeAndArchiveCompactedFiles(): use writelock instead of readlock and move the call to removeCompactedfiles() inside the lock.  This means the read operations will be blocked while the files are being archived, which is bad.
+Synchronize closeAndArchiveCompactedFiles() and modify close() to call it instead of calling removeCompactedfiles() directly
+Add a separate lock for compacted files removal and use in closeAndArchiveCompactedFiles() and close()
+

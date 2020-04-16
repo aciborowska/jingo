@@ -1,0 +1,74 @@
+Today when i play with the REST interface and found the column POST/PUT/GET has a problem.
+When i use the hbase shell to check the data, i found the row name has the padding zero.
+The cause is that TableHandler use Text class to encode the string to the UTF-8. But CharSetEncoder
+will pre-allocate more spaces then the length of String for performance. So we get the padding zero
+when inserting the value to the table.  The fix is to get the String instead of the byte[] for the BatchUpdate.
+Below is the patch.  Also, the patch includes fixing the wrong use of (bytes[]).toString() using Bytes.toString(byte[])
+Index: src/java/org/apache/hadoop/hbase/rest/TableHandler.java
+===================================================================
+— src/java/org/apache/hadoop/hbase/rest/TableHandler.java    (revision 678664)
++++ src/java/org/apache/hadoop/hbase/rest/TableHandler.java    (working copy)
+@@ -174,7 +174,7 @@
+         // copy over those cells with requested column names
+         for(byte [] current_column: columns_retrieved) {
+
+if(requested_columns_set.contains(current_column.toString()))
+Unknown macro: {+          if(requested_columns_set.contains(Bytes.toString(current_column))){
+             m.put(current_column, prefiltered_result.get(current_column));           
+           }         } 
+@@ -295,7 +295,7 @@
+
+     try{
+       // start an update
+
+Text key = new Text(row);
++      String key = new Text(row).toString();
+       batchUpdate = timestamp == null ?
+         new BatchUpdate(key) : new BatchUpdate(key, Long.parseLong(timestamp));
+
+@@ -308,7 +308,7 @@
+         // extract the name and value children
+         Node name_node = column.getElementsByTagName("name").item(0);
+
+Text name = new Text(name_node.getFirstChild().getNodeValue());
++        String name = new Text(name_node.getFirstChild().getNodeValue()).toString();
+
+         Node value_node = column.getElementsByTagName("value").item(0);
+@@ -356,7 +356,7 @@
+           XMLOutputter outputter = getXMLOutputter(response.getWriter());
+           outputter.startTag("regions");
+           for (int i = 0; i < startKeys.length; i++) 
+{
+-            doElement(outputter, "region", startKeys[i].toString());
++            doElement(outputter, "region", Bytes.toString(startKeys[i]));
+           }
+           outputter.endTag();
+           outputter.endDocument();
+@@ -368,7 +368,7 @@
+           PrintWriter out = response.getWriter();
+           for (int i = 0; i < startKeys.length; i++) 
+{
+             // TODO: Add in the server location.  Is it needed?
+-            out.print(startKeys[i].toString());
++            out.print(Bytes.toString(startKeys[i]));
+           }
+           out.close();
+         break;
+@@ -454,7 +454,7 @@
+     // pull the row key out of the path
+     String row = URLDecoder.decode(pathSegments[2], HConstants.UTF8_ENCODING);
+
+Text key = new Text(row);
++    String key = new Text(row).toString();
+
+     String[] columns = request.getParameterValues(COLUMN);
+@@ -472,7 +472,7 @@
+       } else{
+         // delete each column in turn     
+         for(int i = 0; i < columns.length; i++)
+{
+-          table.deleteAll(key, new Text(columns[i]));
++          table.deleteAll(key, new Text(columns[i]).toString());
+         }
+       }
+       response.setStatus(202);

@@ -1,0 +1,97 @@
+Not sure if it is just me, but using MR over HBase employing a TableReducer is not working. After the first row is read all subsequent rows get the same Result's of that very first row. After tracing this from the Map phase I found the culprit in Result and the HBASE-1765 delayed field parsing change.
+This is the code I use in the reduce():
+
+
+
+   @Override
+
+    protected void reduce(ImmutableBytesWritable key, Iterable<Result> values,
+
+        Context context) throws IOException, InterruptedException {
+
+      String skey = Bytes.toString(key.get());
+
+      context.getCounter(CountersTotals.ROWS).increment(1);
+
+      for (Result result : values) {
+
+        for (KeyValue kv: result.list()) {
+
+          try {
+
+            if (LOG.isDebugEnabled()) LOG.debug("reduce: key -> " + skey + ", kv -> " + kv);
+
+            ...
+
+
+
+Here is the current list() implementation:
+
+
+
+  public List<KeyValue> list() {
+
+    if(this.kvs == null) {
+
+      readFields();
+
+    }
+
+    return isEmpty()? null: Arrays.asList(sorted());
+
+  }
+
+
+
+The problem is that readFields(DataInput) does not clear kvs!
+
+
+
+  public void readFields(final DataInput in)
+
+  throws IOException {
+
+    familyMap = null;
+
+    row = null;
+
+    int totalBuffer = in.readInt();
+
+    if(totalBuffer == 0) {
+
+      bytes = null;
+
+      return;
+
+    }
+
+    byte [] raw = new byte[totalBuffer];
+
+    in.readFully(raw, 0, totalBuffer);
+
+    bytes = new ImmutableBytesWritable(raw, 0, totalBuffer);
+
+  }
+
+
+
+The above is called by the MR framework's WritableSerialization for each map output. But since "kvs" is already set "list()" returns the old data!
+I assume the only change needed is clearing kvs as well:
+
+
+
+  public void readFields(final DataInput in)
+
+  throws IOException {
+
+    familyMap = null;
+
+    row = null;
+
+    kvs = null;
+
+    ....
+
+
+
+I'll test that now and report.

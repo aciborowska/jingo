@@ -1,0 +1,181 @@
+The below shown Stackoverflow Error occurs if following requirements are present:
+
+
+	Entities exists with attributes of native Java Types (int, long, double etc.) which are not a primary key or version
+	in 2.1.0: saving a greater amount of such entities (appr. 500 -1000) or
+	in 2.2.0: loading enties which have indirect references to it's own and are annotated as @Transactional (this only happend in an JTA Webpshere Environment); this might be a conceptional problem as well, but forces the error as well
+
+
+
+Workarounds:
+==========
+
+
+	for Version 2.1.0 the saving issue could be prevented by detaching the entity after flushing
+	for Version 2.2.0 the loading issue could be solved by patching the SaveFieldManager.isFieldEqual() method
+
+
+
+Reason:
+======
+
+Given this implementation in the SaveFieldManager:
+
+    public boolean isFieldEqual(int field, Object current) {
+        // if the field is not available, assume that it has changed.
+        if (_saved == null || !_saved.get(field)) 
+{
+            return false;
+        }
+        if (!(getState().pcGetStateManager() instanceof StateManagerImpl)) {            return false;        }
+
+        StateManagerImpl sm = (StateManagerImpl) getState().pcGetStateManager();
+        SingleFieldManager single = new SingleFieldManager(sm, sm.getBroker());
+        sm.provideField(getState(), single, field);
+        Object old = single.fetchObjectField(field);
+
+        return current == old || current != null && current.equals(old);
+    }
+
+
+... the sm.provideField() call publishes the field Java Type specific (see ReflectingPersistenceCapable) whereby the single.fetchObjectField() method only returns the object value of the field in the SingleFieldManager which only gets set during the provideField() call if the Java Class Typ ist String or any other than int, long, boolean etc.
+
+Therefore if you only have String attributes in your entity the isFieldEqual() method will work.
+
+Thus it is obvious that the compare for e.g. an int attribute field will never be equal, even if the old and current value are equal.
+
+The loop will start ...
+
+Patch:
+=====
+This is just an example and definately not at the right place, but it shows the main issue.
+
+    public boolean isFieldEqual(int field, Object current) {
+        // if the field is not available, assume that it has changed.
+        if (_saved == null || !_saved.get(field)) 
+{
+            return false;
+        }
+        if (!(getState().pcGetStateManager() instanceof StateManagerImpl)) {            return false;        }
+
+        StateManagerImpl sm = (StateManagerImpl) getState().pcGetStateManager();
+        SingleFieldManager single = new SingleFieldManager(sm, sm.getBroker());
+        sm.provideField(getState(), single, field);
+        // Object old = single.fetchObjectField(field);
+        Object old = fetchField(field, sm, single);
+
+        return current == old || current != null && current.equals(old);
+    }
+
+    public Object fetchField(int field, StateManagerImpl sm, SingleFieldManager single) {
+        ClassMetaData meta = sm.getMetaData();
+
+        switch (meta.getField(field).getDeclaredTypeCode()) 
+{
+        case JavaTypes.BOOLEAN:
+            return single.fetchBooleanField(field);
+        case JavaTypes.BYTE:
+            return single.fetchByteField(field);
+        case JavaTypes.CHAR:
+            return single.fetchCharField(field);
+        case JavaTypes.DOUBLE:
+            return single.fetchDoubleField(field);
+        case JavaTypes.FLOAT:
+            return single.fetchFloatField(field);
+        case JavaTypes.INT:
+            return single.fetchIntField(field);
+        case JavaTypes.LONG:
+            return single.fetchLongField(field);
+        case JavaTypes.SHORT:
+            return single.fetchShortField(field);
+        case JavaTypes.STRING:
+            return single.fetchObjectField(field);
+        default:
+            return single.fetchObjectField(field);
+        }
+    }
+
+
+Exception Trace (for the loading issue):
+============================
+
+Caused by: javax.transaction.RollbackException
+	at com.ibm.tx.jta.TransactionImpl.stage3CommitProcessing(TransactionImpl.java:1228)
+	at com.ibm.tx.jta.TransactionImpl.processCommit(TransactionImpl.java:998)
+	at com.ibm.tx.jta.TransactionImpl.commit(TransactionImpl.java:919)
+	at com.ibm.ws.tx.jta.TranManagerImpl.commit(TranManagerImpl.java:436)
+	at com.ibm.tx.jta.TranManagerSet.commit(TranManagerSet.java:161)
+	at com.ibm.ws.uow.UOWManagerImpl.uowCommit(UOWManagerImpl.java:1176)
+	at com.ibm.ws.uow.UOWManagerImpl.uowEnd(UOWManagerImpl.java:1146)
+	at com.ibm.ws.uow.UOWManagerImpl.runUnderNewUOW(UOWManagerImpl.java:1094)
+	... 15 more
+Caused by: java.lang.StackOverflowError
+	at org.apache.openjpa.lib.util.J2DoPrivHelper$7.run(J2DoPrivHelper.java:295)
+	at org.apache.openjpa.lib.util.J2DoPrivHelper$7.run(J2DoPrivHelper.java:293)
+	at java.security.AccessController.doPrivileged(AccessController.java:202)
+	at org.apache.openjpa.enhance.Reflection.getDeclaredField(Reflection.java:267)
+	at org.apache.openjpa.enhance.Reflection.findField(Reflection.java:246)
+	at org.apache.openjpa.enhance.com$XXX$YYYY$ZZZ$XXXf$jpa$entities$Person$pcsubclass.pcProvideField(Unknown Source)
+	at org.apache.openjpa.kernel.StateManagerImpl.provideField(StateManagerImpl.java:3163)
+	at org.apache.openjpa.kernel.StateManagerImpl.fetchIntField(StateManagerImpl.java:2348)
+	at org.apache.openjpa.kernel.StateManagerImpl.fetchField(StateManagerImpl.java:866)
+	at org.apache.openjpa.kernel.StateManagerImpl.fetch(StateManagerImpl.java:834)
+	at org.apache.openjpa.kernel.StateManagerImpl.dirtyCheck(StateManagerImpl.java:921)
+	at org.apache.openjpa.kernel.ManagedCache.dirtyCheck(ManagedCache.java:302)
+	at org.apache.openjpa.kernel.BrokerImpl.hasTransactionalObjects(BrokerImpl.java:4074)
+	at org.apache.openjpa.kernel.BrokerImpl.setDirty(BrokerImpl.java:4182)
+	at org.apache.openjpa.kernel.StateManagerImpl.setPCState(StateManagerImpl.java:285)
+	at org.apache.openjpa.kernel.StateManagerImpl.dirty(StateManagerImpl.java:1705)
+	at org.apache.openjpa.kernel.StateManagerImpl.dirty(StateManagerImpl.java:1635)
+	at org.apache.openjpa.kernel.StateManagerImpl.dirtyCheck(StateManagerImpl.java:922)
+	at org.apache.openjpa.kernel.ManagedCache.dirtyCheck(ManagedCache.java:302)
+	at org.apache.openjpa.kernel.BrokerImpl.hasTransactionalObjects(BrokerImpl.java:4074)
+	at org.apache.openjpa.kernel.BrokerImpl.setDirty(BrokerImpl.java:4182)
+	at org.apache.openjpa.kernel.StateManagerImpl.setPCState(StateManagerImpl.java:285)
+	at org.apache.openjpa.kernel.StateManagerImpl.dirty(StateManagerImpl.java:1705)
+	at org.apache.openjpa.kernel.StateManagerImpl.dirty(StateManagerImpl.java:1635)
+	at org.apache.openjpa.kernel.StateManagerImpl.dirtyCheck(StateManagerImpl.java:922)
+	at org.apache.openjpa.kernel.ManagedCache.dirtyCheck(ManagedCache.java:302)
+	at org.apache.openjpa.kernel.BrokerImpl.hasTransactionalObjects(BrokerImpl.java:4074)
+	at org.apache.openjpa.kernel.BrokerImpl.setDirty(BrokerImpl.java:4182)
+	at org.apache.openjpa.kernel.StateManagerImpl.setPCState(StateManagerImpl.java:285)
+	at org.apache.openjpa.kernel.StateManagerImpl.dirty(StateManagerImpl.java:1705)
+	at org.apache.openjpa.kernel.StateManagerImpl.dirty(StateManagerImpl.java:1635)
+	at org.apache.openjpa.kernel.StateManagerImpl.dirtyCheck(StateManagerImpl.java:922)
+	at org.apache.openjpa.kernel.ManagedCache.dirtyCheck(ManagedCache.java:302)
+	at org.apache.openjpa.kernel.BrokerImpl.hasTransactionalObjects(BrokerImpl.java:4074)
+	at org.apache.openjpa.kernel.BrokerImpl.setDirty(BrokerImpl.java:4182)
+	at org.apache.openjpa.kernel.StateManagerImpl.setPCState(StateManagerImpl.java:285)
+	at org.apache.openjpa.kernel.StateManagerImpl.dirty(StateManagerImpl.java:1705)
+	at org.apache.openjpa.kernel.StateManagerImpl.dirty(StateManagerImpl.java:1635)
+	at org.apache.openjpa.kernel.StateManagerImpl.dirtyCheck(StateManagerImpl.java:922)
+	at org.apache.openjpa.kernel.ManagedCache.dirtyCheck(ManagedCache.java:302)
+	at org.apache.openjpa.kernel.BrokerImpl.hasTransactionalObjects(BrokerImpl.java:4074)
+	at org.apache.openjpa.kernel.BrokerImpl.setDirty(BrokerImpl.java:4182)
+	at org.apache.openjpa.kernel.StateManagerImpl.setPCState(StateManagerImpl.java:285)
+	at org.apache.openjpa.kernel.StateManagerImpl.dirty(StateManagerImpl.java:1705)
+	at org.apache.openjpa.kernel.StateManagerImpl.dirty(StateManagerImpl.java:1635)
+	at org.apache.openjpa.kernel.StateManagerImpl.dirtyCheck(StateManagerImpl.java:922)
+	at org.apache.openjpa.kernel.ManagedCache.dirtyCheck(ManagedCache.java:302)
+	at org.apache.openjpa.kernel.BrokerImpl.hasTransactionalObjects(BrokerImpl.java:4074)
+	at org.apache.openjpa.kernel.BrokerImpl.setDirty(BrokerImpl.java:4182)
+	at org.apache.openjpa.kernel.StateManagerImpl.setPCState(StateManagerImpl.java:285)
+	at org.apache.openjpa.kernel.StateManagerImpl.dirty(StateManagerImpl.java:1705)
+	at org.apache.openjpa.kernel.StateManagerImpl.dirty(StateManagerImpl.java:1635)
+	at org.apache.openjpa.kernel.StateManagerImpl.dirtyCheck(StateManagerImpl.java:922)
+	at org.apache.openjpa.kernel.ManagedCache.dirtyCheck(ManagedCache.java:302)
+	at org.apache.openjpa.kernel.BrokerImpl.hasTransactionalObjects(BrokerImpl.java:4074) 
+...
+	at org.apache.openjpa.kernel.ManagedCache.dirtyCheck(ManagedCache.java:302)
+	at org.apache.openjpa.kernel.BrokerImpl.hasTransactionalObjects(BrokerImpl.java:4074)
+	at org.apache.openjpa.kernel.BrokerImpl.getTransactionalStates(BrokerImpl.java:4061)
+	at org.apache.openjpa.kernel.BrokerImpl.flush(BrokerImpl.java:2091)
+	at org.apache.openjpa.kernel.BrokerImpl.flushSafe(BrokerImpl.java:2072)
+	at org.apache.openjpa.kernel.BrokerImpl.beforeCompletion(BrokerImpl.java:1990)
+	at com.ibm.ws.uow.ComponentContextSynchronizationWrapper.beforeCompletion(ComponentContextSynchronizationWrapper.java:65)
+	at com.ibm.tx.jta.RegisteredSyncs.coreDistributeBefore(RegisteredSyncs.java:289)
+	at com.ibm.ws.tx.jta.RegisteredSyncs.distributeBefore(RegisteredSyncs.java:150)
+	at com.ibm.ws.tx.jta.TransactionImpl.prePrepare(TransactionImpl.java:2322)
+	at com.ibm.ws.tx.jta.TransactionImpl.stage1CommitProcessing(TransactionImpl.java:540)
+	at com.ibm.tx.jta.TransactionImpl.processCommit(TransactionImpl.java:985)
+	... 21 more 

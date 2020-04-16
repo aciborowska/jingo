@@ -1,0 +1,216 @@
+When ETL split strategy is applied to ACID tables with predicate pushdown (SARG enabled), split generation fails for ACID. This bug will be usually exposed when working with data at scale, because in most otherwise cases only BI split strategy is chosen. My guess is that this is happening because the correct readerSchema is not being picked up when we try to extract SARG column names.
+Quickest way to reproduce is to add the following unit test to ql/src/test/org/apache/hadoop/hive/ql/TestTxnCommands2.java
+ql/src/test/org/apache/hadoop/hive/ql/TestTxnCommands2.java
+
+
+ @Test
+
+  public void testETLSplitStrategyForACID() throws Exception {
+
+    hiveConf.setVar(HiveConf.ConfVars.HIVE_ORC_SPLIT_STRATEGY, "ETL");
+
+    hiveConf.setBoolVar(HiveConf.ConfVars.HIVEOPTINDEXFILTER, true);
+
+    runStatementOnDriver("insert into " + Table.ACIDTBL + " values(1,2)");
+
+    runStatementOnDriver("alter table " + Table.ACIDTBL + " compact 'MAJOR'");
+
+    runWorker(hiveConf);
+
+    List<String> rs = runStatementOnDriver("select * from " +  Table.ACIDTBL  + " where a = 1");
+
+    int[][] resultData = new int[][] {{1,2}};
+
+    Assert.assertEquals(stringifyValues(resultData), rs);
+
+  }
+
+
+
+Back-trace for this failed test is as follows:
+
+
+
+exec.Task: Job Submission failed with exception 'java.lang.RuntimeException(ORC split generation failed with exception: java.lang.NegativeArraySizeException)'
+
+java.lang.RuntimeException: ORC split generation failed with exception: java.lang.NegativeArraySizeException
+
+	at org.apache.hadoop.hive.ql.io.orc.OrcInputFormat.generateSplitsInfo(OrcInputFormat.java:1570)
+
+	at org.apache.hadoop.hive.ql.io.orc.OrcInputFormat.getSplits(OrcInputFormat.java:1656)
+
+	at org.apache.hadoop.hive.ql.io.HiveInputFormat.addSplitsForGroup(HiveInputFormat.java:370)
+
+	at org.apache.hadoop.hive.ql.io.HiveInputFormat.getSplits(HiveInputFormat.java:488)
+
+	at org.apache.hadoop.mapreduce.JobSubmitter.writeOldSplits(JobSubmitter.java:329)
+
+	at org.apache.hadoop.mapreduce.JobSubmitter.writeSplits(JobSubmitter.java:321)
+
+	at org.apache.hadoop.mapreduce.JobSubmitter.submitJobInternal(JobSubmitter.java:197)
+
+	at org.apache.hadoop.mapreduce.Job$10.run(Job.java:1297)
+
+	at org.apache.hadoop.mapreduce.Job$10.run(Job.java:1294)
+
+	at java.security.AccessController.doPrivileged(Native Method)
+
+	at javax.security.auth.Subject.doAs(Subject.java:422)
+
+	at org.apache.hadoop.security.UserGroupInformation.doAs(UserGroupInformation.java:1656)
+
+	at org.apache.hadoop.mapreduce.Job.submit(Job.java:1294)
+
+	at org.apache.hadoop.mapred.JobClient$1.run(JobClient.java:562)
+
+	at org.apache.hadoop.mapred.JobClient$1.run(JobClient.java:557)
+
+	at java.security.AccessController.doPrivileged(Native Method)
+
+	at javax.security.auth.Subject.doAs(Subject.java:422)
+
+	at org.apache.hadoop.security.UserGroupInformation.doAs(UserGroupInformation.java:1656)
+
+	at org.apache.hadoop.mapred.JobClient.submitJobInternal(JobClient.java:557)
+
+	at org.apache.hadoop.mapred.JobClient.submitJob(JobClient.java:548)
+
+	at org.apache.hadoop.hive.ql.exec.mr.ExecDriver.execute(ExecDriver.java:417)
+
+	at org.apache.hadoop.hive.ql.exec.mr.MapRedTask.execute(MapRedTask.java:141)
+
+	at org.apache.hadoop.hive.ql.exec.Task.executeTask(Task.java:197)
+
+	at org.apache.hadoop.hive.ql.exec.TaskRunner.runSequential(TaskRunner.java:100)
+
+	at org.apache.hadoop.hive.ql.Driver.launchTask(Driver.java:1962)
+
+	at org.apache.hadoop.hive.ql.Driver.execute(Driver.java:1653)
+
+	at org.apache.hadoop.hive.ql.Driver.runInternal(Driver.java:1389)
+
+	at org.apache.hadoop.hive.ql.Driver.run(Driver.java:1131)
+
+	at org.apache.hadoop.hive.ql.Driver.run(Driver.java:1119)
+
+	at org.apache.hadoop.hive.ql.TestTxnCommands2.runStatementOnDriver(TestTxnCommands2.java:1292)
+
+	at org.apache.hadoop.hive.ql.TestTxnCommands2.testETLSplitStrategyForACID(TestTxnCommands2.java:280)
+
+	at sun.reflect.NativeMethodAccessorImpl.invoke0(Native Method)
+
+	at sun.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:62)
+
+	at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)
+
+	at java.lang.reflect.Method.invoke(Method.java:498)
+
+	at org.junit.runners.model.FrameworkMethod$1.runReflectiveCall(FrameworkMethod.java:47)
+
+	at org.junit.internal.runners.model.ReflectiveCallable.run(ReflectiveCallable.java:12)
+
+	at org.junit.runners.model.FrameworkMethod.invokeExplosively(FrameworkMethod.java:44)
+
+	at org.junit.internal.runners.statements.InvokeMethod.evaluate(InvokeMethod.java:17)
+
+	at org.junit.internal.runners.statements.RunBefores.evaluate(RunBefores.java:26)
+
+	at org.junit.internal.runners.statements.RunAfters.evaluate(RunAfters.java:27)
+
+	at org.junit.rules.TestWatcher$1.evaluate(TestWatcher.java:55)
+
+	at org.junit.rules.RunRules.evaluate(RunRules.java:20)
+
+	at org.junit.runners.ParentRunner.runLeaf(ParentRunner.java:271)
+
+	at org.junit.runners.BlockJUnit4ClassRunner.runChild(BlockJUnit4ClassRunner.java:70)
+
+	at org.junit.runners.BlockJUnit4ClassRunner.runChild(BlockJUnit4ClassRunner.java:50)
+
+	at org.junit.runners.ParentRunner$3.run(ParentRunner.java:238)
+
+	at org.junit.runners.ParentRunner$1.schedule(ParentRunner.java:63)
+
+	at org.junit.runners.ParentRunner.runChildren(ParentRunner.java:236)
+
+	at org.junit.runners.ParentRunner.access$000(ParentRunner.java:53)
+
+	at org.junit.runners.ParentRunner$2.evaluate(ParentRunner.java:229)
+
+	at org.junit.runners.ParentRunner.run(ParentRunner.java:309)
+
+	at org.apache.maven.surefire.junit4.JUnit4Provider.execute(JUnit4Provider.java:254)
+
+	at org.apache.maven.surefire.junit4.JUnit4Provider.executeTestSet(JUnit4Provider.java:149)
+
+	at org.apache.maven.surefire.junit4.JUnit4Provider.invoke(JUnit4Provider.java:124)
+
+	at org.apache.maven.surefire.booter.ForkedBooter.invokeProviderInSameClassLoader(ForkedBooter.java:200)
+
+	at org.apache.maven.surefire.booter.ForkedBooter.runSuitesInProcess(ForkedBooter.java:153)
+
+	at org.apache.maven.surefire.booter.ForkedBooter.main(ForkedBooter.java:103)
+
+Caused by: java.util.concurrent.ExecutionException: java.lang.NegativeArraySizeException
+
+	at java.util.concurrent.FutureTask.report(FutureTask.java:122)
+
+	at java.util.concurrent.FutureTask.get(FutureTask.java:192)
+
+	at org.apache.hadoop.hive.ql.io.orc.OrcInputFormat.generateSplitsInfo(OrcInputFormat.java:1560)
+
+	... 57 more
+
+Caused by: java.lang.NegativeArraySizeException
+
+	at org.apache.hadoop.hive.ql.io.orc.OrcInputFormat.getSargColumnNames(OrcInputFormat.java:378)
+
+	at org.apache.hadoop.hive.ql.io.orc.OrcInputFormat.extractNeededColNames(OrcInputFormat.java:444)
+
+	at org.apache.hadoop.hive.ql.io.orc.OrcInputFormat.extractNeededColNames(OrcInputFormat.java:439)
+
+	at org.apache.hadoop.hive.ql.io.orc.OrcInputFormat.access$2800(OrcInputFormat.java:146)
+
+	at org.apache.hadoop.hive.ql.io.orc.OrcInputFormat$SplitGenerator.callInternal(OrcInputFormat.java:1274)
+
+	at org.apache.hadoop.hive.ql.io.orc.OrcInputFormat$SplitGenerator.access$2600(OrcInputFormat.java:1068)
+
+	at org.apache.hadoop.hive.ql.io.orc.OrcInputFormat$SplitGenerator$1.run(OrcInputFormat.java:1248)
+
+	at org.apache.hadoop.hive.ql.io.orc.OrcInputFormat$SplitGenerator$1.run(OrcInputFormat.java:1245)
+
+	at java.security.AccessController.doPrivileged(Native Method)
+
+	at javax.security.auth.Subject.doAs(Subject.java:422)
+
+	at org.apache.hadoop.security.UserGroupInformation.doAs(UserGroupInformation.java:1656)
+
+	at org.apache.hadoop.hive.ql.io.orc.OrcInputFormat$SplitGenerator.call(OrcInputFormat.java:1245)
+
+	at org.apache.hadoop.hive.ql.io.orc.OrcInputFormat$ETLSplitStrategy.runGetSplitsSync(OrcInputFormat.java:883)
+
+	at org.apache.hadoop.hive.ql.io.orc.OrcInputFormat$ETLSplitStrategy.access$1300(OrcInputFormat.java:700)
+
+	at org.apache.hadoop.hive.ql.io.orc.OrcInputFormat$ETLSplitStrategy$1.run(OrcInputFormat.java:857)
+
+	at org.apache.hadoop.hive.ql.io.orc.OrcInputFormat$ETLSplitStrategy$1.run(OrcInputFormat.java:854)
+
+	at java.security.AccessController.doPrivileged(Native Method)
+
+	at javax.security.auth.Subject.doAs(Subject.java:422)
+
+	at org.apache.hadoop.security.UserGroupInformation.doAs(UserGroupInformation.java:1656)
+
+	at org.apache.hadoop.hive.ql.io.orc.OrcInputFormat$ETLSplitStrategy.call(OrcInputFormat.java:854)
+
+	at org.apache.hadoop.hive.ql.io.orc.OrcInputFormat$ETLSplitStrategy.call(OrcInputFormat.java:700)
+
+	at java.util.concurrent.FutureTask.run(FutureTask.java:266)
+
+	at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1142)
+
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:617)
+
+	at java.lang.Thread.run(Thread.java:745)
+
+

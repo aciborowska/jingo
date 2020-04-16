@@ -1,0 +1,68 @@
+Hi, I have a jython UDF with schema
+
+
+@outputSchema("splitted_pivots:tuple(route_pivots:bag{tuple()}, last_event:bag{tuple()})")
+def split_last_end_points(bag_with_pivots, startOfHour, tuple_schema_as_str):
+#some code goes here
+    return current_hour_pivots, [last_event_pivot] 
+
+
+last_event_pivot should contain one tuple. By default it's None.
+It's normal case for the udf to return last_event_pivot=None
+
+Then I try to store this value:
+
+lastEvents24FromCurrHour = FOREACH pivotsWithEndPoints generate FLATTEN (splitted_pivots.last_event) as  (msisdn: long, more_fields)
+
+
+--Stupid hack split_last_end_points can return null for
+--lastEvents24FromCurrHourFiltered = FILTER lastEvents24FromCurrHour by is_end_point is not null and end_point_type is not null;
+STORE lastEvents24FromCurrHour INTO '$lastEndPoints24hOut'
+USING
+org.apache.pig.piggybank.storage.avro.AvroStorage('index', '4', 'schema', '{"name": "last_end_points_24h", "doc": "version 0.0.1", "type": "record", "fields": [
+   {"name": "msisdn",        "type": "long"},
+   {"name": "more_fields",   "type": "int"}
+]}');
+
+
+
+And get exception:
+
+Error running child
+org.apache.avro.file.DataFileWriter$AppendWriteException: java.lang.NullPointerException: null of last_end_points_24h of last_end_points_24h
+	at org.apache.avro.file.DataFileWriter.append(DataFileWriter.java:263)
+	at org.apache.pig.piggybank.storage.avro.PigAvroRecordWriter.write(PigAvroRecordWriter.java:49)
+	at org.apache.pig.piggybank.storage.avro.AvroStorage.putNext(AvroStorage.java:722)
+	at org.apache.pig.backend.hadoop.executionengine.physicalLayer.relationalOperators.POStore.getNext(POStore.java:146)
+	at org.apache.pig.backend.hadoop.executionengine.physicalLayer.relationalOperators.POSplit.runPipeline(POSplit.java:254)
+	at org.apache.pig.backend.hadoop.executionengine.physicalLayer.relationalOperators.POSplit.processPlan(POSplit.java:236)
+	at org.apache.pig.backend.hadoop.executionengine.physicalLayer.relationalOperators.POSplit.processPlan(POSplit.java:241)
+	at org.apache.pig.backend.hadoop.executionengine.physicalLayer.relationalOperators.POSplit.getNext(POSplit.java:228)
+	at org.apache.pig.backend.hadoop.executionengine.mapReduceLayer.PigGenericMapReduce$Reduce.runPipeline(PigGenericMapReduce.java:465)
+	at org.apache.pig.backend.hadoop.executionengine.mapReduceLayer.PigGenericMapReduce$Reduce.processOnePackageOutput(PigGenericMapReduce.java:433)
+	at org.apache.pig.backend.hadoop.executionengine.mapReduceLayer.PigGenericMapReduce$Reduce.reduce(PigGenericMapReduce.java:413)
+	at org.apache.pig.backend.hadoop.executionengine.mapReduceLayer.PigGenericMapReduce$Reduce.reduce(PigGenericMapReduce.java:257)
+	at org.apache.hadoop.mapreduce.Reducer.run(Reducer.java:164)
+	at org.apache.hadoop.mapred.ReduceTask.runNewReducer(ReduceTask.java:610)
+	at org.apache.hadoop.mapred.ReduceTask.run(ReduceTask.java:444)
+	at org.apache.hadoop.mapred.Child$4.run(Child.java:268)
+	at java.security.AccessController.doPrivileged(Native Method)
+	at javax.security.auth.Subject.doAs(Subject.java:396)
+	at org.apache.hadoop.security.UserGroupInformation.doAs(UserGroupInformation.java:1408)
+	at org.apache.hadoop.mapred.Child.main(Child.java:262)
+Caused by: java.lang.NullPointerException: null of last_end_points_24h of last_end_points_24h
+	at org.apache.pig.piggybank.storage.avro.PigAvroDatumWriter.npe(PigAvroDatumWriter.java:323)
+	at org.apache.pig.piggybank.storage.avro.PigAvroDatumWriter.write(PigAvroDatumWriter.java:102)
+	at org.apache.avro.generic.GenericDatumWriter.write(GenericDatumWriter.java:58)
+	at org.apache.avro.file.DataFileWriter.append(DataFileWriter.java:257)
+	... 19 more
+Caused by: java.lang.NullPointerException
+	at org.apache.pig.piggybank.storage.avro.PigAvroDatumWriter.getField(PigAvroDatumWriter.java:385)
+	at org.apache.pig.piggybank.storage.avro.PigAvroDatumWriter.writeRecord(PigAvroDatumWriter.java:363)
+	at org.apache.avro.generic.GenericDatumWriter.write(GenericDatumWriter.java:66)
+	at org.apache.pig.piggybank.storage.avro.PigAvroDatumWriter.write(PigAvroDatumWriter.java:99)
+	... 21 more
+
+
+
+I suppose that AvroStorage should correctly handle null tuples of relations consisting of null. Am I right?

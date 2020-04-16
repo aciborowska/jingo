@@ -1,0 +1,132 @@
+When 'retry-limit' is configured and  'commit-interval' is extracted from jobParameters, commit-interval is always recognized to be '1' regardless of jobParameters.
+
+
+
+
+
+
+<batch:job id="retryJob">
+
+
+
+
+  <batch:step id="step1">
+
+
+
+
+    <batch:tasklet>
+
+
+
+
+      <batch:chunk reader="reader" writer="writer" commit-interval="#{jobParameters['commit.interval']}" retry-limit="5" > 
+
+
+
+
+      <batch:retryable-exception-classes>
+
+
+
+
+        <batch:include class="java.lang.Exception" />
+
+
+
+
+       </batch:retryable-exception-classes>
+
+
+
+
+    </batch:chunk>
+
+
+
+
+  </batch:tasklet>
+
+
+
+
+</batch:step>
+
+
+
+
+</batch:job>
+
+
+
+
+
+
+And 'chunk-completion-policy' also ignored when 'retry-limit' exists.
+These flows are fundamentally same after parsing the XML, because SimpleCompletionPolicy is registered when 'commit-interval' starts with '#". it is processed in  'org.springframework.batch.core.configuration.xml.ChunkElementParser.prase()'
+
+
+
+
+
+
+if (StringUtils.hasText(commitInterval)) {
+
+
+
+
+  if (commitInterval.startsWith("#")) {
+
+
+
+
+    // It's a late binding expression, so we need step scope...
+
+
+
+
+    BeanDefinitionBuilder completionPolicy = BeanDefinitionBuilder.genericBeanDefinition(SimpleCompletionPolicy.class);
+
+
+
+
+    completionPolicy.addConstructorArgValue(commitInterval);
+
+
+
+
+    completionPolicy.setScope("step");
+
+
+
+
+    propertyValues.addPropertyValue("chunkCompletionPolicy", completionPolicy.getBeanDefinition());
+
+
+
+
+  } else {
+
+
+
+
+    propertyValues.addPropertyValue("commitInterval", commitInterval);
+
+
+
+
+  }
+
+
+
+
+}
+
+
+
+
+
+
+The cause is that StepParserStepFactoryBean omits to set ChunkCompletionPolicy when creating FaultTolerantStep.  'builder.chunk(chunkCompletionPolicy);' is called in 'StepParserStepFactoryBean.createSimpleStep()',
+ but it is not in 'createFaultTolerantStep()'.
+I reproduced the problem at https://github.com/benelog/batch-experiments/tree/master/batch-retry-test

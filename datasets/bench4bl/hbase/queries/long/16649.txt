@@ -1,0 +1,26 @@
+Since truncate table with splits preserved will delete hfiles and use the previous regioninfo. It can cause odd behaviors
+
+Case 1: Data appeared after truncate
+reproduce procedure：
+1. create a table, let's say 'test'
+2. write data to 'test', make sure memstore of 'test' is not empty
+3. truncate 'test' with splits preserved
+4. kill the regionserver hosting the region(s) of 'test'
+5. start the regionserver, now it is the time to witness the miracle! the truncated data appeared in table 'test'
+
+
+Case 2: Data loss
+reproduce procedure:
+1. create a table, let's say 'test'
+2. write some data to 'test', no matter how many
+3. truncate 'test' with splits preserved
+4. restart the regionserver to reset the seqid
+5. write some data, but less than 2 since we don't want the seqid to run over the one in 2
+6. kill the regionserver hosting the region(s) of 'test'
+7. restart the regionserver. Congratulations! the data writen in 4 is now all lost
+
+Why?
+for case 1
+Since preserve splits in truncate table procedure will not change the regioninfo, when log replay happens, the 'unflushed' data will restore back to the region
+for case 2
+since the flushedSequenceIdByRegion are stored in Master in a map with the region's encodedName. Although the table is truncated, the region's name is not changed since we chose to preserve the splits. So after truncate the table, the region's sequenceid is reset in the regionserver, but not reset in master. When flush comes and report to master, master will reject the update of sequenceid since the new one is smaller than the old one. The same happens in log replay, all the edits writen in 4 will be skipped since they have a smaller seqid

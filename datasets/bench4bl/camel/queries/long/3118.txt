@@ -1,0 +1,90 @@
+Attached is a patch with a test that demonstrates the problem. The test uses a custom RouteBuilder (SampleIninitalizingRouteBuilder) and another bean (SampleIninitalizingBean) that both implement InitializingBean. When the beans' afterPropertiesSet() methods are called, these beans add their names to a shared list. When the SampleIninitalizingRouteBuilder.configure() method is called then "configured" is added to the shared list.
+
+package  org.apache.camel.spring.issues
+
+// imports omitted ...
+
+public class SampleInitializingBean implements InitializingBean {
+    private String name;
+    private List<String> entries;
+
+    public void setName(String name) {
+        this.name = name;
+    }
+
+    public void setEntries(List<String> entries) {
+        this.entries = entries;
+    }
+
+    public void afterPropertiesSet() {
+        entries.add(name);
+    }
+}
+
+public class SampleInitializingRouteBuilder extends RouteBuilder implements InitializingBean {
+    private String name;
+    private List<String> entries;
+
+    public void setName(String name) {
+        this.name = name;
+    }
+
+    public void setEntries(List<String> entries) {
+        this.entries = entries;
+    }
+
+    public void afterPropertiesSet() {
+        entries.add(name);
+    }
+
+    @Override
+    public void configure() throws Exception {
+        entries.add("configured");
+    }
+}
+
+
+These beans are wired as follows:
+
+    <bean id="entries1" class="java.util.ArrayList"/>
+
+    <bean id="sampleBean1"
+          class="org.apache.camel.spring.issues.SampleInitializingBean">
+        <property name="name" value="test1a"/>
+        <property name="entries" ref="entries1"/>
+    </bean>
+
+    <bean id="sampleRouteBuilder1"
+          class="org.apache.camel.spring.issues.SampleInitializingRouteBuilder" depends-on="sampleBean1">
+        <property name="name" value="test1b"/>
+        <property name="entries" ref="entries1"/>
+    </bean>
+
+    <camelContext xmlns="http://camel.apache.org/schema/spring">
+        <routeBuilder ref="sampleRouteBuilder1"/>
+    </camelContext>
+
+
+Note the depends-on attribute on the sampleRouteBuilder1 bean: it should ensure that sampleBean1 is being initialized before sampleRouteBuilder1 and the camelContext. 
+Actual behaviour, however, is that the beans are initialized in the following order:
+
+sampleRouteBuilder1
+camelContext
+sampleBean1
+
+which is definitely wrong. The shared list contains the entries
+
+test1b
+configured
+test1a
+
+This differs from the expected order
+
+test1a
+test1b
+configured
+
+which cannot be observed. After some debugging, it seems the problem is related to the CamelBeanPostProcessor.postProcessBeforeInitialization() method. It does a lookup of the camelContext (i.e. applicationContext.getBean(camelId))) before the application context finished initialization of dependent beans. The problem is that this lookup already triggers a SampleInitializingRouteBuilder.configure() method call.
+Even worse, this behaviour depends on the declaration order of the beans in the application context XML file. When the camelContext bean is moved to the top, the bean initialization are done in the correct order.
+To demonstrate that this is not a Spring-related problem, the attached test also contains another bean (SampleRouteBuilderContainer) that plays the role of the camelContext but does nothing else than calling configure() on the injected route builder within (afterPropertiesSet()). In this case, the bean initialization occur in the expected, correct order.
+I didn't find a solution to this problem so far and need to dig in further (hope to find some time next week for that). If any of the committers (who are more familiar with camel-spring than I am) have already an idea how to solve that, I appreciate any hints.

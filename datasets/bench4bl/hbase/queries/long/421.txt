@@ -1,0 +1,49 @@
+TestRegionServerExit has a couple of problems:
+1. Region server tries to start http server on a port already in use:
+[junit] 2008-02-07 07:01:06,529 FATAL [RegionServer:2] hbase.HRegionServer(867): Failed init
+[junit] java.io.IOException: Problem starting http server
+[junit] 	at org.apache.hadoop.hbase.util.InfoServer.start(InfoServer.java:227)
+[junit] 	at org.apache.hadoop.hbase.HRegionServer.startServiceThreads(HRegionServer.java:928)
+[junit] 	at org.apache.hadoop.hbase.HRegionServer.init(HRegionServer.java:863)
+[junit] 	at org.apache.hadoop.hbase.HRegionServer.run(HRegionServer.java:633)
+[junit] 	at java.lang.Thread.run(Thread.java:595)
+[junit] Caused by: org.mortbay.util.MultiException[java.net.BindException: Address already in use]
+[junit] 	at org.mortbay.http.HttpServer.doStart(HttpServer.java:731)
+[junit] 	at org.mortbay.util.Container.start(Container.java:72)
+[junit] 	at org.apache.hadoop.hbase.util.InfoServer.start(InfoServer.java:205)
+[junit] 	... 4 more
+[junit] 2008-02-07 07:01:06,530 FATAL [RegionServer:2] hbase.HRegionServer(772): Unhandled exception. Aborting...
+The region server that died apparently was serving the root region.
+The test case apparently has a long timeout for finding the root region because you see a lot of 
+ [junit] 2008-02-07 07:04:14,813 DEBUG [Thread-540] hbase.HConnectionManager$TableServers(708): Wake. Retry finding root region.
+[junit] 2008-02-07 07:04:14,814 DEBUG [Thread-540] hbase.HConnectionManager$TableServers(704): Sleeping. Waiting for root region.
+[junit] 2008-02-07 07:04:24,823 DEBUG [Thread-540] hbase.HConnectionManager$TableServers(708): Wake. Retry finding root region.
+[junit] 2008-02-07 07:04:24,827 DEBUG [Thread-540] hbase.HConnectionManager$TableServers(704): Sleeping. Waiting for root region.
+[junit] 2008-02-07 07:04:34,833 DEBUG [Thread-540] hbase.HConnectionManager$TableServers(708): Wake. Retry finding root region.
+[junit] 2008-02-07 07:04:34,836 DEBUG [Thread-540] hbase.HConnectionManager$TableServers(704): Sleeping. Waiting for root region.
+[junit] 2008-02-07 07:04:44,842 DEBUG [Thread-540] hbase.HConnectionManager$TableServers(708): Wake. Retry finding root region.
+until finally the client gives up:
+ [junit] 2008-02-07 07:04:44,843 FATAL [Thread-540] hbase.TestRegionServerExit$1(161): could not re-open meta table because
+[junit] org.apache.hadoop.hbase.NoServerForRegionException: Timed out trying to locate root region
+[junit] 	at org.apache.hadoop.hbase.HConnectionManager$TableServers.locateRootRegion(HConnectionManager.java:718)
+[junit] 	at org.apache.hadoop.hbase.HConnectionManager$TableServers.locateRegion(HConnectionManager.java:329)
+[junit] 	at org.apache.hadoop.hbase.HConnectionManager$TableServers.relocateRegion(HConnectionManager.java:311)
+[junit] 	at org.apache.hadoop.hbase.HConnectionManager$TableServers.locateRegionInMeta(HConnectionManager.java:476)
+[junit] 	at org.apache.hadoop.hbase.HConnectionManager$TableServers.locateRegion(HConnectionManager.java:339)
+[junit] 	at org.apache.hadoop.hbase.HConnectionManager$TableServers.relocateRegion(HConnectionManager.java:311)
+[junit] 	at org.apache.hadoop.hbase.HTable.getRegionLocation(HTable.java:114)
+[junit] 	at org.apache.hadoop.hbase.HTable$ClientScanner.nextScanner(HTable.java:889)
+[junit] 	at org.apache.hadoop.hbase.HTable$ClientScanner.<init>(HTable.java:817)
+[junit] 	at org.apache.hadoop.hbase.HTable.obtainScanner(HTable.java:522)
+[junit] 	at org.apache.hadoop.hbase.HTable.obtainScanner(HTable.java:411)
+[junit] 	at org.apache.hadoop.hbase.TestRegionServerExit$1.run(TestRegionServerExit.java:156)
+[junit] 	at java.lang.Thread.run(Thread.java:595)
+[junit] Exception in thread "Thread-540" junit.framework.AssertionFailedError
+[junit] 	at junit.framework.Assert.fail(Assert.java:47)
+[junit] 	at junit.framework.Assert.fail(Assert.java:53)
+[junit] 	at org.apache.hadoop.hbase.TestRegionServerExit$1.run(TestRegionServerExit.java:162)
+[junit] 	at java.lang.Thread.run(Thread.java:595)
+Which is not the way the test is supposed to run at all.
+It appears that when we start multiple region servers in a MiniHBaseCluster, they all try to start their http server on the same port. In the past I believe that the http server start failure was not fatal, so the test ran.
+We should either have some kind of setting for MiniHBaseCluster that tells the master and region servers not to start their http servers, or some way of telling multiple servers not to start on the same port, or making http startup failure non-fatal.
+Tests like these are good as they (eventually) point out a regression to us.

@@ -1,0 +1,261 @@
+Hi,
+Two of the tasks listed in the IO to-do list are adding the ability to
+iterate over the lines in a file and the files in a directory.  This
+patch implements those things as methods on FileUtils and provides test
+cases for the new methods.
+  Jim Harrington
+
+
+
+
+
+patch follows ***
+Index: src/java/org/apache/commons/io/FileUtils.java
+
+
+
+
+
+===================================================================
+— src/java/org/apache/commons/io/FileUtils.java	(revision 359064)
++++ src/java/org/apache/commons/io/FileUtils.java	(working copy)
+@@ -28,6 +28,7 @@
+ import java.util.Collection;
+ import java.util.Date;
+ import java.util.List;
++import java.util.Iterator;
+ import org.apache.commons.io.filefilter.DirectoryFileFilter;
+ import org.apache.commons.io.filefilter.FalseFileFilter;
+@@ -226,7 +227,29 @@
+         return files;
+     }
++    /**
++     * <p>Allows iteration over the files in given directory (and optionally
++     * its subdirectories). All files found are filtered by an IOFileFilter.
++     *
++     * See:
++     * @see #listFiles(File, IOFileFilter, IOFileFilter)
++     * for more information.
++     * </p>
++     * @param directory the directory to search in
++     * @param fileFilter filter to apply when finding files.
++     * @param dirFilter optional filter to apply when finding subdirectories.
++     * If this parameter is null, subdirectories will not be included in the
++     * search. Use TrueFileFilter.INSTANCE to match all directories.
++     * @return an iterator of java.io.File for the matching files
++     * @see org.apache.commons.io.filefilter.FileFilterUtils
++     * @see org.apache.commons.io.filefilter.NameFileFilter
++     */
++    public static Iterator iterateFiles(File directory, IOFileFilter 
+fileFilter,
++                                        IOFileFilter dirFilter) 
+{
++        return (listFiles( directory, fileFilter, dirFilter)).iterator();
++    }
+
++
+     /**
+
+Converts an array of file extensions to suffixes for use
+with IOFileFilters.
+@@ -264,7 +287,21 @@
+
+             (recursive ? TrueFileFilter.INSTANCE : FalseFileFilter.INSTANCE));
+     }
++    /**
++     * Allows iteration over the files in a given directory (and optionally
++     * its subdirectories) which match an array of extensions.
++     * @param directory the directory to search in
++     * @param extensions an array of extensions, ex. 
+{"java","xml"}
+. If this
++     * parameter is null, all files are returned.
++     * @param recursive If true all subdirectories are searched, too.
++     * @return an iterator of java.io.File with the matching files
++     */
++    public static Iterator iterateFiles(
++                                        File directory, String[] extensions, 
+boolean recursive) 
+{
++        return (listFiles(directory, extensions, recursive)).iterator();
++    }
+
++
+     /**
+
+<p>Compare the contents of two files to determine if they are equal or
+not.</p>
+@@ -841,6 +878,29 @@
+
+     //-----------------------------------------------------------------------
+     /**
+
+<p>
++     * Reads the contents of a file line by line and returns an iterator over
++     * those lines.
++     *
++     * <p>
++     * There is no iterateLines method without encoding parameter because
++     * the default encoding can differ between platforms and therefore results
++     * in inconsistent results.
++     * </p>
++     *
++     * @param file  the file to read
++     * @param encoding  the encoding to use, null means platform default
++     * @return an iterator over the lines in the file
++     * @throws IOException in case of an I/O error
++     * @throws UnsupportedEncodingException if the encoding is not supported 
+by the VM
++     * @since Commons IO 1.2
++     */
++    public static final Iterator iterateLines(File file, String encoding) 
+throws IOException 
+{
++        return (readLines(file, encoding)).iterator();
++    }
++
++    //-----------------------------------------------------------------------
++    /**
++     * <p>
+Writes a String to a file creating the file if it does not exist.
+</p>
+<p>
+Index: src/test/org/apache/commons/io/FileUtilsTestCase.java
+
+===================================================================
+— src/test/org/apache/commons/io/FileUtilsTestCase.java	(revision 
+359064)
++++ src/test/org/apache/commons/io/FileUtilsTestCase.java	(working copy)
+@@ -24,12 +24,17 @@
+ import java.util.Arrays;
+ import java.util.GregorianCalendar;
+ import java.util.List;
++import java.util.Collection;
++import java.util.Iterator;
++import java.util.Map;
++import java.util.HashMap;
+ import junit.framework.Test;
+ import junit.framework.TestSuite;
+ import junit.textui.TestRunner;
+ import org.apache.commons.io.testtools.FileBasedTestCase;
++import org.apache.commons.io.filefilter.WildcardFilter;
+ /**
+
+This is used to test FileUtils for correctness.
+@@ -659,6 +664,81 @@
+
+         assertEquals("FileUtils.touch() changed lastModified to less than 
+now+3s", true, file.lastModified() <= (now + 3000));
+     }
++    public void testListFiles() throws Exception 
+{
++        File srcDir = getTestDirectory();
++        File subDir = new File(srcDir, "list_test" );
++        subDir.mkdir();
++
++        String[] fileNames = 
+{ "a.txt", "b.txt", "c.txt", "d.txt", "e.txt", "f.txt" };
++        int[] fileSizes = { 123, 234, 345, 456, 678, 789 };
++
++        for(int i = 0; i < fileNames.length; ++i) {
++            File theFile = new File(subDir, fileNames[i]);
++            createFile(theFile, fileSizes[i]);
++        }
++
++        Collection files = FileUtils.listFiles(subDir,
++                                               new WildcardFilter("."),
++                                               new WildcardFilter("*"));
++
++        int count = files.size();
++        Object[] fileObjs = files.toArray();
++
++        assertEquals(files.size(), fileNames.length);
++
++        Map foundFileNames = new HashMap();
++
++        for(int i = 0; i < count; ++i) {
++            boolean found = false;
++            for(int j = 0; (( !found ) && (j < fileNames.length)); ++j) {
++                if ( fileNames[j].equals(((File) fileObjs[i]).getName())) {
++                    foundFileNames.put(fileNames[j], fileNames[j]);
++                    found = true;
++                }
++            }
++        }
++
++        assertEquals(foundFileNames.size(), fileNames.length);
++
++        subDir.delete();
++    }
++
++    public void testIterateFiles() throws Exception {+        File srcDir = getTestDirectory();+        File subDir = new File(srcDir, "list_test" );+        subDir.mkdir();++        String[] fileNames = { "a.txt", "b.txt", "c.txt", "d.txt", "e.txt", "f.txt" }
+;
++        int[] fileSizes = 
+{ 123, 234, 345, 456, 678, 789 }
+;
++
++        for(int i = 0; i < fileNames.length; ++i) 
+{
++            File theFile = new File(subDir, fileNames[i]);
++            createFile(theFile, fileSizes[i]);
++        }
++
++        Iterator files = FileUtils.iterateFiles(subDir,
++                                                new WildcardFilter("."),
++                                                new WildcardFilter("*"));
++
++        Map foundFileNames = new HashMap();
++
++        while(files.hasNext()) {
++            boolean found = false;
++            String fileName = ((File) files.next()).getName();
++
++            for(int j = 0; (( !found ) && (j < fileNames.length)); ++j) {
++                if ( fileNames[j].equals(fileName)) 
+{
++                    foundFileNames.put(fileNames[j], fileNames[j]);
++                    found = true;
++                }
++            }
++        }
++
++        assertEquals(foundFileNames.size(), fileNames.length);
++
++        subDir.delete();
++    }
++
+     public void testReadFileToString() throws Exception 
+{
+         File file = new File(getTestDirectory(), "read.obj");
+         FileOutputStream out = new FileOutputStream(file);
+@@ -698,6 +778,25 @@
+
+         }
+     }
++    public void testIterateLines() throws Exception {
++        File file = newFile("lines.txt");
++        try {
++            String[] data = new String[] 
+{"hello", "/u1234", "", "this 
+is", "some text"}
+;
++            createLineBasedFile(file, data);
++
++            Iterator lines = FileUtils.iterateLines(file, "UTF-8");
++            int counter = 0;
++
++            while( lines.hasNext() ) 
+{
++                String line = (String) lines.next();
++                assertEquals(data[counter], line);
++                ++counter;
++            }
++        } finally 
+{
++            deleteFile(file);
++        }
++    }
++
+     public void testWriteStringToFile1() throws Exception {
+         File file = new File(getTestDirectory(), "write.txt");
+         FileUtils.writeStringToFile(file, "Hello /u1234", "UTF8");

@@ -1,0 +1,18 @@
+This is a new bug we found on production.
+
+ZooKeeper uses ACL reference id and count to save the space in snapshot. During fuzzy snapshot sync, the reference count may not be updated correctly in case like the znode is already exist.
+
+When ACL reference count reaches 0, it will be deleted from the system, but actually there might be other nodes still using it. And when visiting a node with the deleted ACL id, it will be rejected because it doesn't exist anymore.
+
+Here is the detailed flow for one of the scenario here:
+
+	Server A starts to have snap sync with leader
+	After serializing the ACL map to Server A, there is a txn T1 to create a node N1 with new ACL_1 which was not exist in ACL map
+	On leader, after this txn, the ACL map will be ID1 -> (ACL_1, COUNT: 1), and data tree N1 -> ID1
+	On server A, it will be empty ACL map, and N1 -> ID1 in fuzzy snapshot
+	When replaying the txn T1, it will skip at the beginning since the node is already exist, which leaves an empty ACL map, and N1 is referencing to a non-exist ACL ID1
+	Node N1 will be not accessible because the ACL not exist, and if it became leader later then all the write requests will be rejected as well with marshalling error.
+
+
+
+We're still working on the fix, suggestions are welcome.

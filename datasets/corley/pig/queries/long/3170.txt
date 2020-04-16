@@ -1,0 +1,25 @@
+Through the PigStatusReporter, and the ProgressableReporter, when a Pig MR task is done, static references are kept to Hadoop's Context object.
+
+Additionally, the PigCombiner also keeps a static reference, apparently without using it.
+
+When the JVM is reused between MR tasks, it can cause large memory overconsumption, with a peak during the creation of the next task, because while MR is creating the next task (in MapTask.<init> for example), we have both contexts (with  their associated buffers) allocated at once.
+
+This problem is especially important when using a Combiner, because the ReduceContext of a Combiner contains references to large sort buffers.
+
+The specifics of our case were:
+
+	20 GB input data, divided in 85 map tasks
+	Very simple Pig script: LOAD A, FILTER A, GROUP A, FOREACH group generate MAX(field), STORE
+	MapR distribution, which automatically computes Xmx for mappers at 800MB
+	At the end of the first task, the ReduceContext contains more than 400MB of byte[]
+	Systematic OOM in MapTask.<init> on subsequent VM reuse
+	At least -Xmx1200m was required to get the job to complete
+	With attached patch, -Xmx600m is enough
+
+
+
+While a workaround by increasing Xmx is possible, I think the large overconsumption and the complexity of debugging the issue (because the OOM actually happens at the very beginning of the task, before the first byte of data has been processed) warrants fixing it.
+
+The attached patch makes sure that PigStatusReporter and ProgressableReporter drop their reference to the Context in the cleanup phases of the task.
+
+No new test is included because I don't really think it's possible to write a unit test, the issue being not "binary"

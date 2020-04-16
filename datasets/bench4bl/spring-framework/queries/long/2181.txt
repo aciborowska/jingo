@@ -1,0 +1,35 @@
+I have tried using JBossMQ and ActiveMQ to receive async message by DefaultMessageListenerContainer.
+Transaction Manager from JBoss are used and set properly as a bean property for DefaultMessageListenerContainer.
+To trigger the XA rollback, I throw a runtime exception in the onMessage() callback of the MessageListener.
+However, the message is still commit.
+The bean setting:
+  <bean id="transactionManager" class="org.springframework.transaction.jta.JtaTransactionManager">
+    <property name="userTransaction" ref="userTransaction"/>
+  </bean>
+  <bean id="userTransaction" 
+    class="org.springframework.jndi.JndiObjectFactoryBean">
+      <property name="jndiName">
+        <value>java:comp/UserTransaction</value>
+      </property>
+  </bean>
+        <bean id="listenerContainer"
+                class="org.springframework.jms.listener.DefaultMessageListenerContainer">
+                <property name="connectionFactory" ref="XAJmsConnectionFactory" />
+                <property name="destination" ref="XADestination" />
+                <property name="messageListener" ref="coreInboundBeanImpl" />
+                <property name="transactionManager" ref="transactionManager"/>
+        </bean>
+Finally, I needed to extend DefaultMessageListenerContainer and override the receive() method using JMSTemplate instead of the message consumer as follow:
+	public Message receive(long timeOut) throws JMSException
+{
+		template.setConnectionFactory(getConnectionFactory());
+		template.setDefaultDestination(getDestination());
+		template.setReceiveTimeout(timeOut);
+		if (getMessageSelector() == null || "".equals(getMessageSelector().trim()))
+			return template.receive(getDestination());
+		else
+			return template.receiveSelected(getDestination(), getMessageSelector());
+	}
+
+I use JMSTemplate because I find it performs XA without any noticed problem.
+Using the above implementation can successfully rollback as well as commit the message. I am seeking for better solution on this topic.

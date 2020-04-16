@@ -1,0 +1,22 @@
+The only case we need to have the tricky hack code , is because of the scenario below:
+
+If the child is deleted due to session close and re-created in a different global session after that the parent is serialized, then when replay the txn because the node is belonging to a different session, replay the closeSession txn won't delete it anymore, and we'll get NODEEXISTS error when replay the createNode txn. In this case, we need to update the cversion and pzxid to the new value with this tricky code here.
+
+This could be solved in ZOOKEEPER-3145 with explicit CloseSessionTxn. In theory, with that code, we don't need this kind of hack code anymore, but there is another case, which could cause the cversion and pzxid being reverted, and we still need to patch it, here is the scenario:
+
+1. Start to take snapshot at T0
+2. Txn T1 create /P/N1, set P's cversion and pzxid to (1, 1)
+3. Txn T2 create /P/N2, set P's cversion and pzxid to (2, 2)
+4. Txn T3 delete /P/N1, set P's pzxid to 3, which is (2, 3)
+
+Those state are in the fuzzy snapshot.
+
+When loading the snapshot and txns during start up based on the current code:
+
+1. replay T1, since /P/N1 is not exist, we'll overwrite P's cversion and pzxid to (1, 1)
+2. replay T2, node already exist, so go through the hack code to patch cversion and pzxid, and it became (2, 2)
+3. replay T3, set P's pzxid to 3, which is now (2, 3)
+
+The state is consistent with the tricky patch code, but it's error-prone and hacky, we should remove that. To be able to remove that, in this patch, we're going to check the cversion first and avoid reverting the cversion and pzxid when replaying txns.
+
+We've also added metrics to verify that logic is not active on prod anymore, after that I'll open another Jira to remove it to make the logic cleaner.

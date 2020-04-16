@@ -1,0 +1,88 @@
+I have a following camel route:
+
+
+
+String destination = "cxf:http://localhost:9090/test?dataFormat=MESSAGE";
+
+
+
+    from("jms:queue:dslSource")
+
+        .onException(java.net.ConnectException.class, Exception.class)
+
+            .maximumRedeliveries(3)
+
+            .maximumRedeliveryDelay(3000)
+
+            .retryAttemptedLogLevel(LoggingLevel.INFO)
+
+            .log(LoggingLevel.WARN, "Failed to send message ${body}") 
+
+            .log(LoggingLevel.WARN, "Sending message to the error queue: ${body}")          // body is null here
+
+            .to("jms:queue:dslError")
+
+            .end()
+
+        .log(LoggingLevel.INFO, "Sending message ...")
+
+        .setHeader("bridgeDestination", constant(destination))
+
+        .to(destination)
+
+        .log(LoggingLevel.INFO, "received back: ${body}")
+
+        .routeId("example-dsl");
+
+
+
+If an exception is thrown, for instance, a ConnectionException due to unavailability of the backend web service, the onException() route will be executed. The first log endpoint:
+
+
+
+.log(LoggingLevel.WARN, "Failed to send message ${body}") 
+
+
+
+prints out camel exchange IN message body without any problem. However, the second log endpoint:
+
+
+
+.log(LoggingLevel.WARN, "Sending message to the error queue: ${body}")
+
+
+
+only prints out a "null".
+The reason is that when an exception is thrown, the CxfClientCallback.handleException() is called:
+
+
+
+public void handleException(Map<String, Object> ctx, Throwable ex) {
+
+    ....
+
+        if (!boi.getOperationInfo().isOneWay()) {
+
+            // copy the InMessage header to OutMessage header                 
+
+            camelExchange.getOut().getHeaders().putAll(camelExchange.getIn().getHeaders());
+
+            binding.populateExchangeFromCxfResponse(camelExchange, cxfExchange, ctx);
+
+            camelAsyncCallback.done(false);
+
+        }
+
+...
+
+
+
+and this line always populates camel exchange OUT message regardless whether there is a CXF response back or not:
+
+
+
+camelExchange.getOut().getHeaders().putAll(camelExchange.getIn().getHeaders());
+
+
+
+Therefore, the second log endpoint within onException() block has it's camel exchange IN message been overwritten and replaced with OUT message from previous endpoint's although it is a message of NULL body.

@@ -1,0 +1,53 @@
+While creating a new user and adding that user to some groups, an exception occurred during a group assignment that triggered a rollback. The rollback had a side effect of removing everyone from one of the groups that the user had been added to. This group had several thousand users.  The code used for group assignment is rather trivial...
+
+
+
+
+
+
+    public void assignUserToGroups(String userDN, List<String> groupDNs) throws NamingException {
+
+
+
+
+        for (String groupDN : groupDNs) {
+
+
+
+
+            DirContextOperations context = this.ldapTemplate.lookupContext(groupDN);
+
+
+
+
+            context.addAttributeValue(LdapConstants.LDAP_ATTR_MEMBER, userDN);
+
+
+
+
+ 
+
+
+
+
+            this.ldapTemplate.modifyAttributes(context);
+
+
+
+
+        }
+
+
+
+
+    }
+
+
+
+
+
+
+Using Dynatrace we verified that a failure occurred during the modifyAttributes call. The failure was policy based and not related to Spring LDAP. After the exception is thrown the exception bubbles up to the top layer but at edge of service layer there is a 21 second time period where Spring LDAP is doing something. We then did a check of the AD audit logs and found that the user id for this application was busily removing thousands of users from a group during that time.
+The unfortunate part is that we can't be reproduced in our test environment. I have stepped through the code and found that Spring-LDAP does a replace as a rollback correction for an add. This is disconcerting since, for a time, the state of a critical group is solely dependent on the state of an application.
+I realize that I am giving a sub optimal bug report due to the hard-to-reproduce aspect however I am out of idea. All evidence on our side points to a Spring-LDAP transaction oddity. I am open to suggestions though.
+NOTE: JIRA lists 1.3.1 as an "unreleased" version while this is currently the production release version.

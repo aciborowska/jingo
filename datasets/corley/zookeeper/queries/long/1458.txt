@@ -1,0 +1,32 @@
+If I have a child delete op interleaving two child create ops, the second child create will nevertheless have the path suffix incremented only by 1 rather than by 2. Is this expected? The 3.3.5 version takes into account the delete and increments the sequence by 2.
+
+PrepRequestProcessor uses the parent's cversion to generate the child's sequence suffix. However it appears that this particular cversion only counts "create" operations and it doesn't take into account the deletes. Strangely enough, the parent stats returned by getData() show the correct cversion with all the creates and deletes accounted for.
+
+It looks like the first cversion comes from the ChangeRecord for the parent node stuck in ZooKeeperServer.outstandingChangesForPath map. And the second one (returned by getData(), that is) comes from the DataTree.
+
+Here's a simple example that reproduces the situation.
+
+zk.create("/parent", null, OPEN_ACL_UNSAFE, CreateMode.PERSISTENT);
+Stat stat = new Stat();
+
+zk.getData("/parent", false, stat);
+stat.getCVersion(); // returns 0 – expected;
+
+String actualPath = zk.create("/parent/child", null, OPEN_ACL_UNSAFE, CreateMode.EPHEMERAL_SEQUENTIAL);
+// actualPath is "/parent/child0000000000" – expected.
+
+zk.getData("/parent", false, stat);
+stat.getCVersion(); // returns 1 – expected;
+
+zk.getData(actualPath, false, stat);
+zk.delete(actualPath,stat.getVersion()); // delete the child node
+
+zk.getData("/parent", false, stat);
+stat.getCVersion(); // returns 2;
+
+// create another child
+actualPath = zk.create("/parent/child", null, OPEN_ACL_UNSAFE, CreateMode.EPHEMERAL_SEQUENTIAL);
+// returned "/parent/child0000000001" but expected "/parent/child0000000002"
+
+zk.getData("/parent", false, stat);
+stat.getCVersion(); // returns 3;

@@ -1,0 +1,44 @@
+I was struggling with the same kind of issue that was fixed by SEC-2005
+in my app, i have a specialized SecurityContextRepository that is load/saving some extra information related to the context into a cookie
+Everything works fine, the loading and the saving methods are called nicely, except that for the saving the call was happening long after the commit of the response (so' don't reach the client).
+Then, I have tried to trace down the problem and figured out that the internal private class SaveContextPrintWriter in SaveContextOnUpdateOrErrorResponseWrapper.java sounds to be the cause of the problem
+This internal class is using a delegation pattern to allow to save the context when intentionally flushing or closing the PrintWriter from the caller. 
+(flush or close are causing the commit of the response)
+The problem is that the PrintWriter might also call internally its flush method when you are writing in it and there is a long buffer pending. This internal call cannot be intercepted by the delegation pattern. As it is out of the control, the only way to enforce a context save is to add an explicit call to doSaveContext() on every  write*, print*, format*, append* of the internal private class SaveContextPrintWriter, before calling the delegated method  
+by the way, the append methods must also be changed to return this (and not the delegated writer). It helps to keep the wrapped PrintWriter if the caller is doing thing like
+new SaveContextPrintWriter(response.getPrintWriter).append("111").append("222").flush();
+finally, what is applicable for SaveContextPrintWriter must also be applied to SaveContextServletOutputStream = every write method must fist call the doSaveContext()
+example of change 
+
+
+
+
+
+
+    public PrintWriter append(CharSequence csq) {
+
+
+
+
+            doSaveContext();
+
+
+
+
+            delegate.append(csq);
+
+
+
+
+            return this;
+
+
+
+
+        }
+
+
+
+
+
+

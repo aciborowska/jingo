@@ -1,0 +1,60 @@
+Something that is almost certainly introduced via fixes for OPENJPA-2785 and OPENJPA-2733 is that anonymous parameters are not picked up.
+
+The following piece of code does not add the second parameter successfully and thus the test fails.
+
+With a Member entity that has a place and a name field:
+
+
+       Member m = new Member(1, "dave");
+        m.setAge(5);
+        m.setPlace("capetown");
+        em.persist(m);
+
+        CriteriaBuilder cb = em.getCriteriaBuilder();
+
+        CriteriaQuery<Member> q = cb.createQuery(Member.class);
+        Root<Member> c = q.from(Member.class);
+        ParameterExpression<String> name = cb.parameter(String.class);
+        ParameterExpression<String> place = cb.parameter(String.class);
+        CriteriaQuery<Member> where = q.select(c).where(cb.equal(c.get("name"), name), cb.equal(c.get("place"), place));
+
+        TypedQuery<Member> query = em.createQuery(where);
+        query.setParameter(name, "dave");
+        query.setParameter(place, "capetown");
+        List<Member> results = query.getResultList();
+
+        assertThat(results).isNotEmpty();
+
+
+With query and parameter logging on you that the the sql call is made with the same parameter twice...
+
+<t 346847161, conn 1824423245> executing prepstmnt 2078396010 SELECT t0.id, t0.age, t0.name, t0.place FROM Member t0 WHERE (t0.name = ? AND t0.place = ?) [params=(String) dave, (String) dave]
+
+
+And this kinda makes sense as this is what the CriteriaQueryImpl.registerParameter looks like:
+
+
+    /**
+     * Registers the given parameter.
+     */
+    void registerParameter(ParameterExpressionImpl<?> p) {
+        for (Object k : _params.keySet()) {
+            if (p.paramEquals(k)) {
+                // If a named ParameterExpressin did already get registered
+                // with that exact name, then we do ignore it.
+                // If we do a query.setParameter("someParamName", Bla)
+                // then it must uniquely identify a Parameter.
+                return;
+            }
+        }
+
+        p.setIndex(_params.size());
+        _params.put(p, p.getJavaType());
+    }
+
+
+And paramEquals will not differentiate between two anonymous parameters.
+
+So I suspect we are going to need some mechanism for differentiating between two anonymous parameters - and if we did this then I suspect the issue that caused this in the first place might also be resolved. Possibly add some kind of counter or something that can give identity to anonymous parameters.
+
+ Added test to https://github.com/michaelwiles/openjpa-bugs

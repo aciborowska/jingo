@@ -1,0 +1,45 @@
+First of all, sorry if this is not a bug. I may have missed some information on how to make autoSave and FileChangedReloadingStrategy work.
+When a change has been detected by the FileChangedReloadingStrategy code, a clear() followed by a load() is executed in the AbstractFileConfiguration class (around line 809 of version 1.4). The clear() method leads to a possiblySave() call which overwrites the configuration. At the end of the clear() method, the configuration file is empty and the following load() method loads this empty configuration. The possiblySave() call is invoked via the work-around (according to the comment in the code) in AbstractConfiguration (line 538).
+I'm using the following code:
+CompositeConfiguration config = new CompositeConfiguration();
+XMLConfiguration xmlconfig = new XMLConfiguration("config.xml");
+FileChangedReloadingStrategy fcrs = new FileChangedReloadingStrategy();
+xmlconfig.setReloadingStrategy(fcrs);
+config.addConfiguration(new SystemConfiguration());
+config.addConfiguration(xmlconfig);
+xmlconfig.setAutoSave(true);
+...wait for config changes...		
+A workaround for the problem is to deactivate autoSave in the reload() method of the AbstractFileConfiguration class. After the configuration is cleared and loaded, the original autoSave is restored. See the diff below:
+806a807,808
+>                         boolean autoSaveBak = this.isAutoSave(); // save the current state
+>                         this.setAutoSave(false); // deactivate autoSave to prevent information loss
+813a816
+>                               this.setAutoSave(autoSaveBak); // set autoSave to previous value
+The code fragment looks like:
+--------------------------
+                    if (strategy.reloadingRequired())
+                    {
+                        if (getLogger().isInfoEnabled())
+                        {
+                            getLogger().info("Reloading configuration. URL is " + getURL());
+                        }
+                        fireEvent(EVENT_RELOAD, null, getURL(), true);
+                        setDetailEvents(false);
+                        boolean autoSaveBak = this.isAutoSave(); // save the current state
+                        this.setAutoSave(false); // deactivate autoSave to prevent information loss
+                        try
+                        {
+                            clear();
+                            load();
+                        }
+                        finally
+                        {
+                                this.setAutoSave(autoSaveBak); // set autoSave to previous value
+                            setDetailEvents(true);
+                        }
+                        fireEvent(EVENT_RELOAD, null, getURL(), false);
+                        // notify the strategy
+                        strategy.reloadingPerformed();
+                    }
+--------------------------
+I hope this is a valid fix. 

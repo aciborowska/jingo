@@ -1,0 +1,82 @@
+I am trying to wire up an application using embedded Jetty web
+server. In order to make the service beans available to the
+Jetty servlets, I am using ContextLoader.loadParentContext()
+to set a parent context for the root web context, e.g.:
+    <context-param>
+        <param-name>locatorFactorySelector</param-name>
+        <param-value>classpath*:com/awarix/trak/server/**/beanRefFactory.xml</param-value>
+    </context-param>
+    <context-param>
+        <param-name>parentContextKey</param-name>
+        <param-value>com.awarix.trak.server</param-value>
+    </context-param>
+    <listener>
+        <listener-class>org.springframework.web.context.ContextLoaderListener</listener-class>
+    </listener>
+My application is also started using an "AppLauncher" class
+that I wrote that does something like this:
+        // Start application
+        try 
+{
+            ContextSingletonBeanFactoryLocator
+              .getInstance(getSelector(pname)).useBeanFactory(pname);
+        }
+ catch (BeansException e) 
+{
+            LOG.error("failed to launch application", e);
+            e.printStackTrace(System.err);
+            System.exit(1);
+        }
+
+The servlet context is configured to use the same selector and
+context key as is used by the above code (not shown), to ensure
+that the ContextLoader finds the same application context for
+its parent as is used by the rest of the application.
+The problem is that recursion occurs in the
+SingletonBeanFactoryLocator.useBeanFactory() method:
+            else {
+                // this group definition doesn't exist, we need to try to load it
+                if (logger.isDebugEnabled()) 
+{
+                    logger.debug("Factory group with resource name [" + this.resourceName
+                            + "] requested. Creating new instance.");
+                }
+
+                BeanFactory groupContext = createDefinition(this.resourceName, factoryKey);
+                bfg = new BeanFactoryGroup();
+                bfg.definition = groupContext;
+                bfg.refCount = 1;
+                this.bfgInstancesByKey.put(this.resourceName, bfg);
+                this.bfgInstancesByObj.put(groupContext, bfg);
+            }
+Note that the 'bfg' is not added to bfgInstancesByKey until
+after createDefinition() is invoked. This causes the second
+(reentrant) invocation of useBeanFactory() (the one from the
+web context) to fail to find the beans that are trying to be
+created in the first invocation (the one from the app launcher).
+I.e., here is the sequence of events:
+
+AppLauncher invokes useBeanFactory()
+This invokes createDefinition()
+This causes all the application beanRefFactory.xml files
+    to be processed.
+One of these files creates a org.mortbay.jetty.Server bean.
+That bean tries to create the servlet context.
+The ContextLoaderListener fires, causing the ContextLoader
+    to search for the application beans.
+ContextLoader (reentrantly) invokes useBeanFactory() to
+    find the parent context for the web context, i.e., the
+    application context.
+The application context has not yet been registered in
+    bfgInstancesByKey and so is not found.
+All hell breaks loose as Spring tries to create all the
+    (already created) application beans yet again, etc.
+
+I don't know if this is a Spring bug or if what I'm doing
+is "out of spec". In any case the behavior is not intuitive.
+It may be possible to fix SingletonBeanFactoryLocator to handle
+the reentrancy (e.g., register the key in bfgInstancesByKey
+first, then create the definition).
+Otherwise, I'd like to know the "right" way to do what I'm trying
+to do, which is simply get Jetty working as an embedded web server
+and give it access to my (singleton) application service beans.

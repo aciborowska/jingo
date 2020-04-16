@@ -1,0 +1,38 @@
+The static class FacesContextHelper within RichFacesAjaxHandler has a method:
+protected FacesContext getFacesContext(ServletContext context, HttpServletRequest request,
+				HttpServletResponse response)
+This contains a variable private boolean created = false;
+and the following code:
+created = true;
+FacesContextFactory facesContextFactory = (FacesContextFactory) FactoryFinder.getFactory(FactoryFinder.FACES_CONTEXT_FACTORY);
+FacesContext defaultFacesContext = facesContextFactory.getFacesContext(context, request, response,FlowLifecycle.newInstance());
+return defaultFacesContext;
+Note how the static boolean created is set to true before the FacesContext has actually been created.
+Elsewhere there is a method isRichFacesAjaxRequest:
+protected boolean isRichFacesAjaxRequest(HttpServletRequest request, HttpServletResponse response) {
+		FacesContextHelper helper = new FacesContextHelper();
+		try {
+			FacesContext facesContext = helper.getFacesContext(getServletContext(), request, response);
+			AjaxContext context = AjaxContext.getCurrentInstance(facesContext);
+			if (context != null) 
+{
+				return context.isAjaxRequest(facesContext);
+			}
+ else 
+{
+				return false;
+			}
+		} finally 
+{
+			helper.cleanup();
+		}
+	}
+ that at the end calls helper.cleanup() which ends up doing this:
+if (created) {
+	FacesContext.getCurrentInstance().release();
+}
+The trouble is that FacesContext.getCurrentInstance() might return null, or the FacesContext may be null if for some reason a run time exception has occurred when creating the FacesContext.
+There are two issues here:
+Firstly the static created boolean should not be set until the FacexContext has been set, so that the cleanup method is protected from trying to method calls on null  FacesContext.getCurrentInstance()'s
+The second issue is that the creation of the FacesContext can fail (resulting in a null) but this is somehow trapped and hidden, rather than being thrown as a fatal exception. The only indication of a problem in this case is due to the helper.cleanup() crashing due to the above problem with the created boolean being set too early.
+Note that this may well be caused by an incorrect faces configuration - more than likely, as this was encountered in a first cut Richfaces/Webflow dev env.

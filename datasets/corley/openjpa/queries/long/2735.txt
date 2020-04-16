@@ -1,0 +1,29 @@
+Ran into this problem now.
+With two entities, A and B, where A has multi-field ID (say id1 and id2), and B has a field that references A. Running this query:
+select b from B b where b.ref in ( select a from A ); causes problems.
+I don't know how to create a test case for it, because this outright doesn't work with Derby - derby doesn't allow for sub-queries that return more than one field.
+With postgres, this fails, because the query translates into:
+
+
+
+select * from b where b.ref_id1 in ( select a.id1, a.id2 from a );
+
+
+
+The problem is in InSubQExpression.appendTo() method:
+
+
+
+    public void appendTo(Select sel, ExpContext ctx, ExpState state, 
+        SQLBuffer buf) {
+        InSubQExpState istate = (InSubQExpState) state;
+        _sub.calculateValue(sel, ctx, istate.subqState, null, null);
+        _val.calculateValue(sel, ctx, istate.valueState, null, null);
+        _val.appendTo(sel, ctx, istate.valueState, buf, 0);
+        buf.append(" IN ");
+        _sub.appendTo(sel, ctx, istate.valueState, buf, 0);
+    }
+
+
+
+The _val.appendTo() is called with index of 0, but that can be a compound object (which it is in this case). I'm gonna try replacing the appendTo() call with appendType(). I don't understand enough of this to know what I'm doing though.

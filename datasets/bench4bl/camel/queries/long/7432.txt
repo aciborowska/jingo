@@ -1,0 +1,59 @@
+I am using camel-mybatis (version 2.12.0) component in Fuse 6.1 environment to invoke an oracle SP with 2 resultsets. The request is a HashMap and once mybatis maps the resultsets to java beans, the List is again saved in the original HashMap itself. 
+Here is the snippet of SqlMap:
+<select
+    id="searchUsers"
+    parameterType="java.util.HashMap"       
+    statementType="CALLABLE">
+    {call ORACLE.SP_NAME_1(
+        #
+{userId,mode=IN,jdbcType=VARCHAR}
+,
+#
+{maxResultsCount,mode=IN,jdbcType=DECIMAL}
+,
+#
+{view,mode=IN,jdbcType=VARCHAR}
+,
+#
+{statusInfo,mode=OUT,jdbcType=CURSOR,resultMap=statusInfoRowMap}
+,
+#
+{memberInfo,mode=OUT,jdbcType=CURSOR,resultMap=claimInfoRowMap}
+)}
+And here is how I invoke the mybatis component:
+<setBody>
+    <groovy>
+[
+    userId:'ID-1234',
+    maxResultsCount:20,
+    view:'MEMBER',
+]
+   </groovy>
+</setBody>
+<to uri="mybatis:searchUsers?statementType=SelectOne" />
+Since there are no result object (all the results are stored in the original requested HashMap itself), MyBatisProducer is setting null to exchange OUT message. The original body which contains the results from stored procedure is lost.
+The Question is: is this the expected behaviour? mybatis component already stores the result in exchange header, so why to update the body as well?
+The workaround I had to do was - to store the original body to a header, invoke mybatis and reset body from the header (which has the stored procedure result now) : 
+<setBody>
+            <groovy>
+                [
+             userId:'ID1234',
+             maxResultsCount:20,
+             view:'MEMBER'
+          ]
+        </groovy>
+    </setBody>
+    <setHeader headerName="originalRequest">
+        <simple>$
+{body}
+</simple>
+    </setHeader>
+    <to uri="mybatis:searchUsers?statementType=SelectOne" />
+    <setBody>
+        <simple>$
+{in.headers.originalRequest}
+</simple>
+    </setBody>
+    <log message="status: $
+{body.statusInfo}
+" />

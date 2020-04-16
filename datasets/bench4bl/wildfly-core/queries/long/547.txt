@@ -1,0 +1,35 @@
+It is possible to overlay resource directly in deployed jar, however, same resource can not be properly overlayed if said jar is deployed as part of ear ( possibly war as well ).
+Example:
+jar (xxx.jar):
+/org/test/ejb/EJBImpl.class
+/org/test/ejb/resourceToOverlya.txt
+ear(yyy.ear) - war seems to be the subject of this as well
+/xxx.jar
+Overlay #1( over jar)
+overlay target: xxx.jar/org/test/ejb/resourceToOverlya.txt
+Result: proper deployment(EJB is deployed), resource has been overlayed
+Overlay #2( over jar inside ear )
+overlay target: org/test/ejb/resourceToOverlya.txt
+Result: bad deployment, no EJB deployed, overlay target has been overlayed
+Reason of such outcome is that VFS.exists() does not recognize JavaZipFileSystem$ZipNode/Entry as zipped archive and does not dive into children.
+So what happens in here is as follows. When EAR is deployed OverlayProcessor kicks in at:
+https://github.com/wildfly/wildfly-core/blob/master/server/src/main/java/org/jboss/as/server/deployment/DeploymentOverlayDeploymentUnitProcessor.java#L107
+For this example ear/jar pair, first pair of values:
+mountPoint: /content/yyy.ear/xxx.jar/org/test/ejb/resourceToOverlya.txt
+parent:  /content/yyy.ear/xxx.jar/org/test/ejb
+Outcome of exists() call == false, should be true.
+this will iterate up to parent == /content/yyy.ear/xxx.jar
+At this point, 'createParents' contain some entries and 
+https://github.com/wildfly/wildfly-core/blob/master/server/src/main/java/org/jboss/as/server/deployment/DeploymentOverlayDeploymentUnitProcessor.java#L114
+will create tmp/virtual mounts for:
+
+/content/yyy.ear/xxx.jar/org/test/ejb
+/content/yyy.ear/xxx.jar/org/test
+/content/yyy.ear/xxx.jar/org
+
+What it will essentially do is create overlay for whole 'org' package! The VirtualFile.getChildren() will return tmp mounted VirtualFile for 'org' entry: https://github.com/jbossas/jboss-vfs/blob/master/src/main/java/org/jboss/vfs/VirtualFile.java#L335
+There is part of code which should remove 'submount' if there is directory entry: https://github.com/jbossas/jboss-vfs/blob/master/src/main/java/org/jboss/vfs/VirtualFile.java#L345 however ( if I remember correctly) 'org' tmp mount ends up twice in 'submounts'
+When VirtualFile.getChildren is called for 'this' == /content/yyy.ear/xxx.jar ( in this case it is properly removed) and when 'this' ==  /content/yyy.ear/xxx.jar/org - in which case it derails getChildren and diverts into tmp mount.
+Now about https://github.com/jbossas/jboss-vfs/blob/master/src/main/java/org/jboss/vfs/spi/JavaZipFileSystem.java#L355
+What happens here, for ear deployment - it dives recursively into 'find' until 'target' is equal to '/content/yyy.ear/xxx.jar' at this target.getParent() == 'mountPoint' == '/content/yyy.ear'.
+At this point 'find' will get result ZipNode == /content/yyy.ear and fetch child 'xxx.jar' and pop back up one notch in the call stack. However the 'xxx.jar' entry does not have any children, hence there is no way to fetch next child in line 'org'.

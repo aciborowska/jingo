@@ -1,0 +1,78 @@
+I have notice this issue while testing master branch in distributed mode. Reproduction steps:
+1. Write some data with hbase ltt 
+2. While ltt is writing execute $graceful_stop.sh --restart --reload [rs] 
+3. Wait until script start to reload regions to restarted server. In that moment ltt will stop writing and eventually fail. 
+After some digging i have notice that while ltt is working correctly there is single connection per regionserver (lsof for single connection, 27109 is  ltt PID )
+
+
+
+java      27109   hbase  143u    210579579      0t0        TCP hnode1:40423->hnode5:16020 (ESTABLISHED)
+
+
+
+and when in this example hnode5 server is restarted and script starts to reload regions on this server ltt start creating thousands of new tcp connections to this server:
+
+
+
+java      27109   hbase *623u              210674415      0t0        TCP hnode1:52948->hnode5:16020 (ESTABLISHED)
+
+java      27109   hbase *624u               210674416      0t0        TCP hnode1:52949->hnode5:16020 (ESTABLISHED)
+
+java      27109   hbase *625u               210674417      0t0        TCP hnode1:52950->hnode5:16020 (ESTABLISHED)
+
+java      27109   hbase *627u               210674419      0t0        TCP hnode1:52952->hnode5:16020 (ESTABLISHED)
+
+java      27109   hbase *628u               210674420      0t0        TCP hnode1:52953->hnode5:16020 (ESTABLISHED)
+
+java      27109   hbase *633u               210674425      0t0        TCP hnode1:52958->hnode5:16020 (ESTABLISHED)
+
+...
+
+
+
+So here is what happened based on some additional logging and debugging:
+
+AsyncRpcClient never detected that regionserver is restarted because regions were moved and there was no write/read requests to this server and  there is no some sort of heart-bit mechanism implemented
+because of above dead 
+
+AsyncRpcChannel
+
+ stayed in 
+
+PoolMap<Integer, AsyncRpcChannel> connections
+
+when ltt detected that regions are moved back to hnode5  it tried to reconnect to hnode5  leading this issue
+I was able to resolve this issue by adding following to AsyncRpcClient#createRpcChannel():
+
+
+
+synchronized (connections) {
+
+      if (closed) {
+
+        throw new StoppedRpcClientException();
+
+      }
+
+      rpcChannel = connections.get(hashCode);
+
++    if (rpcChannel != null && !rpcChannel.isAlive()) {
+
++        LOG.debug(Removing dead channel from "+ rpcChannel.address.toString());
+
++        connections.remove(hashCode);
+
++      }      
+
+
+
+      if (rpcChannel == null || !rpcChannel.isAlive()) {
+
+        rpcChannel = new AsyncRpcChannel(this.bootstrap, this, ticket, serviceName, location);
+
+        connections.put(hashCode, rpcChannel);
+
+
+
+ I will attach patch after some more testing.
+

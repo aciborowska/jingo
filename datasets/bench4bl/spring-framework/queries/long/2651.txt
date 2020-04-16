@@ -1,0 +1,67 @@
+I previously had a configuration that was working fine through all 2.0 releases until I recently upgrade from M4 to RC4. This no longer works. Here is the stack trace:
+org.springframework.beans.factory.BeanCreationException: Error creating bean with name 'messageSource' defined in file [/home/brian/dev/java/naymz/web/WEB-INF/classes/applicationContext.xml]: Cannot resolve reference to bean 'messageDAO' while setting bean property 'messageDAO'; nested exception is org.springframework.beans.factory.BeanCreationException: Error creating bean with name 'messageDAO' defined in file [/home/brian/dev/java/naymz/web/WEB-INF/classes/applicationContext-dao.xml]: Invocation of init method failed; nested exception is java.lang.IllegalArgumentException: sessionFactory or hibernateTemplate is required
+Caused by: org.springframework.beans.factory.BeanCreationException: Error creating bean with name 'messageDAO' defined in file [/home/brian/dev/java/naymz/web/WEB-INF/classes/applicationContext-dao.xml]: Invocation of init method failed; nested exception is java.lang.IllegalArgumentException: sessionFactory or hibernateTemplate is required
+Caused by: java.lang.IllegalArgumentException: sessionFactory or hibernateTemplate is required
+	at org.springframework.orm.hibernate3.support.HibernateDaoSupport.checkDaoConfig(HibernateDaoSupport.java:112)
+	at org.springframework.dao.support.DaoSupport.afterPropertiesSet(DaoSupport.java:44)
+	at org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory.invokeInitMethods(AbstractAutowireCapableBeanFactory.java:957)
+	at org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory.initializeBean(AbstractAutowireCapableBeanFactory.java:924)
+	at org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory.createBean(AbstractAutowireCapableBeanFactory.java:415)
+	at org.springframework.beans.factory.support.AbstractBeanFactory$1.getObject(AbstractBeanFactory.java:245)
+	at org.springframework.beans.factory.support.DefaultSingletonBeanRegistry.getSingleton(DefaultSingletonBeanRegistry.java:141)
+	at org.springframework.beans.factory.support.AbstractBeanFactory.getBean(AbstractBeanFactory.java:242)
+	at org.springframework.beans.factory.support.AbstractBeanFactory.getBean(AbstractBeanFactory.java:156)
+	at org.springframework.beans.factory.support.BeanDefinitionValueResolver.resolveReference(BeanDefinitionValueResolver.java:246)
+	at org.springframework.beans.factory.support.BeanDefinitionValueResolver.resolveValueIfNecessary(BeanDefinitionValueResolver.java:128)
+	at org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory.applyPropertyValues(AbstractAutowireCapableBeanFactory.java:850)
+	at org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory.populateBean(AbstractAutowireCapableBeanFactory.java:624)
+	at org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory.createBean(AbstractAutowireCapableBeanFactory.java:411)
+	at org.springframework.beans.factory.support.AbstractBeanFactory$1.getObject(AbstractBeanFactory.java:245)
+	at org.springframework.beans.factory.support.DefaultSingletonBeanRegistry.getSingleton(DefaultSingletonBeanRegistry.java:141)
+	at org.springframework.beans.factory.support.AbstractBeanFactory.getBean(AbstractBeanFactory.java:242)
+	at org.springframework.beans.factory.support.AbstractBeanFactory.getBean(AbstractBeanFactory.java:160)
+	at org.springframework.context.support.AbstractApplicationContext.getBean(AbstractApplicationContext.java:646)
+	at org.springframework.context.support.AbstractApplicationContext.initMessageSource(AbstractApplicationContext.java:455)
+	at org.springframework.context.support.AbstractApplicationContext.refresh(AbstractApplicationContext.java:336)
+	at org.springframework.context.support.ClassPathXmlApplicationContext.<init>(ClassPathXmlApplicationContext.java:92)
+	at org.springframework.context.support.ClassPathXmlApplicationContext.<init>(ClassPathXmlApplicationContext.java:77)
+	at org.springframework.test.AbstractSingleSpringContextTests.loadContextLocations(AbstractSingleSpringContextTests.java:138)
+	at org.springframework.test.AbstractSingleSpringContextTests.loadContext(AbstractSingleSpringContextTests.java:125)
+	at org.springframework.test.AbstractSpringContextTests.getContext(AbstractSpringContextTests.java:104)
+	at org.springframework.test.AbstractSingleSpringContextTests.setUp(AbstractSingleSpringContextTests.java:75)
+	at org.springframework.test.ConditionalTestCase.runBare(ConditionalTestCase.java:69)
+	at com.intellij.rt.execution.junit2.JUnitStarter.main(JUnitStarter.java:32)
+This configuration for the SessionFactory (which is a FactoryBean) and the DAO are:
+  <bean id="sessionFactory" parent="abstractSessionFactory">
+    <property name="hibernateProperties">
+      <props>
+        <prop key="hibernate.dialect">org.hibernate.dialect.MySQLInnoDBDialect</prop>
+        <prop key="hibernate.cache.provider_class">org.hibernate.cache.EhCacheProvider</prop>
+        <prop key="hibernate.cache.use_second_level_cache">true</prop>
+        <prop key="hibernate.cache.use_query_cache">true</prop>
+        <prop key="hibernate.show_sql">false</prop>
+        <prop key="hibernate.current_session_context_class">thread</prop>
+        <prop key="hibernate.cglib.use_reflection_optimizer">true</prop>
+      </props>
+    </property>
+  </bean>
+  <bean id="abstractSessionFactory" class="org.springframework.orm.hibernate3.annotation.AnnotationSessionFactoryBean" abstract="true">
+    <property name="dataSource" ref="dataSource"/>
+    <property name="entityInterceptor">
+      <bean class="com.naymz.dao.UpsertInterceptor"/>
+    </property>
+    <property name="annotatedClasses">
+      <list>
+        (snip)
+      </list>
+    </property>
+  </bean>
+  <bean id="messageDAO" class="com.naymz.dao.cms.MessageDAOImpl" autowire="autodetect"/>
+The configuration for the messageSource bean is:
+  <bean id="messageSource" class="com.naymz.cms.NaymzMessageSource">
+    <property name="useCodeAsDefaultMessage" value="false"/>
+    <property name="alwaysUseMessageFormat" value="false"/>
+    <property name="messageDAO" ref="messageDAO"/>
+    <property name="siteDAO" ref="siteDAO"/>
+  </bean>
+The issue appears to be that since there is an abstract FactoryBean, the messageDAO is not being injected based on type. My DAO has no dependencies. The superclass of my DAO with a dependency is org.springframework.orm.hibernate3.support.HibernateDaoSupport, which has a setter for a org.hibernate.SessionFactory. I have tried changing the autowire to byType with no luck. byName works but forces huge amounts of changes all over my configuration so that everything is byName and lines up correctly. For whatever reason, the container can no longer determine that I only have a single bean defined of type org.hibernate.SessionFactory and inject that. So, it seems that autowire autodetect and byType are now broken, probably due to the abstract FactoryBean stuff.

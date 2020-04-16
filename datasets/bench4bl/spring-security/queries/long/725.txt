@@ -1,0 +1,45 @@
+In my Spring configuration I have the following fragment:
+Code:
+<security:authentication-provider>
+    <security:password-encoder hash="md5" base64="true"/>
+    ......
+</security:authentication-provider>
+The problem is that even although I specified base64="true" the configuration parser does not pick it up. My PasswordEncoder is still installed with 'encodeHashAsBase64' property 'false'.
+Analysis: After debugging I was able to locate the reason for the bug. It is located on the line 73 of class org.springframework.security.config.PasswordEncoderParser in the method parse(Element element, ParserContext parserContext)
+This code goes like this:
+Code:
+private void parse(Element element, ParserContext parserContext) {
+    ...
+    if (StringUtils.hasText(ref)) 
+{
+            ....
+    }
+ else {
+      Class beanClass = (Class) ENCODER_CLASSES.get(hash);
+      RootBeanDefinition beanDefinition = new RootBeanDefinition(beanClass);
+      beanDefinition.setSource(parserContext.extractSource(element));
+      if (useBase64) {
+         if (beanClass.isAssignableFrom(BaseDigestPasswordEncoder.class)) 
+{
+            beanDefinition.getPropertyValues().addPropertyValue("encodeHashAsBase64", "true");
+         }
+ else 
+{
+            logger.warn(ATT_BASE_64 + " isn't compatible with " + OPT_HASH_LDAP_SHA + " and will be ignored");
+         }
+      }
+      passwordEncoder = beanDefinition;
+  }
+The problematic part is here:
+if (beanClass.isAssignableFrom(BaseDigestPasswordEncod er.class)) {
+beanDefinition.getPropertyValues().addPropertyValue("encodeHashAsBase64", "true");
+} else {
+logger.warn(ATT_BASE_64 + " isn't compatible with " + OPT_HASH_LDAP_SHA + " and will be ignored");
+}
+The condition in the 'if' statement should be coded the other way around, i.e.
+if (BaseDigestPasswordEncoder.class.isAssignableFrom(b eanClass))
+{...}
+ to set up "encodeHashAsBase64" properly.
+Also: the warning message in the 'else' clause of 'if' statment above is incorrect too. No matter what algorithm you configure in your <securityassword-encoder> it always outputs '
+{sha}
+'. The reason is that insead of the runtime 'hash' parameter the message hardcodes OPT_HASH_LDAP_SHA.

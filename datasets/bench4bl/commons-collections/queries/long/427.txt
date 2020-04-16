@@ -1,0 +1,65 @@
+I am encountering a performance problem in SetUniqueList.retainAll().
+It appears in version 3.2.1 and also in revision 1365132.  I attached
+a test that exposes this problem and a patch that fixes it.  On my
+machine, for this test, the patch provides a 621X speedup.
+To run the test, just do:
+$ java Test
+The output for the un-patched version is:
+Time is 6215
+The output for the patched version is:
+Time is 10
+There are two problems here.  First, "SetUniqueList.retainAll()"
+should have similar implementation with the current implementation of
+"ListOrderedSet.retainAll()", which is more optimized.  Second, even
+"ListOrderedSet.retainAll()" has a performance problem, which was
+reported and explained in detail in COLLECTIONS-426.
+The attached patch has two parts.  The first part (the first loop) is
+inspired from COLLECTIONS-426.  The second part (everything after the
+first loop) is in fact the current implementation of
+"ListOrderedSet.retainAll()", with some minor changes to adapt it for
+the current code.  Overall, the attached patch is very similar to the
+COLLECTIONS-426 patch.
+I will rehash some of the information from COLLECTIONS-426 (which
+describes "ListOrderedSet.retainAll()") for the current
+"SetUniqueList.retainAll()".
+The current code for "SetUniqueList.retainAll()" is:
+
+
+public boolean retainAll(Collection<?> coll) {
+    boolean result = super.retainAll(coll);
+    set.retainAll(coll);
+    return result;
+}
+
+
+where both "super.retainAll(coll)" and "set.retainAll(coll)" can have
+quadratic complexity, e.g., if "coll" is a List.  Both these calls to
+"retainAll" are in fact calls to
+"java.util.AbstractCollection.retainAll()", which has the code:
+
+
+public boolean retainAll(Collection<?> c) {
+    boolean modified = false;
+    Iterator<E> e = iterator();
+    while (e.hasNext()) {
+        if (!c.contains(e.next())) {
+            e.remove();
+            modified = true;
+        }
+    }
+    return modified;
+}
+
+
+which iterates over "this" and calls "contains()" on "c".  Mapping
+this code back to "SetUniqueList.retainAll()" means that the code
+iterates over "this" and "set" and calls "contains()" on "coll".  If
+"coll" has slow "contains()" (e.g., if "coll" is a list), then
+"SetUniqueList.retainAll()" has quadratic complexity.
+The patch iterates over "coll" and calls "contains()" on "set", which
+we know is fast, because "set" is a Set.  For a more detailed
+discussion of the patch and the problem, see the current
+implementation of "ListOrderedSet.retainAll()", the discussion for
+COLLECTIONS-426, and the patch for COLLECTIONS-426.
+Is this a bug, or am I misunderstanding the intended behavior?  If so,
+can you please confirm if the patch is correct?

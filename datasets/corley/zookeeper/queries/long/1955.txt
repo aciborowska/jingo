@@ -1,0 +1,37 @@
+We have a 5 node zookeeper cluster that has been operating normally for several months.  Starting a few days ago, the entire cluster crashes a few times per day, all nodes at the exact same time.  We can't track down the exact issue, but deleting the snapshots and logs and restarting allows the cluster to come back up.  
+
+We are running exhibitor to monitor the cluster.  
+
+It appears that something bad gets into the logs, causing an EOFException and this cascades through the entire cluster:
+
+
+
+2014-07-04 12:55:26,328 [myid:1] - WARN  [QuorumPeer[myid=1]/0:0:0:0:0:0:0:0:2181:Follower@89] - Exception when following the leader
+java.io.EOFException
+        at java.io.DataInputStream.readInt(DataInputStream.java:375)
+        at org.apache.jute.BinaryInputArchive.readInt(BinaryInputArchive.java:63)
+        at org.apache.zookeeper.server.quorum.QuorumPacket.deserialize(QuorumPacket.java:83)
+        at org.apache.jute.BinaryInputArchive.readRecord(BinaryInputArchive.java:108)
+        at org.apache.zookeeper.server.quorum.Learner.readPacket(Learner.java:152)
+        at org.apache.zookeeper.server.quorum.Follower.followLeader(Follower.java:85)
+        at org.apache.zookeeper.server.quorum.QuorumPeer.run(QuorumPeer.java:740)
+2014-07-04 12:55:26,328 [myid:1] - INFO  [QuorumPeer[myid=1]/0:0:0:0:0:0:0:0:2181:Follower@166] - shutdown called
+java.lang.Exception: shutdown Follower
+        at org.apache.zookeeper.server.quorum.Follower.shutdown(Follower.java:166)
+        at org.apache.zookeeper.server.quorum.QuorumPeer.run(QuorumPeer.java:744)
+
+
+Then the server dies, exhibitor tries to restart each node, and they all get stuck trying to replay the bad transaction, logging things like:
+
+
+2014-07-04 12:58:52,734 [myid:1] - INFO  [main:FileSnap@83] - Reading snapshot /var/lib/zookeeper/version-2/snapshot.300011fc0
+2014-07-04 12:58:52,896 [myid:1] - DEBUG [main:FileTxnLog$FileTxnIterator@575] - Created new input stream /var/lib/zookeeper/version-2/log.300000021
+2014-07-04 12:58:52,915 [myid:1] - DEBUG [main:FileTxnLog$FileTxnIterator@578] - Created new input archive /var/lib/zookeeper/version-2/log.300000021
+2014-07-04 12:59:25,870 [myid:1] - DEBUG [main:FileTxnLog$FileTxnIterator@618] - EOF excepton java.io.EOFException: Failed to read /var/lib/zookeeper/version-2/log.300000021
+2014-07-04 12:59:25,871 [myid:1] - DEBUG [main:FileTxnLog$FileTxnIterator@575] - Created new input stream /var/lib/zookeeper/version-2/log.300011fc2
+2014-07-04 12:59:25,872 [myid:1] - DEBUG [main:FileTxnLog$FileTxnIterator@578] - Created new input archive /var/lib/zookeeper/version-2/log.300011fc2
+2014-07-04 12:59:48,722 [myid:1] - DEBUG [main:FileTxnLog$FileTxnIterator@618] - EOF excepton java.io.EOFException: Failed to read /var/lib/zookeeper/version-2/log.300011fc2
+
+And the cluster is dead.  The only way we have found to recover is to delete all of the data and restart.
+
+Camille Fournier Appreciate any assistance you can offer.  

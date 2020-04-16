@@ -1,0 +1,92 @@
+FastDateFormat can't properly parse dates with daylight saving in the "z" pattern. It always returns date without daylight saving. Test case:
+
+
+
+		SimpleDateFormat format = new SimpleDateFormat("dd.MM.yyyy HH:mm:ss z", Locale.GERMANY);
+
+		Date d1 = format.parse("26.10.2014 02:00:00 MESZ");
+
+		Date d2 = format.parse("26.10.2014 02:00:00 MEZ");
+
+		System.out.println(d1);
+
+		System.out.println(d2);
+
+		FastDateFormat formatt = FastDateFormat.getInstance("dd.MM.yyyy HH:mm:ss z", Locale.GERMANY);
+
+		Date d3 = formatt.parse("26.10.2014 02:00:00 MESZ");
+
+		Date d4 = formatt.parse("26.10.2014 02:00:00 MEZ");
+
+		System.out.println(d3);
+
+		System.out.println(d4);	
+
+
+
+returns:
+SDF: Sun Oct 26 02:00:00 CEST 2014
+SDF: Sun Oct 26 02:00:00 CET 2014
+FDF: Sun Oct 26 02:00:00 CET 2014
+FDF:  Sun Oct 26 02:00:00 CET 2014
+FastDateFormat returns the same date, which is wrong.
+Bug is in the FastDateParser.TimeZoneStrategy.setCalendar:
+
+
+
+@Override
+
+        void setCalendar(final FastDateParser parser, final Calendar cal, final String value) {
+
+            TimeZone tz;
+
+            if(value.charAt(0)=='+' || value.charAt(0)=='-') {
+
+                tz= TimeZone.getTimeZone("GMT"+value);
+
+            }
+
+            else if(value.startsWith("GMT")) {
+
+                tz= TimeZone.getTimeZone(value);
+
+            }
+
+            else {
+
+                tz= tzNames.get(value);
+
+                if(tz==null) {
+
+                    throw new IllegalArgumentException(value + " is not a supported timezone name");
+
+                }
+
+            }
+
+            cal.setTimeZone(tz);
+
+        }
+
+
+
+It's not enough to just call: cal.setTimeZone.
+If zone names in standard and daylight time are different, you have to check the name in DateFormatSymbols.getInstance(locale).getZoneStrings(); and if it's >= 3, you have to activate daylight mode.Just like SimpleDateFormat does it:
+
+
+
+1491            // (abbreviation) for both standard and daylight time,
+
+1492            // let the time zone in the Calendar decide which one.
+
+1493            if (!useSameName) {
+
+1494                calendar.set(Calendar.ZONE_OFFSET, tz.getRawOffset());
+
+1495                calendar.set(Calendar.DST_OFFSET,
+
+1496                             j >= 3 ? tz.getDSTSavings() : 0);
+
+1497            }
+
+

@@ -1,0 +1,168 @@
+The main for loop in 
+org.acegisecurity.acls.jdbc.BasicLookupStrategy#readAclsById(ObjectIdentity[], Sid[])  
+uses 'continue;' when an Acl is either found to be already in the results, or is found in the cache.  But the section of code that looks up batches Acls from the database is in the loop, so if the last ObjectIdentity in the in the objects array is found in the results or cache, the loop will terminate without looking up the last batch of Acls from the database.
+I've written a unit test to prove this, it should be added to org.acegisecurity.acls.jdbc.LookupStrategyTest
+/**
+
+A test specifically for a bug, where if the LAST 
+{@link ObjectIdentity} in 
+   * the array of of Oids we are getting ACL's for is in the cache, the 
+   * collection of {@link ObjectIdentity}
+ being collected for a bulk database
+lookup will not be processed due to some inapropriate <code>Continue</code>
+statements in the loop.
+
+@throws Exception
+   */
+  public void testReadLastIsCachedBugFix() throws Exception
+  {
+    ObjectIdentity grandParentOid = new ObjectIdentityImpl("org.acegisecurity.TargetObject", new Long(104));
+    ObjectIdentity parent1Oid = new ObjectIdentityImpl("org.acegisecurity.TargetObject", new Long(105));
+    ObjectIdentity parent2Oid = new ObjectIdentityImpl("org.acegisecurity.TargetObject", new Long(106));
+    ObjectIdentity childOid = new ObjectIdentityImpl("org.acegisecurity.TargetObject", new Long(107));
+
+    MutableAcl grandParentAcl = jdbcMutableAclService.createAcl(grandParentOid);
+    MutableAcl parent1Acl = jdbcMutableAclService.createAcl(parent1Oid);
+    MutableAcl parent2Acl = jdbcMutableAclService.createAcl(parent2Oid);
+    MutableAcl childAcl = jdbcMutableAclService.createAcl(childOid);
+    // Specify the inheritence hierarchy
+    parent1Acl.setParent(grandParentAcl);
+    parent2Acl.setParent(grandParentAcl);
+    childAcl.setParent(parent1Acl);
+    // Now let's add a couple of permissions
+    grandParentAcl.insertAce(null, BasePermission.READ, new PrincipalSid(auth), true);
+    // Explictly save the changed ACL
+    jdbcMutableAclService.updateAcl(grandParentAcl);
+    jdbcMutableAclService.updateAcl(parent1Acl);
+    jdbcMutableAclService.updateAcl(parent2Acl);
+    jdbcMutableAclService.updateAcl(childAcl);
+    // fluch cache to make sure we they are retieved from DB
+    cache.removeAll();
+    // first lookup only child
+    Permission[] checkPermision = new Permission[] 
+{BasePermission.READ}
+;
+    Sid[] sids = new Sid[] 
+{ new PrincipalSid(auth)}
+;
+    ObjectIdentity[] childOids = new ObjectIdentity[] 
+{childOid}
+;
+    Map foundAcls = lookupStrategy.readAclsById(childOids, sids);
+    Acl foundChildAcl = (Acl) foundAcls.get(childOid);
+    assertNotNull(foundChildAcl);
+    assertTrue(foundChildAcl.isGranted(checkPermision, sids, false));
+    // we now expect that the acls for child, parent1 and grandparent are cached
+    // if the bug is present and we now search for all for acls, and make sure
+    // that batchsize is greater than 4, and that parent2 is not the last in the 
+    // oid array (it's the only one not cached), then having an aleady cached
+    // ACL as the last in the oid array to lookup, will cause the BUG we are 
+    // for testing to skip the DB lookup when the last entry to check is 
+    // retireved from the cache.
+    ObjectIdentity[] allOids = new ObjectIdentity[] 
+{grandParentOid, parent1Oid, parent2Oid, childOid}
+;
+    foundAcls = lookupStrategy.readAclsById(allOids, sids);
+    Acl foundParent2Acl = (Acl) foundAcls.get(parent2Oid);
+    assertNotNull(foundParent2Acl);
+    assertTrue(foundParent2Acl.isGranted(checkPermision, sids, false));
+ }
+And rewritten org.acegisecurity.acls.jdbc.BasicLookupStrategy#readAclsById(ObjectIdentity[], Sid[])  to fix it
+/**
+
+The main method.<p>WARNING: This implementation completely disregards the "sids" parameter! Every item
+in the cache is expected to contain all SIDs. If you have serious performance needs (eg a very large number of
+SIDs per object identity), you'll probably want to develop a custom 
+{@link LookupStrategy}
+ implementation
+instead.</p>
+<p>The implementation works in batch sizes specfied by 
+{@link #batchSize}
+.</p>
+     *
+@param objects DOCUMENT ME!
+@param sids DOCUMENT ME!
+     *
+@return DOCUMENT ME!
+     *
+@throws NotFoundException DOCUMENT ME!
+@throws IllegalStateException DOCUMENT ME!
+     */
+    public Map readAclsById(ObjectIdentity[] objects, Sid[] sids)
+        throws NotFoundException {
+        Assert.isTrue(batchSize >= 1, "BatchSize must be >= 1");
+        Assert.notEmpty(objects, "Objects to lookup required");
+
+        // Map<ObjectIdentity,Acl>
+        Map result = new HashMap(); // contains FULLY loaded Acl objects
+        Set currentBatchToLoad = new HashSet(); // contains ObjectIdentitys
+        for (int i = 0; i < objects.length; i++) {
+            // flag to record if we have found the acl for this iteration
+            boolean aclFound = false;
+            // 1.) Check we don't already have this ACL in the results
+            if (result.containsKey(objects[i])) 
+{
+                aclFound = true; // flag as found
+            }
+
+            // 2.) Check cache for the present ACL entry
+            if (!aclFound) {
+              Acl acl = aclCache.getFromCache(objects[i]);
+              // Ensure any cached element supports all the requested SIDs
+              // (they should always, as our base impl doesn't filter on SID)
+              if (acl != null) {
+                  if (acl.isSidLoaded(sids)) 
+{
+                      result.put(acl.getObjectIdentity(), acl);
+                      aclFound = true; // flag as found
+                  }
+ else 
+{
+                      throw new IllegalStateException(
+                          "Error: SID-filtered element detected when implementation does not perform SID filtering - have you added something to the cache manually?");
+                  }
+              }
+            }
+            // 3. Load the Acl from the database
+            if (!aclFound) 
+{
+              currentBatchToLoad.add(objects[i]);
+            }
+
+            // Is it time to load from JDBC the currentBatchToLoad?
+            if ((currentBatchToLoad.size() == this.batchSize) || ((i + 1) == objects.length)) {
+                if (currentBatchToLoad.size() > 0) {
+                    Map loadedBatch = lookupObjectIdentities((ObjectIdentity[]) currentBatchToLoad.toArray(
+                                new ObjectIdentity[] {}), sids);
+                    // Add loaded batch (all elements 100% initialized) to results
+                    result.putAll(loadedBatch);
+                    // Add the loaded batch to the cache
+                    Iterator loadedAclIterator = loadedBatch.values().iterator();
+                    while (loadedAclIterator.hasNext()) 
+{
+                        aclCache.putInCache((AclImpl) loadedAclIterator.next());
+                    }
+                }
+                currentBatchToLoad.clear();
+            }
+        }
+        // Now we're done, check every requested object identity was found 
+        // and log it.
+        if (LOG.isWarnEnabled()) {
+          for (int i = 0; i < objects.length; i++) {
+              if (!result.containsKey(objects[i])) 
+{
+                  LOG.warn("Unable to find ACL information for object identity '"
+                      + objects[i].toString() + "'");
+              }
+          }
+        }
+        return result;
+    }
+Note: This should probably be added to 
+http://opensource.atlassian.com/projects/spring/browse/SEC-532
+NOTE: 2
+This should be fixed after 
+http://opensource.atlassian.com/projects/spring/browse/SEC-547
+(included code contains fix for 547 and 589 also)
+NOTE: 3 This bug was very difficult to replicate in our application, because it is dependent on the last ObjectIdentity being found in the cache AND there being a batch or part batch of Acls to be looked up.

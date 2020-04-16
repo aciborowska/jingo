@@ -1,0 +1,54 @@
+Hi
+The following bean definition:
+<bean id="schemaCollection" class="org.springframework.xml.xsd.commons.CommonsXsdSchemaCollection" lazy-init="true">
+        <property name="xsds" value="dl-messages.xsd"/>
+        <property name="inline" value="true"/>
+throws exception in my logs with a stack trace (part of stack trace)
+at org.apache.ws.commons.schema.resolver.DefaultURIResolver.resolveEntity(DefaultURIResolver.java:64)
+	at org.apache.ws.commons.schema.SchemaBuilder.resolveXmlSchema(SchemaBuilder.java:1872)
+	at org.apache.ws.commons.schema.SchemaBuilder.handleImport(SchemaBuilder.java:1620)
+	at org.apache.ws.commons.schema.SchemaBuilder.handleXmlSchemaElement(SchemaBuilder.java:175)
+	at org.apache.ws.commons.schema.SchemaBuilder.build(SchemaBuilder.java:82)
+	at org.apache.ws.commons.schema.XmlSchemaCollection.read(XmlSchemaCollection.java:359)
+	at org.apache.ws.commons.schema.XmlSchemaCollection.read(XmlSchemaCollection.java:304)
+	at org.apache.ws.commons.schema.XmlSchemaCollection.read(XmlSchemaCollection.java:315)
+	at org.springframework.xml.xsd.commons.CommonsXsdSchemaCollection.afterPropertiesSet(CommonsXsdSchemaCollection.java:109)
+	at org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory.invokeInitMethods(AbstractAutowireCapableBeanFactory.java:1367)
+	at org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory.initializeBean(AbstractAutowireCapableBeanFactory.java:1333)
+	... 55 more
+Caused by: java.net.URISyntaxException: Illegal character in path at index 16: file:/D:/Program Files/IBM/SDP70/runtimes/base_v61/profiles/prof/installedApps/linNode01Cell/ear-dl.ear/web-ws.war/dl-messages.xsd
+	at java.net.URI$Parser.fail(URI.java:2821)
+	at java.net.URI$Parser.checkChars(URI.java:2994)
+	at java.net.URI$Parser.parseHierarchical(URI.java:3078)
+	at java.net.URI$Parser.parse(URI.java:3026)
+	at java.net.URI.<init>(URI.java:590)
+	at org.apache.ws.commons.schema.resolver.DefaultURIResolver.resolveEntity(DefaultURIResolver.java:58)
+	... 65 more
+After a little investigation I found that the main problem is that URI constructor used in DefaultURIResolver.resolveEntity method can not parse expression:
+"file:/D:/Program Files/IBM/SDP70/runtimes/base_v61/profiles/prof/installedApps/linNode01Cell/ear-dl.ear/web-ws.war/dl-messages.xsd"
+and it is because of white space in 'Program Files' folder.
+To make URI constructor happy i would have to provide %20 instead of ' ' So to have it look like: "file:/D:/Program%20Files/IBM/SDP70/..."
+I' ve made some tests and for me it seems like a problem with org.springframework.core.io.Resource.getURL() call on websphere that does not conform to URI specification OR  problem with org.springframework.SaxUtils class that use getURL() instead of getURI.
+1) Problem in Resource.getURL()
+Calling getURL() on ClassPathResource or ServletContextResource in Websphere returns value that is proper URL but its string value (toString() value) contains whitespaces
+A little example:
+String sss = appContext.getResource("/WEB-INF/web.xml").getURL().toString();
+System.out.println(sss);
+String sss2 = appContext.getResource("/WEB-INF/web.xml").getURI().toString();
+System.out.println(sss2);
+produces:
+file:/D:/Program
+Files/IBM/SDP70/runtimes/base_v61/profiles/Wb/installedApps/liseksnNode01Cell/TestClassLoader.ear/TestClassLoaderWeb.war/WEB-INF/web.xml
+file:/D:/Program%20Files/IBM/SDP70/runtimes/base_v61/profiles/Wb/installedApps/liseksnNode01Cell/TestClassLoader.ear/TestClassLoaderWeb.war/WEB-INF/web.xml
+The analogous output you can get with ClassPathResource.
+In comment on http://jira.springframework.org/browse/SPR-3900 by Juergen Hoeller
+you can read
+"Resource URLs always allow conversion to URIs now"
+It doesn't look as it is always true on Websphere...
+2) Problem lies in SaxUtils class
+Method getSystemId() on org.springframework.xml.sax.SaxUtils returns resource.getURI() instead of getURL().
+I took a look at documentation (javadoc) of setSystemId(String systemId) method in org.xml.sax.InputSource class where you can read:
+"If the system ID is a URL, it must be fully resolved"
+Summary:
+i hope that i explained you the source and potential solution for a problem.
+I am just not 100 % if the problem lies in Spring webservices or core spring framework.

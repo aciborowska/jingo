@@ -1,0 +1,63 @@
+OPENJPA-792 patched a defect where putting @Id in the superclass caused primary key conflicts in the subclasses. 
+
+https://issues.apache.org/jira/browse/OPENJPA-792
+
+I get the same error described in OPENJPA-792 when merging a deserialized instance of an object from my domain model. I can reproduce the problem with some objects in my domain model but not others (although the all have the same superclass which contains the @Id field).
+
+This only occurs after deserialization and closing and opening the EntityManager.
+
+My failing unit test looks like this.
+
+    public void canMergeEntitiesWithMatchingIDAfterSerialization() throws 
+                IOException, ClassNotFoundException 
+{
+            
+            // setup id sequences
+            Long id = System.currentTimeMillis();
+            EntityManager em = DB.getPersistenceContext();
+            em.getTransaction().begin();
+            em.createNativeQuery(
+                    "SELECT setval('cms_content_id_seq', " + id + ");")
+                    .getResultList();
+            em.createNativeQuery(
+                    "SELECT setval('web_blobs_id_seq', " + id + ");")
+                    .getResultList();
+                    
+            // persist with same id
+            Server server = newServer();
+            Content c = ContentTest.createValid(server);
+            Blob b = BlobTest.createValid(server);
+            em.persist(c);
+            em.persist(b);
+            em.getTransaction().commit();
+            assertNotNull(c.getId());
+            assertNotNull(b.getId());
+            assertEquals(c.getId(), b.getId());
+            
+            // serialize and deserialize the object
+            File file = File.createTempFile("blob", "bin");
+            ObjectOutput out = new ObjectOutputStream(new FileOutputStream(file));
+            out.writeObject(b);
+            out.close();
+            ObjectInputStream in = new ObjectInputStream(new FileInputStream(file));
+            b = (Blob) in.readObject();
+            in.close();
+            
+            // reopen db session and try to merge an update
+            em.close();
+            em = DB.getPersistenceContext();
+            em.merge(b); // EntityNotFoundException
+        }
+ 
+
+And the stacktrace is 
+
+<openjpa-2.2.0-r422266:1244990 nonfatal store error> org.apache.openjpa.persistence.EntityNotFoundException: Attempted to attach instance "1347912956793" of type "class ox.webcore.blobs.Blob", but this instance is already in the datastore as type "class ox.cms.content.Content".
+FailedObject: ox.webcore.blobs.Blob@162e703
+	at org.apache.openjpa.kernel.VersionAttachStrategy.attach(VersionAttachStrategy.java:118)
+	at org.apache.openjpa.kernel.AttachManager.attach(AttachManager.java:252)
+	at org.apache.openjpa.kernel.AttachManager.attach(AttachManager.java:105)
+	at org.apache.openjpa.kernel.BrokerImpl.attach(BrokerImpl.java:3474)
+	at org.apache.openjpa.kernel.DelegatingBroker.attach(DelegatingBroker.java:1214)
+	at org.apache.openjpa.persistence.EntityManagerImpl.merge(EntityManagerImpl.java:878)
+	at ox.webcore.util.DB$DBTest.canMergeEntitiesWithMatchingIDAfterSerialization(DB.java:145)

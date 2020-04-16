@@ -1,0 +1,25 @@
+The zookeeper interface is designed to retry (once per second for up to ten minutes) if one or more of the Zookeeper hostnames can't be resolved (see MESOS-1326 and MESOS-1523).
+
+However, the current implementation assumes that a DNS resolution failure is indicated by zookeeper_init() returning NULL and errno being set to EINVAL (Zk translates getaddrinfo() failures into errno values). However, the current Zk code does:
+
+
+static int getaddrinfo_errno(int rc) {
+    switch(rc) {
+    case EAI_NONAME:
+// ZOOKEEPER-1323 EAI_NODATA and EAI_ADDRFAMILY are deprecated in FreeBSD.
+#if defined EAI_NODATA && EAI_NODATA != EAI_NONAME
+    case EAI_NODATA:
+#endif
+        return ENOENT;
+    case EAI_MEMORY:
+        return ENOMEM;
+    default:
+        return EINVAL;
+    }
+}
+
+
+
+getaddrinfo() returns EAI_NONAME when "the node or service is not known"; per discussion in MESOS-2186, this seems to happen intermittently due to DNS failures.
+
+Proposed fix: looking at errno is always going to be somewhat fragile, but if we're going to continue doing that, we should check for ENOENT as well as EINVAL.

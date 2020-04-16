@@ -1,0 +1,76 @@
+If the skip method of BOMInputStream is used on a stream without a BOM, skip returns the wrong number of bytes (n - max(BOM-length)). This can lead to problems if the return value is evaluated for example from guava ByteStreams.skipFully.
+BomTest.java
+
+
+public class BomTest {
+
+
+
+	private static InputStream createInputStream(boolean addBOM) {
+
+		ByteBuffer bb = ByteBuffer.allocate(64);
+
+		if (addBOM) {
+
+			// UTF-8 BOM
+
+			bb.put(new byte[] { (byte) 0xEF, (byte) 0xBB, (byte) 0xBF });
+
+		}
+
+		bb.put((byte) 0x31);
+
+		bb.put((byte) 0x32);
+
+		bb.put((byte) 0x33);
+
+		return new ByteArrayInputStream(bb.array());
+
+	}
+
+	
+
+	public static void main(String[] args) throws IOException {
+
+		BOMInputStream is1 = new BOMInputStream(createInputStream(true));
+
+		assertEquals(2, is1.skip(2));
+
+		assertEquals((byte) 0x33, is1.read());
+
+		
+
+		BOMInputStream is2 = new BOMInputStream(createInputStream(false));
+
+		assertEquals(2, is2.skip(2)); // fails here - skip returns 0
+
+		assertEquals((byte) 0x33, is2.read());
+
+	}
+
+	
+
+}
+
+
+
+I catched this bug in 2.0.1, but as far as I can see on the source 2.5 is still affected.
+I suggest the following change to the skip method:
+BOMInputStream.java
+
+
+    public long skip(long n) throws IOException {
+
+    	int skipped = 0;
+
+        while ((n > skipped) && (readFirstBytes() >= 0)) {
+
+            skipped++;
+
+        }
+
+        return in.skip(n - skipped) + skipped;
+
+    }
+
+

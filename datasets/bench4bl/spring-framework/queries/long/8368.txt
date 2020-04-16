@@ -1,0 +1,29 @@
+With the splitting of Spring Framework into multiple jar files in v3.0, there are now several files named "META-INF/spring.handlers", "spring.schemas" and "spring.tooling". This is not a problem when running in a normal servlet container, but poses problems when e.g. creating an executable JAR file from a webapp using an embedded web server such as Jetty, or running GWT in "Dev Mode", which uses a custom class loader.
+In the former scenario, a typical approach is to use a Maven assembly to extract all .class files from the project dependencies and merge them into one hierarchy, as a way of packaging all the dependencies and the webapp itself into one JAR file.
+However, in this case only one copy of "spring.handlers/schemas/tooling" can exist, and so any schemas that are used and /not/ in the one copy cannot be validated. This leads to exceptions such as this one:
+org.springframework.beans.factory.xml.XmlBeanDefinitionStoreException: Line 65 in XML document from class path resource [spring/beans.xml] is invalid; nested exception is org.xml.sax.SAXParseException: cvc-complex-type.2.4.c: The matching wildcard is strict, but no declaration can be found for element 'context:annotation-config'.
+	at org.springframework.beans.factory.parsing.FailFastProblemReporter.error(FailFastProblemReporter.java:68)
+	at org.springframework.beans.factory.parsing.ReaderContext.error(ReaderContext.java:85)
+	at org.springframework.beans.factory.parsing.ReaderContext.error(ReaderContext.java:76)
+	at org.springframework.beans.factory.xml.DefaultBeanDefinitionDocumentReader.importBeanDefinitionResource(DefaultBeanDefinitionDocumentReader.java:218)
+	at org.springframework.beans.factory.xml.DefaultBeanDefinitionDocumentReader.parseDefaultElement(DefaultBeanDefinitionDocumentReader.java:147)
+Other people reporting similar problems can be found at Stack Overflow here and here.
+The workaround is to construct your own "custom" version of these three files, merging all the copies into one like so:
+//IOUtils and FileUtils come from Apache Commons IOfor(String s : new String[] 
+{"spring.schemas", "spring.handlers", "spring.tooling"}
+) {
+	Enumeration<?> e = Test.class.getClassLoader().getResources("META-INF/"+s);
+	StringBuilder out = new StringBuilder();while(e.hasMoreElements()) 
+{
+		URL u = (URL) e.nextElement();
+		out.append(IOUtils.toString(u.openStream())).append("\n");
+	}
+	File outf = new File(s);
+	FileUtils.writeStringToFile(outf, out.toString(), "UTF-8");
+}
+However, the proper fix would be to use a different file-name for each instance of the schemas/handlers/tooling files. For example, inside "org.springframework.aop-3.0.5.RELEASE.jar/META-INF" you would find "spring-aop.schemas", "spring-aop.handlers" and "spring-aop.tooling".
+I'm afraid I'm not sufficiently up-to-speed with the Spring code-base to give you a patch to do this, however a brief investigation shows that "spring.handlers" and "spring.schemas" are specified in org.springframework.beans.factory.xml.PluggableSchemaResolver and DefaultNamespaceHandlerResolver, and that constructors exist for specifying different locations for these files. I hope you find this information useful.
+Best regards,
+
+Ian
+

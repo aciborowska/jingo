@@ -1,0 +1,17 @@
+The smallest p-value returned by TTestImpl.tTest() is the machine epsilon, which is 2.220446E-16 with IEEE754 64-bit double precision floats.
+We found this bug porting some analysis software from R to java, and noticed that the p-values did not match up.  We believe we've identified why this is happening in commons-math-1.2, and a possible solution.
+Please be gentle, as I am not a statistics expert!
+The following method in org.apache.commons.math.stat.inference.TTestImpl currently implements the following method to calculate the p-value for a 2-sided, 2-sample t-test:
+protected double tTest(double m1, double m2, double v1, double v2,  double n1, double n2)
+and it returns:
+        1.0 - distribution.cumulativeProbability(-t, t);
+at line 1034 in version 1.2.
+double cumulativeProbability(double x0, double x1) is implemented by org.apache.commons.math.distribution.AbstractDisstribution, and returns:
+        return cumulativeProbability(x1) - cumulativeProbability(x0);
+So in essence, the p-value returned by TTestImpl.tTest() is:
+1.0 - (cumulativeProbability(t) - cumulativeProbabily(-t))
+For large-ish t-statistics, cumulativeProbabilty(-t) can get quite small, and cumulativeProbabilty(t) can get very close to 1.0.  When cumulativeProbability(-t) is less than the machine epsilon, we get p-values equal to zero because:
+1.0 - 1.0 + 0.0 = 0.0
+An alternative calculation for the p-value of a 2-sided, 2-sample t-test is:
+p = 2.0 * cumulativeProbability(-t)
+This calculation does not suffer from the machine epsilon problem, and we are now getting p-values much smaller than the 2.2E-16 limit we were seeing previously.

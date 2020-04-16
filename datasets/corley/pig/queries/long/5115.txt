@@ -1,0 +1,121 @@
+Pig ResourceSchema allows to use same field names but different types when they are not in the same level. The pig schema like
+
+data: {col1: (col2: (col1_data: chararray)),col2: {col2: (col2_data: chararray)}}
+
+Although col2 has been redefined, they are not appeared in the same level, it is a totally valid pig schema. 
+
+However, once it is translated by AvroStorage, it will throw exception 
+
+Can't redefine: col2
+        at org.apache.pig.newplan.logical.visitor.InputOutputFileValidatorVisitor.visit(InputOutputFileValidatorVisitor.java:64)
+        at org.apache.pig.newplan.logical.relational.LOStore.accept(LOStore.java:66)
+        at org.apache.pig.newplan.DepthFirstWalker.depthFirst(DepthFirstWalker.java:64)
+        at org.apache.pig.newplan.DepthFirstWalker.depthFirst(DepthFirstWalker.java:66)
+        at org.apache.pig.newplan.DepthFirstWalker.depthFirst(DepthFirstWalker.java:66)
+        at org.apache.pig.newplan.DepthFirstWalker.walk(DepthFirstWalker.java:53)
+        at org.apache.pig.newplan.PlanVisitor.visit(PlanVisitor.java:52)
+        at org.apache.pig.newplan.logical.relational.LogicalPlan.validate(LogicalPlan.java:212)
+        at org.apache.pig.PigServer$Graph.compile(PigServer.java:1767)
+        at org.apache.pig.PigServer$Graph.access$300(PigServer.java:1443)
+        at org.apache.pig.PigServer.execute(PigServer.java:1356)
+        at org.apache.pig.PigServer.executeBatch(PigServer.java:415)
+        at org.apache.pig.PigServer.executeBatch(PigServer.java:398)
+        at org.apache.pig.tools.grunt.GruntParser.executeBatch(GruntParser.java:171)
+        at org.apache.pig.tools.grunt.GruntParser.parseStopOnError(GruntParser.java:234)
+        at org.apache.pig.tools.grunt.GruntParser.parseStopOnError(GruntParser.java:205)
+        at org.apache.pig.tools.grunt.Grunt.exec(Grunt.java:81)
+        at org.apache.pig.Main.run(Main.java:631)
+        at org.apache.pig.Main.main(Main.java:177)
+Caused by: org.apache.avro.SchemaParseException: Can't redefine: col2
+        at org.apache.avro.Schema$Names.put(Schema.java:1042)
+        at org.apache.avro.Schema$NamedSchema.writeNameRef(Schema.java:511)
+        at org.apache.avro.Schema$RecordSchema.toJson(Schema.java:626)
+        at org.apache.avro.Schema$ArraySchema.toJson(Schema.java:737)
+        at org.apache.avro.Schema$UnionSchema.toJson(Schema.java:814)
+        at org.apache.avro.Schema$RecordSchema.fieldsToJson(Schema.java:648)
+        at org.apache.avro.Schema$RecordSchema.toJson(Schema.java:635)
+        at org.apache.avro.Schema.toString(Schema.java:297)
+        at org.apache.avro.Schema.toString(Schema.java:287)
+        at org.apache.pig.builtin.AvroStorage.setOutputAvroSchema(AvroStorage.java:442)
+        at org.apache.pig.builtin.AvroStorage.checkSchema(AvroStorage.java:433)
+        at org.apache.pig.newplan.logical.visitor.InputOutputFileValidatorVisitor.visit(InputOutputFileValidatorVisitor.java:54)
+        ... 18 more
+
+
+
+It is caused by a bug in AvroStorageSchemaConversionUtilities class which uses tuple name as GenericRecord name as well as the fieldname that wraps the record. 
+
+So it would like to  produces the avro schema like the following 
+
+{
+  "type": "record",
+  "name": "data",
+  "fields": [
+    {
+      "name": "col1",
+      "type": {
+        "type": "record",
+        "name": "col1_1",
+        "fields": [
+          {
+            "name": "col2",
+            "type": {
+              "type": "record",
+              "name": "col2",
+              "fields": [
+                {
+                  "name": "col1_data",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "col2",
+      "type": {
+        "type": "array",
+        "items": {
+          "type": "record",
+          "name": "col2",
+          "fields": [
+            {
+              "name": "col2_data",
+              "type": "string"
+            }
+          ]
+        }
+      }
+    }
+  ]
+}
+
+
+
+But according to the avro 1.7.7  specs (https://avro.apache.org/docs/1.7.7/spec.html#Names), col2 has been defined as record and redefined as array later, it is an invalid schema, unless the fullname (namespace + name) is unique. 
+
+Since AvroStorageSchemaConversionUtilities will generate avro record if the pig schema is a tuple, we need a way to generate unique recordName. 
+
+
+public static Schema resourceSchemaToAvroSchema(final ResourceSchema rs,
+      String recordName, final String recordNameSpace,
+      final Map<String, List<Schema>> definedRecordNames,
+      final Boolean doubleColonsToDoubleUnderscores) throws IOException {
+
+    if (rs == null) {
+      return null;
+    }
+
+    recordName = toAvroName(recordName, doubleColonsToDoubleUnderscores);
+
+    List<Schema.Field> fields = new ArrayList<Schema.Field>();
+    Schema newSchema = Schema.createRecord(
+            recordName, null, recordNameSpace, false);
+
+
+
+
+The AvroStorage class from piggybank solved this problem by defining a static method and generate unique recordName. We can implement the similar method for the builtin AvroStorage 
+

@@ -1,0 +1,52 @@
+I have read source code of 1.0.x and 1.1.x and both share similar problem
+In ItemOrientedStep:
+Code:
+protected ExitStatus doExecute(final StepExecution stepExecution) throws Exception {
+    // blablabla
+    return stepOperations.iterate(new RepeatCallback() {
+        public ExitStatus doInIteration(RepeatContext context) throws Exception {
+            // balblabla
+            try {
+                // Process chunk .... (1)
+                try 
+{
+                    synchronizer.lock(stepExecution);
+                }
+                catch (InterruptedException e) 
+{
+                    stepExecution.setStatus(BatchStatus.STOPPED);
+                    Thread.currentThread().interrupt();
+                }
+                // step execution persistence
+            }
+            catch (Error e) 
+{
+                processRollback(stepExecution, contribution, fatalException, transaction);
+                throw e;
+            }
+            catch (Exception e) {                processRollback(stepExecution, contribution, fatalException, transaction);                throw e;            }
+            finally 
+{
+                synchronizer.release(stepExecution);
+            }
+            //blblabla
+            return exitStatus;
+        }
+    });
+}
+In case of any exception occured in (1) or during synchronizer.lock(), the internal semaphore in synchronizer is NOT acquired. However, the outer final block releases synchronizer, and hence, releasing the semaphore.
+From JDK API of 1.5, it stated that Semaphore can be released by another thread which is not the original acquirer of semaphore.
+So, in case of parallel processing, I may goes into some case:
+Thread 1 acquired the semaphore and doing those step execution persistence stuff.
+Thread 2 have exception in processChunk, and hence releasing the semaphore.
+Thread 3, originally waiting for semaphore, is now acquired the semaphore because Thread 2 releases it, and hence, it goes to the peresistence block of code.
+In such case, Thread 1 and 3 goes into the should-be-protected block of code for step execution persistence.
+In my environment, I throwed an exception in my writer, and it caused this exception:
+[ERROR] SimpleAsyncTaskExecutor-1 [step.AbstractStep] Encountered an error executing the step
+org.springframework.batch.core.step.AbstractStep$FatalException: Fatal error detected during save of step execution context
+// stack trace deleted
+Caused by: org.springframework.dao.OptimisticLockingFailureException: Attempt to update step execution id=609 with wrong version (5), where current version is 4
+// stack trace deleted
+It is caused by concurrent access and persistence of step execution because of the above mentioned issue.  
+Upon happening, in DB, the step execution will be updated with UNKNOWN status, and hence, preventing it from re-run.
+A quick fix is to set a flag after synchronizer lock, and only release if flag is set.  However it does not cater for interruption exception during synchronizer locking.

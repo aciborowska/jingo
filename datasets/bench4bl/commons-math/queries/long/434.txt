@@ -1,0 +1,102 @@
+The SimplexSolver is returning an unfeasible solution:
+import java.util.ArrayList;
+import java.text.DecimalFormat;
+import org.apache.commons.math.linear.ArrayRealVector;
+import org.apache.commons.math.optimization.GoalType;
+import org.apache.commons.math.optimization.OptimizationException;
+import org.apache.commons.math.optimization.linear.*;
+public class SimplexSolverBug {
+    public static void main(String[] args) throws OptimizationException {
+        LinearObjectiveFunction c = new LinearObjectiveFunction(new double[]
+{0.0d, 1.0d, 1.0d, 0.0d, 0.0d, 0.0d, 0.0d}
+, 0.0d);
+        ArrayList<LinearConstraint> cnsts = new ArrayList<LinearConstraint>(5);
+        LinearConstraint cnst;
+        cnst = new LinearConstraint(new double[] 
+{1.0d, -0.1d, 0.0d, 0.0d, 0.0d, 0.0d, 0.0d}
+, Relationship.EQ, -0.1d);
+        cnsts.add(cnst);
+        cnst = new LinearConstraint(new double[] 
+{1.0d, 0.0d, 0.0d, 0.0d, 0.0d, 0.0d, 0.0d}
+, Relationship.GEQ, -1e-18d);
+        cnsts.add(cnst);
+        cnst = new LinearConstraint(new double[] 
+{0.0d, 1.0d, 0.0d, 0.0d, 0.0d, 0.0d, 0.0d}
+, Relationship.GEQ, 0.0d);
+        cnsts.add(cnst);
+        cnst = new LinearConstraint(new double[] 
+{0.0d, 0.0d, 0.0d, 1.0d, 0.0d, -0.0128588d, 1e-5d}
+, Relationship.EQ, 0.0d);
+        cnsts.add(cnst);
+        cnst = new LinearConstraint(new double[] 
+{0.0d, 0.0d, 0.0d, 0.0d, 1.0d, 1e-5d, -0.0128586d}
+, Relationship.EQ, 1e-10d);
+        cnsts.add(cnst);
+        cnst = new LinearConstraint(new double[] 
+{0.0d, 0.0d, 1.0d, -1.0d, 0.0d, 0.0d, 0.0d}
+, Relationship.GEQ, 0.0d);
+        cnsts.add(cnst);
+        cnst = new LinearConstraint(new double[] 
+{0.0d, 0.0d, 1.0d, 1.0d, 0.0d, 0.0d, 0.0d}
+, Relationship.GEQ, 0.0d);
+        cnsts.add(cnst);
+        cnst = new LinearConstraint(new double[] 
+{0.0d, 0.0d, 1.0d, 0.0d, -1.0d, 0.0d, 0.0d}
+, Relationship.GEQ, 0.0d);
+        cnsts.add(cnst);
+        cnst = new LinearConstraint(new double[] 
+{0.0d, 0.0d, 1.0d, 0.0d, 1.0d, 0.0d, 0.0d}
+, Relationship.GEQ, 0.0d);
+        cnsts.add(cnst);
+        DecimalFormat df = new java.text.DecimalFormat("0.#####E0");
+        System.out.println("Constraints:");
+        for(LinearConstraint con : cnsts) 
+{
+
+            for (int i = 0; i < con.getCoefficients().getDimension(); ++i)
+
+                System.out.print(df.format(con.getCoefficients().getData()[i]) + " ");
+
+            System.out.println(con.getRelationship() + " " + con.getValue());
+
+        }
+
+        SimplexSolver simplex = new SimplexSolver(1e-7);
+        double[] sol = simplex.optimize(c, cnsts, GoalType.MINIMIZE, false).getPointRef();
+        System.out.println("Solution:\n" + new ArrayRealVector(sol));
+        System.out.println("Second constraint is violated!");
+    }
+}
+It's an odd problem, but something I ran across.  I tracked the problem to the getPivotRow routine in SimplexSolver.  It was choosing a pivot that resulted in a negative right-hand-side.  I recommend a fix by replacing
+                ...
+                if (MathUtils.equals(ratio, minRatio, epsilon)) {
+                ...
+with
+                ...
+                if (MathUtils.equals(ratio, minRatio, Math.abs(epsilon/entry))) {
+                ...
+I believe this would be more appropriate (and at least resolves this particular problem).
+Also, you may want to consider making a change in getPivotColumn to replace
+            ...
+            if (MathUtils.compareTo(tableau.getEntry(0, i), minValue, epsilon) < 0) {
+            ...
+with
+            ...
+            if (tableau.getEntry(0, i) < minValue) 
+            ...
+because I don't see the point of biasing earlier columns when multiple entries are within epsilon of each other.  Why not pick the absolute smallest.  I don't know that any problem can result from doing it the other way, but the latter may be a safer bet.
+VERY IMPORTANT: I discovered another bug that occurs when not restricting to non-negatives.  In SimplexTableu::getSolution(), 
+          ...          
+          if (basicRows.contains(basicRow)) 
+              // if multiple variables can take a given value
+              // then we choose the first and set the rest equal to 0
+              coefficients[i] = 0;
+          ...
+should be
+          ...          
+          if (basicRows.contains(basicRow)) {
+              // if multiple variables can take a given value
+              // then we choose the first and set the rest equal to 0
+              coefficients[i] = (restrictToNonNegative ? 0 : -mostNegative);
+          ...
+If necessary, I can give an example of where this bug causes a problem, but it should be fairly obvious why this was wrong.

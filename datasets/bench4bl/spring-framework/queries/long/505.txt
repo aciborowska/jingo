@@ -1,0 +1,106 @@
+I've created a fairly simple test setup which can replication the problem we're experiencing in our system.
+We have a facade (called TestFacade here) which is made transactional using the TransactionProxyFactoryBean. The facade has a setter property to the CompanyDao. The CompanyDao finally has a constructor which takes a Hibernate SessionFactory as argument (autowire=constructor).
+Configuration file:
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE beans PUBLIC "-//SPRING//DTD BEAN//EN" "http://www.springframework.org/dtd/spring-beans.dtd">
+<beans>
+	<bean id="dataSource" class="org.apache.commons.dbcp.BasicDataSource" destroy-method="close">
+		<property name="driverClassName"><value>com.mysql.jdbc.Driver</value></property>
+		<property name="url"><value>jdbc:mysql://localhost/ModelTestDB</value></property>
+		<property name="username"><value>root</value></property>
+		<property name="password"><value>root</value></property>
+	</bean>
+	<bean id="transactionManager" class="org.springframework.jdbc.datasource.DataSourceTransactionManager">
+		<property name="dataSource"><ref local="dataSource"/></property>
+	</bean>
+	<bean id="companyDao" class="org.test.CompanyDao" autowire="constructor">
+	</bean>
+	<bean id="testFacadeTarget" class="org.test.TestFacade">
+		<property name="companyDao">
+			<ref local="companyDao"></ref>
+		</property>
+	</bean>
+	<bean id="testFacade" class="org.springframework.transaction.interceptor.TransactionProxyFactoryBean">
+		<property name="transactionManager">
+			<ref local="transactionManager"></ref>
+		</property>
+		<property name="target">
+			<ref local="testFacadeTarget"></ref>
+		</property>
+		<property name="transactionAttributes">
+			<props>
+				<prop key="*">PROPAGATION_REQUIRED</prop>
+			</props>
+		</property>
+	</bean>
+	<bean id="sessionFactory" class="org.springframework.orm.hibernate.LocalSessionFactoryBean">
+		<property name="mappingResources">
+			<list>
+			</list>
+		</property>
+		<property name="hibernateProperties">
+			<props>
+				<prop key="hibernate.dialect">net.sf.hibernate.dialect.MySQLDialect</prop>
+			</props>
+		</property>
+		<property name="dataSource">
+			<ref bean="dataSource"/>
+		</property>
+	</bean>
+</beans>
+When the configuration only contains the Dao, everything works nicely (with the dao). When the facade and the TransactionProxyFactoryBean gets added to the mix we get the following exception:
+org.springframework.beans.factory.BeanCreationException: Error creating bean with name 'testFacade' defined in class path resource [org/test/application-context.xml]: Can't resolve reference to bean 'testFacadeTarget' while setting property 'target'; nested exception is org.springframework.beans.factory.BeanCreationException: Error creating bean with name 'testFacadeTarget' defined in class path resource [org/test/application-context.xml]: Can't resolve reference to bean 'companyDao' while setting property 'companyDao'; nested exception is 
+org.springframework.beans.factory.BeanCurrentlyInCreationException: Error creating bean with name 'companyDao': Requested bean is already currently in creation
+org.springframework.beans.factory.BeanCreationException: Error creating bean with name 'testFacadeTarget' defined in class path resource [org/test/application-context.xml]: Can't resolve reference to bean 'companyDao' while setting property 'companyDao'; nested exception is org.springframework.beans.factory.BeanCurrentlyInCreationException: Error creating bean with name 'companyDao': Requested bean is already currently in creation
+org.springframework.beans.factory.BeanCurrentlyInCreationException: Error creating bean with name 'companyDao': Requested bean is already currently in creation
+	at org.springframework.beans.factory.support.AbstractBeanFactory.getBean(AbstractBeanFactory.java:199)
+	at org.springframework.beans.factory.support.AbstractBeanFactory.getBean(AbstractBeanFactory.java:163)
+	at org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory.resolveReference(AbstractAutowireCapableBeanFactory.java:898)
+	at org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory.resolveValueIfNecessary(AbstractAutowireCapableBeanFactory.java:832)
+	at org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory.applyPropertyValues(AbstractAutowireCapableBeanFactory.java:773)
+	at org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory.populateBean(AbstractAutowireCapableBeanFactory.java:601)
+	at org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory.createBean(AbstractAutowireCapableBeanFactory.java:258)
+	at org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory.createBean(AbstractAutowireCapableBeanFactory.java:193)
+	at org.springframework.beans.factory.support.AbstractBeanFactory.getBean(AbstractBeanFactory.java:240)
+	at org.springframework.beans.factory.support.AbstractBeanFactory.getBean(AbstractBeanFactory.java:163)
+	at org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory.resolveReference(AbstractAutowireCapableBeanFactory.java:898)
+	at org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory.resolveValueIfNecessary(AbstractAutowireCapableBeanFactory.java:832)
+	at org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory.applyPropertyValues(AbstractAutowireCapableBeanFactory.java:773)
+	at org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory.populateBean(AbstractAutowireCapableBeanFactory.java:601)
+	at org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory.createBean(AbstractAutowireCapableBeanFactory.java:258)
+	at org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory.createBean(AbstractAutowireCapableBeanFactory.java:193)
+	at org.springframework.beans.factory.support.AbstractBeanFactory.getBean(AbstractBeanFactory.java:240)
+	at org.springframework.beans.factory.support.AbstractBeanFactory.getBean(AbstractBeanFactory.java:163)
+	at org.springframework.beans.factory.support.AbstractBeanFactory.getType(AbstractBeanFactory.java:345)
+	at org.springframework.beans.factory.support.DefaultListableBeanFactory.isBeanTypeMatch(DefaultListableBeanFactory.java:193)
+	at org.springframework.beans.factory.support.DefaultListableBeanFactory.getBeansOfType(DefaultListableBeanFactory.java:157)
+	at org.springframework.beans.factory.support.DefaultListableBeanFactory.getBeansOfType(DefaultListableBeanFactory.java:144)
+	at org.springframework.beans.factory.BeanFactoryUtils.beansOfTypeIncludingAncestors(BeanFactoryUtils.java:160)
+	at org.springframework.beans.factory.support.DefaultListableBeanFactory.findMatchingBeans(DefaultListableBeanFactory.java:313)
+	at org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory.createArgumentArray(AbstractAutowireCapableBeanFactory.java:547)
+	at org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory.autowireConstructor(AbstractAutowireCapableBeanFactory.java:433)
+	at org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory.createBean(AbstractAutowireCapableBeanFactory.java:238)
+	at org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory.createBean(AbstractAutowireCapableBeanFactory.java:193)
+	at org.springframework.beans.factory.support.AbstractBeanFactory.getBean(AbstractBeanFactory.java:240)
+	at org.springframework.beans.factory.support.AbstractBeanFactory.getBean(AbstractBeanFactory.java:163)
+	at org.springframework.beans.factory.support.DefaultListableBeanFactory.preInstantiateSingletons(DefaultListableBeanFactory.java:236)
+	at org.springframework.context.support.AbstractApplicationContext.refresh(AbstractApplicationContext.java:304)
+	at org.springframework.context.support.ClassPathXmlApplicationContext.<init>(ClassPathXmlApplicationContext.java:80)
+	at org.springframework.context.support.ClassPathXmlApplicationContext.<init>(ClassPathXmlApplicationContext.java:65)
+	at org.springframework.context.support.ClassPathXmlApplicationContext.<init>(ClassPathXmlApplicationContext.java:56)
+	at org.test.TestFacadeTest.testCreateNewCompany(TestFacadeTest.java:13)
+	at sun.reflect.NativeMethodAccessorImpl.invoke0(Native Method)
+	at sun.reflect.NativeMethodAccessorImpl.invoke(Unknown Source)
+	at sun.reflect.DelegatingMethodAccessorImpl.invoke(Unknown Source)
+	at java.lang.reflect.Method.invoke(Unknown Source)
+	at junit.framework.TestCase.runTest(TestCase.java:154)
+	at junit.framework.TestCase.runBare(TestCase.java:127)
+	at junit.framework.TestResult$1.protect(TestResult.java:106)
+	at junit.framework.TestResult.runProtected(TestResult.java:124)
+	at junit.framework.TestResult.run(TestResult.java:109)
+	at junit.framework.TestCase.run(TestCase.java:118)
+	at junit.framework.TestSuite.runTest(TestSuite.java:208)
+	at junit.framework.TestSuite.run(TestSuite.java:203)
+	at org.eclipse.jdt.internal.junit.runner.RemoteTestRunner.runTests(RemoteTestRunner.java:421)
+	at org.eclipse.jdt.internal.junit.runner.RemoteTestRunner.run(RemoteTestRunner.java:305)
+	at org.eclipse.jdt.internal.junit.runner.RemoteTestRunner.main(RemoteTestRunner.java:186)

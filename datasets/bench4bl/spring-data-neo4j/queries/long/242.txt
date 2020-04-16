@@ -1,0 +1,378 @@
+Hi,
+It seems that registered custom conversion for mapped fields doesn't work when non-String node property is in play. I use simple mapping (not aspectj).
+Here is entity class that has Joda DateTime field "birthday" that should be mapped to Long node property.
+
+
+
+
+
+
+ 
+
+
+
+
+@NodeEntity
+
+
+
+
+public class Actor {
+
+
+
+
+    @GraphId
+
+
+
+
+    private Long nodeId;
+
+
+
+
+ 
+
+
+
+
+    protected String name;
+
+
+
+
+ 
+
+
+
+
+    @GraphProperty(propertyType = Long.class)
+
+
+
+
+    private DateTime birthday;
+
+
+
+
+ ...
+
+
+
+
+}
+
+
+
+
+
+
+Spring-data-neo4j cannot map this to node property, there is no exception, just a log note:
+
+
+
+
+
+
+ 
+
+
+
+
+INFO [org.springframework.data.neo4j.fieldaccess.DelegatingFieldAccessorFactory] No FieldAccessor configured for field: class org.joda.time.DateTime birthday rel: false idx: false
+
+
+
+
+
+
+Everything works fine when @GraphProperty specifies String as "propertyType" (of course, I had to change the converters from/to Joda DateTime <-> String). Conversion to Long also works when I use plain java.util.Date field, instead of Joda DateTime.
+Here are converters:
+
+
+
+
+
+
+ 
+
+
+
+
+public class JodaDateTimeToLongConverter implements Converter<DateTime, Long> {
+
+
+
+
+    public Long convert(DateTime dateTime) {
+
+
+
+
+        return dateTime.getMillis();
+
+
+
+
+    }
+
+
+
+
+}
+
+
+
+
+ 
+
+
+
+
+public class LongToJodaDateTimeConverter implements Converter<Long, DateTime> {
+
+
+
+
+    public DateTime convert(Long millis) {
+
+
+
+
+        return new DateTime(millis);
+
+
+
+
+    }
+
+
+
+
+}
+
+
+
+
+
+
+Here is Spring XML project setup:
+
+
+
+
+
+
+ 
+
+
+
+
+<context:annotation-config/>
+
+
+
+
+ 
+
+
+
+
+    <bean id="graphDatabaseService" class="org.neo4j.kernel.EmbeddedGraphDatabase" destroy-method="shutdown">
+
+
+
+
+        <constructor-arg value="C:/helloworld-neo4j"/>
+
+
+
+
+    </bean>
+
+
+
+
+ 
+
+
+
+
+    <neo4j:config graphDatabaseService="graphDatabaseService"/>
+
+
+
+
+ 
+
+
+
+
+    <bean id="neo4jTransactionManager" class="org.springframework.transaction.jta.JtaTransactionManager">
+
+
+
+
+        <property name="transactionManager" ref="springTransactionManager"/>
+
+
+
+
+        <property name="userTransaction">
+
+
+
+
+            <bean class="org.neo4j.kernel.impl.transaction.UserTransactionImpl">
+
+
+
+
+                <property name="transactionManager" ref="springTransactionManager"/>
+
+
+
+
+            </bean>
+
+
+
+
+        </property>
+
+
+
+
+    </bean>
+
+
+
+
+ 
+
+
+
+
+    <bean id="springTransactionManager" class="org.neo4j.kernel.impl.transaction.SpringTransactionManager">
+
+
+
+
+        <constructor-arg ref="graphDatabaseService"/>
+
+
+
+
+    </bean>
+
+
+
+
+ 
+
+
+
+
+ 
+
+
+
+
+    <tx:annotation-driven transaction-manager="neo4jTransactionManager" />
+
+
+
+
+ 
+
+
+
+
+    <bean id="conversionService" class="org.springframework.context.support.ConversionServiceFactoryBean">
+
+
+
+
+        <property name="converters">
+
+
+
+
+            <set>
+
+
+
+
+                <bean class="org.mycompany.neo4j.utils.JodaDateTimeToLongConverter"/>
+
+
+
+
+                <bean class="org.mycompany.neo4j.utils.LongToJodaDateTimeConverter"/>
+
+
+
+
+            </set>
+
+
+
+
+        </property>
+
+
+
+
+    </bean>
+
+
+
+
+
+
+And portion of ActorDAO:
+
+
+
+
+
+
+ 
+
+
+
+
+    @Transactional
+
+
+
+
+    public Long insert(Actor actor) {
+
+
+
+
+        Actor newActor = neo4jTemplate.repositoryFor(Actor.class).save(actor);
+
+
+
+
+        logger.info("New actor saved under ID: " + newActor.getNodeId());
+
+
+
+
+        return newActor.getNodeId();
+
+
+
+
+    }
+
+
+
+
+
+ 

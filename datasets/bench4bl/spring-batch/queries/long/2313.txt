@@ -1,0 +1,290 @@
+We recently migrated to Spring Batch 3.x a system that has been running fine in production for a number of years on older Spring Batch 2.x releases. While this has been running fine in production for a couple of months now, yesterday a batch failed with what appears to be some kind of race condition / multithreading bug.
+Re-running the batch completely (which would operate on exactly the same data in a re-run) worked fine so this is not easily reproducible.
+The error was
+
+
+
+
+
+
+08:25:21,432  [main] AbstractJob ERROR <execute> - Encountered fatal error executing job
+
+
+
+
+org.springframework.batch.core.JobExecutionException: Flow execution ended unexpectedly
+
+
+
+
+        at org.springframework.batch.core.job.flow.FlowJob.doExecute(FlowJob.java:140)
+
+
+
+
+        at org.springframework.batch.core.job.AbstractJob.execute(AbstractJob.java:304)
+
+
+
+
+        at org.springframework.batch.core.launch.support.SimpleJobLauncher$1.run(SimpleJobLauncher.java:135)
+
+
+
+
+        at org.springframework.core.task.SyncTaskExecutor.execute(SyncTaskExecutor.java:50)
+
+
+
+
+        at org.springframework.batch.core.launch.support.SimpleJobLauncher.run(SimpleJobLauncher.java:128)
+
+
+
+
+        at org.springframework.batch.core.launch.support.CommandLineJobRunner.start(CommandLineJobRunner.java:362)
+
+
+
+
+        at org.springframework.batch.core.launch.support.CommandLineJobRunner.main(CommandLineJobRunner.java:590)
+
+
+
+
+        at com.ml.elt.automarking.util.AutomarkBatchCommandLineRunner.main(AutomarkBatchCommandLineRunner.java:14)
+
+
+
+
+Caused by: org.springframework.batch.core.job.flow.FlowExecutionException: Ended flow=ECIJob at state=ECIJob.loadXMLMaster with exception
+
+
+
+
+        at org.springframework.batch.core.job.flow.support.SimpleFlow.resume(SimpleFlow.java:171)
+
+
+
+
+        at org.springframework.batch.core.job.flow.support.SimpleFlow.start(SimpleFlow.java:141)
+
+
+
+
+        at org.springframework.batch.core.job.flow.FlowJob.doExecute(FlowJob.java:134)
+
+
+
+
+        ... 7 more
+
+
+
+
+Caused by: java.lang.NullPointerException
+
+
+
+
+        at org.springframework.batch.core.scope.context.SynchronizationManagerSupport.decrement(SynchronizationManagerSupport.java:149)
+
+
+
+
+        at org.springframework.batch.core.scope.context.SynchronizationManagerSupport.close(SynchronizationManagerSupport.java:143)
+
+
+
+
+        at org.springframework.batch.core.scope.context.SynchronizationManagerSupport.release(SynchronizationManagerSupport.java:193)
+
+
+
+
+        at org.springframework.batch.core.scope.context.StepSynchronizationManager.release(StepSynchronizationManager.java:112)
+
+
+
+
+        at org.springframework.batch.core.step.AbstractStep.doExecutionRelease(AbstractStep.java:284)
+
+
+
+
+        at org.springframework.batch.core.step.AbstractStep.execute(AbstractStep.java:274)
+
+
+
+
+        at org.springframework.batch.core.job.SimpleStepHandler.handleStep(SimpleStepHandler.java:148)
+
+
+
+
+        at org.springframework.batch.core.job.flow.JobFlowExecutor.executeStep(JobFlowExecutor.java:64)
+
+
+
+
+        at org.springframework.batch.core.job.flow.support.state.StepState.handle(StepState.java:67)
+
+
+
+
+        at org.springframework.batch.core.job.flow.support.SimpleFlow.resume(SimpleFlow.java:162)
+
+
+
+
+        ... 9 more
+
+
+
+
+
+
+In the step that failed, the batch has been split into partitions with gridSize=2 running across 5 threads. it looks like the failure happened at the end of the step.
+Having a look inside the code the NPE line is below. Could this be due to inconsistent synchronization or possibly an assumption that the count hasn't already been removed that is not true? Without being highly familiar with the code it looks a bit odd to me to synchronize on one field (counts) during increment, but another (contexts) during decrement.
+
+
+
+
+
+
+private void decrement() {
+
+
+
+
+		E current = getCurrent().pop();
+
+
+
+
+		if (current != null) {
+
+
+
+
+			int remaining = counts.get(current).decrementAndGet(); // <--- PROBLEMATIC LINE
+
+
+
+
+			if (remaining <= 0) {
+
+
+
+
+				synchronized (contexts) {
+
+
+
+
+					contexts.remove(current);
+
+
+
+
+					counts.remove(current);
+
+
+
+
+				}
+
+
+
+
+			}
+
+
+
+
+		}
+
+
+
+
+	}
+
+
+
+
+ 
+
+
+
+
+	public void increment() {
+
+
+
+
+		E current = getCurrent().peek();
+
+
+
+
+		if (current != null) {
+
+
+
+
+			AtomicInteger count;
+
+
+
+
+			synchronized (counts) {
+
+
+
+
+				count = counts.get(current);
+
+
+
+
+				if (count == null) {
+
+
+
+
+					count = new AtomicInteger();
+
+
+
+
+					counts.put(current, count);
+
+
+
+
+				}
+
+
+
+
+			}
+
+
+
+
+			count.incrementAndGet();
+
+
+
+
+		}
+
+
+
+
+	}
+
+
+
+
+

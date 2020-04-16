@@ -1,0 +1,31 @@
+I have a fairly simple single-threaded C client set up – single-threaded
+because we are embedding zk in the node.js/libuv runtime – which consists of
+the following algorithm:
+
+zookeeper_interest(); select();
+// perform zookeeper api calls
+zookeeper_process();
+
+I've noticed that zookeeper_interest in the C client never returns error if it
+is unable to connect to the zk server.
+
+From the spec of the zookeeper_interest API, I see that zookeeper_interest is
+supposed to return ZCONNECTIONLOSS when disconnected from the client. However,
+digging into the code, I see that the client is making a non-blocking connect
+call
+https://github.com/apache/zookeeper/blob/trunk/src/c/src/zookeeper.c#L1596-1613
+,  and returning ZOK
+https://github.com/apache/zookeeper/blob/trunk/src/c/src/zookeeper.c#L1684
+
+If we assume that the server is not up, this will mean that the subsequent
+select() call would return 0, since the fd is not ready, and future calls to
+zookeeper_interest will always return 0 and not the expected ZCONNECTIONLOSS.
+Thus an upstream client will never be aware that the connection is lost.
+
+I don't think this is the expected behavior. I have temporarily patched the zk
+C client such that zookeeper_interest will return ZCONNECTIONLOSS if it's still
+unable to connect after session_timeout has been exceeded. 
+
+I have included a patch for the client which fixes this for release 3.4.3 6b35e96 in this branch: https://github.com/yunong/zookeeper/tree/release-3.4.3-patched Here's the patch https://gist.github.com/yunong/efe869a0345867d54adf
+
+For more information, please see this email thread. http://mail-archives.apache.org/mod_mbox/zookeeper-dev/201211.mbox/%3C11A8E7C3-4DDE-45D8-ABEC-A8A4D32CF647@gmail.com%3E

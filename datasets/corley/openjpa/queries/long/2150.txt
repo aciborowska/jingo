@@ -1,0 +1,81 @@
+I am noticing a problem when using criteria queries against entities that use an @EmbeddedId that doesn't occur when using a string based query.
+
+To summarise, the string query below..
+
+em.createQuery("select lrm.user from LeagueRoleMember as lrm where lrm.leagueRole = :leagueRole")
+                                .setParameter("leagueRole", leagueRole)
+                                .getResultList();
+
+will execute the following sql statement...
+
+SELECT t1.USER_NAME FROM LeagueRoleMember t0 LEFT OUTER JOIN User t1 ON t0.USER_NAME = t1.USER_NAME WHERE (t0.LEAGUE_ID = ? AND t0.ROLE_NAME = ?)
+
+However, a CriteriaQuery constructed to be identical to the String query...
+
+CriteriaBuilder cb = emf.getCriteriaBuilder();
+CriteriaQuery<User> cq = cb.createQuery(User.class);
+Root<LeagueRoleMember> leagueRoleMember = cq.from(LeagueRoleMember.class);
+cq.select(leagueRoleMember.get(LeagueRoleMember_.user));
+cq.where(cb.equal(leagueRoleMember.get(LeagueRoleMember_.leagueRole), cb.parameter(LeagueRole.class, "leagueRole")));
+em.createQuery(cq).setParameter("leagueRole", leagueRole).getResultList();
+
+Will execute this sql statement (NOTE: it doesn't use t0.ROLE_NAME in the where clause which it should)...
+
+SELECT t1.USER_NAME FROM LeagueRoleMember t0 LEFT OUTER JOIN User t1 ON t0.USER_NAME = t1.USER_NAME WHERE (t0.LEAGUE_ID = ?)
+
+The entities are mapped as follows (getters and setters omitted)...
+
+@Entity
+public class User {
+        @Id
+        @Column(name="USER_NAME")
+        private String userName;
+}
+
+@Entity
+public class League  {
+        @Id
+        private Integer id;
+
+        @Column(name="NAME")
+        String name;
+}
+
+@Embeddable
+public class LeagueRolePK implements Serializable {
+        @Column(name="LEAGUE_ID")
+        private Integer leagueId;
+
+        @Column(name="ROLE_NAME")
+        private String roleName;
+}
+
+@Entity
+public class LeagueRole {
+        @EmbeddedId LeagueRolePK id;
+
+        @MapsId("leagueId")
+        @ManyToOne
+        private League league;
+}
+
+@Embeddable
+public class LeagueRoleMemberPK implements Serializable {
+        LeagueRolePK leagueRolePK;
+
+        @Column(name="USER_NAME")
+        private String userName;
+}
+
+@Entity
+public class LeagueRoleMember implements Serializable {
+        @EmbeddedId LeagueRoleMemberPK id;
+
+        @MapsId("leagueRolePK")
+        @ManyToOne
+        LeagueRole leagueRole;
+
+        @MapsId("userName")
+        @ManyToOne
+        User user;
+} 

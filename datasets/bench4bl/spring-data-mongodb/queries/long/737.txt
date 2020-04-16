@@ -1,0 +1,36 @@
+Multiple Mongo databases are being accessed in a transactional test case. When the transaction is rolled back at the end of the test, the following exception is thrown:
+2013-08-01 19:55:56,774 ERROR [org.springframework.transaction.support.TransactionSynchronizationUtils] - <TransactionSynchronization.beforeCompletion threw exception>
+java.lang.IllegalStateException: No value for key [Mongo: localhost/127.0.0.1:27017] bound to thread [main]
+at org.springframework.transaction.support.TransactionSynchronizationManager.unbindResource(TransactionSynchronizationManager.java:209)
+at org.springframework.transaction.support.ResourceHolderSynchronization.beforeCompletion(ResourceHolderSynchronization.java:69)
+at org.springframework.transaction.support.TransactionSynchronizationUtils.triggerBeforeCompletion(TransactionSynchronizationUtils.java:106)
+at org.springframework.transaction.support.AbstractPlatformTransactionManager.triggerBeforeCompletion(AbstractPlatformTransactionManager.java:937)
+at org.springframework.transaction.support.AbstractPlatformTransactionManager.processRollback(AbstractPlatformTransactionManager.java:834)
+at org.springframework.transaction.support.AbstractPlatformTransactionManager.rollback(AbstractPlatformTransactionManager.java:822)
+at org.springframework.test.context.transaction.TransactionalTestExecutionListener$TransactionContext.endTransaction(TransactionalTestExecutionListener.java:519)
+at org.springframework.test.context.transaction.TransactionalTestExecutionListener.endTransaction(TransactionalTestExecutionListener.java:293)
+at org.springframework.test.context.transaction.TransactionalTestExecutionListener.afterTestMethod(TransactionalTestExecutionListener.java:186)
+at org.springframework.test.context.TestContextManager.afterTestMethod(TestContextManager.java:406)
+at org.springframework.test.context.junit4.statements.RunAfterTestMethodCallbacks.evaluate(RunAfterTestMethodCallbacks.java:91)
+at org.springframework.test.context.junit4.statements.SpringRepeat.evaluate(SpringRepeat.java:72)
+at org.springframework.test.context.junit4.SpringJUnit4ClassRunner.runChild(SpringJUnit4ClassRunner.java:231)
+at org.junit.runners.BlockJUnit4ClassRunner.runChild(BlockJUnit4ClassRunner.java:47)
+at org.junit.runners.ParentRunner$3.run(ParentRunner.java:231)
+at org.junit.runners.ParentRunner$1.schedule(ParentRunner.java:60)
+at org.junit.runners.ParentRunner.runChildren(ParentRunner.java:229)
+at org.junit.runners.ParentRunner.access$000(ParentRunner.java:50)
+at org.junit.runners.ParentRunner$2.evaluate(ParentRunner.java:222)
+at org.springframework.test.context.junit4.statements.RunBeforeTestClassCallbacks.evaluate(RunBeforeTestClassCallbacks.java:61)
+at org.springframework.test.context.junit4.statements.RunAfterTestClassCallbacks.evaluate(RunAfterTestClassCallbacks.java:71)
+at org.junit.runners.ParentRunner.run(ParentRunner.java:300)
+at org.springframework.test.context.junit4.SpringJUnit4ClassRunner.run(SpringJUnit4ClassRunner.java:174)
+at org.junit.runner.JUnitCore.run(JUnitCore.java:157)
+at com.intellij.junit4.JUnit4IdeaTestRunner.startRunnerWithArgs(JUnit4IdeaTestRunner.java:76)
+at com.intellij.rt.execution.junit.JUnitStarter.prepareStreamsAndStart(JUnitStarter.java:195)
+at com.intellij.rt.execution.junit.JUnitStarter.main(JUnitStarter.java:63)
+This is a similar stack trace that was filed for DATAMONGO-546. I looked for a code resolution to that issue, but it appears that it was closed because the reporter upgraded and the issue disappeared.
+After some debugging of the interaction between MongoDbUtils and TransactionSynchronizationManager, I have a working theory as to the cause. In a nutshell, MongoDbUtils invokes TransactionSynchronizationManager for each database in the same Mongo instance. This ends up registering two MongoSynchronizations that have the same holder. As such, there is only one resource bound in the TransactionSynchronizationManager, (see MongoDbUtils.java lines 124-139). When the transaction is completed, TransactionSynchronizationUtils.triggerBeforeCompletion() is invoked and it iterates through the MongoSynchronizations in effect invoking unbindResource() for each. The first database's synchronization unbinds the holder by Mongo key. The second fails because the holder is only bound once.
+I am willing to submit a patch for this issue that does one of two things:
+1. Override MongoSynchronization.beforeCompletion() and MongoSynchronization.suspend() so that they utilize unbindResourceIfPossible(), or
+2. Modify MongoDbUtils.doGetDB() so that it only registers one MongoSynchronization per Mongo instead of one per database.
+I am not sure which of these two options is "better", so some feedback from the committer community would be appreciated before I get too far into the weeds!

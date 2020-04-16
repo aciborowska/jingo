@@ -1,0 +1,14 @@
+https://issues.apache.org/jira/browse/HBASE-13761 introduced a RowTracker in FuzzyRowFilter to avoid performing getNextForFuzzyRule() for each fuzzy key on each getNextCellHint() by maintaining a list of possible row matches for each fuzzy key. The implementation assumes that the prepared rows will be matched one by one, so it removes the first row in the list as soon as it is used. However, this approach may lead to omitting rows in some cases:
+Consider a case where we have two fuzzy keys:
+1?1
+2?2
+and the data is like:
+000
+111
+112
+121
+122
+211
+212
+when the first row 000 fails to match, RowTracker will update possible row matches with cell 000 and fuzzy keys 1?1,2?2. This will populate RowTracker with 101 and 202. Then 101 is popped out of RowTracker, hint the scanner to go to row 101. The scanner will get 111 and find it is a match, and continued to find that 112 is not a match, getNextCellHint will be called again. Then comes the bug: Row 101 has been removed out of RowTracker, so RowTracker will jump to 202. As you see row 121 will be omitted, but it is actually a match for fuzzy key 1?1.
+I will illustrate the bug by adding a new test case in TestFuzzyRowFilterEndToEnd. Also I will provide the bug fix in my patch. The idea of the new solution is to maintain a priority queue for all the possible match rows for each fuzzy key, and whenever getNextCellHint is called, the elements in the queue that are smaller than the parameter currentCell will be updated(and re-insert into the queue). The head of queue will always be the "Next cell hint".

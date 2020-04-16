@@ -1,0 +1,15 @@
+Recently, on prod ensembles, we saw some peers failed to connect to others due to timed out when connecting to the other's leader election port. This was triggered by a network incident with lots of packet loss.
+
+After investigation, we found it's because we doesn't close the socket explicitly when it timed out during ssl handshake in QuorumCnxManager.connectOne.
+
+The quorum connection manager is handling connections sequentially with a default listen backlog queue size 50, during the network loss, there are socket read timed out, which is syncLimit * tickTime, and almost all the following connect requests in the backlog queue will timed out from the other side before it's being processed. Those timed out learners will try to connect to a different server, and leaves the connect requests on server side without sending the close_notify packet. The server is slowly consuming from these queue with syncLimit * tickTime timeout for each of those requests which haven't sent notify_close packet. Any new connect requests will be queued up again when there is spot in the listen backlog queue, but timed out before the server handles it, and it can never successfully finish any new connection, so it failed to join the quorum. And the peers are leaking FD because all those connections are in CLOSE-WAIT state.
+  
+ Restarting the servers to drain the listen backlog queue mitigated the issue.
+
+Here are the steps to manually reproduce the issue:
+
+	issuing two telnet connect to server A in the quorum without sending any packet
+	stop all other servers
+	start those again
+	server A read timed out from those telnet connect request one by one and it cannot join the quorum anymore
+

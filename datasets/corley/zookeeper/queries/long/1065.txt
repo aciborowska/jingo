@@ -1,0 +1,91 @@
+I have an application that uses ZooKeeper. There is an ensemble in
+production. But in order to simplify development the application will
+start an embedded ZooKeeper server when started in development mode. We
+are experiencing a timing issue with ZooKeeper 3.3.3 and I was wondering
+if this is allowed to be happen or if we did something wrong when
+starting the embedded server.
+
+
+Basically, we have a watch registered using an #exists call and watch
+code like the following.
+
+@Override
+public void process(final WatchedEvent event) {
+  switch (event.getType()) {
+    ...
+    case NodeCreated:
+      pathCreated(event.getPath());
+      break;
+    ...
+  }
+}
+
+@Override
+protected void pathCreated(final String path) {
+  // process events only for this node
+  if (!isMyPath(path))
+    return;
+  try {
+    loadNode(); // calls zk.getData(String, Watcher, Stat)
+  } catch (final Exception e) {
+    // got NoNodeException here (but not when debugging)
+    log(..., e)
+  }
+}
+
+
+
+
+From inspecting the logs we noticed a NoNodeException. When setting
+breakpoints on #loadNode and stepping through we don't get the
+exception. But when setting a breakpoint on #log only we got a hit and
+could confirm the issue this way.
+
+The path is actually some levels deep. All the parent paths don't exist
+either so they are created as well. However, no exception is thrown fro
+them. The sequence is as follows.
+
+
+/l1  --> watch triggered, getData, no exception
+/l1/l2  --> watch triggered, getData, no exception
+/l1/l2/l3  --> watch triggered, getData, no exception
+/l1/l2/l3/l4  --> watch triggered, getData, no exception
+/l1/l2/l3/l4/l5  --> watch triggered, getData, no exception
+/l1/l2/l3/l4/l5/l6  --> watch triggered, getData, NoNodeException
+
+
+
+The only difference is that all paths up to including l5 do not actually
+have any data. Only l6 has some data. Could there be some latency issues?
+
+For completeness, the embedded server is started as follows.
+
+// disable LOG4J JMX stuff
+System.setProperty("zookeeper.jmx.log4j.disable", Boolean.TRUE.toString());
+
+// get directories
+final File dataDir = new File(config.getDataLogDir());
+final File snapDir = new File(config.getDataDir());
+
+// clean old logs
+PurgeTxnLog.purge(dataDir, snapDir, 3);
+
+// create standalone server
+zkServer = new ZooKeeperServer();
+zkServer.setTxnLogFactory(new FileTxnSnapLog(dataDir, snapDir));
+zkServer.setTickTime(config.getTickTime());
+zkServer.setMinSessionTimeout(config.getMinSessionTimeout());
+zkServer.setMaxSessionTimeout(config.getMaxSessionTimeout());
+
+factory = new NIOServerCnxn.Factory(config.getClientPortAddress(),
+config.getMaxClientCnxns());
+
+// start server
+LOG.info("Starting ZooKeeper standalone server.");
+try {
+  factory.startup(zkServer);
+} catch (final InterruptedException e) {
+  LOG.warn("Interrupted during server start.", e);
+  Thread.currentThread().interrupt();
+}
+

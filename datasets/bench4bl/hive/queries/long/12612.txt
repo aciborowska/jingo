@@ -1,0 +1,95 @@
+Similar to what was reported on HIVE-6978, but now it only happens when the query is read from the standard input. For example, the following fails as expected:
+
+
+
+bash$ if beeline -u "jdbc:hive2://..." -e "boo;" ; then echo "Ok?!" ; else echo "Failed!" ; fi
+
+Connecting to jdbc:hive2://...
+
+Connected to: Apache Hive (version 1.1.0-cdh5.5.0)
+
+Driver: Hive JDBC (version 1.1.0-cdh5.5.0)
+
+Transaction isolation: TRANSACTION_REPEATABLE_READ
+
+Error: Error while compiling statement: FAILED: ParseException line 1:0 cannot recognize input near 'boo' '<EOF>' '<EOF>' (state=42000,code=40000)
+
+Closing: 0: jdbc:hive2://...
+
+Failed!
+
+
+
+But the following does not:
+
+
+
+bash$ if echo "boo;"|beeline -u "jdbc:hive2://..." ; then echo "Ok?!" ; else echo "Failed!" ; fi
+
+Connecting to jdbc:hive2://...
+
+Connected to: Apache Hive (version 1.1.0-cdh5.5.0)
+
+Driver: Hive JDBC (version 1.1.0-cdh5.5.0)
+
+Transaction isolation: TRANSACTION_REPEATABLE_READ
+
+Beeline version 1.1.0-cdh5.5.0 by Apache Hive
+
+0: jdbc:hive2://...:8> Error: Error while compiling statement: FAILED: ParseException line 1:0 cannot recognize input near 'boo' '<EOF>' '<EOF>' (state=42000,code=40000)
+
+0: jdbc:hive2://...:8> Closing: 0: jdbc:hive2://...
+
+Ok?!
+
+
+
+This was misleading our batch scripts to always believe that the execution of the queries succeded, when sometimes that was not the case. 
+Workaround
+We found we can work around the issue by always using the -e or the -f parameters, and even reading the standard input through the /dev/stdin device (this was useful because a lot of the scripts fed the queries from here documents), like this:
+some-script.sh
+
+
+#!/bin/sh
+
+
+
+set -o nounset -o errexit -o pipefail
+
+
+
+# As beeline is failing to report an error status if reading the query
+
+# to be executed from STDIN, check whether no -f or -e option is used
+
+# and, in that case, pretend it has to read the query from a regular
+
+# file using -f to read from /dev/stdin
+
+function beeline_workaround_exit_status () {
+
+    for arg in "$@"
+
+    do if [ "$arg" = "-f" -o "$arg" = "-e" ]
+
+       then beeline -u "..." "$@"
+
+            return
+
+       fi
+
+    done
+
+    beeline -u "..." "$@" -f /dev/stdin
+
+}
+
+
+
+beeline_workaround_exit_status <<EOF
+
+boo;
+
+EOF
+
+

@@ -1,0 +1,114 @@
+[Moving a thread from the zookeeper-user]
+
+RECOVERY
+We eventually recovered from this situation by shutting down clients. Initially I tried restarting the Zookeepers, however, they were getting hammered and I believe sessions timing out. I shut down ~2k clients (lightweight python app; simply sets one data watch and takes an action when it changes) at which point zktop could make a connection and a leader election was verified. After resetting latency stats the numbers were very good. I do not believe it would have ever recovered without shedding load.
+
+
+QUORUM/ELECTIONS DURING EVENT
+Unfortunately I do not have logs from the event  We had debug logging on, and logrotate configured to keep 10 100MB files, and the interesting parts rotated away. I have already switched to info logging so we don't lose this data again.
+
+During the incident I was not able to view cluster status with zktop, and never observed a successful operation beyond connections, which quickly timed out.
+
+
+GC PAUSE/LOGGING
+This is a very good question. No, Zookeeper GC is not tuned and uses whatever the defaults are in the start scripts. GC logging is not enabled either. I filed an internal bug against myself to enable logging, and tune GC.
+
+
+CLIENT SESSION TIMEOUTS
+Clients are not explicitly setting timeouts, and I believe sessionTimeout is 10 seconds based on this log entry when initially connecting.
+
+2010-07-01 05:14:00,260:44267(0x2af330240110):ZOO_INFO@zookeeper_init@727: Initiating client connection, host=10.209.21.133:2181,10.209.21.175:2181,10.209.21.181:2181 sessionTimeout=10000 watcher=(nil) sessionId=0 sessionPasswd=<null> context=(nil) flags=0
+
+
+CLIENT BACKOFFS
+Looking in application logs, we see lots of the following:
+
+2010-07-01 05:13:14,674:41491(0x41ebf940):ZOO_ERROR@handle_socket_error_msg@1528: Socket [10.209.21.181:2181] zk retcode=-7, errno=110(Connection timed out): connection timed out (exceeded timeout by 0ms)
+
+Doing some simple aggregations we see 130 errors in a ~13 minute sample period. This behavior on thousands of clients appears to have been a DDoS attack against Zookeeper. Using exponential behavior as the default behavior seems appropriate looking at this data.
+
+Fulltext of the client errors is attached. I grepped "errno" from a Python client log; I believe it uses the same underlying C library, so I did not include example output from a C program (though I can if needed). It looks basically the same.
+
+
+GOING FORWARD
+The long-GC pause causing clients to dogpile sounds like the most plausible explanation at this time. GC logging/tuning is clearly where I dropped the ball, just using the defaults; I don't think any changes should be made related to lack of tuning.
+
+Exponential backoffs does seem like a good idea, and generally useful for most people. There will always be service interruptions and backoffs would be a great preventive measure to get out of a dogpile situation.
+
+
+
+Patrick's message:
+"""
+Hi Travis, as Flavio suggested would be great to get the logs. A few questions:
+
+1) how did you eventually recover, restart the zk servers?
+
+2) was the cluster losing quorum during this time? leader re-election?
+
+3) Any chance this could have been initially triggered by a long GC pause on one of the servers? (is gc logging turned on, any sort of heap monitoring?) Has the GC been tuned on the servers, for example CMS and incremental?
+
+4) what are the clients using for timeout on the sessions?
+
+3.4 probably not for a few months yet, but we are planning for a 3.3.2 in a few weeks to fix a couple critical issues (which don't seem related to what you saw). If we can identify the problem here we should be able to include it in any fix release we do.
+
+fixing something like 517 might help, but it's not clear how we got to this state in the first place. fixing 517 might not have any effect if the root cause is not addressed. 662 has only ever been reported once afaik, and we weren't able to identify the root cause for that one.
+
+One thing we might also consider is modifying the zk client lib to backoff connection attempts if they keep failing (timing out say). Today the clients are pretty aggressive on reconnection attempts. Having some sort of backoff (exponential?) would provide more breathing room to the server in this situation.
+
+Patrick
+"""
+
+Flavio's message:
+"""
+Hi Travis, Do you think it would be possible for you to open a jira and upload your logs?
+
+Thanks,
+-Flavio
+"""
+
+My initial message:
+"""
+Hey zookeepers -
+
+We just experienced a total zookeeper outage, and here's a quick
+post-mortem of the issue, and some questions about preventing it going
+forward. Quick overview of the setup:
+
+
+	RHEL5 2.6.18 kernel
+	Zookeeper 3.3.0
+	ulimit raised to 65k files
+	3 cluster members
+	4-5k connections in steady-state
+	Primarily C and python clients, plus some java
+
+
+
+In chronological order, the issue manifested itself as alert about RW
+tests failing. Logs were full of too many files errors, and the output
+of netstat showed lots of CLOSE_WAIT and SYN_RECV sockets. CPU was
+100%. Application logs showed lots of connection timeouts. This
+suggests an event happened that caused applications to dogpile on
+Zookeeper, and eventually the CLOSE_WAIT timeout caused file handles
+to run out and basically game over.
+
+I looked through lots of logs (clients+servers) and did not see a
+clear indication of what happened. Graphs show a sudden decrease in
+network traffic when the outage began, zookeeper goes cpu bound, and
+runs our of file descriptors.
+
+Clients are primarily a couple thousand C clients using default
+connection parameters, and a couple thousand python clients using
+default connection parameters.
+
+Digging through Jira we see two issues that probably contributed to this outage:
+
+   https://issues.apache.org/jira/browse/ZOOKEEPER-662
+   https://issues.apache.org/jira/browse/ZOOKEEPER-517
+
+Both are tagged for the 3.4.0 release. Anyone know if that's still the
+case, and when 3.4.0 is roughly scheduled to ship?
+
+Thanks!
+Travis
+"""

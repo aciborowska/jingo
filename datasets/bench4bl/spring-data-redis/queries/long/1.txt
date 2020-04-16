@@ -1,0 +1,67 @@
+I have found that whilst using connection pooling the connections are never returned back to the pool. I'm not sure if you are aware of this or if it is just a feature which is incomplete at this early stage. If it is, please disregard this issue.
+Here is my spring configuration:
+
+
+
+
+
+
+    <context:component-scan base-package="net.foo.bar"/>
+
+
+
+
+ 
+
+
+
+
+    <bean id="jedisConnectionFactory"
+
+
+
+
+          class="org.springframework.data.keyvalue.redis.connection.jedis.JedisConnectionFactory">
+
+
+
+
+        <property name="pooling" value="true"/>
+
+
+
+
+    </bean>
+
+
+
+
+ 
+
+
+
+
+    <bean id="stringRedisTemplate" class="org.springframework.data.keyvalue.redis.core.StringRedisTemplate">
+
+
+
+
+        <property name="connectionFactory" ref="jedisConnectionFactory"/>
+
+
+
+
+    </bean>
+
+
+
+
+
+
+I discovered this after noticing my webapp would lock up after 8 (Redis) get operations, after a bit of digging I found out that this number corresponded with the default size of the JedisPool created within JedisConnectionFactory.afterPropertiesSet(). 
+Further digging revealed that whilst a resource is obtained from the pool, the resource is never returned (via a call to JedisPool.returnResource(...)) . This is causing the pool to become exhausted and 'deadlock' ensues. Internally Jedis is using the GenericObjectPool from Apache Commons, reading the documentation for this class shows the condition I am experiencing:
+
+When whenExhaustedAction is WHEN_EXHAUSTED_BLOCK, borrowObject() will block (invoke Object.wait() until a new or idle object is available. If a positive maxWait value is supplied, the borrowObject() will block for at most that many milliseconds, after which a NoSuchElementException will be thrown. If maxWait is non-positive, the borrowObject() method will block indefinitely.
+I have verified that this problem can be solved by returning connections to be pool by using 1.0.0.M2-SNAPSHOT and 'hacking' in a call to  JedisPool.returnResource(...) in the RedisConnectionUtils.releaseConnection(...). I have attached this patch, however it is not a fix and only serves to demonstrate.
+I have found that once my webapp uses the patched 1.0.0.M2-SNAPSHOT I no longer experience this problem.
+I am happy to provide further information, if required (or provide a more formal patch?). 

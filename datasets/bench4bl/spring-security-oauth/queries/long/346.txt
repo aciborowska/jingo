@@ -1,0 +1,134 @@
+I am working on updating from 1.0.0M6d to 1.0.0RC3. In my client I have the following oauth:resource defined:
+
+
+
+
+
+
+ 
+
+
+
+
+<oauth:resource id="service" type="authorization_code" client-id="client" client-secret="secret"
+
+
+
+
+		access-token-uri="${accessTokenUri}" user-authorization-uri="${userAuthorizationUri}"  scope="read,write"/>
+
+
+
+
+
+
+On the resource I have the following:
+
+
+
+
+
+
+ 
+
+
+
+
+<http pattern="/service/**" create-session="never" entry-point-ref="oauthAuthenticationEntryPoint"
+
+
+
+
+		access-decision-manager-ref="accessDecisionManager" xmlns="http://www.springframework.org/schema/security">
+
+
+
+
+		<anonymous enabled="false" />
+
+
+
+
+		<intercept-url pattern="/service" access="ROLE_USER,SCOPE_READ" />
+
+
+
+
+		<intercept-url pattern="/service/**" access="ROLE_USER,SCOPE_READ" method="GET"/>
+
+
+
+
+		<custom-filter ref="resourceServerFilter" before="PRE_AUTH_FILTER" />
+
+
+
+
+		<access-denied-handler ref="oauthAccessDeniedHandler" />
+
+
+
+
+	</http>
+
+
+
+
+
+
+and for the AccessDecisionManager:
+
+
+
+
+
+
+<bean id="accessDecisionManager" class="org.springframework.security.access.vote.UnanimousBased" xmlns="http://www.springframework.org/schema/beans">
+
+
+
+
+		<constructor-arg>
+
+
+
+
+			<list>
+
+
+
+
+				<bean class="org.springframework.security.oauth2.provider.vote.ScopeVoter" />
+
+
+
+
+				<bean class="org.springframework.security.access.vote.RoleVoter" />
+
+
+
+
+				<bean class="org.springframework.security.access.vote.AuthenticatedVoter" />
+
+
+
+
+			</list>
+
+
+
+
+		</constructor-arg>
+
+
+
+
+	</bean>
+
+
+
+
+
+
+When I replace ScopeVoter with my own implementation, I can see that the AuthorizationRequest associated with the Authentication passed to the vote() method on ScopeVoter has only a single scope associated with it: 'read write'. It looks like somewhere the scopes are getting parsed incorrectly in the request. If I remove the scope attribute from oauth:resource, it seems to fall back to the scopes registered with the client and the request succeeds.
+I did some further investigation to narrow down the issue. I am using the JdbcTokenStore. If I load the access token, the scope field is ['read write'], instead of ['read', 'write']. If load the AuthorizationRequest (readAuthentication) for the access token, the scope is ['read', 'write'] which is correct. Based on this the scope seems to be getting mangled  either when the access token is initially created or when it is read on the resource server.

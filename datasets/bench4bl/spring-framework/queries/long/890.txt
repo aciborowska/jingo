@@ -1,0 +1,37 @@
+I just upgraded my web app to Spring 1.2 RC2 and Hibernate 3.0.1. I updated all spring references to the hibernate3 subpackage and followed the other migration steps.
+When I ran my web app, I noticed a strange and severe issue. Several stateful web requests that were previously working were not persisting to the database after the upgrade. 
+I am using Spring MVC. My service API's that are called from the web controller are wrapped with the following transactional attributes.
+<property name="transactionAttributes">
+  <props>
+     <prop key="insert*">PROPAGATION_REQUIRED</prop>
+     <prop key="update*">PROPAGATION_REQUIRED</prop>
+     <prop key="save*">PROPAGATION_REQUIRED</prop>
+     <prop key="*">PROPAGATION_REQUIRED,readOnly</prop>
+ </props>
+</property>
+With Spring 1.1, Hibernate 2.1.8 the following worked fine in my setup :
+1) user requests a page, edits some data and submits the form
+2) in controller, I call myservice.find(...) [a readonly txn] in onBindAndValidate()/formBackingObject(). The find() method eventually calls getHibernateTemplate().find(..)
+3) if errors present, errors are added by calling errors.reject(..) and Spring MVC framework redisplays the form the user with error messages. The invalid data that was bound to the object before the onBindAndValidate() call are discarded (because txn is readonly) and not saved to the DB.
+4) if no errors are present, service method to save bound domain objects is called : myservice.save(myobj) [a non-readonly txn] which eventually calls getHibernateTemplate().saveOrUpdate(myobj) and the data is persisted to the database by Hibernate.
+With Spring 1.2 RC2, Hibernate 3.0.1 I ran into problems. After running my app through a debugger here's what I found.
+Basically what is happening with Spring 1.2 RC2/H3 is that in step 2) when getHibernateTemplate().find(..) is called, all objects returned by this query are marked are as org.hibernate.engine.Status.READ_ONLY query.setReadOnly(true) is called.
+org.springframework.orm.hibernate3.HibernateTemplate#find(..)
+   -->HibernateTemplate#prepareQuery(..)
+      --->SessionFactoryUtils.applyTransactionTimeout(..) 
+         --->
+if (TransactionSynchronizationManager.isCurrentTransactionReadOnly()) {
+  query.setReadOnly(true);
+}
+I noticed that the above code is new to the hibernate3 versions of the classes and did not exist in the "classic" H2 version.
+Now when I reach step 4), getHibernateTemplate().saveOrUpdate(myobj) is eventually called via myservice.save(myobj). However since myobj was returned by myservice.find() is step 2) and marked as readonly, when saveOrUpdate is called on it, the changes are not persisted to the database.
+Note that if I declare my service API txn attibutes as
+<property name="transactionAttributes">
+  <props>
+     <prop key="*">PROPAGATION_REQUIRED</prop>
+ </props>
+</property>
+then the problem is that when invalid data is entered by users, onBindAndValidate does add to the errors instance and the form is redisplayed to the user with error messages but the changes to the bound domain object with bad data is persisted to the database. And this is not desirable.
+Please let me know if I'm missing something.
+Thanks,
+Sanjiv

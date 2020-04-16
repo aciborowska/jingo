@@ -1,0 +1,109 @@
+Trying the following settings:
+
+<property>
+
+  <name>hbase.ipc.server.callqueue.handler.factor</name>
+
+  <value>0.5</value>
+
+</property>
+
+<property>
+
+  <name>hbase.ipc.server.callqueue.read.ratio</name>
+
+  <value>0.5</value>
+
+</property>
+
+<property>
+
+  <name>hbase.ipc.server.callqueue.scan.ratio</name>
+
+  <value>0.1</value>
+
+</property>
+
+
+
+With 30 default handlers, this means 15 queues. Further, it means 8 write queues and 7 read queues. 10% of that is 0.7 which is then floor'ed to 0. The debug log confirms it, as the tertiary check omits the scan details when they are zero:
+
+2016-10-12 12:50:27,305 INFO  [main] ipc.SimpleRpcScheduler: Using fifo as user call queue, count=15
+
+2016-10-12 12:50:27,311 DEBUG [main] ipc.RWQueueRpcExecutor: FifoRWQ.default writeQueues=7 writeHandlers=15 readQueues=8 readHandlers=14
+
+
+
+But the code in RWQueueRpcExecutor calls RpcExecutor.startHandler() nevertheless and that does this:
+
+
+
+    for (int i = 0; i < numHandlers; i++) {
+
+      final int index = qindex + (i % qsize);
+
+      String name = "RpcServer." + threadPrefix + ".handler=" + handlers.size() + ",queue=" +
+
+          index + ",port=" + port;
+
+
+
+The modulo triggers then 
+
+2016-10-12 11:41:22,810 ERROR [main] master.HMasterCommandLine: Master exiting
+
+java.lang.RuntimeException: Failed construction of Master: class org.apache.hadoop.hbase.master.HMasterCommandLine$LocalHMaster
+
+        at org.apache.hadoop.hbase.util.JVMClusterUtil.createMasterThread(JVMClusterUtil.java:145)
+
+        at org.apache.hadoop.hbase.LocalHBaseCluster.addMaster(LocalHBaseCluster.java:220)
+
+        at org.apache.hadoop.hbase.LocalHBaseCluster.(LocalHBaseCluster.java:155)
+
+        at org.apache.hadoop.hbase.master.HMasterCommandLine.startMaster(HMasterCommandLine.java:222)
+
+        at org.apache.hadoop.hbase.master.HMasterCommandLine.run(HMasterCommandLine.java:137)
+
+        at org.apache.hadoop.util.ToolRunner.run(ToolRunner.java:70)
+
+        at org.apache.hadoop.hbase.util.ServerCommandLine.doMain(ServerCommandLine.java:126)
+
+        at org.apache.hadoop.hbase.master.HMaster.main(HMaster.java:2524)
+
+Caused by: java.lang.ArithmeticException: / by zero
+
+        at org.apache.hadoop.hbase.ipc.RpcExecutor.startHandlers(RpcExecutor.java:125)
+
+        at org.apache.hadoop.hbase.ipc.RWQueueRpcExecutor.startHandlers(RWQueueRpcExecutor.java:178)
+
+        at org.apache.hadoop.hbase.ipc.RpcExecutor.start(RpcExecutor.java:78)
+
+        at org.apache.hadoop.hbase.ipc.SimpleRpcScheduler.start(SimpleRpcScheduler.java:272)
+
+        at org.apache.hadoop.hbase.ipc.RpcServer.start(RpcServer.java:2212)
+
+        at org.apache.hadoop.hbase.regionserver.RSRpcServices.start(RSRpcServices.java:1143)
+
+        at org.apache.hadoop.hbase.regionserver.HRegionServer.(HRegionServer.java:615)
+
+        at org.apache.hadoop.hbase.master.HMaster.(HMaster.java:396)
+
+        at org.apache.hadoop.hbase.master.HMasterCommandLine$LocalHMaster.(HMasterCommandLine.java:312)
+
+        at sun.reflect.NativeConstructorAccessorImpl.newInstance0(Native Method)
+
+        at sun.reflect.NativeConstructorAccessorImpl.newInstance(NativeConstructorAccessorImpl.java:62)
+
+        at sun.reflect.DelegatingConstructorAccessorImpl.newInstance(DelegatingConstructorAccessorImpl.java:45)
+
+        at java.lang.reflect.Constructor.newInstance(Constructor.java:422)
+
+        at org.apache.hadoop.hbase.util.JVMClusterUtil.createMasterThread(JVMClusterUtil.java:140)
+
+        ... 7 more
+
+
+
+That causes the server to not even start. I would suggest we either skip the startHandler() call altogether, or make it zero aware.
+Another possible option is to reserve at least one scan handler/queue when the scan ratio is greater than zero, but only of there is more than one read handler/queue to begin with. Otherwise the scan handler/queue should be zero and share the one read handler/queue.
+Makes sense?

@@ -1,0 +1,519 @@
+The predicate pushdown filter is not applying left associativity of joins correctly in determining possible aliases for pushing predicates.
+In hive.ql.ppd.OpProcFactory.JoinPPD.getQualifiedAliases, the criteria for pushing aliases is specified as:
+
+    /**
+
+     * Figures out the aliases for whom it is safe to push predicates based on
+
+     * ANSI SQL semantics For inner join, all predicates for all aliases can be
+
+     * pushed For full outer join, none of the predicates can be pushed as that
+
+     * would limit the number of rows for join For left outer join, all the
+
+     * predicates on the left side aliases can be pushed up For right outer
+
+     * join, all the predicates on the right side aliases can be pushed up Joins
+
+     * chain containing both left and right outer joins are treated as full
+
+     * outer join. [...]
+
+     *
+
+     * @param op
+
+     *          Join Operator
+
+     * @param rr
+
+     *          Row resolver
+
+     * @return set of qualified aliases
+
+     */
+
+
+
+Since hive joins are left associative, something like "a RIGHT OUTER JOIN b LEFT OUTER JOIN c INNER JOIN d" should be interpreted as "((a RIGHT OUTER JOIN b) LEFT OUTER JOIN c) INNER JOIN d", so there would be cases where joins with both left and right outer joins can have aliases that can be pushed.  Here, aliases b and d are eligible to be pushed up while the current criteria provide that none are eligible.
+Using:
+
+create table t1 (id int, key string, value string);
+
+create table t2 (id int, key string, value string);
+
+create table t3 (id int, key string, value string);
+
+create table t4 (id int, key string, value string);
+
+
+
+For example, the query
+
+explain select * from t1 full outer join t2 on t1.id=t2.id join t3 on t2.id=t3.id where t3.id=20; 
+
+
+
+currently gives
+
+STAGE DEPENDENCIES:
+
+  Stage-1 is a root stage
+
+  Stage-0 is a root stage
+
+
+
+STAGE PLANS:
+
+  Stage: Stage-1
+
+    Map Reduce
+
+      Alias -> Map Operator Tree:
+
+        t1 
+
+          TableScan
+
+            alias: t1
+
+            Reduce Output Operator
+
+              key expressions:
+
+                    expr: id
+
+                    type: int
+
+              sort order: +
+
+              Map-reduce partition columns:
+
+                    expr: id
+
+                    type: int
+
+              tag: 0
+
+              value expressions:
+
+                    expr: id
+
+                    type: int
+
+                    expr: key
+
+                    type: string
+
+                    expr: value
+
+                    type: string
+
+        t2 
+
+          TableScan
+
+            alias: t2
+
+            Reduce Output Operator
+
+              key expressions:
+
+                    expr: id
+
+                    type: int
+
+              sort order: +
+
+              Map-reduce partition columns:
+
+                    expr: id
+
+                    type: int
+
+              tag: 1
+
+              value expressions:
+
+                    expr: id
+
+                    type: int
+
+                    expr: key
+
+                    type: string
+
+                    expr: value
+
+                    type: string
+
+        t3 
+
+          TableScan
+
+            alias: t3
+
+            Reduce Output Operator
+
+              key expressions:
+
+                    expr: id
+
+                    type: int
+
+              sort order: +
+
+              Map-reduce partition columns:
+
+                    expr: id
+
+                    type: int
+
+              tag: 2
+
+              value expressions:
+
+                    expr: id
+
+                    type: int
+
+                    expr: key
+
+                    type: string
+
+                    expr: value
+
+                    type: string
+
+      Reduce Operator Tree:
+
+        Join Operator
+
+          condition map:
+
+               Outer Join 0 to 1
+
+               Inner Join 1 to 2
+
+          condition expressions:
+
+            0 {VALUE._col0} {VALUE._col1} {VALUE._col2}
+
+            1 {VALUE._col0} {VALUE._col1} {VALUE._col2}
+
+            2 {VALUE._col0} {VALUE._col1} {VALUE._col2}
+
+          handleSkewJoin: false
+
+          outputColumnNames: _col0, _col1, _col2, _col5, _col6, _col7, _col10, _col11, _col12
+
+          Filter Operator
+
+            predicate:
+
+                expr: (_col10 = 20)
+
+                type: boolean
+
+            Select Operator
+
+              expressions:
+
+                    expr: _col0
+
+                    type: int
+
+                    expr: _col1
+
+                    type: string
+
+                    expr: _col2
+
+                    type: string
+
+                    expr: _col5
+
+                    type: int
+
+                    expr: _col6
+
+                    type: string
+
+                    expr: _col7
+
+                    type: string
+
+                    expr: _col10
+
+                    type: int
+
+                    expr: _col11
+
+                    type: string
+
+                    expr: _col12
+
+                    type: string
+
+              outputColumnNames: _col0, _col1, _col2, _col3, _col4, _col5, _col6, _col7, _col8
+
+              File Output Operator
+
+                compressed: false
+
+                GlobalTableId: 0
+
+                table:
+
+                    input format: org.apache.hadoop.mapred.TextInputFormat
+
+                    output format: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
+
+
+
+  Stage: Stage-0
+
+    Fetch Operator
+
+      limit: -1
+
+
+
+while the correct behavior is to push the filter "t3.id=20" down:
+
+STAGE DEPENDENCIES:
+
+  Stage-1 is a root stage
+
+  Stage-0 is a root stage
+
+
+
+STAGE PLANS:
+
+  Stage: Stage-1
+
+    Map Reduce
+
+      Alias -> Map Operator Tree:
+
+        t1 
+
+          TableScan
+
+            alias: t1
+
+            Reduce Output Operator
+
+              key expressions:
+
+                    expr: id
+
+                    type: int
+
+              sort order: +
+
+              Map-reduce partition columns:
+
+                    expr: id
+
+                    type: int
+
+              tag: 0
+
+              value expressions:
+
+                    expr: id
+
+                    type: int
+
+                    expr: key
+
+                    type: string
+
+                    expr: value
+
+                    type: string
+
+        t2 
+
+          TableScan
+
+            alias: t2
+
+            Reduce Output Operator
+
+              key expressions:
+
+                    expr: id
+
+                    type: int
+
+              sort order: +
+
+              Map-reduce partition columns:
+
+                    expr: id
+
+                    type: int
+
+              tag: 1
+
+              value expressions:
+
+                    expr: id
+
+                    type: int
+
+                    expr: key
+
+                    type: string
+
+                    expr: value
+
+                    type: string
+
+        t3 
+
+          TableScan
+
+            alias: t3
+
+            Filter Operator
+
+              predicate:
+
+                  expr: (id = 20)
+
+                  type: boolean
+
+              Reduce Output Operator
+
+                key expressions:
+
+                      expr: id
+
+                      type: int
+
+                sort order: +
+
+                Map-reduce partition columns:
+
+                      expr: id
+
+                      type: int
+
+                tag: 2
+
+                value expressions:
+
+                      expr: id
+
+                      type: int
+
+                      expr: key
+
+                      type: string
+
+                      expr: value
+
+                      type: string
+
+      Reduce Operator Tree:
+
+        Join Operator
+
+          condition map:
+
+               Outer Join 0 to 1
+
+               Inner Join 1 to 2
+
+          condition expressions:
+
+            0 {VALUE._col0} {VALUE._col1} {VALUE._col2}
+
+            1 {VALUE._col0} {VALUE._col1} {VALUE._col2}
+
+            2 {VALUE._col0} {VALUE._col1} {VALUE._col2}
+
+          handleSkewJoin: false
+
+          outputColumnNames: _col0, _col1, _col2, _col5, _col6, _col7, _col10, _col11, _col12
+
+          Select Operator
+
+            expressions:
+
+                  expr: _col0
+
+                  type: int
+
+                  expr: _col1
+
+                  type: string
+
+                  expr: _col2
+
+                  type: string
+
+                  expr: _col5
+
+                  type: int
+
+                  expr: _col6
+
+                  type: string
+
+                  expr: _col7
+
+                  type: string
+
+                  expr: _col10
+
+                  type: int
+
+                  expr: _col11
+
+                  type: string
+
+                  expr: _col12
+
+                  type: string
+
+            outputColumnNames: _col0, _col1, _col2, _col3, _col4, _col5, _col6, _col7, _col8
+
+            File Output Operator
+
+              compressed: false
+
+              GlobalTableId: 0
+
+              table:
+
+                  input format: org.apache.hadoop.mapred.TextInputFormat
+
+                  output format: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
+
+
+
+  Stage: Stage-0
+
+    Fetch Operator
+
+      limit: -1
+
+
+
+The current behavior is actually stranger than this: for a left outer join (similarly for a right outer join), hive finds the leftmost alias referred to in the predicates of left outer joins and rejects any alias to the right of it for pushdown.  So in this query the filter "t2.id=20" pushed down:
+
+explain select * from t1 join t2 on (t1.id=t2.id) left outer join t3 on (t2.id=t3.id) where t2.id=20;
+
+
+
+while it isn't here:
+
+explain select * from t1 join t2 on (t1.id=t2.id) left outer join t3 on (t1.id=t3.id) where t2.id=20;
+
+

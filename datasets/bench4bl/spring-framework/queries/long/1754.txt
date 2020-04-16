@@ -1,0 +1,49 @@
+Browsers parse the </script> tag even if it appears inside a string literal in javascript. In other words, the following HTML:
+<html>
+  <body>
+    <script>
+      document.write("</script>");
+    </script>
+   </body>
+</html>
+is invalid because the </script> inside the document.write() will be interpreted as the end of the javascript.
+Spring's javaScriptEscape should handle escaping the </script> tag to prevent a web page from breaking when someone sends </script> as input. Here's a jsp that demonstrates the problem:
+<%@ taglib uri="http://java.sun.com/jsp/jstl/core" prefix="c" %>
+<%@ taglib uri="http://www.springframework.org/tags" prefix="spring"%>
+<html>
+  <body id="body">
+  </body>
+  <script type="text/javascript">
+	  function drawTextInput(value) 
+{
+		  var input = document.createElement("input");
+		  input.type = "text";
+		  input.value = value;
+		  document.getElementById("body").appendChild(input);
+	  }
+	  drawTextInput('<c:out value="$
+{param.input}"/>');
+	  drawTextInput('<spring:message text="${param.input}
+" javaScriptEscape="true"/>');
+  </script>
+</html>
+If you deploy and browse to this JSP, you can control the text field values with a request parameter named input, like /jstest.jsp?input=foo
+I put in the <c:out> and <spring:message> versions to show the different behaviors between these two tags. I want the text input value to match the user input, but <c:out> escapes it, so I need to use something like the spring tag with javaScriptEscaping. But you'll notice that if you set input=</script>, it breaks the page. In case you're wondering why I would do this in a real application, I have some dynamic forms with a lot of interactive functionality, and most of the form HTML is conditionally rendered by javascript based on user interactions. 
+I took a look at the source code, and the fix is very easy. I just added the following condition in JavaScriptUtils.javaScriptEscape()
+    else if (c == '/') 
+{
+        filtered.append("\\/");
+    }
+
+This will replace '/' with '\/', which is for the most part equivalent to '/' but has the nice side effect that <\/script> will not be interpreted as the end script tag in string literals. You can verify the fix with the JSP above, but here's another one you can use to verify that also demonstrates the new replacement operation does not change the interpreted value of the string literals:
+<%@ taglib uri="http://www.springframework.org/tags" prefix="spring"%>
+<% String endScript = "</script>"; %>
+<html>
+  <body>
+    <script type="text/javascript">
+	  alert("<spring:escapeBody javaScriptEscape="true"><%= endScript %></spring:escapeBody>");
+	  alert("/" == "\/");
+	  alert("</"+"script>" == "<spring:escapeBody javaScriptEscape="true"><%= endScript %></spring:escapeBody>");
+    </script>
+  </body>
+</html>

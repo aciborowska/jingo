@@ -1,0 +1,30 @@
+Hi Luke/Anybody,
+When used @PreAutorize(#username == principal.username) issues - when target is AOPProxy I always get an NullPointerExpression in MethodSecurityEvaluationContext addArgumentsAsVariables method. I have compiled with debug info, no issues with that. 
+I have looked at the bug report which is the same case for Genrics http://jira.springframework.org/browse/SEC-1448
+However, in my case my target object is wrapped in a AOPproxy(JdkDynamicProxy), but when used with AopUtils.getMostSpecificMethod(method, target) it always returns the class as $Proxy which cannot be read by the parameterDiscoverer. May be I have a wrapper of AOPProxy inside another AOPProxy which wraps my target. I guess it is a valid case. 
+I could able to get around it by having custom EvaluationContext which first try run through a loop and get the target object as below 
+while (candidate instanceof TargetClassAware) { // This is to ensure that we get to the final target object - most specific.
+if (candidate instanceof TargetSource) {
+candidate = ((TargetSource)candidate).getTarget(); 
+} else if (candidate instanceof Advised){
+candidate =((Advised) candidate).getTargetSource();
+}
+}
+return AopUtils.getTargetClass(candidate);
+However I still consider this as a work around and it would be nice that spring-security supports this out of the box, as it is so common that we use AOPproxy's as target object. 
+-----------------------------------------------------------------------------------------------------------
+I just copy below source code from Spring-sec MethodSecurityEvaluationContext class
+private void addArgumentsAsVariables() {
+Object[] args = mi.getArguments();
+Object targetObject = mi.getThis();
+Method method = ClassUtils.getMostSpecificMethod(mi.getMethod(), targetObject.getClass());
+String[] paramNames = parameterNameDiscoverer.getParameterNames(method);
+for(int i=0; i < args.length; i++) {
+super.setVariable(paramNames[i], args[i]);
+}
+}
+I was talking about targetObject in this method, which is the class/interface that is annotated with preAuthorize. And in my application context the bean is wrapped in multi levels of AOPproxy's. 
+I am not sure whether it is Spring issue or Spring sec issue, because in 3.0.3 even spring sec uses AopUtils.getMostSpecificmethod(method, target) this issue will not be solved as AopUtils just looks one level not recursively until it hits the right target. 
+I would open a JIRA issue, if possible with a test case.
+Luke,
+I told I will open JIRA with a test case, but it is difficult that I trim down my application context to make this test case. Please let me know if you cant reproduce it then i will fetch some time to create a test case. 

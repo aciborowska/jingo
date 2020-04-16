@@ -1,0 +1,87 @@
+Exception:   
+java.security.AccessControlException: access denied (java.util.PropertyPermission user.dir read)
+Cause:
+Currently I developing an applet that  uses XmlBeanFactory for infrastructure beans providing. 
+The reported problem arises when the XmlBeanFactory is configured and a bean is retrieved:
+                         XmlBeanFactory factory  = new XmlBeanFactory(new UrlResource(configurationFileURL relative to classloader))
+                         Object object = beanFactory.getBean(someBeanId, beanClass);
+Note: I am using my own utility class to retrieve a URL from a classloader resource.
+It turns out that the XmlBeanFactory  will eventually call the resolveEntity method on the ResourceEntityResolver class. This method, in order to configure a systemRootUrl, does the following on line 76:
+                          String systemRootUrl = new File("").toURL().toString(); 
+That´s a problem since non-signed applet cannot read local file. (new File("").toURL() is a READ call).
+Sugestion:
+Replace the following code on ResourceEntityResolver , method resolveEntity: 
+72
+73			try {
+74				String decodedSystemId = URLDecoder.decode(systemId);
+75				String givenUrl = new URL(decodedSystemId).toString();
+76				String systemRootUrl = new File("").toURL().toString();
+77				// try relative to resource base if currently in system root
+78				if (givenUrl.startsWith(systemRootUrl)) 
+{
+79					resourcePath = givenUrl.substring(systemRootUrl.length());
+80				}
+81			}
+82			catch (MalformedURLException ex) {
+83				// no URL -> try relative to resource base
+84				resourcePath = systemId;
+85			}
+
+with 
+
+72
+73			try {
+74				String decodedSystemId = URLDecoder.decode(systemId);
+75				String givenUrl = new URL(decodedSystemId).toString();
+76				String systemRootUrl = new File("").toURL().toString();
+77				// try relative to resource base if currently in system root
+78				if (givenUrl.startsWith(systemRootUrl)) {79					resourcePath = givenUrl.substring(systemRootUrl.length());80				}
+81			}
+82			catch (MalformedURLException ex) 
+{
+83				// no URL -> try relative to resource base
+84				resourcePath = systemId;
+85			}
+86			catch (AccessControlException ex) 
+{
+87				//Error while trying to access priviledge resource
+88				resourcePath = systemId;
+89			}
+
+Original stack trace:
+[INFO] CollectionFactory - JDK 1.4+ collections available
+[INFO] XmlBeanDefinitionReader - Loading XML bean definitions from URL [jar:http://rb000110:8080/gro/applets/app-gro_bayesiannet-applet.jar!/br/com/gro/causal/uc2401_redebayesiana/view/applet/registry-causal-applet.xml]
+org.springframework.beans.factory.BeanDefinitionStoreException: Unexpected exception parsing XML document from URL [jar:http://rb000110:8080/gro/applets/app-gro_bayesiannet-applet.jar!/br/com/gro/causal/uc2401_redebayesiana/view/applet/registry-causal-applet.xml]; nested exception is java.security.AccessControlException: access denied (java.util.PropertyPermission user.dir read)
+Caused by: java.security.AccessControlException: access denied (java.util.PropertyPermission user.dir read)
+	at java.security.AccessControlContext.checkPermission(Unknown Source)
+	at java.security.AccessController.checkPermission(Unknown Source)
+	at java.lang.SecurityManager.checkPermission(Unknown Source)
+	at java.lang.SecurityManager.checkPropertyAccess(Unknown Source)
+	at java.lang.System.getProperty(Unknown Source)
+	at java.io.Win32FileSystem.getUserPath(Unknown Source)
+	at java.io.Win32FileSystem.resolve(Unknown Source)
+	at java.io.File.getAbsolutePath(Unknown Source)
+	at java.io.File.toURL(Unknown Source)
+	at org.springframework.beans.factory.xml.ResourceEntityResolver.resolveEntity(ResourceEntityResolver.java:76)
+	at com.sun.org.apache.xerces.internal.util.EntityResolverWrapper.resolveEntity(Unknown Source)
+	at com.sun.org.apache.xerces.internal.impl.XMLEntityManager.resolveEntity(Unknown Source)
+	at com.sun.org.apache.xerces.internal.impl.xs.XMLSchemaLoader.resolveDocument(Unknown Source)
+	at com.sun.org.apache.xerces.internal.impl.xs.XMLSchemaValidator.findSchemaGrammar(Unknown Source)
+	at com.sun.org.apache.xerces.internal.impl.xs.XMLSchemaValidator.handleStartElement(Unknown Source)
+	at com.sun.org.apache.xerces.internal.impl.xs.XMLSchemaValidator.startElement(Unknown Source)
+	at com.sun.org.apache.xerces.internal.impl.XMLNSDocumentScannerImpl.scanStartElement(Unknown Source)
+	at com.sun.org.apache.xerces.internal.impl.XMLNSDocumentScannerImpl$NSContentDispatcher.scanRootElementHook(Unknown Source)
+	at com.sun.org.apache.xerces.internal.impl.XMLDocumentFragmentScannerImpl$FragmentContentDispatcher.dispatch(Unknown Source)
+	at com.sun.org.apache.xerces.internal.impl.XMLDocumentFragmentScannerImpl.scanDocument(Unknown Source)
+	at com.sun.org.apache.xerces.internal.parsers.XML11Configuration.parse(Unknown Source)
+	at com.sun.org.apache.xerces.internal.parsers.XML11Configuration.parse(Unknown Source)
+	at com.sun.org.apache.xerces.internal.parsers.XMLParser.parse(Unknown Source)
+	at com.sun.org.apache.xerces.internal.parsers.DOMParser.parse(Unknown Source)
+	at com.sun.org.apache.xerces.internal.jaxp.DocumentBuilderImpl.parse(Unknown Source)
+	at org.springframework.beans.factory.xml.DefaultDocumentLoader.loadDocument(DefaultDocumentLoader.java:77)
+	at org.springframework.beans.factory.xml.XmlBeanDefinitionReader.doLoadBeanDefinitions(XmlBeanDefinitionReader.java:405)
+	at org.springframework.beans.factory.xml.XmlBeanDefinitionReader.loadBeanDefinitions(XmlBeanDefinitionReader.java:357)
+	at org.springframework.beans.factory.xml.XmlBeanDefinitionReader.loadBeanDefinitions(XmlBeanDefinitionReader.java:334)
+	at org.springframework.beans.factory.xml.XmlBeanFactory.<init>(XmlBeanFactory.java:73)
+	at org.springframework.beans.factory.xml.XmlBeanFactory.<init>(XmlBeanFactory.java:61)
+	at br.com.regerbanc.infra.core.registry.RegistryManager.setupRegistry(RegistryManager.java:142)

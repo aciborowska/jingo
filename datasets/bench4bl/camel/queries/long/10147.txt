@@ -1,0 +1,97 @@
+If a route contains a large expressen (a few MB) and an error occurs the message history feature will take a very long time.
+The following code is a slightly modified unit test from camel-core (the only change is the String used in the constant expression).
+
+
+
+import org.apache.camel.CamelExecutionException;
+
+import org.apache.camel.ContextTestSupport;
+
+import org.apache.camel.builder.RouteBuilder;
+
+
+
+/**
+
+ * @version 
+
+ */
+
+public class SedaInOutWithErrorTest extends ContextTestSupport {
+
+
+
+    public void testInOutWithError() throws Exception {
+
+        getMockEndpoint("mock:result").expectedMessageCount(0);
+
+
+
+        try {
+
+            template.requestBody("direct:start", "Hello World", String.class);
+
+            fail("Should have thrown an exception");
+
+        } catch (CamelExecutionException e) {
+
+            assertIsInstanceOf(IllegalArgumentException.class, e.getCause());
+
+            assertEquals("Damn I cannot do this", e.getCause().getMessage());
+
+        }
+
+
+
+        assertMockEndpointsSatisfied();
+
+    }
+
+
+
+    @Override
+
+    protected RouteBuilder createRouteBuilder() throws Exception {
+
+        return new RouteBuilder() {
+
+            @Override
+
+            public void configure() throws Exception {
+
+                StringBuilder sb = new StringBuilder();
+
+                sb.append("Something ");
+
+                for (int i=0; i<1000000; i++) {
+
+                    sb.append("very ");
+
+                }
+
+                sb.append("long");
+
+                
+
+                from("direct:start").to("seda:foo");
+
+
+
+                from("seda:foo").transform(constant(sb.toString()))
+
+                    .throwException(new IllegalArgumentException("Damn I cannot do this"))
+
+                    .to("mock:result");
+
+            }
+
+        };
+
+    }
+
+}
+
+
+
+This test will set the body to a 5MB test and then run into an error. This will run for a very long time, because MessageHelper.doDumpMessageHistoryStacktrace() will first run a URISupport.sanitizeUri() on the expression and then cut it off to 78 characters.
+If we cut the expression of (e.g. to 100 characters) before doing the sanitizeUri() this will run much faster in this case (and not slower for smaller expressions).

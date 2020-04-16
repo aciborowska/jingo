@@ -1,0 +1,40 @@
+As We create the table with TTL in columnFamily, When files was selected to compact and the files's KVs all expired, after this, it generate a file just contains some meta-info such as trail,but without kvs(size:564bytes). (and the storeFile.getReader().getMaxTimestamp() = -1)
+And then We put the data to this table so fast, so memStore will flush to storefile, and cause the compact task,unexpected thing happens: the storefiles's count keeps on increasing all the time.
+seeing the debug log : 
+hbase-regionServer.log
+
+
+2014-08-17 15:41:02,689 DEBUG [regionserver60020-smallCompactions-1408258247722] regionserver.CompactSplitThread: CompactSplitThread Status: compaction_queue=(0:1), split_queue=0, merge_queue=0
+
+2014-08-17 15:41:02,689 DEBUG [regionserver60020-smallCompactions-1408258247722] compactions.RatioBasedCompactionPolicy: Selecting compaction from 9 store files, 0 compacting, 9 eligible, 10 blocking
+
+2014-08-17 15:41:02,689 INFO  [regionserver60020-smallCompactions-1408258247722] compactions.RatioBasedCompactionPolicy: Deleting the expired store file by compaction: hdfs://hbase:9000/hbase/data/default/top_subchannel_2/0b47596c0bff1a60cf749cf1101eb642/s/c6392d54411a46cbb19350d706a298be whose maxTimeStamp is -1 while the max expired timestamp is 1408257662689
+
+2014-08-17 15:41:02,689 DEBUG [regionserver60020-smallCompactions-1408258247722] regionserver.HStore: 0b47596c0bff1a60cf749cf1101eb642 - s: Initiating minor compaction
+
+2014-08-17 15:41:02,689 INFO  [regionserver60020-smallCompactions-1408258247722] regionserver.HRegion: Starting compaction on s in region top_subchannel_2,,1407982287422.0b47596c0bff1a60cf749cf1101eb642.
+
+2014-08-17 15:41:02,689 INFO  [regionserver60020-smallCompactions-1408258247722] regionserver.HStore: Starting compaction of 1 file(s) in s of top_subchannel_2,,1407982287422.0b47596c0bff1a60cf749cf1101eb642. into tmpdir=hdfs://hbase:9000/hbase/data/default/top_subchannel_2/0b47596c0bff1a60cf749cf1101eb642/.tmp, totalSize=564
+
+2014-08-17 15:41:02,689 DEBUG [regionserver60020-smallCompactions-1408258247722] compactions.Compactor: Compacting hdfs://hbase:9000/hbase/data/default/top_subchannel_2/0b47596c0bff1a60cf749cf1101eb642/s/c6392d54411a46cbb19350d706a298be, keycount=0, bloomtype=NONE, size=564, encoding=FAST_DIFF, seqNum=45561
+
+2014-08-17 15:41:02,711 INFO  [regionserver60020-smallCompactions-1408258247722] regionserver.StoreFile: HFile Bloom filter type for f2e60ae4574a4d6eb89745d43582e9b4: NONE, but ROW specified in column family configuration
+
+2014-08-17 15:41:02,713 DEBUG [regionserver60020-smallCompactions-1408258247722] regionserver.HRegionFileSystem: Committing store file hdfs://hbase:9000/hbase/data/default/top_subchannel_2/0b47596c0bff1a60cf749cf1101eb642/.tmp/f2e60ae4574a4d6eb89745d43582e9b4 as hdfs://hbase:9000/hbase/data/default/top_subchannel_2/0b47596c0bff1a60cf749cf1101eb642/s/f2e60ae4574a4d6eb89745d43582e9b4
+
+2014-08-17 15:41:02,726 INFO  [regionserver60020-smallCompactions-1408258247722] regionserver.StoreFile: HFile Bloom filter type for f2e60ae4574a4d6eb89745d43582e9b4: NONE, but ROW specified in column family configuration
+
+2014-08-17 15:41:02,727 DEBUG [regionserver60020-smallCompactions-1408258247722] regionserver.HStore: Removing store files after compaction...
+
+2014-08-17 15:41:02,731 DEBUG [regionserver60020-smallCompactions-1408258247722] backup.HFileArchiver: Finished archiving from class org.apache.hadoop.hbase.backup.HFileArchiver$FileableStoreFile, file:hdfs://hbase:9000/hbase/data/default/top_subchannel_2/0b47596c0bff1a60cf749cf1101eb642/s/c6392d54411a46cbb19350d706a298be, to hdfs://hbase:9000/hbase/archive/data/default/top_subchannel_2/0b47596c0bff1a60cf749cf1101eb642/s/c6392d54411a46cbb19350d706a298be
+
+2014-08-17 15:41:02,731 INFO  [regionserver60020-smallCompactions-1408258247722] regionserver.HStore: Completed compaction of 1 file(s) in s of top_subchannel_2,,1407982287422.0b47596c0bff1a60cf749cf1101eb642. into f2e60ae4574a4d6eb89745d43582e9b4(size=564), total size for store is 25.8 M. This selection was in queue for 0sec, and took 0sec to execute.
+
+2014-08-17 15:41:02,731 INFO  [regionserver60020-smallCompactions-1408258247722] regionserver.CompactSplitThread: Completed compaction: Request = regionName=top_subchannel_2,,1407982287422.0b47596c0bff1a60cf749cf1101eb642., storeName=s, fileCount=1, fileSize=564, priority=2, time=10316710063714; duration=0sec
+
+
+
+Because of the "empty storefile" MaxTimestamp is -1,it have priority to compact first. it will be deleted,but generate a copy of it. though the compact task done,but the count didn't decrease. 
+when the count of storefiles more than 10, so we got CompactPriority = -1, the CompactThread will require recursive enqueues again and again very soon.
+Terrible things happen: the debug log increasing so fast,the flusherThread blocking,and the "empty storefile" generate and remove again and again. and we are keeping on puting data to the table, and the client get a lot of RegionTooBusyException.After a while, the regionServer crash because the MemStoreFlusher is die. so the region was assigning to other regionServer. As doing the same things, also, the regionServer crashed,then all the regionserver crashed....
+I think this is a bug for ttl&compact,so we need to generate the store file without keyvalues after the compcat done?

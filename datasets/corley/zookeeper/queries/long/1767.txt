@@ -1,0 +1,36 @@
+As a coordination service, ZooKeeper is meant to be high performant. DEBUG logs are not normally viewed (see Doug Cutting's comment in HADOOP-953). I propose to add a conditional check to each DEBUG log stmt to improve performance. 
+
+Firstly, previous issues added a condition check before a DEBUG log stmt. For example, in ZOOKEEPER-558:
+
+- LOG.debug("Got notification sessionid:0x" 
+- 	+ Long.toHexString(sessionId)); 
++ if (LOG.isDebugEnabled()) { 
++ 	LOG.debug("Got notification sessionid:0x" + 
++ 	Long.toHexString(sessionId)); 
++ }
+
+ 
+And in ZOOKEEPER-259:
+
+-                LOG
+-                    .debug("Got ping sessionid:0x"
+-                    + Long.toHexString(sessionId));
++                if (LOG.isDebugEnabled()) {
++                    LOG.debug("Got ping response for sessionid:0x"
++                            + Long.toHexString(sessionId)
++                            + " after " 
++                            + ((System.nanoTime() - lastPingSentNs) / 1000000)
++                            + "ms");
++                }
+
+
+Secondly, its underlying cause is that: 
+
+	If a DEBUG log stmt is unguarded, the string operations (most likely concatenations) are actually conducted even though the log event doesn't happen b/c a level less verbose than DEBUG is configured.
+	Adding the conditional check creates another basic block in Java bytecode. And instructions inside that basicblock is executed only when execution path goes into it. But this only happens when the path passes the test. Detailed explanations are in a StackOverflow thread: http://stackoverflow.com/questions/10428447/log-debug-enabled-check-in-java
+
+
+
+An alternative solution is to move from log4j to slf4j and use the "{}" format. A workaround now is to add all conditional checks. The additional overhead is marginal (possibly compare-and-jump instruction(s) in Java bytecode) compared to saved computation of expensive string creations and concatenations.  
+
+Its counterpart in Hadoop has been accepted: HADOOP-6884.

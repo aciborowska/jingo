@@ -1,0 +1,76 @@
+I have a scenario, albeit a very odd one, where by doing multiple 'merge' calls on the same unmanaged entity causes an exception.  I say that it is an 'odd' case because of the fact that an 'unmanaged' entity is being merged multiple times.  The proper way to handle the scenario is to merge the managed instance.  I'll attach a test to recreate/demonstrate the issue, but for now here are code snippets we can use to explain the issue:
+
+@Entity
+@IdClass( LineItemPK.class )
+public class LineItem {
+	@Id
+	@Column( name = "ORDER_ID", nullable = false )
+	private Long orderId;
+
+	@Id
+	@Column( name = "ITEM_ID", nullable = false )
+	private Long itemId;
+......
+
+@Embeddable
+public class LineItemPK implements Serializable {
+	@Column( name = "ORDER_ID", nullable = false )
+	private Long orderId;
+
+	@Column( name = "ITEM_ID", nullable = false )
+	private Long itemId;
+......
+
+@Entity
+@Table( name = "ORDER_TABLE" )
+public class Order {
+      @Id 
+      @Column( name = "ID", nullable = false )
+      private Long id; 
+
+      @OneToMany( fetch = FetchType.EAGER, cascade = CascadeType.ALL )
+      @JoinColumn( name = "ORDER_ID", referencedColumnName = "ID" )
+      private List<LineItem> items;
+......
+
+
+With these classes, take this test:
+
+em.getTransaction().begin();
+Order order = new Order( 1l );
+
+LineItem item = new LineItem( "my product", 44, 4.99f );
+order.addItem(item);
+
+//NOTE: Notice that throughout the rest of the test the unmanaged order is //merged.  Throughout the rest of the test we should do a 
+//'order = em.merge(order)', or something to that effect (i.e. use the //'managed' order).  However, technically speaking merging the unmanaged //order is not wrong, albeit odd and potentially error prone.        
+em.merge(order);
+em.getTransaction().commit();
+
+em.getTransaction().begin();
+LineItem additional = new LineItem( "My second product", 1, 999.95f );
+order.addItem(additional);
+order.setOrderEntry( new Date( System.currentTimeMillis() ) );
+em.merge(order);
+//NOTE: do a flush here and all works fine:
+//em.flush();
+em.merge(order);
+em.getTransaction().commit();
+
+As you can see, the unmanaged order is merged.  As my comments above suggest this is odd, but technically not wrong.  What makes this case interesting is that if we change LineItem to use a single PK rather than a compound PK, all works fine!    The issue can also be resolve by performing a strategic 'flush' as commented above.  Furthermore, the exception the above test yields is:
+
+Caused by: <openjpa-2.1.2-SNAPSHOT-r422266:1686894M fatal general error> org.apache.openjpa.persistence.PersistenceException: Column 'ORDER_ID'  cannot accept a NULL value. 
+{prepstmnt 27085446 UPDATE ITEM_TABLE SET ORDER_ID = ? WHERE ORDER_ID = ? [params=(null) null, (long) 1]}
+ [code=20000, state=23502]
+
+This is rather meaningless and is caused because OpenJPA executes this SQL when doing the third merge:
+
+openjpa.jdbc.SQL - <t 3968441, conn 30267242> executing prepstmnt 27085446 UPDATE ITEM_TABLE SET ORDER_ID = ? WHERE ORDER_ID = ? [params=(null) null, (long) 1]
+
+Given the odd message, and the fact that things work for the same exact scenario when a single PK is used, and the fact that it can be resolved iwth a 'flush', it makes sense to fix this issue.  
+
+Finally, I can't stress enough that the proper way to perform the above test is to use the MANAGED version of the 'order'.  In other words, replace all 'em.merge(order)' with 'order = em.merge(order)'.  The above scenario creates far more SQL statements because of merging an unmanaged entity than if you merged a managed entity.
+
+Thanks,
+
+Heath

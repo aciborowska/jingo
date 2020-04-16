@@ -1,0 +1,180 @@
+When redelivery occurs for dynamic routers, the properties are being kept. So if the dynamic router uses a property to store the current state such as used in example http://camel.apache.org/dynamic-router.html , then the redelivery actually ends up skipping the endpoint that caused the exception
+Here is my dynamic router class
+
+public class Router {
+
+	public String route(Exchange exchange) {
+
+		Boolean invoked = exchange.getProperty("invoked", Boolean.class);
+
+		if (invoked == null) {
+
+			exchange.setProperty("invoked", true);
+
+			return "mock:route";
+
+		} else
+
+			return null;
+
+	}
+
+}
+
+
+
+Here is my unit test class
+
+@RunWith(CamelSpringJUnit4ClassRunner.class)
+
+@ContextConfiguration(loader = CamelSpringDelegatingTestContextLoader.class)
+
+public class DynamicRouterTest {
+
+
+
+	@Produce(uri = "direct:start")
+
+	private ProducerTemplate producerTemplate;
+
+
+
+	@EndpointInject(uri = "mock:end")
+
+	private MockEndpoint end;
+
+
+
+	@EndpointInject(uri = "mock:route")
+
+	private MockEndpoint route;
+
+
+
+	@Configuration
+
+	public static class JavaConfig extends SingleRouteCamelConfiguration {
+
+
+
+		@Override
+
+		public RouteBuilder route() {
+
+			return new SpringRouteBuilder() {
+
+
+
+				@Override
+
+				public void configure() throws Exception {
+
+					this.getContext().setTracing(true);
+
+					from("direct:start").onException(IOException.class).maximumRedeliveries(-1).end()
+
+
+
+					.dynamicRouter().method(Router.class).to("mock:end");
+
+				}
+
+			};
+
+		}
+
+
+
+	}
+
+
+
+	@Test
+
+	public void test() throws InterruptedException {
+
+		route.whenAnyExchangeReceived(new Processor() {
+
+
+
+			@Override
+
+			public void process(Exchange exchange) throws Exception {
+
+				exchange.getIn().setBody("mock route");
+
+			}
+
+		});
+
+		route.expectedBodiesReceived("before");
+
+		end.expectedBodiesReceived("mock route");
+
+
+
+		producerTemplate.sendBody("before");
+
+		route.assertIsSatisfied();
+
+		end.assertIsSatisfied();
+
+	}
+
+
+
+	@Test
+
+	public void test_exception() throws InterruptedException {
+
+		route.whenExchangeReceived(1, new Processor() {
+
+
+
+			@Override
+
+			public void process(Exchange exchange) throws Exception {
+
+				exchange.setException(new IOException());
+
+			}
+
+		});
+
+		route.whenExchangeReceived(2, new Processor() {
+
+
+
+			@Override
+
+			public void process(Exchange exchange) throws Exception {
+
+				exchange.getIn().setBody("mock route");
+
+			}
+
+		});
+
+
+
+                // this bit fails
+
+		route.expectedBodiesReceived("before", "before");
+
+
+
+		end.expectedBodiesReceived("mock route");
+
+		producerTemplate.sendBody("before");
+
+		route.assertIsSatisfied();
+
+		end.assertIsSatisfied();
+
+	}
+
+}
+
+
+
+The test method runs successfully but the test_exception method which tests the redelivery does not. Fails with "java.lang.AssertionError: mock://route Received message count. Expected: <2> but was: <1>" which shows that the dynamic router only called the mock:route once.

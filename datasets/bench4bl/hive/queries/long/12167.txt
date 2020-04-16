@@ -1,0 +1,164 @@
+I ran some random test (vectorization_10) with HBase metastore for unrelated reason, and I see large number of exceptions in hive.log
+
+$ grep -c "ConnectionLoss" hive.log
+
+52
+
+$ grep -c "Connection refused" hive.log
+
+1014
+
+
+
+These log lines' count has increased by ~33% since merging llap branch, but it is still high before that (39/~700) for the same test). These lines are not present if I disable HBase metastore.
+The exceptions are:
+
+2015-10-13T17:51:06,232 WARN  [Thread-359-SendThread(localhost:2181)]: zookeeper.ClientCnxn (ClientCnxn.java:run(1102)) - Session 0x0 for server null, unexpected error, closing socket connection and attempting reconnect
+
+java.net.ConnectException: Connection refused
+
+	at sun.nio.ch.SocketChannelImpl.checkConnect(Native Method) ~[?:1.8.0_45]
+
+	at sun.nio.ch.SocketChannelImpl.finishConnect(SocketChannelImpl.java:717) ~[?:1.8.0_45]
+
+	at org.apache.zookeeper.ClientCnxnSocketNIO.doTransport(ClientCnxnSocketNIO.java:361) ~[zookeeper-3.4.6.jar:3.4.6-1569965]
+
+	at org.apache.zookeeper.ClientCnxn$SendThread.run(ClientCnxn.java:1081) [zookeeper-3.4.6.jar:3.4.6-1569965]
+
+
+
+that is retried for some seconds and then
+
+2015-10-13T17:51:22,867 WARN  [Thread-359]: zookeeper.ZKUtil (ZKUtil.java:checkExists(544)) - hconnection-0x1da6ef180x0, quorum=localhost:2181, baseZNode=/hbase Unable to set watcher on znode (/hbase/hbaseid)
+
+org.apache.zookeeper.KeeperException$ConnectionLossException: KeeperErrorCode = ConnectionLoss for /hbase/hbaseid
+
+	at org.apache.zookeeper.KeeperException.create(KeeperException.java:99) ~[zookeeper-3.4.6.jar:3.4.6-1569965]
+
+	at org.apache.zookeeper.KeeperException.create(KeeperException.java:51) ~[zookeeper-3.4.6.jar:3.4.6-1569965]
+
+	at org.apache.zookeeper.ZooKeeper.exists(ZooKeeper.java:1045) ~[zookeeper-3.4.6.jar:3.4.6-1569965]
+
+	at org.apache.hadoop.hbase.zookeeper.RecoverableZooKeeper.exists(RecoverableZooKeeper.java:222) ~[hbase-client-1.1.1.jar:1.1.1]
+
+	at org.apache.hadoop.hbase.zookeeper.ZKUtil.checkExists(ZKUtil.java:541) [hbase-client-1.1.1.jar:1.1.1]
+
+	at org.apache.hadoop.hbase.zookeeper.ZKClusterId.readClusterIdZNode(ZKClusterId.java:65) [hbase-client-1.1.1.jar:1.1.1]
+
+	at org.apache.hadoop.hbase.client.ZooKeeperRegistry.getClusterId(ZooKeeperRegistry.java:105) [hbase-client-1.1.1.jar:1.1.1]
+
+	at org.apache.hadoop.hbase.client.ConnectionManager$HConnectionImplementation.retrieveClusterId(ConnectionManager.java:879) [hbase-client-1.1.1.jar:1.1.1]
+
+	at org.apache.hadoop.hbase.client.ConnectionManager$HConnectionImplementation.<init>(ConnectionManager.java:635) [hbase-client-1.1.1.jar:1.1.1]
+
+	at sun.reflect.NativeConstructorAccessorImpl.newInstance0(Native Method) ~[?:1.8.0_45]
+
+	at sun.reflect.NativeConstructorAccessorImpl.newInstance(NativeConstructorAccessorImpl.java:62) [?:1.8.0_45]
+
+	at sun.reflect.DelegatingConstructorAccessorImpl.newInstance(DelegatingConstructorAccessorImpl.java:45) [?:1.8.0_45]
+
+	at java.lang.reflect.Constructor.newInstance(Constructor.java:422) [?:1.8.0_45]
+
+	at org.apache.hadoop.hbase.client.ConnectionFactory.createConnection(ConnectionFactory.java:238) [hbase-client-1.1.1.jar:1.1.1]
+
+	at org.apache.hadoop.hbase.client.ConnectionManager.createConnection(ConnectionManager.java:420) [hbase-client-1.1.1.jar:1.1.1]
+
+	at org.apache.hadoop.hbase.client.ConnectionManager.createConnectionInternal(ConnectionManager.java:329) [hbase-client-1.1.1.jar:1.1.1]
+
+	at org.apache.hadoop.hbase.client.HConnectionManager.createConnection(HConnectionManager.java:144) [hbase-client-1.1.1.jar:1.1.1]
+
+	at org.apache.hadoop.hive.metastore.hbase.VanillaHBaseConnection.connect(VanillaHBaseConnection.java:56) [hive-metastore-2.0.0-SNAPSHOT.jar:?]
+
+	at org.apache.hadoop.hive.metastore.hbase.HBaseReadWrite.<init>(HBaseReadWrite.java:227) [hive-metastore-2.0.0-SNAPSHOT.jar:?]
+
+	at org.apache.hadoop.hive.metastore.hbase.HBaseReadWrite.<init>(HBaseReadWrite.java:83) [hive-metastore-2.0.0-SNAPSHOT.jar:?]
+
+	at org.apache.hadoop.hive.metastore.hbase.HBaseReadWrite$1.initialValue(HBaseReadWrite.java:157) [hive-metastore-2.0.0-SNAPSHOT.jar:?]
+
+	at org.apache.hadoop.hive.metastore.hbase.HBaseReadWrite$1.initialValue(HBaseReadWrite.java:151) [hive-metastore-2.0.0-SNAPSHOT.jar:?]
+
+	at java.lang.ThreadLocal.setInitialValue(ThreadLocal.java:180) [?:1.8.0_45]
+
+	at java.lang.ThreadLocal.get(ThreadLocal.java:170) [?:1.8.0_45]
+
+	at org.apache.hadoop.hive.metastore.hbase.HBaseReadWrite.getInstance(HBaseReadWrite.java:205) [hive-metastore-2.0.0-SNAPSHOT.jar:?]
+
+	at org.apache.hadoop.hive.metastore.hbase.StatsCache$Invalidator.run(StatsCache.java:309) [hive-metastore-2.0.0-SNAPSHOT.jar:?]
+
+
+
+or (note this one is after the connection was already created)
+
+2015-10-13T17:51:58,134 WARN  [Thread-359]: zookeeper.ZKUtil (ZKUtil.java:getData(753)) - hconnection-0x1da6ef180x0, quorum=localhost:2181, baseZNode=/hbase Unable to get data of znode /hbase/meta-region-server
+
+org.apache.zookeeper.KeeperException$ConnectionLossException: KeeperErrorCode = ConnectionLoss for /hbase/meta-region-server
+
+	at org.apache.zookeeper.KeeperException.create(KeeperException.java:99) ~[zookeeper-3.4.6.jar:3.4.6-1569965]
+
+	at org.apache.zookeeper.KeeperException.create(KeeperException.java:51) ~[zookeeper-3.4.6.jar:3.4.6-1569965]
+
+	at org.apache.zookeeper.ZooKeeper.getData(ZooKeeper.java:1155) ~[zookeeper-3.4.6.jar:3.4.6-1569965]
+
+	at org.apache.hadoop.hbase.zookeeper.RecoverableZooKeeper.getData(RecoverableZooKeeper.java:360) ~[hbase-client-1.1.1.jar:1.1.1]
+
+	at org.apache.hadoop.hbase.zookeeper.ZKUtil.getData(ZKUtil.java:745) [hbase-client-1.1.1.jar:1.1.1]
+
+	at org.apache.hadoop.hbase.zookeeper.MetaTableLocator.getMetaRegionState(MetaTableLocator.java:482) [hbase-client-1.1.1.jar:1.1.1]
+
+	at org.apache.hadoop.hbase.zookeeper.MetaTableLocator.getMetaRegionLocation(MetaTableLocator.java:168) [hbase-client-1.1.1.jar:1.1.1]
+
+	at org.apache.hadoop.hbase.zookeeper.MetaTableLocator.blockUntilAvailable(MetaTableLocator.java:600) [hbase-client-1.1.1.jar:1.1.1]
+
+	at org.apache.hadoop.hbase.zookeeper.MetaTableLocator.blockUntilAvailable(MetaTableLocator.java:580) [hbase-client-1.1.1.jar:1.1.1]
+
+	at org.apache.hadoop.hbase.zookeeper.MetaTableLocator.blockUntilAvailable(MetaTableLocator.java:559) [hbase-client-1.1.1.jar:1.1.1]
+
+	at org.apache.hadoop.hbase.client.ZooKeeperRegistry.getMetaRegionLocation(ZooKeeperRegistry.java:61) [hbase-client-1.1.1.jar:1.1.1]
+
+	at org.apache.hadoop.hbase.client.ConnectionManager$HConnectionImplementation.locateMeta(ConnectionManager.java:1185) [hbase-client-1.1.1.jar:1.1.1]
+
+	at org.apache.hadoop.hbase.client.ConnectionManager$HConnectionImplementation.locateRegion(ConnectionManager.java:1152) [hbase-client-1.1.1.jar:1.1.1]
+
+	at org.apache.hadoop.hbase.client.RpcRetryingCallerWithReadReplicas.getRegionLocations(RpcRetryingCallerWithReadReplicas.java:300) [hbase-client-1.1.1.jar:1.1.1]
+
+	at org.apache.hadoop.hbase.client.ScannerCallableWithReplicas.call(ScannerCallableWithReplicas.java:153) [hbase-client-1.1.1.jar:1.1.1]
+
+	at org.apache.hadoop.hbase.client.ScannerCallableWithReplicas.call(ScannerCallableWithReplicas.java:61) [hbase-client-1.1.1.jar:1.1.1]
+
+	at org.apache.hadoop.hbase.client.RpcRetryingCaller.callWithoutRetries(RpcRetryingCaller.java:200) [hbase-client-1.1.1.jar:1.1.1]
+
+	at org.apache.hadoop.hbase.client.ClientSmallReversedScanner.loadCache(ClientSmallReversedScanner.java:211) [hbase-client-1.1.1.jar:1.1.1]
+
+	at org.apache.hadoop.hbase.client.ClientSmallReversedScanner.next(ClientSmallReversedScanner.java:185) [hbase-client-1.1.1.jar:1.1.1]
+
+	at org.apache.hadoop.hbase.client.ConnectionManager$HConnectionImplementation.locateRegionInMeta(ConnectionManager.java:1249) [hbase-client-1.1.1.jar:1.1.1]
+
+	at org.apache.hadoop.hbase.client.ConnectionManager$HConnectionImplementation.locateRegion(ConnectionManager.java:1155) [hbase-client-1.1.1.jar:1.1.1]
+
+	at org.apache.hadoop.hbase.client.RpcRetryingCallerWithReadReplicas.getRegionLocations(RpcRetryingCallerWithReadReplicas.java:300) [hbase-client-1.1.1.jar:1.1.1]
+
+	at org.apache.hadoop.hbase.client.ScannerCallableWithReplicas.call(ScannerCallableWithReplicas.java:153) [hbase-client-1.1.1.jar:1.1.1]
+
+	at org.apache.hadoop.hbase.client.ScannerCallableWithReplicas.call(ScannerCallableWithReplicas.java:61) [hbase-client-1.1.1.jar:1.1.1]
+
+	at org.apache.hadoop.hbase.client.RpcRetryingCaller.callWithoutRetries(RpcRetryingCaller.java:200) [hbase-client-1.1.1.jar:1.1.1]
+
+	at org.apache.hadoop.hbase.client.ClientScanner.call(ClientScanner.java:320) [hbase-client-1.1.1.jar:1.1.1]
+
+	at org.apache.hadoop.hbase.client.ClientScanner.nextScanner(ClientScanner.java:295) [hbase-client-1.1.1.jar:1.1.1]
+
+	at org.apache.hadoop.hbase.client.ClientScanner.initializeScannerInConstruction(ClientScanner.java:160) [hbase-client-1.1.1.jar:1.1.1]
+
+	at org.apache.hadoop.hbase.client.ClientScanner.<init>(ClientScanner.java:155) [hbase-client-1.1.1.jar:1.1.1]
+
+	at org.apache.hadoop.hbase.client.HTable.getScanner(HTable.java:811) [hbase-client-1.1.1.jar:1.1.1]
+
+	at org.apache.hadoop.hive.metastore.hbase.HBaseReadWrite.scan(HBaseReadWrite.java:2046) [hive-metastore-2.0.0-SNAPSHOT.jar:?]
+
+	at org.apache.hadoop.hive.metastore.hbase.HBaseReadWrite.scan(HBaseReadWrite.java:2027) [hive-metastore-2.0.0-SNAPSHOT.jar:?]
+
+	at org.apache.hadoop.hive.metastore.hbase.HBaseReadWrite.invalidateAggregatedStats(HBaseReadWrite.java:1707) [hive-metastore-2.0.0-SNAPSHOT.jar:?]
+
+	at org.apache.hadoop.hive.metastore.hbase.StatsCache$Invalidator.run(StatsCache.java:309) [hive-metastore-2.0.0-SNAPSHOT.jar:?]
+
+

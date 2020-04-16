@@ -1,0 +1,66 @@
+See the simple test case:
+
+        {
+            Query query = em.createQuery("SELECT o FROM Osoba o WHERE o.imie = 'Jacek' AND o.nazwisko = 'Laskowski'");
+            final Osoba osoba = (Osoba) query.getSingleResult();
+            final Long numerOsoby = osoba.getNumer(); // numer is the pk
+            long wersja = osoba.getWersja(); // wersja is a versioned property
+            {
+                EntityTransaction tx = em.getTransaction();
+                tx.begin();
+                Osoba osobaWersja0 = em.find(Osoba.class, numerOsoby);
+                assert osobaWersja0.getWersja() == wersja;
+                osobaWersja0.setImie("change");
+                em.flush();
+
+                wersja++;
+
+                assert osobaWersja0.getWersja() == wersja;
+                tx.commit();
+                assert osobaWersja0.getWersja() == wersja;
+                em.refresh(osobaWersja0);
+                assert osobaWersja0.getWersja() == wersja;
+            }
+            {
+                em.clear(); // osoba is now detached
+                final String noweImie = "Yet another name change";
+                osoba.setImie(noweImie);
+
+                EntityTransaction tx = em.getTransaction();
+                tx.begin();
+                Osoba osobaWersja1 = em.find(Osoba.class, numerOsoby);
+                osobaWersja1.setImie("and another");
+                tx.commit(); // change is on its way to database
+
+                wersja++;
+
+                assert osobaWersja1.getWersja() == wersja;
+                assert osobaWersja1.getWersja() != osoba.getWersja();
+
+                if (em.getClass().getCanonicalName().equals("org.apache.openjpa.persistence.EntityManagerImpl")) {
+                    Osoba osobaPoMerge = em.merge(osoba);
+
+                    assert osobaPoMerge.getImie().equals(osoba.getImie());
+                    assert osobaPoMerge.getImie().equals(noweImie);
+
+                    em.getTransaction().begin();
+                    try 
+{
+                        em.flush();
+                        assert false;
+                    }
+ catch (/* OptimisticLock */Exception oczekiwano) 
+{
+                        em.getTransaction().rollback();
+                    }
+                }
+            }
+        }
+
+It works fine with Apache OpenJPA 0.9.7-SNAPSHOT with the sources on the past Friday. Hibernate EntityManager 3.3.1 and TopLink Essentials 2.0 BUILD 40 throw exception as the detached entity is merged  to em. According to the spec 9.1.17 Version Annotation p. 178 (and the javadoc - http://java.sun.com/javaee/5/docs/api/javax/persistence/Version.html - too):
+
+The Version annotation specifies the version field or property of an entity class that serves as its optimistic lock value. The version is used to ensure integrity when performing the merge operation and for optimistic concurrency control.
+
+So, I think that it's a bug in OpenJPA.
+
+BTW, I'm still unable to send emails to open-jpa-dev. Who should I contact to in order to fix it?

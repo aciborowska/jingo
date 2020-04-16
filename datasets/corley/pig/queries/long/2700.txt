@@ -1,0 +1,58 @@
+I am running Pig unit tests against Hadoop 2.0.0-SNAPSHOT as follows:
+
+
+--- ivy/libraries.properties
++++ ivy/libraries.properties
+@@ -37,9 +37,9 @@ guava.version=11.0
+ jersey-core.version=1.8
+ hadoop-core.version=1.0.0
+ hadoop-test.version=1.0.0
+-hadoop-common.version=0.23.1
+-hadoop-hdfs.version=0.23.1
+-hadoop-mapreduce.version=0.23.1
++hadoop-common.version=2.0.0-SNAPSHOT
++hadoop-hdfs.version=2.0.0-SNAPSHOT
++hadoop-mapreduce.version=2.0.0-SNAPSHOT
+
+
+
+And I see the following issues:
+
+1) copyFromLocalToCluster fails:
+
+fs command '-put AccumulatorInput.txt AccumulatorInput.txt' failed. Please check output logs for details
+java.io.IOException: fs command '-put AccumulatorInput.txt AccumulatorInput.txt' failed. Please check output logs for details
+    at org.apache.pig.tools.grunt.GruntParser.processFsCommand(GruntParser.java:1012)
+
+
+
+I am getting around this problem by explicitly creating intermediate directories that do not exist. (Please see the attached patch.)
+
+
+2) Many tests including TestAccumulator hang and eventually timeout. The JVM thread dump shows the following call stack:
+
+
+[junit]    java.lang.Thread.State: TIMED_WAITING (sleeping)
+[junit]     at java.lang.Thread.sleep(Native Method)
+[junit]     at org.apache.pig.backend.hadoop.executionengine.mapReduceLayer.MapReduceLauncher.launchPig(MapReduceLauncher.java:245)
+[junit]     at org.apache.pig.PigServer.launchPlan(PigServer.java:1314)
+[junit]     at org.apache.pig.PigServer.executeCompiledLogicalPlan(PigServer.java:1299)
+[junit]     at org.apache.pig.PigServer.storeEx(PigServer.java:996)
+[junit]     at org.apache.pig.PigServer.store(PigServer.java:963)
+[junit]     at org.apache.pig.PigServer.openIterator(PigServer.java:876)
+[junit]     at org.apache.pig.test.TestAccumulator.testAccumBasic(TestAccumulator.java:150)
+
+
+
+This is because test jobs are never finished in the mini cluster. The reason why test jobs are never finished is because they fail with a ClassNotFound exception while being executed.
+
+In fact, this is a regression of HADOOP-6963 where hadoop introduced dependency on Apache Commons IO library:
+
+FileUtil.java
+isSymLink = org.apache.commons.io.FileUtils.isSymlink(allFiles[i]);
+
+
+
+But the Apache Commons IO library is missing in Pig, so test jobs keep failing in the mini cluster until timeout.
+
+I am fixing this issue by adding commons-io-2.3.jar to ivy.xml and library.properties. (Please see the attached patch.)

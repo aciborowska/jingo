@@ -1,0 +1,73 @@
+The use case uses a correlationId with RabbitMQ InOut Producer :
+
+
+
+from("direct:route")
+
+   .setHeader(RabbitMQConstants.EXCHANGE_NAME, constant("exchange"))
+
+   .setHeader(RabbitMQConstants.CORRELATIONID, constant("123"))
+
+   .inOut("rabbitmq://...")
+
+
+
+The response always contains a null out body message.
+The problem is located when restoring the original correlation id in org.apache.camel.component.rabbitmq.reply.ReplyManagerSupport : 
+
+
+
+public void processReply(ReplyHolder holder)
+
+
+
+
+
+
+// restore correlation id in case the remote server messed with it
+
+if (holder.getOriginalCorrelationId() != null) {
+
+   if (exchange.getOut() != null) {
+
+      exchange.getOut().setHeader(RabbitMQConstants.CORRELATIONID, 
+
+         holder.getOriginalCorrelationId());
+
+   } else {
+
+      exchange.getIn().setHeader(RabbitMQConstants.CORRELATIONID, 
+
+         holder.getOriginalCorrelationId());
+
+   }
+
+}
+
+
+
+The test exchange.getOut() is always successful because of the lazy creation in DefaultExchange.getOut
+
+
+
+public Message getOut() {
+
+   // lazy create
+
+   if (out == null) {
+
+      out = (in != null && in instanceof MessageSupport)
+
+      ? ((MessageSupport)in).newInstance() : new DefaultMessage();
+
+      configureMessage(out);
+
+   }
+
+   return out;
+
+}
+
+
+
+The in body message contains the correct response from RabbitMQ. However, since the out message will be always created with a null body, the null body response will be returned in the pipeline

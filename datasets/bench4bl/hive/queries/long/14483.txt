@@ -1,0 +1,32 @@
+Error message:
+Caused by: java.lang.ArrayIndexOutOfBoundsException: 1024
+at org.apache.orc.impl.RunLengthIntegerReaderV2.nextVector(RunLengthIntegerReaderV2.java:369)
+at org.apache.orc.impl.TreeReaderFactory$BytesColumnVectorUtil.commonReadByteArrays(TreeReaderFactory.java:1231)
+at org.apache.orc.impl.TreeReaderFactory$BytesColumnVectorUtil.readOrcByteArrays(TreeReaderFactory.java:1268)
+at org.apache.orc.impl.TreeReaderFactory$StringDirectTreeReader.nextVector(TreeReaderFactory.java:1368)
+at org.apache.orc.impl.TreeReaderFactory$StringTreeReader.nextVector(TreeReaderFactory.java:1212)
+at org.apache.orc.impl.TreeReaderFactory$ListTreeReader.nextVector(TreeReaderFactory.java:1902)
+at org.apache.orc.impl.TreeReaderFactory$StructTreeReader.nextBatch(TreeReaderFactory.java:1737)
+at org.apache.orc.impl.RecordReaderImpl.nextBatch(RecordReaderImpl.java:1045)
+at org.apache.hadoop.hive.ql.io.orc.RecordReaderImpl.ensureBatch(RecordReaderImpl.java:77)
+at org.apache.hadoop.hive.ql.io.orc.RecordReaderImpl.hasNext(RecordReaderImpl.java:89)
+at org.apache.hadoop.hive.ql.io.orc.OrcInputFormat$OrcRecordReader.next(OrcInputFormat.java:230)
+at org.apache.hadoop.hive.ql.io.orc.OrcInputFormat$OrcRecordReader.next(OrcInputFormat.java:205)
+at org.apache.hadoop.hive.ql.io.HiveContextAwareRecordReader.doNext(HiveContextAwareRecordReader.java:350)
+... 22 more
+How to reproduce?
+Configure StringTreeReader  which contains StringDirectTreeReader as TreeReader (DIRECT or DIRECT_V2 column encoding)
+batchSize = 1026;
+invoke method nextVector(ColumnVector previousVector,boolean[] isNull, final int batchSize)
+scratchlcv is LongColumnVector with long[] vector  (length 1024)
+ which execute BytesColumnVectorUtil.readOrcByteArrays(stream, lengths, scratchlcv,result, batchSize);
+as result in method commonReadByteArrays(stream, lengths, scratchlcv,
+            result, (int) batchSize) we received ArrayIndexOutOfBoundsException.
+If we use StringDictionaryTreeReader, then there is no exception, as we have a verification  scratchlcv.ensureSize((int) batchSize, false) before reader.nextVector(scratchlcv, scratchlcv.vector, batchSize);
+These changes were made for Hive 2.1.0 by corresponding commit https://github.com/apache/hive/commit/0ac424f0a17b341efe299da167791112e4a953e9#diff-a1cec556fb2db4b69a1a4127a6908177R1467 for task  https://issues.apache.org/jira/browse/HIVE-12159 by Owen O'Malley
+How to fix?
+add  only one line :
+scratchlcv.ensureSize((int) batchSize, false) ;
+in method org.apache.orc.impl.TreeReaderFactory#BytesColumnVectorUtil#commonReadByteArrays(InStream stream, IntegerReader lengths,
+        LongColumnVector scratchlcv,
+        BytesColumnVector result, final int batchSize) before invocation lengths.nextVector(scratchlcv, scratchlcv.vector, batchSize);

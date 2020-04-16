@@ -1,0 +1,16 @@
+On-going performance investigation at Facebook has demonstrated that Zookeeper is easily overwhelmed by spikes in connection rates and/or write request rates. Zookeeper performance gets progressively worse, clients timeout and try to reconnect (exacerbating the problem) and things enter a death spiral. To solve this problem, we need to add load protection to Zookeeper via rate limiting and work shedding.
+
+This JIRA task adds a new request throttling mechanism (RequestThrottler) to Zookeeper in hopes of preventing Zookeeper from becoming overwhelmed during request spikes.
+ 
+When enabled, the RequestThrottler limits the number Of outstanding requests currently submitted to the request processor pipeline. 
+ 
+The throttler augments the limit imposed by the globalOutstandingLimit that is enforced by the connection layer (NIOServerCnxn, NettyServerCnxn). The connection layer limit applies backpressure against the TCP connection by disabling selection on connections once the request limit is reached. However, the connection layer always allows a connection to send at least one request before disabling selection on that connection. Thus, in a scenario with 40000 client connections, the total number of requests inflight may be as high as 40000 even if the globalOustandingLimit was set lower.
+ 
+The RequestThrottler addresses this issue by adding additional queueing. When enabled, client connections no longer submit requests directly to the request processor pipeline but instead to the RequestThrottler. The RequestThrottler is then responsible for issuing requests to the request processors, and enforces a separate maxRequests limit. If the total number of outstanding requests is higher than maxRequests, the throttler will continually stall for stallTime milliseconds until under limit.
+ 
+The RequestThrottler can also optionally drop stale requests rather than submit them to the processor pipeline. A stale request is a request sent by a connection that is already closed, and/or a request whose latency will end up being higher than its associated session timeout.
+To ensure ordering guarantees, if a request is ever dropped from a connection that connection is closed and flagged as invalid. All subsequent requests inflight from that connection are then dropped as well.
+ 
+The notion of staleness is configurable, both connection staleness and latency staleness can be individually enabled/disabled. Both these settings and the various throttle settings (limit, stall time, stale drop) can be configured via system properties as well as at runtime via JMX.
+ 
+The throttler has been tested and benchmarked at Facebook

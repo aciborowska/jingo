@@ -1,0 +1,50 @@
+This bug is related to HBASE-14241 and HBASE-13851. 
+Fix for HBASE-13851 introduced the check for non alive connections and if connection is not alive, it close it:
+
+        if (!conn.isAlive()) {
+
+          if (connsToClose == null) {
+
+            connsToClose = new HashSet<Connection>();
+
+          }
+
+          connsToClose.add(conn);
+
+        }
+
+....
+
+    if (connsToClose != null) {
+
+      for (Connection conn : connsToClose) {
+
+        if (conn.markClosed(new InterruptedIOException("RpcClient is closing"))) {
+
+          conn.close();
+
+        }
+
+      }
+
+    }
+
+
+
+
+
+That worked fine until fix for HBASE-14241 introduced handling for interrupt in writer thread:
+
+          try {
+
+            cts = callsToWrite.take();
+
+          } catch (InterruptedException e) {
+
+            markClosed(new InterruptedIOException());
+
+          }
+
+
+
+So, if writer thread is running, but connection thread is not started yet, interrupt will cause calling of markClosed which will set shouldCloseConnection flag for the parent connection. And the next time during the handling of non alive connections markClosed will return false and close will not be called. As the result connection will not be removed from the connections pool and RpcClientImpl.close never finish. 

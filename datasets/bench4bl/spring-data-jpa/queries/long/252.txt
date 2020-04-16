@@ -1,0 +1,113 @@
+When using the PagingAndSortingRepository with a Pageable query, attempts to sort by the join property will exclude entities where the join condition is absent.
+From JSR-317 4.4.5.2:
+LEFT JOIN and LEFT OUTER JOIN are synonymous. They enable the retrieval of a set of entities where matching values in the join condition may be absent.
+According to standard SQL and JPA specs, the left outer join should always contain all entities from the "left" table even if the join condition is absent. Therefore, the exclusion of the "left" entities when there is no matching value in the "right" table seems incorrect.
+For example, given an entity "Person" with optional OneToOne relationship "Address" (where Address is the owner), any attempts to retrieve pages of Person entities from the repository that are ordered by an Address property will only return Person entities that have non-null Addresses. This is only a problem for Pageable and Sort queries; using the same @Query with a non-pageable/sort works as expected.
+
+
+
+
+
+
+// Includes Persons with no Addresses and sorts by address.city, as expected
+
+
+
+
+@Query("select p from Person p left outer join p.address address order by address.city")
+
+
+
+
+List<Person> findPersonOrderByCity();
+
+
+
+
+ 
+
+
+
+
+// Excludes Persons with no Addresses when sorting by an address property
+
+
+
+
+@Query("select p from Person p left outer join p.address address")
+
+
+
+
+Page<Person> findPerson(Pageable pageable);
+
+
+
+
+ 
+
+
+
+
+// Excludes Persons with no Addresses when sorting by an address property    
+
+
+
+
+@Query("select p from Person p left outer join p.address address")
+
+
+
+
+List<Person> findPerson(Sort sort);
+
+
+
+
+
+
+The resulting core sql statements (simplified slightly for brevity) are as follows; notice the additional FROM clause incorrectly added to the pageable query:
+
+
+
+
+
+
+@Query("select p from Person p left outer join p.address address order by address.city")
+
+
+
+
+List<Person> findPersonOrderByCity();
+
+
+
+
+select p.id, p.first_name, p.last_name from person p left outer join address a on p.id=a.person order by a.city
+
+
+
+
+ 
+
+
+
+
+@Query("select p from Person p left outer join p.address address")
+
+
+
+
+Page<Person> findPerson(Pageable pageable);
+
+
+
+
+select p.id, p.first_name, p.last_name from person p left outer join address a on p.id=a.person, address a2 where p.id=a2.person order by a2.city asc
+
+
+
+
+
+
+A full test case is attached. This has been tested with spring-data-jpa-1.1.1.RELEASE and hibernate-4.1.5.SP1.

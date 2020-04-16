@@ -1,0 +1,41 @@
+It seems that in some cases, the parameters can't be set for sub-queries. I've seen this exception:
+
+ java.lang.IllegalArgumentException: Parameter named "device_group_access_hash" is not declared in query "SELECT SUM(1) AS total_count, MIN(e.when) AS min_time, MAX(e.when) AS max_time, e.vehicle.vin AS key_vin, e.level AS key_level, e.moduleID AS key_json_moduleID FROM E_ComponentLog e INNER JOIN e.vehicle ?  WHERE (((e.vehicle.tenancy = :tenancy AND e.type = :_type) AND e.when BETWEEN :minTime AND :maxTime) AND e.vehicle IN (SELECT  DISTINCT * FROM E_SotaDevice e INNER JOIN e.groups ?  WHERE e.groups.group IN (SELECT e.groupName FROM E_SotaDeviceGroupBlock e WHERE (e.strHash = :device_group_access_hash AND e.tenancy = e.tenancy)))) GROUP BY e.vehicle.vin, e.level, e.moduleID". Declared parameter keys are "[ParameterExpression<Timestamp>('maxTime'), ParameterExpression<String>('_type'), ParameterExpression<String>('tenancy'), ParameterExpression<Timestamp>('minTime')]".
+        at org.apache.openjpa.persistence.AbstractQuery.getParameter(AbstractQuery.java:385)
+        at org.apache.openjpa.persistence.AbstractQuery.setParameter(AbstractQuery.java:586)
+        at org.apache.openjpa.persistence.AbstractQuery.setParameter(AbstractQuery.java:47)
+        at java.util.HashMap.forEach(HashMap.java:1289)
+        at com.excelfore.util.Q$COMPONENT_LOG_GROUP.getGroupList(Q.java:2384)
+
+
+
+The parameter can clearly be seen in the query. I don't really know how to localize it into a test case. This only happens when EntityManagerImpl.createQuery() ends up calling declareParameter(). It looks like there are two ways parameters are processed, and for simpler queries, this doesn't happen. 
+
+When this happens, the parameters are gathered using parameter visitors. But subquery did not delegate its parameters to the visitor, so they were omitted. I've fixed this by:
+
+Index: openjpa-persistence/src/main/java/org/apache/openjpa/persistence/criteria/SubqueryImpl.java
+===================================================================
+--- openjpa-persistence/src/main/java/org/apache/openjpa/persistence/criteria/SubqueryImpl.java (revision 1828187)
++++ openjpa-persistence/src/main/java/org/apache/openjpa/persistence/criteria/SubqueryImpl.java (working copy)
+@@ -365,4 +361,18 @@
+     public StringBuilder asVariable(AliasContext q) {
+         return asValue(q);
+     }
++
++    @Override
++    public void acceptVisit(CriteriaExpressionVisitor visitor) {
++        // $TODO: this should be all expressions, not just parameters,
++        // but I don't know exactly how I would get those, plus this is so far
++        // only used for gathering parameters, so...
++        Set<ParameterExpression<?>> pSet = _delegate.getParameters();
++        Expression<?>[] expressions = new Expression<?>[pSet.size()];
++        int i = 0;
++        for (ParameterExpression pe : pSet) {
++            expressions[i++] = pe;
++        }
++        Expressions.acceptVisit(visitor, this, expressions);
++    }
+
+
+
+Note, that because I have other fixes in this file due to OPENJPA-2733, so the diff will need to be manually applied, and imports adjusted.

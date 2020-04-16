@@ -1,0 +1,85 @@
+I encountered this problem when I sent html from the server to a client using AjaxRequest. HTML was escaped wrapped in CDATA. I thought it was pretty safe. See my xml fragment below:
+//------------------------------------------------------------------------------------------
+<?xml version="1.0" encoding="UTF-8"?>
+<ajax-fragment>
+<html-rows>
+<![CDATA[
+<div style="padding-left: 1px;" class="columnContent4  column4">
+<span  column-id="Message"  class="cellContent"  onmouseover="w12450823.onDwell(event); w12450823.onCellSelectionOnMouseOver(event);"  onclick="w12450823.onCellSelectionOnClick(event)"  >May 29 10:48:29 rdia643 su: - 2 nitroqa-nss</span></div>
+]]>
+</html-rows>
+</ajax-fragment>
+//------------------------------------------------------------------------------------------
+However in FF2 there was js error:
+//-------------------------------------------------------------------------------------------- 
+Error: not well-formed
+Source Code:
+<span  column-id="Message"  class="cellContent "  onmouseover="w12450823.onDwell(event); w12450823.onCellSelectionOnMouseOver(event); " onclick="w12450823.onCellSelectionOnClick(event)"  >May 29 10:48:29 rdia643 su: - 2 nitroqa-nss</span></div
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------^
+I figured out that StringEscapeUtils.escapeHTML() did not escape one of the characters. it was a '\b'(ascii 8).
+I had to change to org.apache.commons.lang.Entities.excape() method:
+public void escape(Writer writer, String str) throws IOException {
+	int len = str.length();
+	for (int i = 0; i < len; i++) {
+		char c = str.charAt;
+		String entityName = this.entityName(c);
+		if (entityName == null) {
+			if ((c < 0x20 && c != 9 && c != 10 && c != 13) || c >> 0x7F) 
+{
+				writer.write("&#");
+				writer.write(Integer.toString(c, 10));
+				writer.write(';');
+			}
+			else 
+{
+				writer.write(c);
+			}
+		}
+		else 
+{
+			writer.write('&');
+			writer.write(entityName);
+			writer.write(';');
+		}
+	}
+}
+//---------------------------------------------------------------------------------------
+It can be tested with unittest:
+import java.io.Reader;
+import java.io.StringReader;
+import junit.framework.TestCase;
+import org.apache.commons.lang.StringEscapeUtils;
+import org.jdom.input.SAXBuilder;
+public class StringEscapeUtilsTest extends TestCase {
+public void testPR73092() throws Exception {
+	StringBuilder test = new StringBuilder(50);
+	for (int i = 0; i <= 50; i++) 
+{
+		test.append((char)i);
+	}
+
+	StringBuilder result = new StringBuilder("<test>\n<![CDATA[\n");
+	result.append(StringEscapeUtils.escapeHtml(test.toString()));
+	result.append("\n]]>\n</test>\n");
+	validate(new StringReader(result.toString()));
+	result = new StringBuilder("<test>\n<![CDATA[\n");
+	result.append(test.toString());
+	result.append("\n]]>\n</test>\n");
+	try 
+{
+		validate(new StringReader(result.toString()));
+		fail("expected to blow up");
+	}
+	catch (Exception e) 
+{
+		//
+	}
+}
+/** make sure that xml is well-formed */
+private static void validate(Reader xmlSource) throws Exception 
+{
+	SAXBuilder saxBuilder = new SAXBuilder();
+	saxBuilder.build(xmlSource);
+}
+
+}

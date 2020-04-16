@@ -1,0 +1,65 @@
+Consider the following pig query, which demonstrates various problems during the Logical Plan creation and the subsequent execution of the M/R job. In this query we do two cogroups, one between A and B to generate an alias ABtemptable. Then we again cogroup A with ABtemptable based on marks which was read in as an int. 
+==================================================================================
+
+A = load 'mymarks.txt' as (marks:int, username:chararray);
+B = load 'mygrades.txt' as (username:chararray,grade:chararray);
+ABtemp = cogroup A by username, B  by username;
+ABtemptable = foreach ABtemp generate
+           group as username,
+           flatten(A.marks) as newmarks;
+--describe ABtemptable;
+C = cogroup A by marks, ABtemptable by newmarks;
+--describe C;
+explain C;
+dump C;
+
+
+==================================================================================
+The schema for C and ABtemptable which pig reports:
+==================================================================================
+
+describe ABtemptable;
+
+ ABtemptable: 
+{username: chararray,newmarks: int}
+
+describe C;
+
+ C: {group: int,A: 
+{username: chararray,marks: int}
+,ABtemptable: {username: chararray,newmarks: int}}
+==================================================================================
+If you run the above query you get the following error:
+==================================================================================
+2008-11-18 03:57:14,372 [main] ERROR org.apache.pig.backend.hadoop.executionengine.mapReduceLayer.Launcher - Error message from task (map) task_200810152105_0156_m_000000java.io.IOException: Type mismatch in key from map: expected org.apache.pig.impl.io.NullableText, recieved org.apache.pig.impl.io.NullableIntWritable
+        at org.apache.hadoop.mapred.MapTask$MapOutputBuffer.collect(MapTask.java:415)
+        at org.apache.pig.backend.hadoop.executionengine.mapReduceLayer.PigMapReduce$Map.collect(PigMapReduce.java:97)
+        at org.apache.pig.backend.hadoop.executionengine.mapReduceLayer.PigMapBase.runPipeline(PigMapBase.java:172)
+        at org.apache.pig.backend.hadoop.executionengine.mapReduceLayer.PigMapBase.map(PigMapBase.java:158)
+        at org.apache.pig.backend.hadoop.executionengine.mapReduceLayer.PigMapReduce$Map.map(PigMapReduce.java:82)
+        at org.apache.hadoop.mapred.MapRunner.run(MapRunner.java:47)
+        at org.apache.hadoop.mapred.MapTask.run(MapTask.java:227)
+        at org.apache.hadoop.mapred.TaskTracker$Child.main(TaskTracker.java:2209)
+==================================================================================
+Looking at the 
+
+explain C;
+
+ output, you see that newmarks has become a chararray (surprising!!)
+==================================================================================
+---CoGroup viraj-Tue Nov 18 03:49:42 UTC 2008-25 Schema: {group: Unknown,
+{username: bytearray,marks: int}
+,ABtemptable: {username: chararray,newmarks: chararray}} Type: bag
+      Project viraj-Tue Nov 18 03:49:42 UTC 2008-23 Projections: [1] Overloaded: false FieldSchema: marks: int Type: int
+      Input: SplitOutput[null] viraj-Tue Nov 18 03:49:42 UTC 2008-29
+      Project viraj-Tue Nov 18 03:49:42 UTC 2008-24 Projections: [1] Overloaded: false FieldSchema: newmarks: chararray Type: chararray
+       Input: ForEach viraj-Tue Nov 18 03:49:42 UTC 2008-22
+    ---ForEach viraj-Tue Nov 18 03:49:42 UTC 2008-22 Schema: 
+{username: chararray,newmarks: chararray}
+ Type: bag
+==================================================================================
+In Summary this script demonstrates the following problems:
+1) Logical Plan creation
+2) When cogrouping with fields of different types which results in group unknown is not caught during compile phase.
+Additionally I am enclosing the explain output of alias C and testfiles to run the script which is on this jira!!
+Viraj

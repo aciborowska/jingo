@@ -1,0 +1,243 @@
+        Spring 1.3 Release Candidate ship with a sophisticated JMS listener solution: properly supporting concurrent reception, possibly also transactional reception. 
+	But, here's an interesting conflict between JMS and J2EE that has been popularly discovered. Could you please take a look to find out the work around solution for it? 
+	Appreciate your care on this critical issue with Spring 1.3 JMS listener!
+	You can't run an implementor of MessageListener in a J2EE container. J2EE 1.3 says not to do it in the EJB container. J2EE 1.4 says not to do it in the Web container either. Basically, you can't use it in any container that controls thread creation, which is any container except an application client container.
+"Note: A MessageListener can only be used in the client container. (The J2EE specification forbids the use of the JMS MessageListener mechanism for the asynchronous receipt of messages in the EJB and Web containers.)" 
+	The section "J2EE.6.7 Java™ Message Service (JMS) 1.0 Requirements" of the J2EE specification gives a list of methods that must not be called in Web and EJB containers. This is enforced in WebSphere Application Server by throwing a javax.jms.IllegalStateException.
+	Here is a relevant part from J2EE 1.3 specification:http://java.sun.com/j2ee/j2ee-1_3-fr-spec.pdf section 6.7:
+message listeners. The use of this message listener facility may be 
+limited by the restrictions on the use of threads in various 
+containers. In EJB containers, for instance, it is typically not 
+possible to create threads. The following methods must not be used by 
+application components executing in containers that prevent them 
+from creating threads: 
+. 
+
+javax.jms.Session method setMessageListener
+javax.jms.Session method getMessageListener
+javax.jms.Session method run
+javax.jms.QueueConnection method createConnectionConsumer
+javax.jms.TopicConnection method createConnectionConsumer
+javax.jms.TopicConnection method createDurableConnectionConsumer
+javax.jms.MessageConsumer method getMessageListener
+javax.jms.MessageConsumer method setMessageListener
+. 
+In addition, use of the following methods on javax.jms.Connection
+objects by applications in web and EJB containers may interfere with the
+connection management functions of the container and must not be used:
+setExceptionListener
+stop
+setClientID
+A J2EE container may throw a JMSException if the application component 
+violates these restrictions. ...."  
+
+	WebSphere Application Server 5 and 6 don't allow MessageListeners to be used in either container. When you try, you get an error like this:
+javax.jms.IllegalStateException: Method setMessageListener not permitted
+at com.ibm.ejs.jms.JMSCMUtils.methodNotPermittedException(JMSCMUtils.java:202)
+at com.ibm.ejs.jms.JMSMessageConsumerHandle.setMessageListener(JMSMessageConsumerHandle.java:193)
+at MyMessageListenerImpl.connect(MyMessageListenerImpl.java:39)
+. . .
+	So WebSphere Application Server doesn't actually prevent you from deploying a class that implements MessageListener, but when you try to run your code, WAS prevents the MessageConsumer.setMessageListener(MessageListener) method from running by throwing an IllegalStateException. For details, see IBM WMQ FAQ answer #92 and IBM Technote #1114239.
+	So when you get this error, the problem isn't a bug in your code, it's your entire approach. In a nutshell, if you want to run a MessageListener in J2EE, don't implement a MessageListener, implement a (can you guess?) messsage-driven bean (the JMS kind, which implements MessageListener). And if you don't like using EJBs? Get used to it. MDBs work in J2EE; MessageListeners don't.
+	BTW, here is the code snippet which is based on Spring 1.3 MessageListener, the code does not work on WebSphere Application Server 6: it throws javax.jms.IllegalStateException at the highlighted code below. 
+>
+>   public class MessageHandlerDAO implements MessageListener,
+>   InitializingBean {
+>   protected final Log log = LogFactory.getLog(getClass());
+>
+>   private Type1MessageHandler type1MessageHandler;
+>
+>   private Type2MessageHandler type2MessageHandler;
+>
+>   private Type3MessageHandler type3MessageHandler;
+>
+>   private JmsTemplate102 jmsTemplate;
+>
+>   private QueueConnection conn;
+>
+>   private String username;
+>
+>   private String password;
+>
+>   public MessageHandlerDAO() 
+{
+>    log.info("Creating MessageHandlerDAO().................");
+>   }
+>
+>   /**
+>    * listening method.
+>    */
+>   public void onMessage(Message message) {
+>    log.info("onMessage()....................");
+>
+>    TextMessage msg = null;
+>
+>    try {
+>     if (message instanceof TextMessage) {
+>      msg = (TextMessage) message;
+>      if(log.isDebugEnabled())
+>       log.debug("Reading message: " + msg.getText());
+>
+>      MessageParser messageParser = new PortalXMLMessageParser();
+>      GeneralMessage gm = messageParser.parse(msg.getText());
+>      if(gm == null)
+{
+>       log.info("message format not right!");
+>       return;
+>      }
+>      String type = gm.getType();
+>
+>      if (MessageHandlerDAO.isNonBlank(type)) {
+>       if (type.equals("1")) {
+>        if (type1MessageHandler.handle(gm)) 
+{
+>         if(log.isDebugEnabled())
+>          log.debug("Successfully deal with the message!"
+>           + " (The message type is : 1");
+>        }
+ else 
+{
+>         if(log.isDebugEnabled())
+>          log.debug("Fail to deal with the message!"
+>           + " (The message type is : 1");
+>        }
+>       } else if (type.equals("2")) {
+>        if (type2MessageHandler.handle(gm)) 
+{
+>         if(log.isDebugEnabled())
+>          log.debug("Successfully deal with the message!"
+>           + " (The message type is : 2");
+>        }
+ else 
+{
+>         if(log.isDebugEnabled())
+>          log.debug("Fail to deal with the message!"
+>           + " (The message type is : 2");
+>        }
+>       } else if (type.equals("3")) {
+>        if (type3MessageHandler.handle(gm)) 
+{
+>         if(log.isDebugEnabled())
+>          log.debug("Successfully deal with the message!"
+>           + " (The message type is : 3");
+>        }
+ else 
+{
+>         if(log.isDebugEnabled())
+>          log.debug("Fail to deal with the message!"
+>           + " (The message type is : 3");
+>        }
+>       }
+>      } else 
+{
+>       log.info("Unknow the message type!");
+>      }
+>     } else 
+{
+>      log.error("This message type is not correct : "
+>        + message.getClass().getName());
+>     }
+>    } catch (JMSException jmse) 
+{
+>     log.error("JMSException", jmse);
+>    }
+>   }
+>
+>   public void afterPropertiesSet() throws Exception 
+{
+>    initial();
+>   }
+>
+>   public void destroy() {
+>    try 
+{
+>     conn.close();
+>     log.info("JMS Connection close successfully!");
+>    }
+ catch (JMSException e) 
+{
+>     log.error("Message Exception", e);
+>    }
+>   }
+>
+>   public void initial() {
+>       log.info("initial()...................");
+>    try {
+>   //   conn = jmsTemplate.getConnectionFactory().createConnection(
+>   //     username, password);
+>     Context context = new InitialContext();
+>     QueueConnectionFactory qcf =
+>      (QueueConnectionFactory) context.lookup("ConnectionFactory");
+>     context.close();
+>     conn = qcf.createQueueConnection();
+>     context = new InitialContext();
+>     Queue queue = (Queue) context.lookup("queue/wftopic");
+>     context.close();
+>     QueueSession session = conn
+>       .createQueueSession(false, Session.AUTO_ACKNOWLEDGE);
+>     QueueReceiver receiver = session.createReceiver(queue);
+>     receiver.setMessageListener(this);
+>     conn.start();
+>
+>   //            conn =
+>   jmsTemplate.getConnectionFactory().createConnection();
+>   //   conn.createSession(false, javax.jms.Session.AUTO_ACKNOWLEDGE)
+>   //     .createConsumer(jmsTemplate.getDefaultDestination())
+>   //     .setMessageListener(this);
+>   //   conn.start();
+>    } catch (Exception e) {>     log.error("Message Exception", e);>    }
+>    log.info("Listening to the message................, " +
+>   Thread.currentThread().getName());
+>   }
+>
+>   public static boolean isBlank(String input) {
+>    if ((input == null) || (input.length() == 0)) 
+{
+>     return true;
+>    }
+>
+>    return input.trim().length() == 0;
+>   }
+>
+>   public static boolean isNonBlank(String input) 
+{
+>    return !isBlank(input);
+>   }
+>
+>   public void setType1MessageHandler(Type1MessageHandler
+>   type1MessageHandler) 
+{
+>    this.type1MessageHandler = type1MessageHandler;
+>   }
+>
+>   public void setType2MessageHandler(Type2MessageHandler
+>   type2MessageHandler) 
+{
+>    this.type2MessageHandler = type2MessageHandler;
+>   }
+>
+>   public void setType3MessageHandler(Type3MessageHandler
+>   type3MessageHandler) 
+{
+>    this.type3MessageHandler = type3MessageHandler;
+>   }
+>
+>   public void setJmsTemplate(JmsTemplate102 jmsTemplate) 
+{
+>    this.jmsTemplate = jmsTemplate;
+>   }
+>
+>   public void setPassword(String password) 
+{
+>    this.password = password;
+>   }
+>
+>   public void setUsername(String username) 
+{
+>    this.username = username;
+>   }
+>   }
+>
+>
+>
+>

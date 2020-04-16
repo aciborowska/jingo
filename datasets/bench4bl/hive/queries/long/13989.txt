@@ -1,0 +1,196 @@
+Hive takes two approaches to working with extended ACLs depending on whether data is being produced via a Hive query or HCatalog APIs. A Hive query will run an FsShell command to recursively set the extended ACLs for a directory sub-tree. HCatalog APIs will attempt to build up the directory sub-tree programmatically and runs some code to set the ACLs to match the parent directory.
+Some incorrect assumptions were made when implementing the extended ACLs support. Refer to https://issues.apache.org/jira/browse/HDFS-4685 for the design documents of extended ACLs in HDFS. These documents model the implementation after the POSIX implementation on Linux, which can be found at http://www.vanemery.com/Linux/ACL/POSIX_ACL_on_Linux.html.
+The code for setting extended ACLs via HCatalog APIs is found in HdfsUtils.java:
+
+
+
+    if (aclEnabled) {
+
+      aclStatus =  sourceStatus.getAclStatus();
+
+      if (aclStatus != null) {
+
+        LOG.trace(aclStatus.toString());
+
+        aclEntries = aclStatus.getEntries();
+
+        removeBaseAclEntries(aclEntries);
+
+
+
+        //the ACL api's also expect the tradition user/group/other permission in the form of ACL
+
+        aclEntries.add(newAclEntry(AclEntryScope.ACCESS, AclEntryType.USER, sourcePerm.getUserAction()));
+
+        aclEntries.add(newAclEntry(AclEntryScope.ACCESS, AclEntryType.GROUP, sourcePerm.getGroupAction()));
+
+        aclEntries.add(newAclEntry(AclEntryScope.ACCESS, AclEntryType.OTHER, sourcePerm.getOtherAction()));
+
+      }
+
+    }
+
+
+
+We found that DEFAULT extended ACL rules were not being inherited properly by the directory sub-tree, so the above code is incomplete because it effectively drops the DEFAULT rules. The second problem is with the call to sourcePerm.getGroupAction(), which is incorrect in the case of extended ACLs. When extended ACLs are used the GROUP permission is replaced with the extended ACL mask. So the above code will apply the wrong permissions to the GROUP. Instead the correct GROUP permissions now need to be pulled from the AclEntry as returned by getAclStatus().getEntries(). See the implementation of the new method getDefaultAclEntries for details.
+Similar issues exist with the HCatalog API. None of the API accounts for setting extended ACLs on the directory sub-tree. The changes to the HCatalog API allow the extended ACLs to be passed into the required methods similar to how basic permissions are passed in. When building the directory sub-tree the extended ACLs of the table directory are inherited by all sub-directories, including the DEFAULT rules.
+Replicating the problem:
+Create a table to write data into (I will use acl_test as the destination and words_text as the source) and set the ACLs as follows:
+
+$ hdfs dfs -setfacl -m default:user::rwx,default:group::r-x,default:mask::rwx,default:user:hdfs:rwx,group::r-x,user:hdfs:rwx /user/cdrome/hive/acl_test
+
+
+
+$ hdfs dfs -ls -d /user/cdrome/hive/acl_test
+
+drwxrwx---+  - cdrome hdfs          0 2016-07-13 20:36 /user/cdrome/hive/acl_test
+
+
+
+$ hdfs dfs -getfacl -R /user/cdrome/hive/acl_test
+
+# file: /user/cdrome/hive/acl_test
+
+# owner: cdrome
+
+# group: hdfs
+
+user::rwx
+
+user:hdfs:rwx
+
+group::r-x
+
+mask::rwx
+
+other::---
+
+default:user::rwx
+
+default:user:hdfs:rwx
+
+default:group::r-x
+
+default:mask::rwx
+
+default:other::---
+
+
+
+Note that the basic GROUP permission is set to rwx after setting the ACLs. The ACLs explicitly set the DEFAULT rules and a rule specifically for the hdfs user.
+Run the following query to populate the table:
+
+insert into acl_test partition (dt='a', ds='b') select a, b from words_text where dt = 'c';
+
+
+
+Note that words_text only has a single partition key.
+Now examine the ACLs for the resulting directories:
+
+$ hdfs dfs -getfacl -R /user/cdrome/hive/acl_test
+
+# file: /user/cdrome/hive/acl_test
+
+# owner: cdrome
+
+# group: hdfs
+
+user::rwx
+
+user:hdfs:rwx
+
+group::r-x
+
+mask::rwx
+
+other::---
+
+default:user::rwx
+
+default:user:hdfs:rwx
+
+default:group::r-x
+
+default:mask::rwx
+
+default:other::---
+
+
+
+# file: /user/cdrome/hive/acl_test/dt=a
+
+# owner: cdrome
+
+# group: hdfs
+
+user::rwx
+
+user:hdfs:rwx
+
+group::rwx
+
+mask::rwx
+
+other::---
+
+default:user::rwx
+
+default:user:hdfs:rwx
+
+default:group::rwx
+
+default:mask::rwx
+
+default:other::---
+
+
+
+# file: /user/cdrome/hive/acl_test/dt=a/ds=b
+
+# owner: cdrome
+
+# group: hdfs
+
+user::rwx
+
+user:hdfs:rwx
+
+group::rwx
+
+mask::rwx
+
+other::---
+
+default:user::rwx
+
+default:user:hdfs:rwx
+
+default:group::rwx
+
+default:mask::rwx
+
+default:other::---
+
+
+
+# file: /user/cdrome/hive/acl_test/dt=a/ds=b/000000_0.deflate
+
+# owner: cdrome
+
+# group: hdfs
+
+user::rwx
+
+user:hdfs:rwx
+
+group::rwx
+
+mask::rwx
+
+other::---
+
+
+
+Note that the GROUP permission is now erroneously set to rwx because of the code mentioned above; it is set to the same value as the ACL mask.
+The code changes for the HCatalog APIs is synonymous to the applyGroupAndPerms method which ensures that all new directories are created with the same permissions as the table. This patch will ensure that changes to intermediate directories will not be propagated, instead the table ACLs will be applied to all new directories created.
+I would also like to call out that the older versions of HDFS which support ACLs had a number issues in addition to those mentioned here which appear to have been addressed in later versions of Hadoop. This patch was originally written to work with a version of Hadoop-2.6, we are now using Hadoop-2.7 which appears to have fixed some of them. However, I think that this patch is still required for correct behavior of ACLs with Hive/HCatalog.

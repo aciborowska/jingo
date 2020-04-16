@@ -1,0 +1,538 @@
+There does seem to be an issue with the use of customer converters when used in mongoTemplate.update* via an Update object.
+I have a custom (de)serialiser for an enumerated type, and it works perfectly when saving and loading a @Document annotated POJO.
+It also works when building and executing a Query object.
+However when used in an Update, it is either ignored, or called in situations where it shouldn't.
+Please clone https://github.com/patrickherrera/converter_test.git for a full test application.
+In brief there is a POJO and for the purposes of the test it has a static enum with the desired converters:
+
+
+
+
+
+
+@Document
+
+
+
+
+public class MyPersistantObject {
+
+
+
+
+    public Allocation allocation;
+
+
+
+
+    public BigDecimal value;
+
+
+
+
+ 
+
+
+
+
+    public enum Allocation {
+
+
+
+
+        AVAILABLE("V"),
+
+
+
+
+        ALLOCATED("A");
+
+
+
+
+ 
+
+
+
+
+        private final String code;
+
+
+
+
+ 
+
+
+
+
+        Allocation(String code) {
+
+
+
+
+            this.code = code;
+
+
+
+
+        }
+
+
+
+
+ 
+
+
+
+
+        public static Converter<Allocation, String> writer() {
+
+
+
+
+            return new Converter<Allocation, String>() {
+
+
+
+
+                public String convert(Allocation allocation) {
+
+
+
+
+                    return allocation.getCode();
+
+
+
+
+                }
+
+
+
+
+            };
+
+
+
+
+        }
+
+
+
+
+ 
+
+
+
+
+        public static Converter<String, Allocation> reader() {
+
+
+
+
+            return new Converter<String, Allocation>() {
+
+
+
+
+                public Allocation convert(String source) {
+
+
+
+
+                    return Allocation.getByCode(source);
+
+
+
+
+                }
+
+
+
+
+            };
+
+
+
+
+        }
+
+
+
+
+ 
+
+
+
+
+        public static Allocation getByCode(String code) {
+
+
+
+
+            switch (code) {
+
+
+
+
+                case "V":
+
+
+
+
+                    return AVAILABLE;
+
+
+
+
+                case "A":
+
+
+
+
+                    return ALLOCATED;
+
+
+
+
+            }
+
+
+
+
+ 
+
+
+
+
+            throw new IllegalArgumentException("Unable to get Allocation from: " + code);
+
+
+
+
+        }
+
+
+
+
+ 
+
+
+
+
+        public String getCode() {
+
+
+
+
+            return code;
+
+
+
+
+        }
+
+
+
+
+    }
+
+
+
+
+}
+
+
+
+
+
+
+It simply converts back and forward using a short code rather than the full Enum name.
+These are registered in the Spring Boot application entry point:
+
+
+
+
+
+
+    @Bean
+
+
+
+
+    public CustomConversions customConversions() {
+
+
+
+
+        return new CustomConversions(Arrays.asList(
+
+
+
+
+                MyPersistantObject.Allocation.reader(),
+
+
+
+
+                MyPersistantObject.Allocation.writer()
+
+
+
+
+        ));
+
+
+
+
+    }
+
+
+
+
+
+
+There is a unit test that drives a few scenarios:
+
+
+
+
+
+
+@Test
+
+
+
+
+    public void testConversion() {
+
+
+
+
+        Update update;
+
+
+
+
+        Query query;
+
+
+
+
+        MyPersistantObject returned;
+
+
+
+
+        MyPersistantObject myPersistantObject = new MyPersistantObject();
+
+
+
+
+        myPersistantObject.allocation = AVAILABLE;
+
+
+
+
+        myPersistantObject.value = new BigDecimal(1234567);
+
+
+
+
+ 
+
+
+
+
+        mongoTemplate.save(myPersistantObject);
+
+
+
+
+ 
+
+
+
+
+        // Check it was saved correctly - first with invalid allocation to confirm conversion in query
+
+
+
+
+        query = query(where("allocation").is(ALLOCATED));
+
+
+
+
+        assertThat(mongoTemplate.findOne(query, MyPersistantObject.class), is(nullValue()));
+
+
+
+
+ 
+
+
+
+
+        // Check it was saved correctly - now with valid allocation to confirm conversion in query
+
+
+
+
+        query = query(where("allocation").is(AVAILABLE));
+
+
+
+
+        returned = mongoTemplate.findOne(query, MyPersistantObject.class);
+
+
+
+
+        assertThat(returned.allocation, is(AVAILABLE));
+
+
+
+
+        assertThat(returned.value.longValue(), is(1234567L));
+
+
+
+
+ 
+
+
+
+
+        try {
+
+
+
+
+            // Update allocation from constant - will fail
+
+
+
+
+            update = update("allocation", ALLOCATED);
+
+
+
+
+            mongoTemplate.updateMulti(query, update, MyPersistantObject.class);
+
+
+
+
+        } catch (Exception e) {
+
+
+
+
+            System.err.println("failed to convert allocation: java.lang.IllegalArgumentException: can't serialize class converter_test.MyPersistantObject$Allocation");
+
+
+
+
+        }
+
+
+
+
+ 
+
+
+
+
+        // Update allocation from string value - succeeds
+
+
+
+
+        update = update("allocation", ALLOCATED.getCode());
+
+
+
+
+        mongoTemplate.updateMulti(query, update, MyPersistantObject.class);
+
+
+
+
+        // Check allocation update
+
+
+
+
+        query = query(where("allocation").is(ALLOCATED));
+
+
+
+
+        returned = mongoTemplate.findOne(query, MyPersistantObject.class);
+
+
+
+
+        assertThat(returned.allocation, is(ALLOCATED));
+
+
+
+
+ 
+
+
+
+
+        // Update value only - will fail: Caused by: java.lang.IllegalArgumentException: Unable to get MyPersistantObject.Allocation from: 54321
+
+
+
+
+        // Tries to use MyPersistantObject.Allocation converter to String
+
+
+
+
+        update = update("value", new BigDecimal(54321));
+
+
+
+
+        mongoTemplate.updateMulti(query, update, MyPersistantObject.class);
+
+
+
+
+        // Check value update
+
+
+
+
+        returned = mongoTemplate.findAll(MyPersistantObject.class).get(0);
+
+
+
+
+        assertThat(returned.value.longValue(), is(54321L));
+
+
+
+
+    }
+
+
+
+
+
+
+Hopefully that makes sense.
+Firstly it saves and queries for the object to demonstrate that the converters are called correctly on the document.  I have confirmed that the document in the database correctly stores the Enum code rather than the name.
+By use of a positive and negative case, it appears that the converter is being called correctly when used in the Query builder.
+When it comes to an Update, the Enum is unable to be serialised correctly, and an exception is thrown to that effect.
+If I change it to use the code (a String), it works and we confirm that by Querying it back from the DB.
+So it appears that the customer converter for converting from my Enum is not called in this situation.
+Next I try and update the other value in the Document.  The BigDecimal is converted to a String by an existing converter I assume, but then my customer converter is called to try and convert the numeric String into an Allocation Enum which of course fails.
+I tried to debug the code and it seems that there is an overloaded method in CustomConversions: getCustomWriteTarget that takes one or two arguments, the second being a requestedTargetType.  That second variant never seems to be called in MappingMongoConverter, but perhaps if that type information was passed then it would not use my Allocation converter.
+Without type information it seems the default is just to use the first converter that can handle the input type, in this case a String.  It is my custom one which is picked up first but can't actually handle it.
+Please advise if there is something I am missing, as I can't find a workaround either - I have resorted to the Mongo Driver itself to do the update.

@@ -1,0 +1,58 @@
+While doing a load test we ran into an lock contention issue with InMemoryNonceServices
+In our load test we are hitting an oauth protected service with 50 threads. Each request should take about 5-10ms. Initially our client was using a nonce with insufficient randomness, so we 'fixed' it by using a uuid (the id of the resource being accessed). This is of course a hack but it revealed what is in my view some dubious synchronization in the InMemoryNonceServices class.
+The validateNonceMethod has a synchronized block that iterates over all the entries that were collected during the cutoff period to check if any entries are old enough so that they can be removed. In our load tests, this easily ranges in the tens of thousands of entries and consequently our server was constantly blocked on accessing this synchronized block. Response times dropped to 3-4 seconds. Simply disabling oauth nonce validation fixed the problem for us but of course this is not a fix we want in production.
+The fix seems obvious. Don't synchronize on iterating over all nonces in entries and instead handle removal of the nonces a bit smarter. Probably simply using a concurrent linked list would work well enough.
+For reference, here is the offending method:
+  @Override
+  public void validateNonce(ConsumerDetails consumerDetails, long timestamp, String nonce) throws AuthenticationException {
+    final long cutoff = (System.currentTimeMillis() / 1000) - getValidityWindowSeconds();
+    super.validateNonce(consumerDetails, timestamp, nonce);
+    String consumerKey = consumerDetails.getConsumerKey();
+    LinkedList<TimestampEntry> entries = TIMESTAMP_ENTRIES.get(consumerKey);
+    if (entries == null) 
+{
+      entries = new LinkedList<TimestampEntry>();
+      TIMESTAMP_ENTRIES.put(consumerKey, entries);
+    }
+
+    synchronized (entries) {
+      if (entries.isEmpty()) 
+{
+        entries.add(new TimestampEntry(timestamp, nonce));
+      }
+      else {
+        boolean isNew = entries.getLast().getTimestamp() < timestamp;
+        ListIterator<TimestampEntry> listIterator = entries.listIterator();
+        while (listIterator.hasNext()) {
+          TimestampEntry entry = listIterator.next();
+          if (entry.getTimestamp() < cutoff) 
+{
+            listIterator.remove();
+            isNew = !listIterator.hasNext();
+          }
+          else if (isNew) 
+{
+            //optimize for a new, latest timestamp
+            entries.addLast(new TimestampEntry(timestamp, nonce));
+            return;
+          }
+          else if (entry.getTimestamp() == timestamp) {
+            if (!entry.addNonce(nonce)) 
+{
+              throw new NonceAlreadyUsedException("Nonce already used: " + nonce);
+            }
+            return;
+          }
+          else if (entry.getTimestamp() > timestamp) 
+{
+            //insert a new entry just before this one.
+            entries.add(listIterator.previousIndex(), new TimestampEntry(timestamp, nonce));
+            return;
+          }
+        }
+        //got through the whole list; assume it's just a new one.
+        //this shouldn't happen because of the optimization above.
+        entries.addLast(new TimestampEntry(timestamp, nonce));
+      }
+    }
+  }

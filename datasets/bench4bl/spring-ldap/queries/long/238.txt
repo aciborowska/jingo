@@ -1,0 +1,531 @@
+Per the 1.3.1 source in the trunk:
+
+
+
+
+
+
+ContextMapper.java
+
+
+
+
+
+
+public interface ContextMapper {
+
+
+
+
+    /**
+
+
+
+
+     * Map a single LDAP Context to an object. The supplied Object
+
+
+
+
+     * <code>ctx</code> is the object from a single {@link SearchResult},
+
+
+
+
+     * {@link Binding}, or a lookup operation.
+
+
+
+
+     * 
+
+
+
+
+     * @param ctx
+
+
+
+
+     *            the context to map to an object. Typically this will be a
+
+
+
+
+     *            {@link DirContextAdapter} instance, unless a project specific
+
+
+
+
+     *            <code>DirObjectFactory</code> has been specified on the
+
+
+
+
+     *            <code>ContextSource</code>.
+
+
+
+
+     * @return an object built from the data in the context.
+
+
+
+
+     */
+
+
+
+
+    Object mapFromContext(Object ctx);
+
+
+
+
+}
+
+
+
+
+
+
+The 
+
+
+
+
+
+
+mapFromContext(Object ctx);
+
+
+
+
+
+
+Does not throw the 
+
+
+
+
+
+
+javax.naming.NamingException
+
+
+
+
+
+
+This is done in the analogous AttributesMapper class, and both are handled by the 
+
+
+
+
+
+
+	/**
+
+
+
+
+	 * Perform a search operation, such as a search(), list() or listBindings().
+
+
+
+
+	 * This method handles all the plumbing; getting a readonly context; looping
+
+
+
+
+	 * through the NamingEnumeration and closing the context and enumeration. It
+
+
+
+
+	 * also calls the supplied DirContextProcessor before and after the search,
+
+
+
+
+	 * respectively. This enables custom pre-processing and post-processing,
+
+
+
+
+	 * like for example when handling paged results or other search controls.
+
+
+
+
+	 * <p>
+
+
+
+
+	 * The actual list is delegated to the {@link SearchExecutor} and each
+
+
+
+
+	 * {@link NameClassPair} (this might be a NameClassPair or a subclass
+
+
+
+
+	 * thereof) is passed to the CallbackHandler. Any encountered
+
+
+
+
+	 * NamingException will be translated using the NamingExceptionTranslator.
+
+
+
+
+	 * 
+
+
+
+
+	 * @param se the SearchExecutor to use for performing the actual list.
+
+
+
+
+	 * @param handler the NameClassPairCallbackHandler to which each found entry
+
+
+
+
+	 * will be passed.
+
+
+
+
+	 * @param processor DirContextProcessor for custom pre- and post-processing.
+
+
+
+
+	 * Must not be <code>null</code>. If no custom processing should take place,
+
+
+
+
+	 * please use e.g.
+
+
+
+
+	 * {@link #search(SearchExecutor, NameClassPairCallbackHandler)}.
+
+
+
+
+	 * @throws NamingException if any error occurs. Note that a
+
+
+
+
+	 * NameNotFoundException will be ignored. Instead this is interpreted that
+
+
+
+
+	 * no entries were found.
+
+
+
+
+	 */
+
+
+
+
+	public void search(SearchExecutor se, NameClassPairCallbackHandler handler, DirContextProcessor processor) {
+
+
+
+
+		DirContext ctx = contextSource.getReadOnlyContext();
+
+
+
+
+ 
+
+
+
+
+		NamingEnumeration results = null;
+
+
+
+
+		RuntimeException ex = null;
+
+
+
+
+		try {
+
+
+
+
+			processor.preProcess(ctx);
+
+
+
+
+			results = se.executeSearch(ctx);
+
+
+
+
+ 
+
+
+
+
+			while (results.hasMore()) {
+
+
+
+
+				NameClassPair result = (NameClassPair) results.next();
+
+
+
+
+				handler.handleNameClassPair(result);
+
+
+
+
+			}
+
+
+
+
+		}
+
+
+
+
+		catch (NameNotFoundException e) {
+
+
+
+
+			// It is possible to ignore errors caused by base not found
+
+
+
+
+			if (ignoreNameNotFoundException) {
+
+
+
+
+				log.warn("Base context not found, ignoring: " + e.getMessage());
+
+
+
+
+			}
+
+
+
+
+			else {
+
+
+
+
+				ex = LdapUtils.convertLdapException(e);
+
+
+
+
+			}
+
+
+
+
+		}
+
+
+
+
+		catch (PartialResultException e) {
+
+
+
+
+			// Workaround for AD servers not handling referrals correctly.
+
+
+
+
+			if (ignorePartialResultException) {
+
+
+
+
+				log.debug("PartialResultException encountered and ignored", e);
+
+
+
+
+			}
+
+
+
+
+			else {
+
+
+
+
+				ex = LdapUtils.convertLdapException(e);
+
+
+
+
+			}
+
+
+
+
+		}
+
+
+
+
+		catch (javax.naming.NamingException e) {
+
+
+
+
+			ex = LdapUtils.convertLdapException(e);
+
+
+
+
+		}
+
+
+
+
+		finally {
+
+
+
+
+			try {
+
+
+
+
+				processor.postProcess(ctx);
+
+
+
+
+			}
+
+
+
+
+			catch (javax.naming.NamingException e) {
+
+
+
+
+				if (ex == null) {
+
+
+
+
+					ex = LdapUtils.convertLdapException(e);
+
+
+
+
+				}
+
+
+
+
+				else {
+
+
+
+
+					// We already had an exception from above and should ignore
+
+
+
+
+					// this one.
+
+
+
+
+					log.debug("Ignoring Exception from postProcess, " + "main exception thrown instead", e);
+
+
+
+
+				}
+
+
+
+
+			}
+
+
+
+
+			closeContextAndNamingEnumeration(ctx, results);
+
+
+
+
+			// If we got an exception it should be thrown.
+
+
+
+
+			if (ex != null) {
+
+
+
+
+				throw ex;
+
+
+
+
+			}
+
+
+
+
+		}
+
+
+
+
+	}
+
+
+
+
+
+
+Method of LdapTemplate which states in its javadoc comment that 
+
+Any encountered NamingException will be translated using the NamingExceptionTranslator.

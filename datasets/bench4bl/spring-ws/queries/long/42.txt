@@ -1,0 +1,42 @@
+While sending a SOAP Attachment with the reponse using Spring-WS, the response does not include the required 'multipart/related' and 'boundary' mime headers.
+I've added an attachment in my MessageEndpoint with the following line of code:
+((SoapMessage) messageContext.getResponse())
+					.addAttachment(new File("fileName"))
+The resulting SOAP response message looks like the following:
+HTTP/1.1 200 OK
+Server: Apache-Coyote/1.1
+Content-Type: type="text/xml"; charset=utf-8
+Transfer-Encoding: chunked
+Date: Mon, 03 Jul 2006 22:19:11 GMT
+2000
+------=_Part_2_5156525.1151965151925
+Content-Type: text/xml
+<SOAP-ENV:Envelope xmlns:SOAP-ENV="http://schemas.xmlsoap.org/soap/envelope/"><SOAP-ENV:Header/><SOAP-ENV:Body><GetFlightsResponse xmlns="http://www.springframework.org/spring-ws/samples/airline/schemas"><flight><number>KL1653</number><departureTime>2006-01-31T10:05:00+01:00</departureTime><from><code>AMS</code><name>Schiphol Airport</name><city>Amsterdam</city></from><arrivalTime>2006-01-31T12:25:00+01:00</arrivalTime><to><code>VCE</code><name>Marco Polo Airport</name><city>Venice</city></to><serviceClass>economy</serviceClass></flight></GetFlightsResponse></SOAP-ENV:Body></SOAP-ENV:Envelope>
+------=_Part_2_5156525.1151965151925
+Content-Type: application/octet-stream
+foo bar
+-----=_Part_2_5156525.1151965151925- 
+Within the MessageHandlerAdapter.handle method the Content-Type of the underlying SOAP message needs to be taken into considaration. I added some proof-of-concept code into the handle method and the attachment support works:
+if (responseMessage instanceof SaajSoapMessage) {
+	MimeHeaders headers = ((SaajSoapMessage) responseMessage).getSaajMessage().getMimeHeaders();
+	String[] contentTypeArray = headers.getHeader("Content-Type");
+	contentType = contentTypeArray[0];
+}
+else {
+	contentType = soapMessage.getVersion().getContentType();
+}
+The resulting SOAP message contains the 'multipart/related' and the 'bounday' header:
+HTTP/1.1 200 OK
+Server: Apache-Coyote/1.1
+Content-Type: multipart/related; type="text/xml";   	
+			  boundary="----=_Part_2_5156525.1151965151925";charset=utf-8
+Transfer-Encoding: chunked
+Date: Mon, 03 Jul 2006 22:19:11 GMT
+2000
+------=_Part_2_5156525.1151965151925
+Content-Type: text/xml
+<SOAP-ENV:Envelope xmlns:SOAP-ENV="http://schemas.xmlsoap.org/soap/envelope/"><SOAP-ENV:Header/><SOAP-ENV:Body><GetFlightsResponse xmlns="http://www.springframework.org/spring-ws/samples/airline/schemas"><flight><number>KL1653</number><departureTime>2006-01-31T10:05:00+01:00</departureTime><from><code>AMS</code><name>Schiphol Airport</name><city>Amsterdam</city></from><arrivalTime>2006-01-31T12:25:00+01:00</arrivalTime><to><code>VCE</code><name>Marco Polo Airport</name><city>Venice</city></to><serviceClass>economy</serviceClass></flight></GetFlightsResponse></SOAP-ENV:Body></SOAP-ENV:Envelope>
+------=_Part_2_5156525.1151965151925
+Content-Type: application/octet-stream
+foo bar
+-----=_Part_2_5156525.1151965151925- 

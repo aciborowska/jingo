@@ -1,0 +1,82 @@
+Multiple singleton beans depending on a proxied (AOP) prototype bean definition is not supported.  When trying to do that, the bean factory throws an exception.
+Here is how to reproduce:
+application context file:
+	<bean id="Service" class="org.xyz.ServiceBean" scope="prototype"/>
+	<bean id="ServiceDependent1" class="org.xyz.ServiceDependent1" >
+		<constructor-arg ref="Service"/>
+	</bean>
+	<bean id="ServiceDependent2" class="org.xyz.ServiceDependent2" >
+		<constructor-arg ref="Service"/>
+	</bean>
+	<bean id="ServiceInterceptor" class="org.xyz.ServiceInterceptor" />
+	<aop:config proxy-target-class="false">
+		<aop:pointcut id="ServicePointcut"
+			expression="target(org.xyz.Service)" />
+		<aop:advisor advice-ref="ServiceInterceptor"
+			pointcut-ref="ServicePointcut" />
+	</aop:config>
+Java code behind this application context:
+// Service interface is used to define "ServicePointcut" 
+public interface Service
+{
+	void doSomething();
+}
+// "Service" bean:
+public class ServiceBean implements Service
+{
+	public void doSomething()
+	{
+		System.out.println("Doing something...");		
+	}
+}
+// "ServiceDependent1" bean:
+public class ServiceDependent1
+{
+	private Service service;
+	public ServiceDependent1(Service pService)
+	{
+		service = pService;
+	}
+}
+
+// "ServiceDependent2" bean:
+public class ServiceDependent2
+{
+	private Service service;
+
+	public ServiceDependent2(Service pService)
+	{		service = pService;	}
+}
+// "ServiceInterceptor" bean:
+import org.aopalliance.intercept.MethodInterceptor;
+import org.aopalliance.intercept.MethodInvocation;
+public class ServiceInterceptor implements MethodInterceptor
+{
+	public Object invoke(MethodInvocation pArg0) throws Throwable
+	{
+		System.out.println("Intercepting...");
+		return pArg0.proceed();
+	}
+}
+Here is the full stack trace of the exception.  Maybe I am mistaken and this is not a bug, but something I am sure of is that the error message is incorrect when it says "Bean with name 'Service' has been injected into other beans [ServiceDependent1] in its raw version as part of a circular reference" because bean [ServiceDependent1] does not receive a raw version of bean [Service] - it received a proxied one and I am  pretty sure as well that there is no circular reference there....
+Exception in thread "main" org.springframework.beans.factory.BeanCreationException: Error creating bean with name 'ServiceDependent2' defined in class path resource [spring/config.xml]: Cannot resolve reference to bean 'Service' while setting constructor argument; nested exception is org.springframework.beans.factory.BeanCurrentlyInCreationException: Error creating bean with name 'Service': Bean with name 'Service' has been injected into other beans [ServiceDependent1] in its raw version as part of a circular reference, but has eventually been wrapped (for example as part of auto-proxy creation). This means that said other beans do not use the final version of the bean. This is often the result of over-eager type matching - consider using 'getBeanNamesOfType' with the 'allowEagerInit' flag turned off, for example.
+Caused by: org.springframework.beans.factory.BeanCurrentlyInCreationException: Error creating bean with name 'Service': Bean with name 'Service' has been injected into other beans [ServiceDependent1] in its raw version as part of a circular reference, but has eventually been wrapped (for example as part of auto-proxy creation). This means that said other beans do not use the final version of the bean. This is often the result of over-eager type matching - consider using 'getBeanNamesOfType' with the 'allowEagerInit' flag turned off, for example.
+	at org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory.createBean(AbstractAutowireCapableBeanFactory.java:424)
+	at org.springframework.beans.factory.support.AbstractBeanFactory.getBean(AbstractBeanFactory.java:264)
+	at org.springframework.beans.factory.support.AbstractBeanFactory.getBean(AbstractBeanFactory.java:156)
+	at org.springframework.beans.factory.support.BeanDefinitionValueResolver.resolveReference(BeanDefinitionValueResolver.java:248)
+	at org.springframework.beans.factory.support.BeanDefinitionValueResolver.resolveValueIfNecessary(BeanDefinitionValueResolver.java:128)
+	at org.springframework.beans.factory.support.ConstructorResolver.resolveConstructorArguments(ConstructorResolver.java:329)
+	at org.springframework.beans.factory.support.ConstructorResolver.autowireConstructor(ConstructorResolver.java:97)
+	at org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory.autowireConstructor(AbstractAutowireCapableBeanFactory.java:684)
+	at org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory.createBeanInstance(AbstractAutowireCapableBeanFactory.java:622)
+	at org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory.createBean(AbstractAutowireCapableBeanFactory.java:381)
+	at org.springframework.beans.factory.support.AbstractBeanFactory$1.getObject(AbstractBeanFactory.java:245)
+	at org.springframework.beans.factory.support.DefaultSingletonBeanRegistry.getSingleton(DefaultSingletonBeanRegistry.java:140)
+	at org.springframework.beans.factory.support.AbstractBeanFactory.getBean(AbstractBeanFactory.java:242)
+	at org.springframework.beans.factory.support.AbstractBeanFactory.getBean(AbstractBeanFactory.java:156)
+	at org.springframework.beans.factory.support.DefaultListableBeanFactory.preInstantiateSingletons(DefaultListableBeanFactory.java:273)
+	at org.springframework.context.support.AbstractApplicationContext.refresh(AbstractApplicationContext.java:346)
+	at org.springframework.context.support.ClassPathXmlApplicationContext.<init>(ClassPathXmlApplicationContext.java:92)
+	at org.springframework.context.support.ClassPathXmlApplicationContext.<init>(ClassPathXmlApplicationContext.java:77)
+	at org.xyz.Main.main(Main.java:13)

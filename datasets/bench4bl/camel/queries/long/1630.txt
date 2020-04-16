@@ -1,0 +1,69 @@
+I have the following simple configuration :
+
+<route>
+    <from uri="file:///home/julien/tests/a?include=.*?\.xml" />
+    <to uri="file:///home/julien/tests/b?fileName=${date:now:yyyy_MM_dd}/${file:onlyname}"/>
+</route>
+
+
+After putting an input file into /home/julien/tests/a I get the following error:
+
+ 
+org.apache.camel.component.file.GenericFileOperationFailedException: Cannot store file: /home/julien/tests/b/2009_05_19/160903061200040046.xml
+        at org.apache.camel.component.file.FileOperations.storeFile(FileOperations.java:188)
+        at org.apache.camel.component.file.GenericFileProducer.writeFile(GenericFileProducer.java:135)
+        at org.apache.camel.component.file.GenericFileProducer.processExchange(GenericFileProducer.java:78)
+        at org.apache.camel.component.file.GenericFileProducer.process(GenericFileProducer.java:49)
+        at org.apache.camel.impl.converter.AsyncProcessorTypeConverter$ProcessorToAsyncProcessorBridge.process(AsyncProcessorTypeConverter.java:43)
+        at org.apache.camel.processor.SendProcessor.process(SendProcessor.java:83)
+        at org.apache.camel.management.InstrumentationProcessor.process(InstrumentationProcessor.java:68)
+        at org.apache.camel.processor.DeadLetterChannel.process(DeadLetterChannel.java:195)
+        at org.apache.camel.processor.DeadLetterChannel.process(DeadLetterChannel.java:130)
+        at org.apache.camel.management.InstrumentationProcessor.process(InstrumentationProcessor.java:68)
+        at org.apache.camel.processor.interceptor.StreamCachingInterceptor.proceed(StreamCachingInterceptor.java:88)
+        at org.apache.camel.processor.interceptor.StreamCachingInterceptor.process(StreamCachingInterceptor.java:83)
+        at org.apache.camel.processor.UnitOfWorkProcessor.process(UnitOfWorkProcessor.java:52)
+        at org.apache.camel.component.file.GenericFileConsumer.processExchange(GenericFileConsumer.java:157)
+        at org.apache.camel.component.file.GenericFileConsumer.poll(GenericFileConsumer.java:98)
+        at org.apache.camel.impl.ScheduledPollConsumer.run(ScheduledPollConsumer.java:66)
+        at java.util.concurrent.Executors$RunnableAdapter.call(Executors.java:441)
+        at java.util.concurrent.FutureTask$Sync.innerRunAndReset(FutureTask.java:317)
+        at java.util.concurrent.FutureTask.runAndReset(FutureTask.java:150)
+        at java.util.concurrent.ScheduledThreadPoolExecutor$ScheduledFutureTask.access$101(ScheduledThreadPoolExecutor.java:98)
+        at java.util.concurrent.ScheduledThreadPoolExecutor$ScheduledFutureTask.runPeriodic(ScheduledThreadPoolExecutor.java:181)
+        at java.util.concurrent.ScheduledThreadPoolExecutor$ScheduledFutureTask.run(ScheduledThreadPoolExecutor.java:205)
+        at java.util.concurrent.ThreadPoolExecutor$Worker.runTask(ThreadPoolExecutor.java:886)
+        at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:908)
+        at java.lang.Thread.run(Thread.java:619)
+Caused by: java.io.FileNotFoundException: /home/julien/tests/b/2009_05_19/160903061200040046.xml (No such file or directory)
+        at java.io.RandomAccessFile.open(Native Method)
+        at java.io.RandomAccessFile.<init>(RandomAccessFile.java:212)
+        at org.apache.camel.component.file.FileOperations.prepareOutputFileChannel(FileOperations.java:253)
+        at org.apache.camel.component.file.FileOperations.writeFileByFile(FileOperations.java:205)
+        at org.apache.camel.component.file.FileOperations.storeFile(FileOperations.java:178)
+        ... 24 more
+
+
+In the meantime, Camel has created a fubar directory /home/julien/tests/b/home/julien/tests/b/2009_05_19 .
+I tracked the problem and found it to be cause by the following code section in GenericFileProducer.java
+
+
+    protected void writeFile(GenericFileExchange<T> exchange, String fileName) throws GenericFileOperationFailedException {
+        InputStream payload = exchange.getIn().getBody(InputStream.class);
+        try {
+            // build directory if auto create is enabled
+            if (endpoint.isAutoCreate()) {
+                int lastPathIndex = fileName.lastIndexOf(File.separator);
+                if (lastPathIndex != -1) {
+                    String directory = fileName.substring(0, lastPathIndex);
+                    // skip trailing /
+                    directory = FileUtil.stripLeadingSeparator(directory);
+                    if (!operations.buildDirectory(directory, false)) {
+                        log.debug("Cannot build directory [" + directory + "] (could be because of denied permissions)");
+                    }
+                }
+            }
+          ....................
+
+
+Instead of stripping the trailing separator as noted in the comment, the code strips the leading separator...

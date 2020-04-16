@@ -1,0 +1,37 @@
+Seen on one of our 0.19.1 clusters:
+
+
+
+java.io.FileNotFoundException: File does not exist: hdfs://jdc2-atr-dc-2.atr.trendmicro.com:50000
+
+/data/hbase/log_10.3.134.207_1242286427894_60020/hlog.dat.1242528291898
+
+ at org.apache.hadoop.hdfs.DistributedFileSystem.getFileStatus(DistributedFileSystem.java:415)
+
+ at org.apache.hadoop.fs.FileSystem.getLength(FileSystem.java:679)
+
+ at org.apache.hadoop.hbase.io.SequenceFile$Reader.<init>(SequenceFile.java:1431)
+
+ at org.apache.hadoop.hbase.io.SequenceFile$Reader.<init>(SequenceFile.java:1426)
+
+ at org.apache.hadoop.hbase.regionserver.HLog.splitLog(HLog.java:753)
+
+ at org.apache.hadoop.hbase.regionserver.HLog.splitLog(HLog.java:716)
+
+ at org.apache.hadoop.hbase.master.ProcessServerShutdown.process(ProcessServerShutdown.java:249)
+
+ at org.apache.hadoop.hbase.master.HMaster.processToDoQueue(HMaster.java:442)
+
+ at org.apache.hadoop.hbase.master.HMaster.run(HMaster.java:377)
+
+2009-05-17 04:05:55,481 INFO org.apache.hadoop.hbase.master.RegionServerOperation: process
+
+shutdown of server 10.3.134.207:60020: logSplit: false, rootRescanned: false, numberOfMetaRegions: 1,
+
+onlineMetaRegions.size(): 1
+
+
+
+I do not have the region server log yet, but here is my conjecture:
+Here, the write ahead log for 10.3.134.207 is missing in DFS: java.io.FileNotFoundException: hdfs://jdc2-atr-dc-2.atr.trendmicro.com:50000/data/hbase/log_10.3.134.207_1242286427894_60020/hlog.dat.1242528291898 when the master tries to split it after declaring the region server crashed. There have been recent trouble reports on this cluster that indicate severe memory stress, e.g. kernel panics due to OOM. Based on that I think it is likely that the region server here missed a heartbeat so the master declared it crashed and began to split the log. But, the log was then deleted out from underneath the master's split thread. I think the region server was actually still running but partially swapped out or the node was otherwise overloaded so it missed its heartbeat. Then, when the region server came back after being swapped in, it realized it missed its heartbeat and shut down, deleting the log as is normally done. 
+Even if the above is not the actual cause in this case, I think the scenario is plausible. What do you think?

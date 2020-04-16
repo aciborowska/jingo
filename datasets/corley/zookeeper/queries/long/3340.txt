@@ -1,0 +1,21 @@
+I was recently profiling a on a ZK Quorum Leader in a low-volume environment and noticed that most of its time was spent in QuorumCnxManager#RecvWorker.  Nothing wrong with that, but it did draw my attention to it.  I noticed that Queue interactions are a bit... verbose.  I would like to propose that we streamline this area of the code.
+ 
+
+https://github.com/apache/zookeeper/blob/master/zookeeper-server/src/main/java/org/apache/zookeeper/server/quorum/QuorumCnxManager.java#L1291-L1309
+
+
+This proposed JIRA should not be viewed simply as 'ArrayBlockingQueue' v.s. 'CircularBlockingQueue'.
+
+One of the things that this PR does is remove the need for double-locking. For example in addToRecvQueue the following condition exists:
+
+
+    public void addToRecvQueue(Message msg) {
+        synchronized(recvQLock) {
+            if (recvQueue.remainingCapacity() == 0) {
+                try {
+
+
+
+From here it can be observed that there are two locks obtained: recvQLock and the one internal to recvQueue. This is required because there are multiple interactions that this Manager wants to do on the queue in a serialized way. The CircularBlockingQueue performs all of those actions on behalf of the caller, but it does it internal to the queue, under a single lock,... the one internal to CircularBlockingQueue.
+
+The current code also has some race-conditions that are simply ignored when they happen. The race conditions are detailed nicely in the code comments here. However, the changes in this PR directly deal with, and eliminate, these race conditions altogether since all actions that work against the CircularBlockingQueue all occur within its internal locks. This greatly simplifies the code and removes the need for new folks to learn this nuance of "why is the code doing this."

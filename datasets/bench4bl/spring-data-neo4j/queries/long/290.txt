@@ -1,0 +1,433 @@
+The toString representation of a collection isn't generally good index input to Lucene, hence this sort of workaround:
+
+
+
+
+
+
+interface PersonRepository extends GraphRepository<Person>, NamedIndexRepository<Person> {
+
+
+
+
+ 
+
+
+
+
+}
+
+
+
+
+ 
+
+
+
+
+@NodeEntity
+
+
+
+
+class Person {
+
+
+
+
+    @GraphId
+
+
+
+
+    Long id;
+
+
+
+
+ 
+
+
+
+
+    @Indexed
+
+
+
+
+    String name;
+
+
+
+
+ 
+
+
+
+
+    @Indexed
+
+
+
+
+    String[] aliasesAsArray;
+
+
+
+
+ 
+
+
+
+
+    @Indexed(indexName = "extra_index", indexType = IndexType.FULLTEXT)
+
+
+
+
+    Set<String> aliasesAsCollection;
+
+
+
+
+ 
+
+
+
+
+    Person() {
+
+
+
+
+    }
+
+
+
+
+ 
+
+
+
+
+    Person(String name, final Set<String> aliases) {
+
+
+
+
+        this.name = name;
+
+
+
+
+ 
+
+
+
+
+        aliasesAsArray = aliases.toArray(new String[aliases.size()]);
+
+
+
+
+ 
+
+
+
+
+        aliasesAsCollection = new HashSet<String>(aliases) {
+
+
+
+
+            @Override
+
+
+
+
+            public String toString() {
+
+
+
+
+                StringBuilder stringBuilder = new StringBuilder();
+
+
+
+
+ 
+
+
+
+
+                for (String alias : aliases) {
+
+
+
+
+                    stringBuilder.append(alias);
+
+
+
+
+                    stringBuilder.append(" ");
+
+
+
+
+                }
+
+
+
+
+ 
+
+
+
+
+                return stringBuilder.toString();
+
+
+
+
+            }
+
+
+
+
+        };
+
+
+
+
+    }
+
+
+
+
+}
+
+
+
+
+ 
+
+
+
+
+@RunWith(SpringJUnit4ClassRunner.class)
+
+
+
+
+@ContextConfiguration
+
+
+
+
+@Transactional
+
+
+
+
+public class IndexTests {
+
+
+
+
+    @Configuration
+
+
+
+
+    @EnableNeo4jRepositories
+
+
+
+
+    static class TestConfig extends Neo4jConfiguration {
+
+
+
+
+        @Bean
+
+
+
+
+        GraphDatabaseService graphDatabaseService() {
+
+
+
+
+            return new ImpermanentGraphDatabase();
+
+
+
+
+        }
+
+
+
+
+    }
+
+
+
+
+ 
+
+
+
+
+    @Autowired
+
+
+
+
+    Neo4jTemplate template;
+
+
+
+
+ 
+
+
+
+
+    @Autowired
+
+
+
+
+    GraphDatabaseService graphDatabaseService;
+
+
+
+
+ 
+
+
+
+
+    @Autowired
+
+
+
+
+    PersonRepository personRepository;
+
+
+
+
+ 
+
+
+
+
+    @Before
+
+
+
+
+    public void before() {
+
+
+
+
+        personRepository.save(new Person("Shawn Corey Carter", new HashSet<String>(asList("Jay-Z"))));
+
+
+
+
+        personRepository.save(new Person("Sean Coombs", new HashSet<String>(asList("P-diddy", "Puff Daddy"))));
+
+
+
+
+        personRepository.save(new Person("Curtis James Jackson", new HashSet<String>(asList("50 Cent"))));
+
+
+
+
+    }
+
+
+
+
+ 
+
+
+
+
+    @Test
+
+
+
+
+    public void shouldFindByMemberOfIndexedArray() throws Exception {
+
+
+
+
+        assertThat(personRepository.findAllByQuery("aliasesAsArray", "P-diddy").single().name, is(equalTo("Sean Coombs")));
+
+
+
+
+        assertThat(personRepository.findAllByQuery("aliasesAsArray", "\"Puff Daddy\"").single().name, is(equalTo("Sean Coombs")));
+
+
+
+
+    }
+
+
+
+
+ 
+
+
+
+
+    @Test
+
+
+
+
+    public void shouldFindByMemberOfIndexedCollection() throws Exception {
+
+
+
+
+        assertThat(personRepository.findAllByQuery("extra_index", "aliasesAsCollection", "P-diddy").single().name, is(equalTo("Sean Coombs")));
+
+
+
+
+        assertThat(personRepository.findAllByQuery("extra_index", "aliasesAsCollection", "Puff Daddy").single().name, is(equalTo("Sean Coombs")));
+
+
+
+
+        assertThat(personRepository.findAllByQuery("extra_index", "aliasesAsCollection", "Puff").single().name, is(equalTo("Sean Coombs")));
+
+
+
+
+        assertThat(personRepository.findAllByQuery("extra_index", "aliasesAsCollection", "Daddy").single().name, is(equalTo("Sean Coombs")));
+
+
+
+
+    }
+
+
+
+
+}
+
+
+
+
+

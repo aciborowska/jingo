@@ -1,0 +1,266 @@
+Hi together,
+we have a problem with webflow 2.3.2 (and above and mojarra since 2.1.16)
+Problem is the following: since mojarra 2.1.16 they reset the statecontext after saving .
+Important lines are     
+
+
+
+
+
+
+com.sun.faces.application.view.FaceletPartialStateManagementStrategy
+
+
+
+
+    @Override
+
+
+
+
+    public Object saveView(FacesContext context) {
+
+
+
+
+ 
+
+
+
+
+        saveDynamicActions(context, stateContext, stateMap);
+
+
+
+
+        StateContext.release(context);
+
+
+
+
+}
+
+
+
+
+
+
+With this they fixed:https://java.net/jira/browse/JAVASERVERFACES-2609
+So far so good:
+The problem is that that getViewState also saves the view, which sounds strange in itself.
+
+
+
+
+
+
+org.springframework.faces.webflow.FlowViewStateManager
+
+
+
+
+    @Override
+
+
+
+
+    public String getViewState(FacesContext context) {
+
+
+
+
+ 
+
+
+
+
+        /*
+
+
+
+
+         * Mojarra 2: PartialRequestContextImpl.renderState() invokes this method during Ajax request rendering. We
+
+
+
+
+         * overridde it to convert FlowSerializedView state to an array before calling the
+
+
+
+
+         * ResponseStateManager.getViewState(), which in turn calls the ServerSideStateHelper and expects state to be an
+
+
+
+
+         * array.
+
+
+
+
+         */
+
+
+
+
+        Object state = saveView(context);
+
+
+
+
+    }
+
+
+
+
+
+
+Just after rendering where webflow already saved the state, and the statecontext is resetted, the state is saved normally, 
+
+
+
+
+
+
+org.springframework.faces.webflow.JsfView
+
+
+
+
+ 
+
+
+
+
+    /**
+
+
+
+
+     * Performs the standard duties of the JSF RENDER_RESPONSE phase.
+
+
+
+
+     */
+
+
+
+
+    public void render() throws IOException {
+
+
+
+
+        FacesContext facesContext = FlowFacesContext.getCurrentInstance();
+
+
+
+
+        if (facesContext.getResponseComplete()) {
+
+
+
+
+            return;
+
+
+
+
+        }
+
+
+
+
+        facesContext.setViewRoot(viewRoot);
+
+
+
+
+        try {
+
+
+
+
+            logger.debug("Asking faces lifecycle to render");
+
+
+
+
+            facesLifecycle.render(facesContext); // here webflow already saves the state, and releases the statecontext with this call!
+
+
+
+
+ 
+
+
+
+
+            /* Ensure serialized view state is always updated even if JSF didn't call StateManager.writeState(). */
+
+
+
+
+            if (JsfRuntimeInformation.isAtLeastJsf20()) {
+
+
+
+
+                if (requestContext.getExternalContext().isAjaxRequest()) {
+
+
+
+
+                    saveState();
+
+
+
+
+                }
+
+
+
+
+            }
+
+
+
+
+        } finally {
+
+
+
+
+            logger.debug("View rendering complete");
+
+
+
+
+            facesContext.responseComplete();
+
+
+
+
+        }
+
+
+
+
+    }
+
+
+
+
+
+
+Result is that the view is saved twice.
+Because saveView releases the statecontext, the result is that all added dynamic actions are lost.
+Essentially this breaks the whole application for all dynamically added components, because at the second save, they are not available anymore, and so the saving loses all dynamic added components.
+For me this seems a problem in webflow, not mojarra. I also don't understand the javadoc above for the FlowViewStateManager why they are saving the state. Looks not correct for me to save state twice.
+Is this a bug and my problem understandable?
+I can try to create an example project, if needed.
+Can anyone give me some insight, and perphas an idea how to patch it in webflow?
+Thanks
+Andreas

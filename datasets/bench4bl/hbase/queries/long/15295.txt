@@ -1,0 +1,129 @@
+We have seen this in a cluster with Phoenix secondary indexes leading to a deadlock. All handlers are busy waiting on the index updates to finish:
+
+
+
+"B.defaultRpcServer.handler=50,queue=0,port=16020" #91 daemon prio=5 os_prio=0 tid=0x00007f29f64ba000 nid=0xab51 waiting on condition [0x00007f29a8762000]
+
+   java.lang.Thread.State: WAITING (parking)
+
+	at sun.misc.Unsafe.park(Native Method)
+
+	- parking to wait for  <0x0000000124f1d5c8> (a com.google.common.util.concurrent.AbstractFuture$Sync)
+
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:175)
+
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer.parkAndCheckInterrupt(AbstractQueuedSynchronizer.java:836)
+
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer.doAcquireSharedInterruptibly(AbstractQueuedSynchronizer.java:997)
+
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer.acquireSharedInterruptibly(AbstractQueuedSynchronizer.java:1304)
+
+	at com.google.common.util.concurrent.AbstractFuture$Sync.get(AbstractFuture.java:275)
+
+	at com.google.common.util.concurrent.AbstractFuture.get(AbstractFuture.java:111)
+
+	at org.apache.phoenix.hbase.index.parallel.BaseTaskRunner.submit(BaseTaskRunner.java:66)
+
+	at org.apache.phoenix.hbase.index.parallel.BaseTaskRunner.submitUninterruptible(BaseTaskRunner.java:99)
+
+	at org.apache.phoenix.hbase.index.write.ParallelWriterIndexCommitter.write(ParallelWriterIndexCommitter.java:194)
+
+	at org.apache.phoenix.hbase.index.write.IndexWriter.write(IndexWriter.java:179)
+
+	at org.apache.phoenix.hbase.index.write.IndexWriter.writeAndKillYourselfOnFailure(IndexWriter.java:144)
+
+	at org.apache.phoenix.hbase.index.write.IndexWriter.writeAndKillYourselfOnFailure(IndexWriter.java:134)
+
+	at org.apache.phoenix.hbase.index.Indexer.doPostWithExceptions(Indexer.java:457)
+
+	at org.apache.phoenix.hbase.index.Indexer.doPost(Indexer.java:406)
+
+	at org.apache.phoenix.hbase.index.Indexer.postBatchMutate(Indexer.java:401)
+
+	at org.apache.hadoop.hbase.regionserver.RegionCoprocessorHost$36.call(RegionCoprocessorHost.java:1006)
+
+	at org.apache.hadoop.hbase.regionserver.RegionCoprocessorHost$RegionOperation.call(RegionCoprocessorHost.java:1673)
+
+	at org.apache.hadoop.hbase.regionserver.RegionCoprocessorHost.execOperation(RegionCoprocessorHost.java:1748)
+
+	at org.apache.hadoop.hbase.regionserver.RegionCoprocessorHost.execOperation(RegionCoprocessorHost.java:1705)
+
+	at org.apache.hadoop.hbase.regionserver.RegionCoprocessorHost.postBatchMutate(RegionCoprocessorHost.java:1002)
+
+	at org.apache.hadoop.hbase.regionserver.HRegion.doMiniBatchMutation(HRegion.java:3162)
+
+	at org.apache.hadoop.hbase.regionserver.HRegion.batchMutate(HRegion.java:2801)
+
+	at org.apache.hadoop.hbase.regionserver.HRegion.batchMutate(HRegion.java:2743)
+
+	at org.apache.hadoop.hbase.regionserver.RSRpcServices.doBatchOp(RSRpcServices.java:692)
+
+	at org.apache.hadoop.hbase.regionserver.RSRpcServices.doNonAtomicRegionMutation(RSRpcServices.java:654)
+
+	at org.apache.hadoop.hbase.regionserver.RSRpcServices.multi(RSRpcServices.java:2031)
+
+	at org.apache.hadoop.hbase.protobuf.generated.ClientProtos$ClientService$2.callBlockingMethod(ClientProtos.java:32213)
+
+	at org.apache.hadoop.hbase.ipc.RpcServer.call(RpcServer.java:2114)
+
+	at org.apache.hadoop.hbase.ipc.CallRunner.run(CallRunner.java:101)
+
+	at org.apache.hadoop.hbase.ipc.RpcExecutor.consumerLoop(RpcExecutor.java:130)
+
+	at org.apache.hadoop.hbase.ipc.RpcExecutor$1.run(RpcExecutor.java:107)
+
+	at java.lang.Thread.run(Thread.java:745)
+
+
+
+And the index region is trying to split, and is trying to do a meta update: 
+
+
+
+"regionserver/<hostaname>/10.132.70.191:16020-splits-1454693389669" #1779 prio=5 os_prio=0 tid=0x00007f29e149c000 nid=0x5107 in Object.wait() [0x00007f1f136d6000]
+
+   java.lang.Thread.State: TIMED_WAITING (on object monitor)
+
+        at java.lang.Object.wait(Native Method)
+
+        at org.apache.hadoop.hbase.ipc.RpcClientImpl.call(RpcClientImpl.java:1215)
+
+        - locked <0x000000010b72bc20> (a org.apache.hadoop.hbase.ipc.Call)
+
+        at org.apache.hadoop.hbase.ipc.AbstractRpcClient.callBlockingMethod(AbstractRpcClient.java:213)
+
+        at org.apache.hadoop.hbase.ipc.AbstractRpcClient$BlockingRpcChannelImplementation.callBlockingMethod(AbstractRpcClient.java:287)
+
+        at org.apache.hadoop.hbase.protobuf.generated.ClientProtos$ClientService$BlockingStub.execService(ClientProtos.java:32675)
+
+        at org.apache.hadoop.hbase.protobuf.ProtobufUtil.execService(ProtobufUtil.java:1618)
+
+        at org.apache.hadoop.hbase.ipc.RegionCoprocessorRpcChannel$1.call(RegionCoprocessorRpcChannel.java:92)
+
+        at org.apache.hadoop.hbase.ipc.RegionCoprocessorRpcChannel$1.call(RegionCoprocessorRpcChannel.java:89)
+
+        at org.apache.hadoop.hbase.client.RpcRetryingCaller.callWithRetries(RpcRetryingCaller.java:126)
+
+        at org.apache.hadoop.hbase.ipc.RegionCoprocessorRpcChannel.callExecService(RegionCoprocessorRpcChannel.java:95)
+
+        at org.apache.hadoop.hbase.ipc.CoprocessorRpcChannel.callBlockingMethod(CoprocessorRpcChannel.java:73)
+
+        at org.apache.hadoop.hbase.protobuf.generated.MultiRowMutationProtos$MultiRowMutationService$BlockingStub.mutateRows(MultiRowMutationProtos.java:2149)
+
+        at org.apache.hadoop.hbase.MetaTableAccessor.multiMutate(MetaTableAccessor.java:1339)
+
+        at org.apache.hadoop.hbase.MetaTableAccessor.splitRegion(MetaTableAccessor.java:1309)
+
+        at org.apache.hadoop.hbase.regionserver.SplitTransactionImpl.createDaughters(SplitTransactionImpl.java:296)
+
+        at org.apache.hadoop.hbase.regionserver.SplitTransactionImpl.execute(SplitTransactionImpl.java:509)
+
+        at org.apache.hadoop.hbase.regionserver.SplitRequest.run(SplitRequest.java:85)
+
+        at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1142)
+
+        at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:617)
+
+
+
+The issue is that the RPC to the meta is using a coprocessor endpoint, thus does not get a high priority from AnnotationReadingPriorityFunction. Because of this, a deadlock happens because all handlers are already busy waiting on the index updates.  

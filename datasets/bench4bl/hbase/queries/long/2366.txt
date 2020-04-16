@@ -1,0 +1,11 @@
+Right now, every region has a .regioninfo file that describes what the region contains. This is used by the add_table tool to recover a table from HDFS, when there are problems with the .META. table. Right now the .regioninfo file stores both region-specific as well as table-specific metadata (the columns), which can cause problems.
+One such problem appears when some of the .regioninfo files are not updates. Workflow to reproduce this is:
+1. Create a new table with a list of columns.
+2. Push some data into the table, so at least one region exists.
+3. Do an ALTER on the table and add some new columns.
+3.1 Look at one of the .regioninfo files. They still contain the old list of columns.
+4. Push some more data into the table, containing values for the new columns.
+5. Run add_table.rb on this table. 
+6. Try to push the data at point 4 again. You will get errors - NoSuchColumnFamilyExists exception.
+in our specific case, 10 out of the 140 regions of a table had the initial list of columns, and the others were updated (as part of splits, as we deduced). We had to run add_table, which replaced the .META. entries with the ones on disk, and as a result we couldn't get to our data anymore. Re-writing the .regioninfo with the correct column list (as done in HRegion.java) and re-adding the table fixed it for us,.
+It should be possible to store the table information in a single location (e.g. /hbase/table_name/.tableinfo maybe?) and work on it on table create / alter which would prevent this case from happening again.

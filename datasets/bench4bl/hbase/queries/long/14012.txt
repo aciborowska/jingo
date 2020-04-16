@@ -1,0 +1,49 @@
+(Rewrite to be more explicit about what the problem is)
+ITBLL. Master comes up (It is being killed every 1-5 minutes or so). It is joining a running cluster (all servers up except Master with most regions assigned out on cluster). ProcedureStore has two ServerCrashProcedures unfinished (RUNNABLE state) for two separate servers. One SCP is in the middle of the assign step when master crashes (SERVER_CRASH_ASSIGN). This SCP step has this comment on it:
+
+
+
+        // Assign may not be idempotent. SSH used to requeue the SSH if we got an IOE assigning
+
+        // which is what we are mimicing here but it looks prone to double assignment if assign
+
+        // fails midway. TODO: Test.
+
+
+
+This issue is 1.2+ only since it is ServerCrashProcedure (Added in HBASE-13616, post hbase-1.1.x).
+Looking at ServerShutdownHandler, how we used to do crash processing before we moved over to the Pv2 framework, SSH may have (accidentally) avoided this issue since it does its processing in a big blob starting over if killed mid-crash. In particular, post-crash, SSH scans hbase:meta to find servers that were on the downed server. SCP scanneds Meta in one step, saves off the regions it finds into the ProcedureStore, and then in the next step, does actual assign. In this case, we crashed post-meta scan and during assign. Assign is a bulk assign. It mostly succeeded but got this:
+
+
+
+ 809622 2015-06-09 20:05:28,576 INFO  [ProcedureExecutorThread-9] master.GeneralBulkAssigner: Failed assigning 3 regions to server c2021.halxg.cloudera.com,16020,1433905510696, reassigning them
+
+
+
+So, most regions actually made it to new locations except for a few stragglers. All of the successfully assigned regions then are reassigned on other side of master restart when we replay the SCP assign step.
+Let me put together the scan meta and assign steps in SCP; this should do until we redo all of assign to run on Pv2.
+A few other things I noticed:
+In SCP, we only check if failover in first step, not for every step, which means ServerCrashProcedure will run if on reload it is beyond the first step.
+
+
+
+    // Is master fully online? If not, yield. No processing of servers unless master is up
+
+    if (!services.getAssignmentManager().isFailoverCleanupDone()) {
+
+      throwProcedureYieldException("Waiting on master failover to complete");
+
+    }
+
+
+
+This means we are assigning while Master is still coming up, a no-no (though it does not seem to have caused problem here). Fix.
+Also, I see that over the 8 hours of this particular log, each time the master crashes and comes back up, we queue a ServerCrashProcedure for c2022 because an empty dir never gets cleaned up:
+
+
+
+ 39 2015-06-09 22:15:33,074 WARN  [ProcedureExecutorThread-0] master.SplitLogManager: returning success without actually splitting and deleting all the log files in path hdfs://c2020.halxg.cloudera.com:8020/hbase/WALs/c2022.halxg.cloudera.com,16020,1433902151857-splitting
+
+
+
+Fix this too.

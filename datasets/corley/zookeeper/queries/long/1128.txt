@@ -1,0 +1,86 @@
+http://zookeeper.apache.org/doc/trunk/recipes.html
+The current recipe for Lock has the wrong process.
+Specifically, for the 
+"4. The client calls exists( ) with the watch flag set on the path in the lock directory with the next lowest sequence number."
+It shouldn't be the "the next lowest sequence number". It should be the "current lowest path". 
+
+If you're gonna use "the next lowest sequence number", you'll never wait for the lock possession.
+
+The following is the test code:
+
+LockTest.java
+        ACL acl = new ACL(Perms.ALL, new Id("10.0.0.0/8", "1"));
+        List<ACL> acls = new ArrayList<ACL>();
+        acls.add(acl);
+        String connectStr = "localhost:2181";
+        final Semaphore sem = new Semaphore(0);
+        ZooKeeper zooKeeper = new ZooKeeper(connectStr, 1000 * 30, new Watcher() {
+
+            @Override
+            public void process(WatchedEvent event) {
+                System.out.println("eventType:" + event.getType());
+                System.out.println("keeperState:" + event.getState());
+                if (event.getType() == Event.EventType.None) {
+                    if (event.getState() == Event.KeeperState.SyncConnected) {
+                        sem.release();
+                    }
+                }
+            }
+        });
+        System.out.println("state:" + zooKeeper.getState());
+        System.out.println("Waiting for the state to be connected");
+        try {
+            sem.acquire();
+        } catch (InterruptedException ex) {
+            ex.printStackTrace();
+        }
+        System.out.println("Now state:" + zooKeeper.getState());
+
+        String directory = "/_locknode_";
+        Stat stat = zooKeeper.exists(directory, false);
+        if (stat == null) {
+            zooKeeper.create(directory, new byte[]{}, ZooDefs.Ids.OPEN_ACL_UNSAFE, CreateMode.PERSISTENT);
+        }
+        String prefix = directory + "/lock-";
+        String path = zooKeeper.create(prefix, new byte[]{}, ZooDefs.Ids.OPEN_ACL_UNSAFE, CreateMode.EPHEMERAL_SEQUENTIAL);
+        System.out.println("Create the path for " + path);
+        while (true) {
+            List<String> children = zooKeeper.getChildren(directory, false);
+            Collections.sort(children);
+            System.out.println("The whole lock size is " + children.size());
+            String lowestPath = children.get(0);
+            DecimalFormat df = new DecimalFormat("0000000000");
+            String currentSuffix = lowestPath.substring("lock-".length());
+            System.out.println("CurrentSuffix is " + currentSuffix);
+            int intIndex = Integer.parseInt(currentSuffix);
+
+            if (path.equals(directory + "/" + lowestPath)) {
+                //I've got the lock and release it
+                System.out.println("I've got the lock at " + new Date());
+                System.out.println("next index is " + intIndex);
+                Thread.sleep(10000);
+                System.out.println("After sleep 3 seconds, I'm gonna release the lock");
+                zooKeeper.delete(path, -1);
+                break;
+            }
+            final Semaphore wakeupSem = new Semaphore(0);
+            stat = zooKeeper.exists(directory + "/" + lowestPath, new Watcher() {
+
+                @Override
+                public void process(WatchedEvent event) {
+                    System.out.println("Event is " + event.getType());
+                    System.out.println("State is " + event.getState());
+                    if (event.getType() == Event.EventType.NodeDeleted) {
+                        wakeupSem.release();
+                    }
+                }
+            });
+            if (stat != null) {
+                System.out.println("Waiting for the delete of ");
+                wakeupSem.acquire();
+            } else {
+                System.out.println("Continue to seek");
+            }
+        }
+
+ 

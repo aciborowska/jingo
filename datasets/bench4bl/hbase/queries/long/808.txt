@@ -1,0 +1,281 @@
+Below is a report from the list.  I confirmed playing in shell that indeed we have this problem.  Lets fix for 0.2.1.
+
+Hello.
+
+I made some tests with HBase 0.2.0 (RC2), focused on insertion and
+timestamps behaviour. I had some surprising results, and I was wondering if
+people using hbase already tried such an usage, and what was their
+conclusion.
+
+First of all I created a table with the default column attributes, using
+hbase shell
+
+
+
+## TABLE
+
+hbase(main):008:0> describe 'proxy-0.2'
+{NAME => 'proxy-0.2', IS_ROOT => 'false', IS_META => 'false', FAMILIES =>
+[{NAME => 'status', BLOOMFILTER => '
+false', IN_MEMORY => 'false', LENGTH => '2147483647', BLOCKCACHE => 'false',
+VERSIONS => '3', TTL => '-1', COM
+PRESSION => 'NONE'}, {NAME => 'header', BLOOMFILTER => 'false', IN_MEMORY =>
+'false', LENGTH => '2147483647',
+BLOCKCACHE => 'false', VERSIONS => '3', TTL => '-1', COMPRESSION => 'NONE'},
+{NAME => 'bytes', BLOOMFILTER =>
+'false', IN_MEMORY => 'false', LENGTH => '2147483647', BLOCKCACHE =>
+'false', VERSIONS => '3', TTL => '-1', CO
+MPRESSION => 'NONE'}, {NAME => 'info', BLOOMFILTER => 'false', IN_MEMORY =>
+'false', LENGTH => '2147483647', B
+LOCKCACHE => 'false', VERSIONS => '3', TTL => '-1', COMPRESSION => 'NONE'}]}
+
+
+Test1
+
+I make a loop that inserts the same row with different values at different
+timestamps, arbitrary from 1000 incrementing from 10 to 10. I have a method
+for dumping the row history: it makes a query for the last version, and
+queries for past version using the current version timestamp minus 1. Note
+that my table object is created once for entire program life cycle.
+
+
+## GLOBAL CODE
+
+	// somewhere in constructor
+	t = new HTable(conf, TABLE_NAME);
+
+	/**
+	 * Dump reversed history of a HBase row, querying for older version
+	 * using the max timestamp of all cells -1 until there is no cell returned
+	 * @param rowKey
+	 */
+	private void dumpRowVersions(String rowKey) {
+		Logger.log.info("Versions or row : "+rowKey);
+		try {
+			// first query. The newest version of the row
+			RowResult rr = t.getRow(rowKey);
+			int version = 1;
+			long maxTs;
+			
+			do {
+				maxTs = -1;
+				String line = "";
+				// go through all cells of the row
+				for (Map.Entry en : rr.entrySet()) {
+					long ts = en.getValue().getTimestamp();
+					maxTs = Math.max(maxTs, ts);
+					line += new String(en.getKey());
+					line += " => " + new String(en.getValue().getValue());
+					line += " ["+ts+"], ";
+				}
+
+				// remove the last coma and space for smarter output
+				if (line.length() > 0) {
+					line = line.substring(0, line.length()-2);
+				}
+
+				// prefix result with a version counter and the max timestamp 
+				// found in the cells
+				line = "#"+version+" MXTS["+maxTs+"] "+line;
+				if (maxTs != -1) {
+					// there was resulting cell. Continue iteration
+					Logger.log.info(line);
+					
+					// get previous version
+					version++;
+					rr = t.getRow(rowKey, maxTs-1);
+				}
+			} while (maxTs != -1);
+			
+		} catch (IOException ex) {
+			throw new IllegalStateException("Cannot fetch history of row
+"+rowKey,ex);
+		}
+	}
+
+## LOOP CODE 
+
+			long ts = 1000;
+			do {
+				// insert the testrow with a new timestamp
+				BatchUpdate bu = new BatchUpdate("testrow", ts);
+				bu.put("bytes:", ("valbytes ts "+ts).getBytes());
+				bu.put("status:", ("valstat ts"+ts).getBytes());
+				t.commit(bu);
+				Logger.log.info("-- Inserted ts "+ts);
+				
+				// dump row history
+				Thread.sleep(70);
+				dumpRowVersions("testrow");
+				
+				// next iteration in two seconds
+				ts += 10;
+				Thread.sleep(2000);
+			} while (true);
+
+## OUTPUT
+
+> > Connecting to hbase master...
+ > -- Inserted ts 1000
+ > Versions or row : testrow
+ > #1 MXTS[1000] bytes: => valbytes ts 1000 [1000], status: => valstat
+ts1000 [1000]
+ > -- Inserted ts 1010
+ > Versions or row : testrow
+ > #1 MXTS[1010] bytes: => valbytes ts 1010 [1010], status: => valstat
+ts1010 [1010]
+ > #2 MXTS[1000] bytes: => valbytes ts 1000 [1000], status: => valstat
+ts1000 [1000]
+ > -- Inserted ts 1020
+ > Versions or row : testrow
+ > #1 MXTS[1020] bytes: => valbytes ts 1020 [1020], status: => valstat
+ts1020 [1020]
+ > #2 MXTS[1010] bytes: => valbytes ts 1010 [1010], status: => valstat
+ts1010 [1010]
+ > #3 MXTS[1000] bytes: => valbytes ts 1000 [1000], status: => valstat
+ts1000 [1000]
+ > -- Inserted ts 1030
+ > Versions or row : testrow
+ > #1 MXTS[1030] bytes: => valbytes ts 1030 [1030], status: => valstat
+ts1030 [1030]
+ > #2 MXTS[1020] bytes: => valbytes ts 1020 [1020], status: => valstat
+ts1020 [1020]
+ > #3 MXTS[1010] bytes: => valbytes ts 1010 [1010], status: => valstat
+ts1010 [1010]
+ > #4 MXTS[1000] bytes: => valbytes ts 1000 [1000], status: => valstat
+ts1000 [1000]
+ > -- Inserted ts 1040
+ > Versions or row : testrow
+ > #1 MXTS[1040] bytes: => valbytes ts 1040 [1040], status: => valstat
+ts1040 [1040]
+ > #2 MXTS[1030] bytes: => valbytes ts 1030 [1030], status: => valstat
+ts1030 [1030]
+ > #3 MXTS[1020] bytes: => valbytes ts 1020 [1020], status: => valstat
+ts1020 [1020]
+ > #4 MXTS[1010] bytes: => valbytes ts 1010 [1010], status: => valstat
+ts1010 [1010]
+ > #5 MXTS[1000] bytes: => valbytes ts 1000 [1000], status: => valstat
+ts1000 [1000]
+ > -- Inserted ts 1050
+ > Versions or row : testrow
+ > #1 MXTS[1050] bytes: => valbytes ts 1050 [1050], status: => valstat
+ts1050 [1050]
+ > #2 MXTS[1040] bytes: => valbytes ts 1040 [1040], status: => valstat
+ts1040 [1040]
+ > #3 MXTS[1030] bytes: => valbytes ts 1030 [1030], status: => valstat
+ts1030 [1030]
+ > #4 MXTS[1020] bytes: => valbytes ts 1020 [1020], status: => valstat
+ts1020 [1020]
+ > #5 MXTS[1010] bytes: => valbytes ts 1010 [1010], status: => valstat
+ts1010 [1010]
+ > #6 MXTS[1000] bytes: => valbytes ts 1000 [1000], status: => valstat
+ts1000 [1000]
+ > -- Inserted ts 1060
+ > Versions or row : testrow
+ > #1 MXTS[1060] bytes: => valbytes ts 1060 [1060], status: => valstat
+ts1060 [1060]
+ > #2 MXTS[1050] bytes: => valbytes ts 1050 [1050], status: => valstat
+ts1050 [1050]
+ > #3 MXTS[1040] bytes: => valbytes ts 1040 [1040], status: => valstat
+ts1040 [1040]
+ > #4 MXTS[1030] bytes: => valbytes ts 1030 [1030], status: => valstat
+ts1030 [1030]
+ > #5 MXTS[1020] bytes: => valbytes ts 1020 [1020], status: => valstat
+ts1020 [1020]
+ > #6 MXTS[1010] bytes: => valbytes ts 1010 [1010], status: => valstat
+ts1010 [1010]
+ > #7 MXTS[1000] bytes: => valbytes ts 1000 [1000], status: => valstat
+ts1000 [1000]
+ > -- Inserted ts 1070
+ > Versions or row : testrow
+ > #1 MXTS[1070] bytes: => valbytes ts 1070 [1070], status: => valstat
+ts1070 [1070]
+ > #2 MXTS[1060] bytes: => valbytes ts 1060 [1060], status: => valstat
+ts1060 [1060]
+ > #3 MXTS[1050] bytes: => valbytes ts 1050 [1050], status: => valstat
+ts1050 [1050]
+ > #4 MXTS[1040] bytes: => valbytes ts 1040 [1040], status: => valstat
+ts1040 [1040]
+ > #5 MXTS[1030] bytes: => valbytes ts 1030 [1030], status: => valstat
+ts1030 [1030]
+ > #6 MXTS[1020] bytes: => valbytes ts 1020 [1020], status: => valstat
+ts1020 [1020]
+ > #7 MXTS[1010] bytes: => valbytes ts 1010 [1010], status: => valstat
+ts1010 [1010]
+ > #8 MXTS[1000] bytes: => valbytes ts 1000 [1000], status: => valstat
+ts1000 [1000]
+ > -- Inserted ts 1080
+ > Versions or row : testrow
+ > #1 MXTS[1080] bytes: => valbytes ts 1080 [1080], status: => valstat
+ts1080 [1080]
+ > #2 MXTS[1070] bytes: => valbytes ts 1070 [1070], status: => valstat
+ts1070 [1070]
+ > #3 MXTS[1060] bytes: => valbytes ts 1060 [1060], status: => valstat
+ts1060 [1060]
+ > #4 MXTS[1050] bytes: => valbytes ts 1050 [1050], status: => valstat
+ts1050 [1050]
+ > #5 MXTS[1040] bytes: => valbytes ts 1040 [1040], status: => valstat
+ts1040 [1040]
+ > #6 MXTS[1030] bytes: => valbytes ts 1030 [1030], status: => valstat
+ts1030 [1030]
+ > #7 MXTS[1020] bytes: => valbytes ts 1020 [1020], status: => valstat
+ts1020 [1020]
+ > #8 MXTS[1010] bytes: => valbytes ts 1010 [1010], status: => valstat
+ts1010 [1010]
+ > #9 MXTS[1000] bytes: => valbytes ts 1000 [1000], status: => valstat
+ts1000 [1000]
+ > -- Inserted ts 1090
+ > Versions or row : testrow
+ > #1 MXTS[1090] bytes: => valbytes ts 1090 [1090], status: => valstat
+ts1090 [1090]
+ > #2 MXTS[1080] bytes: => valbytes ts 1080 [1080], status: => valstat
+ts1080 [1080]
+ > #3 MXTS[1070] bytes: => valbytes ts 1070 [1070], status: => valstat
+ts1070 [1070]
+ > #4 MXTS[1060] bytes: => valbytes ts 1060 [1060], status: => valstat
+ts1060 [1060]
+ > #5 MXTS[1050] bytes: => valbytes ts 1050 [1050], status: => valstat
+ts1050 [1050]
+ > #6 MXTS[1040] bytes: => valbytes ts 1040 [1040], status: => valstat
+ts1040 [1040]
+ > #7 MXTS[1030] bytes: => valbytes ts 1030 [1030], status: => valstat
+ts1030 [1030]
+ > #8 MXTS[1020] bytes: => valbytes ts 1020 [1020], status: => valstat
+ts1020 [1020]
+ > #9 MXTS[1010] bytes: => valbytes ts 1010 [1010], status: => valstat
+ts1010 [1010]
+ > #10 MXTS[1000] bytes: => valbytes ts 1000 [1000], status: => valstat
+ts1000 [1000]
+ > -- Inserted ts 1100
+ > Versions or row : testrow
+ > #1 MXTS[1100] bytes: => valbytes ts 1100 [1100], status: => valstat
+ts1100 [1100]
+ > #2 MXTS[1090] bytes: => valbytes ts 1090 [1090], status: => valstat
+ts1090 [1090]
+ > #3 MXTS[1080] bytes: => valbytes ts 1080 [1080], status: => valstat
+ts1080 [1080]
+ > #4 MXTS[1070] bytes: => valbytes ts 1070 [1070], status: => valstat
+ts1070 [1070]
+ > #5 MXTS[1060] bytes: => valbytes ts 1060 [1060], status: => valstat
+ts1060 [1060]
+ > #6 MXTS[1050] bytes: => valbytes ts 1050 [1050], status: => valstat
+ts1050 [1050]
+ > #7 MXTS[1040] bytes: => valbytes ts 1040 [1040], status: => valstat
+ts1040 [1040]
+ > #8 MXTS[1030] bytes: => valbytes ts 1030 [1030], status: => valstat
+ts1030 [1030]
+ > #9 MXTS[1020] bytes: => valbytes ts 1020 [1020], status: => valstat
+ts1020 [1020]
+ > #10 MXTS[1010] bytes: => valbytes ts 1010 [1010], status: => valstat
+ts1010 [1010]
+ > #11 MXTS[1000] bytes: => valbytes ts 1000 [1000], status: => valstat
+ts1000 [1000]
+
+
+Despite the VERSIONS parameter of the columns (3) it seems that all versions
+are stored. 
+
+Question: is there some garbage collector process that removes the old
+versions ? if yes, when does it take place ?
+
+

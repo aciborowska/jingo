@@ -1,0 +1,42 @@
+We are using Spring 1.2.5 with Weblogic 8.1.4 along with Hibernate 3.1.3 and container managed transactions. When an exception is thrown within the JtaSessionSynchronization.beforeCompletion method, the exception is swallowed by a catch clause. The catch clause simply logs and calls transactionManager.setRollBackOnly. The problem is that in certain cases we would like this exception to be propogated back to the client caller.
+We were wondering why it is necessary to catch all Throwables and call setRollbackOnly? In this case the exception will be a RuntimeException which if uncaught will cause the container to roll back anyway.
+In our own environment we have changed the method from:
+public void beforeCompletion() {
+	try 
+{
+		boolean readOnly = TransactionSynchronizationManager.isCurrentTransactionReadOnly();
+		this.springSessionSynchronization.beforeCommit(readOnly);
+	}
+	catch (Throwable ex) {
+		logger.error("beforeCommit callback threw exception", ex);
+		try {
+			this.jtaTransactionManager.setRollbackOnly();
+		}
+		catch (SystemException ex2) {
+			logger.error("Could not set JTA transaction rollback-only", ex2);
+		}
+	}
+	// Unbind the SessionHolder from the thread early, to avoid issues
+	// with strict JTA implementations that issue warnings when doing JDBC
+	// operations after transaction completion (e.g. Connection.getWarnings).
+	this.beforeCompletionCalled = true;
+	this.springSessionSynchronization.beforeCompletion();
+}
+
+to:
+
+public void beforeCompletion() {
+	try {		boolean readOnly = TransactionSynchronizationManager.isCurrentTransactionReadOnly();		this.springSessionSynchronization.beforeCommit(readOnly);	}
+	finally 
+{
+		//Unbind the SessionHolder from the thread early, to avoid issues
+		// with strict JTA implementations that issue warnings when doing JDBC
+		// operations after transaction completion (e.g. Connection.getWarnings).
+		this.beforeCompletionCalled = true;
+		this.springSessionSynchronization.beforeCompletion();
+	}
+
+}
+For discussion see: http://forum.springframework.org/showthread.php?t=26565
+Thanks.
+-karl

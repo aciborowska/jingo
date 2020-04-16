@@ -1,0 +1,57 @@
+There seems to be a code bug that can cause expiration of one region server carrying meta to bring down the master under certain case.
+Here is the sequence of event.
+a) The master detects the expiration of a region server on ZK, and starts to expire the region server.
+b) Since the failed region server carries meta, the shutdown handler will call verifyAndAssignMetaWithRetries() during processing the expired rs.
+c)  In verifyAndAssignMeta(), there is a logic to verifyMetaRegionLocation
+
+
+
+(!server.getMetaTableLocator().verifyMetaRegionLocation(server.getConnection(),
+
+      this.server.getZooKeeper(), timeout)) {
+
+      this.services.getAssignmentManager().assignMeta
+
+      (HRegionInfo.FIRST_META_REGIONINFO);
+
+    } else if (serverName.equals(server.getMetaTableLocator().getMetaRegionLocation(
+
+      this.server.getZooKeeper()))) {
+
+      throw new IOException("hbase:meta is onlined on the dead server "
+
+          + serverName);
+
+
+
+If we see the meta region is still alive on the expired rs, we throw an exception.
+We do some retries (default 10x1000ms) for verifyAndAssignMeta.
+If we still get the exception after retries, we abort the master.
+
+
+
+2015-05-27 06:58:30,156 FATAL [MASTER_META_SERVER_OPERATIONS-bdvs1163:60000-0] master.HMaster: Master server abort: loaded coprocessors are: []
+
+2015-05-27 06:58:30,156 FATAL [MASTER_META_SERVER_OPERATIONS-bdvs1163:60000-0] master.HMaster: verifyAndAssignMeta failed after10 times retries, aborting
+
+java.io.IOException: hbase:meta is onlined on the dead server bdvs1164.svl.ibm.com,16020,1432681743203
+
+        at org.apache.hadoop.hbase.master.handler.MetaServerShutdownHandler.verifyAndAssignMeta(MetaServerShutdownHandler.java:162)
+
+        at org.apache.hadoop.hbase.master.handler.MetaServerShutdownHandler.verifyAndAssignMetaWithRetries(MetaServerShutdownHandler.java:184)
+
+        at org.apache.hadoop.hbase.master.handler.MetaServerShutdownHandler.process(MetaServerShutdownHandler.java:93)
+
+        at org.apache.hadoop.hbase.executor.EventHandler.run(EventHandler.java:128)
+
+        at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1145)
+
+        at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:615)
+
+        at java.lang.Thread.run(Thread.java:745)
+
+2015-05-27 06:58:30,156 INFO  [MASTER_META_SERVER_OPERATIONS-bdvs1163:60000-0] regionserver.HRegionServer: STOPPED: verifyAndAssignMeta failed after10 times retries, aborting
+
+
+
+The problem happens when the expired is slow processing its own expiration or has a slow death, and is still able to respond to master's meta verification in the meantime

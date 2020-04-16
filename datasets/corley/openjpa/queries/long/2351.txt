@@ -1,0 +1,62 @@
+HI!  I have a test (see attachment ExternalizableIssues.zip) which demonstrates the following issue:
+
+java.lang.IllegalAccessError: tried to access field hat.test.SuperEntity.id from class hat.test.SimpleEntity
+	at hat.test.SimpleEntity.writeExternal(SimpleEntity.java)
+	at java.io.ObjectOutputStream.writeExternalData(ObjectOutputStream.java:1429)
+	at java.io.ObjectOutputStream.writeOrdinaryObject(ObjectOutputStream.java:1398)
+	at java.io.ObjectOutputStream.writeObject0(ObjectOutputStream.java:1158)
+	at java.io.ObjectOutputStream.writeObject(ObjectOutputStream.java:330)
+	at hat.test.TestMain.roundtrip(TestMain.java:28)
+	at hat.test.TestMain.main(TestMain.java:16)
+
+
+
+As I'll explain, the generated classes seem to be incorrect when a DetachState is used:
+
+    <properties>
+      <property name="openjpa.DetachState" value="fetch-groups(DetachedStateField=true)"/>
+    </properties>
+
+In this case, OpenJPA enhancer would generate the classes as Externalizable, rather than Serializable, and it is the implementation of a writeExternal method which causes a problem. NOTE: when running the test and playing around with DetachState setting, make sure to use a runtime enhancer/javaagent and not to pre-enhance as the entities need to be re-enhanced as the value of DetachState changes or is removed.
+
+If one decompiles the enhnaced version (see 'SimpleEntity_Enhnaced_Externalizable.java.txt' in the provided zip) of SimpleEntity with 'openjpa.DetachState' set, we get a writeExternal method like the following where the private field in the parent class is accessed (i.e. 'this.superText'):
+
+
+  public void writeExternal(ObjectOutput paramObjectOutput)
+    throws IOException
+  {
+    pcWriteUnmanaged(paramObjectOutput);
+    if (this.pcStateManager != null)
+    {
+      if (!this.pcStateManager.writeDetached(paramObjectOutput));
+    }
+    else
+    {
+      paramObjectOutput.writeObject(pcGetDetachedState());
+      paramObjectOutput.writeObject(null);
+    }
+    paramObjectOutput.writeInt(this.id);
+    paramObjectOutput.writeObject(this.superText);
+    paramObjectOutput.writeObject(this.text);
+  }
+
+
+For comparison purposes only, if we look at the enhanced version (see 'SimpleEntity_Enhnaced_Serializable.java.txt' in the provided zip) of SimpleEntity with 'openjpa.DetachState' NOT set, we see the following writeObject method:
+
+  private void writeObject(ObjectOutputStream paramObjectOutputStream)
+    throws IOException
+  {
+    boolean bool = pcSerializing();
+    paramObjectOutputStream.defaultWriteObject();
+    if (bool)
+      pcSetDetachedState(null);
+  }
+
+
+Seems like generated code should detect the private field and call the get method?
+
+The provided test (ExternalizableIssues.zip), is a simple Java Eclipse project.  You can import this zip and run the test class.  Simply point to an OpenJPA jar (I'm using an OpenJPA 2.0.x jar) and use an enhancer at runtime.
+
+Thanks,
+
+Heath

@@ -1,0 +1,55 @@
+In Pig, it is often the case that the result of an operation is a scalar value that needs to be applied to the next step of processing.
+
+For example:
+
+	FILTER by MAX of group – See: PIG-772
+	Compute proportions by dividing by total (SUM) of grouped alias
+
+
+
+Today Pig programmers need to go through distasteful and slow contortions of using FLATTEN or CROSS to propagate the scalar computation to EVERY row of data to perform these operations creating needless copies of data.  Or, the user must write the global sum to a file, then read it back in to gain the efficiency.
+
+If the language were simply extended to have the notion of scalar aliases, then coding would be simplified without contortions for the programmer and, I believe, execution of the code would be faster too.
+
+For instance, to compute global proportions, I want to do the following:
+
+
+CountryPopulations = load 'country.dat' using PigStorage() as ( country: chararray, population: long );
+AllCountryPopulations= group CountryPopulations all;
+Total = foreach AllCountryPopulations generate SUM(CountryPopulations.population) as population;
+PopulationProportions = foreach CountryPopulations generate
+    country, population, (double)population / (double)Total.population as global_proportion;
+
+
+
+One of the very distasteful workarounds for this is to do something like:
+
+
+CountryPopulations = load 'country.dat' using PigStorage() as ( country: chararray, population: long );
+AllCountryPopulations= group CountryPopulations all;
+Total = foreach AllCountryPopulations generate SUM(CountryPopulations.population) as population;
+CountryPopulationsTotal = cross CountryPopulations, Total;
+PopulationProportions = foreach CountryPopulations generate
+    CountryPopulations::country,
+    CountryPopulations::population,
+    (double)CountryPopulations::population / (double)Total::population as global_proportion;
+
+
+
+This just makes me cringe every time I have to do it.  Constructing new rows of data simply to apply
+the same scalar value row after row after row for potentially billions of rows of data just feels horribly wrong
+and inefficient both from the coding standpoint and from the execution standpoint.
+
+In SQL, I'd just code this as:
+
+
+select
+     country,
+     population,
+     population / SUM(population)
+from
+     CountryPopulations;
+
+
+
+In writing a SQL to Pig translator, it would seem that this construct or idiom would need to be supported, so why not create a higher level of Pig which would support the notion of scalars efficiently.

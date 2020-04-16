@@ -1,0 +1,50 @@
+When region split doesn't pass quota check, we would see exception similar to the following:
+
+
+
+2015-12-29 16:07:33,653 INFO  [RS:0;10.21.128.189:57449-splits-1451434041585] regionserver.SplitRequest(97): Running rollback/cleanup of failed split of np2:                     testRegionNormalizationSplitOnCluster,zzzzz,1451434045065.27cccb3fae03002b8058beef61cb7c20.; Failed to get ok from master to split np2:testRegionNormalizationSplitOnCluster,     zzzzz,1451434045065.27cccb3fae03002b8058beef61cb7c20.
+
+java.io.IOException: Failed to get ok from master to split np2:testRegionNormalizationSplitOnCluster,zzzzz,1451434045065.27cccb3fae03002b8058beef61cb7c20.
+
+  at org.apache.hadoop.hbase.regionserver.SplitTransactionImpl.stepsBeforePONR(SplitTransactionImpl.java:345)
+
+  at org.apache.hadoop.hbase.regionserver.SplitTransactionImpl.createDaughters(SplitTransactionImpl.java:262)
+
+  at org.apache.hadoop.hbase.regionserver.SplitTransactionImpl.execute(SplitTransactionImpl.java:502)
+
+  at org.apache.hadoop.hbase.regionserver.SplitRequest.doSplitting(SplitRequest.java:82)
+
+  at org.apache.hadoop.hbase.regionserver.SplitRequest.run(SplitRequest.java:155)
+
+  at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1145)
+
+
+
+However, region split may fail for subsequent SplitTransactionPhase's in stepsBeforePONR().
+Currently in branch-1, the distinction among the following TransitionCode's is not clear in AssignmentManager#onRegionTransition():
+
+
+
+    case SPLIT_PONR:
+
+    case SPLIT:
+
+    case SPLIT_REVERTED:
+
+      errorMsg =
+
+          onRegionSplit(serverName, code, hri, HRegionInfo.convert(transition.getRegionInfo(1)),
+
+            HRegionInfo.convert(transition.getRegionInfo(2)));
+
+      if (org.apache.commons.lang.StringUtils.isEmpty(errorMsg)) {
+
+        try {
+
+          regionStateListener.onRegionSplitReverted(hri);
+
+
+
+onRegionSplit() handles the above 3 TransitionCode's. However, errorMsg is normally null (onRegionSplit returns null at the end).
+This would result in onRegionSplitReverted() being called for cases of SPLIT_PONR and SPLIT.
+When region split fails, AssignmentManager#onRegionTransition() should account for the failure properly so that quota bookkeeping is consistent.

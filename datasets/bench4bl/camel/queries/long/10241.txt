@@ -1,0 +1,118 @@
+MockEndpointAndSkip does not seem to get re-applied after each test when used in conjunction with DirtiesContext. Here is a unit test exhibiting the problem
+
+@RunWith(CamelSpringBootJUnit4ClassRunner.class)
+
+@SpringApplicationConfiguration
+
+@MockEndpointsAndSkip("direct:b")
+
+@DirtiesContext(classMode = ClassMode.AFTER_EACH_TEST_METHOD)
+
+public class MockTest {
+
+
+
+	@Produce(uri = "direct:a")
+
+	private ProducerTemplate producer;
+
+
+
+	@EndpointInject(uri = "mock:end")
+
+	private MockEndpoint end;
+
+
+
+	@EndpointInject(uri = "mock:direct:b")
+
+	private MockEndpoint directB;
+
+
+
+	@Autowired
+
+	private CamelContext context;
+
+
+
+	@Configuration
+
+	@EnableAutoConfiguration
+
+	public static class Config extends SpringRouteBuilder {
+
+
+
+		@Override
+
+		public void configure() throws Exception {
+
+			from("direct:a").to("direct:b");
+
+			from("direct:b").to("mock:end");
+
+		}
+
+	}
+
+
+
+	@Test
+
+	public void testMock() throws InterruptedException {
+
+		end.expectedMessageCount(0);
+
+		directB.expectedBodiesReceived("hello");
+
+
+
+		producer.sendBody("hello");
+
+
+
+		MockEndpoint.assertIsSatisfied(context);
+
+	}
+
+
+
+	@Test
+
+	public void testMock2() throws InterruptedException {
+
+		end.expectedMessageCount(0);
+
+		directB.expectedBodiesReceived("hello");
+
+
+
+		producer.sendBody("hello");
+
+
+
+		MockEndpoint.assertIsSatisfied(context);
+
+	}
+
+}
+
+
+
+testMock and testMock2 are exactly the same and if run individually, they pass. However if you run both, the second one will always fail. Running them both inside eclipse and from maven command line exhibit the same behaviour. 
+The error I get is
+
+java.lang.AssertionError: mock://end Received message count. Expected: <0> but was: <1>
+
+
+
+Which must mean that the skipping isn’t working. Here’s the tracer output to confirm
+
+org.apache.camel.processor.interceptor.Tracer - ID-minhmac-local-51406-1470352938165-1-2 >>> (route3) from(direct://a) --> direct://b <<< Pattern:InOnly, Headers:{breadcrumbId=ID-minhmac-local-51406-1470352938165-1-1}, BodyType:String, Body:hello
+
+org.apache.camel.processor.interceptor.Tracer - ID-minhmac-local-51406-1470352938165-1-2 >>> (route4) direct://b --> mock://end <<< Pattern:InOnly, Headers:{breadcrumbId=ID-minhmac-local-51406-1470352938165-1-1}, BodyType:String, Body:hello
+
+
+
+If you remove the DirtiesContext, then both tests passes. My suspicion is that there is a bug when re-applying the MockEndpointAndSkip when the spring context is being rebuilt between tests.

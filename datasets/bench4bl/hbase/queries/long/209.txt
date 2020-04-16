@@ -1,0 +1,12 @@
+In Hadoop-Nightly #277 TestRegionServerExit failed with a timeout.
+The reason for this was a race in the Master in which checkAssigned (run from either the root or meta scanner)  will immediately try to split the log and then assign a region which has invalid server info.
+The scenario went something like this:
+1. region server aborted
+2. root region was written on optional cache flush
+lease timed out on aborted server which removes it from serversToServerInfo and queues a PendingServerShutdown operation
+3. root scanner runs and finds server info incorrect (it is in the root region but the server is not in serversToServerInfo
+4. checkAssigned starts splitting the log but because the log name is incorrect it can't finish
+5. PendingServerShutdown fires and really gums up the works.
+So there are two problems:
+1. HLog.splitLog needs to generate the correct log file name.
+2. PendingServerShutdown and/or leaseExpired need to cooperate with checkAssigned so that there are not two concurrent attempts to recover the log.

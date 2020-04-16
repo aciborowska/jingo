@@ -1,0 +1,75 @@
+Pig should allow values calculated in the main body of a FOREACH to be accessed by and inner nested FOREACH.
+
+
+top_queries = LOAD './test/data/pigunit/top_queries_input_data.txt' AS (site:chararray, hits:int);
+-- yahoo	10
+-- twitter	7
+-- ...
+
+top_queries_g = GROUP top_queries BY site;
+
+-- BREAKS: Invalid field projection. Projected field [top_queries] does not exist in schema: site:chararray,hits:int. - org.apache.pig.tools.grunt.Grunt
+cant_use_values_in_inner_foreach = FOREACH top_queries_g {
+  n_sites    = COUNT_STAR(top_queries);
+  hits_x     = FOREACH top_queries GENERATE hits / n_sites;
+  GENERATE group AS site, n_sites, hits_x;
+  };
+DUMP cant_use_values_in_inner_foreach;
+
+-- This works, because n_sites behaves same regardless of scope
+can_use_const_val = FOREACH top_queries_g {
+  n_sites    = 3;
+  hits_x     = FOREACH top_queries GENERATE hits / n_sites;
+  GENERATE group AS site, n_sites, hits_x;
+  };
+DUMP can_use_const_val;
+
+
+
+Pig handles the schema for the inner foreach in a very confusing way. 
+
+It should not allow statements in the main foreach body that aren't in the main-body scope:
+
+
+works_but_is_confusing = FOREACH top_queries_g {
+  namelen_g  = SIZE(group);
+  namelen_s  = SIZE(site); -- this should not work
+  
+  -- but it does, because namelen_s gains right scope when evaluated
+  hits_x     = FOREACH top_queries GENERATE namelen_s * hits;
+  -- instead, this should work, only evaluating namelen_g once
+  -- hits_x  = FOREACH top_queries GENERATE namelen_g * hits;
+
+  -- if I used 'namelen_s' in this line, it would break.
+  GENERATE group AS site, namelen_g, hits_x;
+  };
+DUMP works_but_is_confusing;
+
+
+
+Here, the inner foreach precedes the declaration of 'site' in the main body:
+
+
+-- declaring main-body site _after_ the inner foreach doesn't interfere
+alias_means_two_things = FOREACH top_queries_g {
+  hits_x     = FOREACH top_queries GENERATE SIZE(site)*hits; -- works
+  site       = CONCAT(group, group);
+  namelen_s  = SIZE(site);
+  GENERATE site, namelen_s, hits_x;
+  };
+DUMP alias_means_two_things;
+
+
+
+Simply switching the order of the lines causes an error – the main body declaration of site hides the inner-bag alias. Also, the error shows up on the line in the main-body, which is very confusing.
+
+
+-- BREAKS
+main_body_hides_alias = FOREACH top_queries_g {
+  site       = CONCAT(group, group);  -- Projected field [group] does not exist in schema: site:chararray,hits:int
+  namelen_s  = SIZE(site);
+  hits_x     = FOREACH top_queries GENERATE SIZE(site)*hits;
+  GENERATE site, namelen_s, hits_x;
+  };
+DUMP main_body_hides_alias;
+

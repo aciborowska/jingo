@@ -1,0 +1,814 @@
+There is a problem with Cypher queries using the IN keyword.
+Some collection types work: varargs
+Some do not: Set, List
+We should
+1) test what works and what doesn't
+2) add support for obvious things (Set, List at least)
+3) we should document the above
+Some code to reproduce:
+
+
+
+
+
+
+@NodeEntity
+
+
+
+
+class Mother {
+
+
+
+
+    @GraphId
+
+
+
+
+    Long id;
+
+
+
+
+ 
+
+
+
+
+    @RelatedTo(type = "CHILD")
+
+
+
+
+    Set<Child> children;
+
+
+
+
+ 
+
+
+
+
+    Mother() {
+
+
+
+
+    }
+
+
+
+
+ 
+
+
+
+
+    Mother(Child... children) {
+
+
+
+
+        this.children = new HashSet<Child>(asList(children));
+
+
+
+
+    }
+
+
+
+
+}
+
+
+
+
+ 
+
+
+
+
+@NodeEntity
+
+
+
+
+class Child {
+
+
+
+
+    @GraphId
+
+
+
+
+    Long id;
+
+
+
+
+ 
+
+
+
+
+    int age;
+
+
+
+
+ 
+
+
+
+
+    long eyeColour;
+
+
+
+
+ 
+
+
+
+
+    String month;
+
+
+
+
+ 
+
+
+
+
+    Child() {
+
+
+
+
+    }
+
+
+
+
+ 
+
+
+
+
+    public Child(int age, long eyeColour, String month) {
+
+
+
+
+        this.age = age;
+
+
+
+
+        this.eyeColour = eyeColour;
+
+
+
+
+        this.month = month;
+
+
+
+
+    }
+
+
+
+
+}
+
+
+
+
+ 
+
+
+
+
+class EyeColour {
+
+
+
+
+    static long Brown = 42l;
+
+
+
+
+    static long GREEN = 87l;
+
+
+
+
+    static long BLUE = 23l;
+
+
+
+
+}
+
+
+
+
+ 
+
+
+
+
+interface MotherRepository extends GraphRepository<Mother> {
+
+
+
+
+    @Query("start mom=node({0}) match mom-[:CHILD]->child where child.age in {1} return child")
+
+
+
+
+    Set<Child> childrenByAges(long id, int... ages);
+
+
+
+
+ 
+
+
+
+
+    @Query("start mom=node({id}) match mom-[:CHILD]->child where child.eyeColour in {foo} return child")
+
+
+
+
+    Set<Child> childrenByColour(@Param("id") long id, @Param("foo")long[] colours);
+
+
+
+
+ 
+
+
+
+
+    @Query("start mom=node({0}) match mom-[:CHILD]->child where child.month in {1} return child")
+
+
+
+
+    Set<Child> childrenByMonth(long id, List<String> months);
+
+
+
+
+}
+
+
+
+
+ 
+
+
+
+
+@RunWith(SpringJUnit4ClassRunner.class)
+
+
+
+
+@ContextConfiguration
+
+
+
+
+@Transactional
+
+
+
+
+public class InKeywordTests {
+
+
+
+
+    @Configuration
+
+
+
+
+    @EnableNeo4jRepositories
+
+
+
+
+    static class TestConfig extends Neo4jConfiguration {
+
+
+
+
+        @Bean
+
+
+
+
+        GraphDatabaseService graphDatabaseService() {
+
+
+
+
+            return new ImpermanentGraphDatabase();
+
+
+
+
+        }
+
+
+
+
+    }
+
+
+
+
+ 
+
+
+
+
+    @Autowired
+
+
+
+
+    private MotherRepository motherRepository;
+
+
+
+
+ 
+
+
+
+
+    @Test
+
+
+
+
+    public void shouldFindChildrenUsingInKeyword() throws Exception {
+
+
+
+
+        Mother mother = motherRepository.save(new Mother(new Child(3, EyeColour.Brown, "april"), new Child(4, EyeColour.GREEN, "may"), new Child(7, EyeColour.BLUE, "april")));
+
+
+
+
+ 
+
+
+
+
+        assertThat(motherRepository.childrenByAges(mother.id, 3, 4).size(), is(2));
+
+
+
+
+        assertThat(motherRepository.childrenByColour(mother.id, new long[]{EyeColour.Brown, EyeColour.BLUE}).size(), is(2));
+
+
+
+
+        assertThat(motherRepository.childrenByMonth(mother.id, asList("april")).size(), is(2));
+
+
+
+
+    }
+
+
+
+
+}
+
+
+
+
+
+
+Output:
+
+
+
+
+
+
+scala.MatchError: [april] (of class java.util.Arrays$ArrayList)
+
+
+
+
+	at org.neo4j.cypher.internal.commands.InIterable.isMatch(InIterable.scala:30)
+
+
+
+
+	at org.neo4j.cypher.internal.pipes.matching.SimplePatternMatcherBuilder$$anonfun$getMatches$1$$anonfun$apply$3.apply(SimplePatternMatcherBuilder.scala:86)
+
+
+
+
+	at org.neo4j.cypher.internal.pipes.matching.SimplePatternMatcherBuilder$$anonfun$getMatches$1$$anonfun$apply$3.apply(SimplePatternMatcherBuilder.scala:86)
+
+
+
+
+	at scala.collection.LinearSeqOptimized$class.forall(LinearSeqOptimized.scala:69)
+
+
+
+
+	at scala.collection.immutable.List.forall(List.scala:45)
+
+
+
+
+	at org.neo4j.cypher.internal.pipes.matching.SimplePatternMatcherBuilder$$anonfun$getMatches$1.apply(SimplePatternMatcherBuilder.scala:86)
+
+
+
+
+	at org.neo4j.cypher.internal.pipes.matching.SimplePatternMatcherBuilder$$anonfun$getMatches$1.apply(SimplePatternMatcherBuilder.scala:78)
+
+
+
+
+	at scala.collection.TraversableLike$$anonfun$flatMap$1.apply(TraversableLike.scala:200)
+
+
+
+
+	at scala.collection.TraversableLike$$anonfun$flatMap$1.apply(TraversableLike.scala:200)
+
+
+
+
+	at scala.collection.Iterator$class.foreach(Iterator.scala:652)
+
+
+
+
+	at scala.collection.JavaConversions$JIteratorWrapper.foreach(JavaConversions.scala:573)
+
+
+
+
+	at scala.collection.IterableLike$class.foreach(IterableLike.scala:73)
+
+
+
+
+	at scala.collection.JavaConversions$JIterableWrapper.foreach(JavaConversions.scala:587)
+
+
+
+
+	at scala.collection.TraversableLike$class.flatMap(TraversableLike.scala:200)
+
+
+
+
+	at scala.collection.JavaConversions$JIterableWrapper.flatMap(JavaConversions.scala:587)
+
+
+
+
+	at org.neo4j.cypher.internal.pipes.matching.SimplePatternMatcherBuilder.getMatches(SimplePatternMatcherBuilder.scala:78)
+
+
+
+
+	at org.neo4j.cypher.internal.pipes.matching.MatchingContext.getMatches(MatchingContext.scala:52)
+
+
+
+
+	at org.neo4j.cypher.internal.pipes.MatchPipe$$anonfun$createResults$1.apply(MatchPipe.scala:33)
+
+
+
+
+	at org.neo4j.cypher.internal.pipes.MatchPipe$$anonfun$createResults$1.apply(MatchPipe.scala:32)
+
+
+
+
+	at scala.collection.TraversableLike$$anonfun$flatMap$1.apply(TraversableLike.scala:200)
+
+
+
+
+	at scala.collection.TraversableLike$$anonfun$flatMap$1.apply(TraversableLike.scala:200)
+
+
+
+
+	at scala.collection.LinearSeqOptimized$class.foreach(LinearSeqOptimized.scala:59)
+
+
+
+
+	at scala.collection.immutable.List.foreach(List.scala:45)
+
+
+
+
+	at scala.collection.TraversableLike$class.flatMap(TraversableLike.scala:200)
+
+
+
+
+	at scala.collection.immutable.List.flatMap(List.scala:45)
+
+
+
+
+	at org.neo4j.cypher.internal.pipes.MatchPipe.createResults(MatchPipe.scala:32)
+
+
+
+
+	at org.neo4j.cypher.internal.pipes.FilterPipe.createResults(FilterPipe.scala:30)
+
+
+
+
+	at org.neo4j.cypher.internal.pipes.ColumnFilterPipe.createResults(ColumnFilterPipe.scala:37)
+
+
+
+
+	at org.neo4j.cypher.internal.executionplan.ExecutionPlanImpl$$anonfun$3$$anonfun$apply$1.apply(ExecutionPlanImpl.scala:62)
+
+
+
+
+	at org.neo4j.cypher.internal.executionplan.ExecutionPlanImpl$$anonfun$3$$anonfun$apply$1.apply(ExecutionPlanImpl.scala:62)
+
+
+
+
+	at org.neo4j.cypher.PipeExecutionResult.immutableResult(PipeExecutionResult.scala:36)
+
+
+
+
+	at org.neo4j.cypher.PipeExecutionResult.iterator(PipeExecutionResult.scala:138)
+
+
+
+
+	at org.neo4j.cypher.PipeExecutionResult.hasNext(PipeExecutionResult.scala:140)
+
+
+
+
+	at scala.collection.Iterator$$anon$19.hasNext(Iterator.scala:334)
+
+
+
+
+	at scala.collection.JavaConversions$IteratorWrapper.hasNext(JavaConversions.scala:562)
+
+
+
+
+	at org.neo4j.helpers.collection.IteratorWrapper.hasNext(IteratorWrapper.java:42)
+
+
+
+
+	at org.neo4j.helpers.collection.IteratorUtil.addToCollection(IteratorUtil.java:322)
+
+
+
+
+	at org.neo4j.helpers.collection.IteratorUtil.addToCollection(IteratorUtil.java:341)
+
+
+
+
+	at org.springframework.data.neo4j.repository.query.GraphRepositoryQuery.dispatchQuery(GraphRepositoryQuery.java:92)
+
+
+
+
+	at org.springframework.data.neo4j.repository.query.GraphRepositoryQuery.execute(GraphRepositoryQuery.java:70)
+
+
+
+
+	at org.springframework.data.repository.core.support.RepositoryFactorySupport$QueryExecutorMethodInterceptor.invoke(RepositoryFactorySupport.java:313)
+
+
+
+
+	at org.springframework.aop.framework.ReflectiveMethodInvocation.proceed(ReflectiveMethodInvocation.java:172)
+
+
+
+
+	at org.springframework.transaction.interceptor.TransactionInterceptor.invoke(TransactionInterceptor.java:110)
+
+
+
+
+	at org.springframework.aop.framework.ReflectiveMethodInvocation.proceed(ReflectiveMethodInvocation.java:172)
+
+
+
+
+	at org.springframework.dao.support.PersistenceExceptionTranslationInterceptor.invoke(PersistenceExceptionTranslationInterceptor.java:155)
+
+
+
+
+	at org.springframework.aop.framework.ReflectiveMethodInvocation.proceed(ReflectiveMethodInvocation.java:172)
+
+
+
+
+	at org.springframework.aop.framework.JdkDynamicAopProxy.invoke(JdkDynamicAopProxy.java:202)
+
+
+
+
+	at cypher.in_keyword.$Proxy27.childrenByMonth(Unknown Source)
+
+
+
+
+	at cypher.in_keyword.InKeywordTests.shouldFindChildrenUsingInKeyword(InKeywordTests.java:106)
+
+
+
+
+	at sun.reflect.NativeMethodAccessorImpl.invoke0(Native Method)
+
+
+
+
+	at sun.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:39)
+
+
+
+
+	at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:25)
+
+
+
+
+	at org.junit.runners.model.FrameworkMethod$1.runReflectiveCall(FrameworkMethod.java:45)
+
+
+
+
+	at org.junit.internal.runners.model.ReflectiveCallable.run(ReflectiveCallable.java:15)
+
+
+
+
+	at org.junit.runners.model.FrameworkMethod.invokeExplosively(FrameworkMethod.java:42)
+
+
+
+
+	at org.junit.internal.runners.statements.InvokeMethod.evaluate(InvokeMethod.java:20)
+
+
+
+
+	at org.springframework.test.context.junit4.statements.RunBeforeTestMethodCallbacks.evaluate(RunBeforeTestMethodCallbacks.java:74)
+
+
+
+
+	at org.springframework.test.context.junit4.statements.RunAfterTestMethodCallbacks.evaluate(RunAfterTestMethodCallbacks.java:83)
+
+
+
+
+	at org.springframework.test.context.junit4.statements.SpringRepeat.evaluate(SpringRepeat.java:72)
+
+
+
+
+	at org.springframework.test.context.junit4.SpringJUnit4ClassRunner.runChild(SpringJUnit4ClassRunner.java:231)
+
+
+
+
+	at org.springframework.test.context.junit4.SpringJUnit4ClassRunner.runChild(SpringJUnit4ClassRunner.java:88)
+
+
+
+
+	at org.junit.runners.ParentRunner$3.run(ParentRunner.java:231)
+
+
+
+
+	at org.junit.runners.ParentRunner$1.schedule(ParentRunner.java:60)
+
+
+
+
+	at org.junit.runners.ParentRunner.runChildren(ParentRunner.java:229)
+
+
+
+
+	at org.junit.runners.ParentRunner.access$000(ParentRunner.java:50)
+
+
+
+
+	at org.junit.runners.ParentRunner$2.evaluate(ParentRunner.java:222)
+
+
+
+
+	at org.springframework.test.context.junit4.statements.RunBeforeTestClassCallbacks.evaluate(RunBeforeTestClassCallbacks.java:61)
+
+
+
+
+	at org.springframework.test.context.junit4.statements.RunAfterTestClassCallbacks.evaluate(RunAfterTestClassCallbacks.java:71)
+
+
+
+
+	at org.junit.runners.ParentRunner.run(ParentRunner.java:300)
+
+
+
+
+	at org.springframework.test.context.junit4.SpringJUnit4ClassRunner.run(SpringJUnit4ClassRunner.java:174)
+
+
+
+
+	at org.junit.runner.JUnitCore.run(JUnitCore.java:157)
+
+
+
+
+	at com.intellij.junit4.JUnit4IdeaTestRunner.startRunnerWithArgs(JUnit4IdeaTestRunner.java:76)
+
+
+
+
+	at com.intellij.rt.execution.junit.JUnitStarter.prepareStreamsAndStart(JUnitStarter.java:195)
+
+
+
+
+	at com.intellij.rt.execution.junit.JUnitStarter.main(JUnitStarter.java:63)
+
+
+
+
+	at sun.reflect.NativeMethodAccessorImpl.invoke0(Native Method)
+
+
+
+
+	at sun.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:39)
+
+
+
+
+	at com.intellij.rt.execution.application.AppMain.main(AppMain.java:120)
+
+
+
+
+ 
+
+
+
+
+

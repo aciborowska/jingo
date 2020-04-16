@@ -1,0 +1,76 @@
+We sometimes need to copy a logical operator/plan when writing an optimization rule. Currently copy an operator/plan is awkward. We need to write some utilities to facilitate this process. Swati contribute PIG-1510 but we feel it still cannot address most use cases. I propose to add some more utilities into new logical plan:
+
+all LogicalExpressions:
+
+copy(LogicalExpressionPlan newPlan, boolean keepUid);
+
+
+
+	Do a shallow copy of the logical expression operator (except for fieldSchema, uidOnlySchema, ProjectExpression.attachedRelationalOp)
+	Set the plan to newPlan
+	If keepUid is true, further copy uidOnlyFieldSchema
+
+
+
+all LogicalRelationalOperators:
+
+copy(LogicalPlan newPlan, boolean keepUid);
+
+
+
+	Do a shallow copy of the logical relational operator (except for schema, uid related fields)
+	Set the plan to newPlan;
+	If the operator have inner plan/expression plan, copy the whole inner plan with the same keepUid flag (Especially, LOInnerLoad will copy its inner project, with the same keepUid flag)
+	If keepUid is true, further copy uid related fields (LOUnion.uidMapping, LOCogroup.groupKeyUidOnlySchema, LOCogroup.generatedInputUids)
+
+
+
+LogicalExpressionPlan.java
+
+LogicalExpressionPlan copy(LogicalRelationalOperator attachedRelationalOp, boolean keepUid);
+LogicalExpressionPlan copyAbove(LogicalExpression leave, LogicalRelationalOperator attachedRelationalOp, boolean keepUid);
+LogicalExpressionPlan copyBelow(LogicalExpression root, LogicalRelationalOperator attachedRelationalOp, boolean keepUid);
+
+
+
+	Create a new logical expression plan and copy expression operator along with connection with the same keepUid flag
+	Set all ProjectExpression.attachedRelationalOp to attachedRelationalOp parameter
+
+
+
+
+Pair<List<Operator>, List<Operator>> merge(LogicalExpressionPlan plan, LogicalRelationalOperator attachedRelationalOp);
+
+
+
+	Merge plan into the current logical expression plan as an independent tree
+	attachedRelationalOp is the destination operator new logical expression plan attached to
+	return the sources/sinks of this independent tree
+
+
+
+
+LogicalPlan.java
+
+LogicalPlan copy(LOForEach foreach, boolean keepUid);
+LogicalPlan copyAbove(LogicalRelationalOperator leave, LOForEach foreach, boolean keepUid);
+LogicalPlan copyBelow(LogicalRelationalOperator root, LOForEach foreach, boolean keepUid);
+
+
+
+	Main use case to copy inner plan of ForEach
+	Create a new logical plan and copy relational operator along with connection
+	Copy all expression plans inside relational operator, set plan and attachedRelationalOp properly
+	If the plan is ForEach inner plan, param foreach is the destination ForEach operator; otherwise, pass null
+
+
+
+
+Pair<List<Operator>, List<Operator>> merge(LogicalPlan plan, LOForEach foreach);
+
+
+
+	Merge plan into the current logical plan as an independent tree
+	foreach is the destination LOForEach is the destination plan is a ForEach inner plan; otherwise, pass null
+	return the sources/sinks of this independent tree
+

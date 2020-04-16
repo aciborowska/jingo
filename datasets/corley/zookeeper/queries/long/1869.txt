@@ -1,0 +1,62 @@
+We have deployed zookeeper version 3.5.0.1515976, with 3 zk servers in the quorum.
+The problem we are facing is that one zookeeper server in the quorum falls apart, and never becomes part of the cluster until we restart zookeeper server on that node.
+
+Our interpretation from zookeeper logs on all nodes is as follows: 
+(For simplicity assume S1=> zk server1, S2 => zk server2, S3 => zk server 3)
+Initially S3 is the leader while S1 and S2 are followers.
+
+S2 hits 46 sec latency while fsyncing write ahead log and results in loss of connection with S3.
+ S3 in turn prints following error message:
+
+Unexpected exception causing shutdown while sock still open
+java.net.SocketTimeoutException: Read timed out
+Stack trace
+
+	
+	
+		
+		
+			
+			
+				
+				
+					
+					
+						
+						
+							GOODBYE /169.254.1.2:47647(S2) ********
+						
+						
+					
+					
+				
+				
+			
+			
+		
+		
+	
+	
+
+
+
+S2 in this case closes connection with S3(leader) and shuts down follower with following log messages:
+Closing connection to leader, exception during packet send
+java.net.SocketException: Socket close
+Follower@194] - shutdown called
+java.lang.Exception: shutdown Follower
+
+After this point S3 could never reestablish connection with S2 and leader election mechanism keeps failing. S3 now keeps printing following message repeatedly:
+Cannot open channel to 2 at election address /169.254.1.2:3888
+java.net.ConnectException: Connection refused.
+
+While S3 is in this state, S2 repeatedly keeps printing following message:
+INFO [NIOServerCxnFactory.AcceptThread:/0.0.0.0:2181:NIOServerCnxnFactory$AcceptThread@296] - Accepted socket connection from /127.0.0.1:60667
+Exception causing close of session 0x0: ZooKeeperServer not running
+Closed socket connection for client /127.0.0.1:60667 (no session established for client)
+
+Leader election never completes successfully and causing S2 to fall apart from the quorum.
+S2 was out of quorum for almost 1 week.
+
+While debugging this issue, we found out that both election and peer connection ports on S2  can't be telneted from any of the node (S1, S2, S3). Network connectivity is not the issue. Later, we restarted the ZK server S2 (service zookeeper-server restart) – now we could telnet to both the ports and S2 joined the ensemble after a leader election attempt.
+Any idea what might be forcing S2 to get into a situation where it won't accept any connections on the leader election and peer connection ports?

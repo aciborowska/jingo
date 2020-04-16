@@ -1,0 +1,37 @@
+The TestSessionManagerMetrics fails occasionally with the following error: 
+
+org.junit.ComparisonFailure: expected:<[0]> but was:<[1]>
+
+	at org.apache.hive.service.cli.session.TestSessionManagerMetrics.testThreadPoolMetrics(TestSessionManagerMetrics.java:98)
+
+
+
+Failed tests: 
+
+  TestSessionManagerMetrics.testThreadPoolMetrics:98 expected:<[0]> but was:<[1]>
+
+
+
+This test starts four background threads with a "wait" call in their run method. The threads are using the common "barrier" object as lock. 
+The expected behaviour is that two threads will be in the async pool (because the hive.server2.async.exec.threads is set to 2) and the other two thread will be waiting in the queue. This condition is checked like this:
+
+MetricsTestUtils.verifyMetricsJson(json, MetricsTestUtils.GAUGE, MetricsConstant.EXEC_ASYNC_POOL_SIZE, 2);
+
+MetricsTestUtils.verifyMetricsJson(json, MetricsTestUtils.GAUGE, MetricsConstant.EXEC_ASYNC_QUEUE_SIZE, 2);
+
+
+
+Then a notifyAll is called on the lock object, so the two threads in the pool should "wake up" and complete and the other two threads should go from the queue to the pool. This is checked like this in the test:
+
+MetricsTestUtils.verifyMetricsJson(json, MetricsTestUtils.GAUGE, MetricsConstant.EXEC_ASYNC_POOL_SIZE, 2);
+
+MetricsTestUtils.verifyMetricsJson(json, MetricsTestUtils.GAUGE, MetricsConstant.EXEC_ASYNC_QUEUE_SIZE, 0);
+
+
+
+There are two use cases which can cause error in this test:
+
+The notifyAll call happens before both threads in the pool are up and running and in the "wait" phase.
+In this case the thread which is not up in time will stuck in the pool, so the other two threads can not move from the queue to the pool. 
+After the notifyAll call, the threads in the pool "wake up" with some delay. So they don't complete and removed from the pool and the other two threads are not moved from the queue to the pool until the metrics are checked. Therefore the check fails, since the queue is not empty.
+

@@ -1,0 +1,103 @@
+I have an entity "Event" which has two @OneToMany relations with two entities "Appointment" and "Activity" which both have the same superclass "Booking".
+
+After saving an Event with 1 Activity and 1 Appointment and retrieving it using find, the Event is returned with 2  Activities and  1 Appointment.  One of these Activities seems
+to contain the data of the Appointment.
+
+I noticed that two things both seem to make it work as excepted: 
+   (1) change the @Inheritance strategy to one of InheritanceType.SINGLE_TABLE or InheritanceType.TABLE_PER_CLASS
+   (2) remove the @Version field from "Event"
+
+
+
+These are the entity configurations:  
+
+@Entity
+public final class Event  {
+	@Id
+	@GeneratedValue
+	protected Long id;
+	@Version
+	protected Integer version;
+
+	@OneToMany(cascade = ALL, mappedBy = "event", fetch = FetchType.EAGER)
+	private List<Activity> activities = new ArrayList<Activity>();
+
+	@OneToMany(cascade = ALL, mappedBy = "event", fetch = FetchType.EAGER)
+	private List<Appointment> appointments = new ArrayList<Appointment>();
+     ...
+}
+
+@Entity
+@Inheritance(strategy = InheritanceType.JOINED)
+public class Booking {
+	@Id
+	@GeneratedValue
+	protected Long id;
+
+	@ManyToOne(optional = true, cascade = ALL, fetch = FetchType.EAGER)
+	protected Event event;
+
+	@Basic(fetch = FetchType.EAGER)
+	public String name;
+        ...
+}
+
+@Entity
+public final class Activity extends Booking {
+  ...
+}
+
+@Entity
+public final class Appointment extends Booking {
+  ...
+}
+
+
+This is the "test" which illustrates the problem:
+
+
+public static void main(String[] args) 
+{
+		Event event = new Event();
+		
+		Appointment appointment = new Appointment("APPOINTMENT");
+		appointment.setEvent(event);
+		event.addAppointment(appointment);
+		Activity activity = new Activity("ACTIVITY");
+		activity.setEvent(event);
+		event.addActivity(activity);
+		
+		System.out.println("#activities before saving: " + event.getActivities().size());
+		System.out.println("#appointments before saving: " +  event.getAppointments().size());
+		
+		Event saved = save(event);
+		System.out.println("#activities after saving: " + saved.getActivities().size());
+		System.out.println("#appointments after saving: " + saved.getAppointments().size());
+		
+		Event found =  find(saved.getId());
+		System.out.println("#activities after find: " + found.getActivities().size());
+		System.out.println("#appointments after find: " + found.getAppointments().size());
+	}
+
+	private static Event save(Event entity) 
+{
+		entityManager.getTransaction().begin();
+		Event result = entityManager.merge(entity);
+		entityManager.getTransaction().commit();
+		return result;
+	}
+
+	private static Event find(long id) 
+{
+		entityManager.getTransaction().begin();
+		Event result = entityManager.find(Event.class, id);
+		entityManager.getTransaction().commit();
+		return result;
+	}
+
+	static OpenJPAEntityManager entityManager = (OpenJPAEntityManager) Persistence.createEntityManagerFactory(
+			"openjpa_test", System.getProperties()).createEntityManager();
+
+
+
+I've attached all the files in a zip.

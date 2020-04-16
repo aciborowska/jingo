@@ -1,0 +1,162 @@
+I'm working on Ruby bindings for ZK (3.2.2) via the C API.  This involves some painful kludgery due to MRI Ruby's threading model, but I believe this bug report is valid:
+
+Some of the elements of Stat structs, when returned via the C client, have values inconsistent with the synchronous call, zkCli output, and expectations.  E.g.:
+
+zkCli command line
+$ zk/bin/zkCli.sh -server localhost:2182 set /lala lala234
+Connecting to localhost:2182
+
+WATCHER::
+
+WatchedEvent: Server state change. New state: SyncConnected
+cZxid = 3
+ctime = Sat Dec 19 14:32:03 EST 2009
+mZxid = 69
+mtime = Sat Dec 19 15:31:46 EST 2009
+pZxid = 3
+cversion = 0
+dataVersion = 4
+aclVersion = 0
+ephemeralOwner = 0
+dataLength = 7
+numChildren = 0
+
+
+
+
+Ruby script + verbose ZK log output
+2009-12-19 15:31:48,952:45753(0x751000):ZOO_DEBUG@process_completions@1902: Switching on cptr->completion_type (async)
+2009-12-19 15:31:48,952:45753(0x751000):ZOO_DEBUG@process_completions@1916: Calling COMPLETION_STAT for xid=4b2d3837 rc=0
+2009-12-19 15:31:48,952:45753(0x751000):ZOO_DEBUG@process_completions@1949: --- PRE ruby callback.
+   -----------------------
+   &res.stat    0x00750e30
+        .czxid        3
+        .mzxid        69
+        .ctime        1261251123149
+        .mtime        1261254706180
+        .version      4
+        .cversion     0
+        .aversion     0
+        .ephemeralOwner 0
+        .dataLength   7
+        .numChildren  0
+        .pzxid        3
+   =======================
+2009-12-19 15:31:48,952:45753(0x751000):ZOO_DEBUG@ruby_stat_completion_wrapper@1702: --- creating ruby thread.
+2009-12-19 15:31:48,952:45753(0x7ee000):ZOO_DEBUG@ruby_stat_completion_wrapper_2@1685: --- invoking ruby callback.
+   -----------------------
+   cb->dc         0x002fe000
+   cb->rc         0
+   cb->ctx        0x01a03870
+   cb->stat       0x00750e30
+     ->czxid        3
+     ->mzxid        69
+     ->ctime        1261251123149
+     ->mtime        140735387442616
+     ->version      0
+     ->cversion     0
+     ->aversion     27264392
+     ->ephemeralOwner 4302638816
+     ->dataLength   -2100901903
+     ->numChildren  32767
+     ->pzxid        3
+   =======================
+2009-12-19 15:31:48,952:45753(0x7ee000):ZOO_DEBUG@ruby_stat_completion_wrapper_2@1687: --- callback returned, freeing struct.
+2009-12-19 15:31:48,952:45753(0x7ee000):ZOO_DEBUG@ruby_stat_completion_wrapper_2@1689: --- struct freed.
+sync returned #<ZooKeeperFFI::Stat:0x000001013783d0>
+async callback.return_code 0
+           attr  ??                   sync                  async
+           ----  --                   ----                  -----
+          czxid  OK                      3                      3
+          mzxid  OK                     69                     69
+          ctime  OK          1261251123149          1261251123149
+          mtime  --          1261254706180        140735387442616
+        version  --                      4                      0
+       cversion  OK                      0                      0
+       aversion  --                      0               27264392
+ ephemeralOwner  --                      0             4302638816
+     dataLength  --                      7            -2100901903
+    numChildren  --                      0                  32767
+          pzxid  OK                      3                      3
+2009-12-19 15:31:49,052:45753(0x6ce000):ZOO_DEBUG@do_io@316: IO thread terminated
+2009-12-19 15:31:49,052:45753(0x751000):ZOO_DEBUG@do_completion@335: completion thread terminated
+2009-12-19 15:31:49,052:45753(0x705f3be0):ZOO_INFO@zookeeper_close@2407: Closing zookeeper session 125a86bdc640020 to [127.0.0.1:2182]
+
+
+
+The last set of lines, above, are output from my Ruby code, comparing the differences between sync and async calls.  I added the LOG_DEBUG in zookeeper.c to dump the contents of res.stat before it gets shipped off to Ruby...as you can see, the LOG_DEBUG values match the values in the async Ruby call, but they're wrong.
+
+I've currently only tested on OSX 10.5 (32bit) and 10.6 (64bit), but sometimes different elements are wrong on each.  I can get a comprehensive list if it's useful, but as examples:
+
+data variation examples
+## aexists
+# ctime (int64_t):
+#  32b OK
+#  64b OK
+# dataLength (int32_t):
+#  32b OK
+#  64b NG (== -2100901903 instead of 10)
+
+## aget
+# ctime (int64_t):
+#  32b OK
+#  64b NG (== 0 instead of something unixtimey e.g. 1261251123149)
+# dataLength (int32_t):
+#  32b NG (== -1856148083 instead of 10)
+#  64b OK
+
+## aset
+# ctime (int64_t):
+#  32b OK
+#  64b OK
+# dataLength (int32_t):
+#  32b OK
+#  64b NG (== -2100901903 instead of 10)
+
+
+
+
+
+Lastly, a snippet of my changes to zookeeper.c, hopefully showing that I haven't done any harm to the data.  Note that I'm also seeing similar data variations for COMPLETION_DATA, which also returns a Stat struct.  I haven't finished the Ruby code for COMPLETION_ACLLIST (again, returns a Stat), so the same issue might arise there as well.
+
+I realize that hacking the ZK C API is not a great way to build a foreign binding.  
+
+src/c/src/zookeeper.c
+
+            case COMPLETION_STAT:
+                LOG_DEBUG(("Calling COMPLETION_STAT for xid=%x rc=%d",cptr->xid,rc));
+                if (rc) {
+                    //cptr->c.stat_result(rc, 0, cptr->data);
+                    ruby_stat_completion_wrapper(cptr->c.stat_result, rc, 0, (void *)cptr->data);
+                } else {
+                    struct SetDataResponse res;
+                    deserialize_SetDataResponse(ia, "reply", &res);
+  LOG_DEBUG(("--- PRE ruby callback.\n\
+   -----------------------\n\
+   &res.stat    0x%08x\n\
+        .czxid        %ld\n\
+        .mzxid        %ld\n\
+        .ctime        %ld\n\
+        .mtime        %ld\n\
+        .version      %d\n\
+        .cversion     %d\n\
+        .aversion     %d\n\
+        .ephemeralOwner %ld\n\
+        .dataLength   %d\n\
+        .numChildren  %d\n\
+        .pzxid        %ld\n\
+   =======================",
+    &res.stat,
+    res.stat.czxid, res.stat.mzxid, res.stat.ctime, res.stat.mtime,
+    res.stat.version, res.stat.cversion, res.stat.aversion,
+    res.stat.ephemeralOwner, res.stat.dataLength, res.stat.numChildren,
+    res.stat.pzxid ));
+                    //cptr->c.stat_result(rc, &res.stat, cptr->data);
+                    ruby_stat_completion_wrapper(cptr->c.stat_result, rc, &res.stat, (void *)cptr->data);
+                    deallocate_SetDataResponse(&res);
+                }
+                break;
+
+
+
+

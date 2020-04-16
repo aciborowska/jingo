@@ -1,0 +1,35 @@
+Parallax/Paratimer seeks to improve the progress estimation of Pig by identifying the processing speed at different steps in the processing pipeline for each of the jobs. For that, it considers the following factors:
+1. (Estimated) Per tuple processing cost (a)
+2. (Estimated) Total Number of tuples to be processed (N)
+3. The number of tuples which are processed till now (K) 
+
+It also accounts for the dynamic changes to runtime environment by considering:
+4. The (calculated) slowdown factor (s) to the per-tuple processing cost, and
+5. The current width (w) of the pipeline (number of running mappers/reducers)
+
+Given these parameters, the time remaining for a particular stage in the pipeline can be computed as:
+
+s*a*(N-K)/w
+
+Of these, 'a' and 'N' are either estimated from a sample, or learned from a previous "debug" run; while 's' and 'w' are dynamically read or calculated.
+
+Paratimer also breaks down each MR job into the following (groups of) stages:
+(1) Record reader - Map - Combine
+(2) Copy
+(3) Sort, and
+(4) Reduce
+
+'K' is observed while the job is in progress for each of these stages by monitoring the following counters in hadoop:
+(1) MAP_INPUT_RECORDS (available in Hadoop)
+(2) REDUCE_INPUT_GROUPS (available in Hadoop)
+(3) REDUCE_INPUT_RECORDS (available in Hadoop)
+(4) REDUCE_COPY_OUTPUT_RECORDS (new counter to be added in Hadoop)
+
+The sum of such estimate of time remaining for each of the stages for all the jobs along the critical path of the execution plan, along with a overhead time for as yet uninitialized MR jobs, gives us a more precise estimate of the time remaining, and thus a better overall progress estimate.
+
+The critical path calculation is targeted as part of PIG-1883; I also propose that the estimation of parameters such as 'N' (cardinality estimate) and 'a' be handled separately (and tracked in a different jira).
+
+Assuming that the estimates are available, the following action items emerge:
+1. The estimated values need to be propagated to the specific operators in the pipeline. This can be accomplished by piggy-backing (pun unintended  ) on the mechanism used for keeping track of line numbers for error reporting.
+2. Using these and other observed counters and values, estimate the time remaining for each stage, and
+3. Calculate the pig script execution percentage complete by estimating the progress of jobs along the critical path

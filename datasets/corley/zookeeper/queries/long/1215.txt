@@ -1,0 +1,26 @@
+Motivation:
+1.  Reduce the impact of client restarts on zookeeper by implementing a persisted cache, and only fetching deltas on restart
+2.  Reduce unnecessary calls to zookeeper.
+3.  Improve performance of gets by caching on the client
+4.  Allow for larger caches than in memory caches.
+
+Behavior Change:
+Zookeeper clients will not have the option to specify a folder path where it can cache zookeeper gets.  If they do choose to cache results, the zookeeper library will check the persisted cache before actually sending a request to zookeeper.  Watches will automatically be placed on all gets in order to invalidate the cache.  Alternatively, we can add a cache flag to the get API - thoughts?  On reconnect or restart, zookeeper clients will check the version number of each entries into its persisted cache, and will invalidate any old entries.  In checking version number, zookeeper clients will also place a watch on those files.  In regards to watches, client watch handlers will not fire until the invalidation step is completed, which may slow down client watch handling. Since setting up watches on all files is necessary on initialization, initialization will likely slow down as well.
+
+API Change:
+The zookeeper library will expose a new init interface that specifies a folder path to the cache.  A new get API will specify whether or not to use cache, and whether or not stale data is safe to return if the connection is down.
+
+Design:
+The zookeeper handler structure will now include a cache_root_path (possibly null) string to cache all gets, as well as a bool for whether or not it is okay to serve stale data.  Old API calls will default to a null path (which signifies no cache), and signify that it is not okay to serve stale data.
+
+The cache will be located at a cache_root_path.  All files will be placed at cache_root_path/file_path.  The cache will be an incomplete copy of everything that is in zookeeper, but everything in the cache will have the same relative path from the cache_root_path that it has as a path in zookeeper.  Each file in the cache will include the Statstructure and the file contents.
+
+zoo_get will check the zookeeper handler to determine whether or not it has a cache.  If it does, it will first go to the path to the persisted cache and append the get path.  If the file exists and it is not invalidated, the zookeeper client will read it and return its value.  If the file does not exist or is invalidated, the zookeeper library will perform the same get as is currently designed.  After getting the results, the library will place the value in the persisted cache for subsequent reads.  zoo_set will automatically invalidate the path in the cache.
+
+If caching is requested, then on each zoo_get that goes through to zookeeper, a watch will be placed on the path. A cache watch handler will handle all watch events by invalidating the cache, and placing another watch on it.  Client watch handlers will handle the watch event after the cache watch handler.  The cache watch handler will not call zoo_get, because it is assumed that the client watch handlers will call zoo_get if they need the fresh data as soon as it is invalidated (which is why the cache watch handler must be executed first).
+
+All updates to the cache will be done on a separate thread, but will be queued in order to maintain consistency in the cache.  In addition, all client watch handlers will not be fired until the cache watch handler completes its invalidation write in order to ensure that client calls to zoo_get in the watch event handler are done after the invalidation step.  This means that a client watch handler could be waiting on SEVERAL writes before it can be fired off, since all writes are queued.
+
+When a new connection is made, if a zookeeper handler has a cache, then that cache will be scanned in order to find all leaf nodes.  Calls will be made to zookeeper to check if all of these nodes still exist, and if they do, what their version number is.  Any inconsistencies in version will result in the cache invalidating the out of date files.  Any files that no longer exist will be deleted from the cache.
+
+If a connection fails, and a zoo_get call is made on a zookeeper handler that has a cache associated with it, and that cache tolerates stale data, then the stale data will be returned from cache - otherwise, all zoo_gets will error out as they do today.

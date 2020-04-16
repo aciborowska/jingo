@@ -1,0 +1,37 @@
+Using GROUP ALL on an empty table produces no output. I would expect it to produce a single row with key 'all' and an empty bag. This seems inconsistent with PIG-514.
+
+
+vals = LOAD 'test/data/pigunit/top_queries_input_data.txt' AS (name:chararray, val:int); 
+empty = FILTER vals BY (1 == 2); 
+empty_g_1 = GROUP empty ALL; 
+empty_g_2 = GROUP empty BY 1;
+empty_g_1_stats = FOREACH empty_g_1 GENERATE 
+  COUNT_STAR(empty); 
+DUMP empty_g_1; 
+DUMP empty_g_2; 
+DUMP empty_g_1_stats; 
+
+
+
+None of the previous statements produce output. My workaround is to COGROUP with a one-line table:
+
+
+ 
+one_line = FOREACH (LIMIT vals 1) GENERATE 1 AS uno; 
+empty_cog = COGROUP one_line BY uno, empty BY 1; 
+DUMP empty_cog;
+
+
+
+A practical example of where it complicates things is set equality. You'd like to do this by testing whether the symmetric difference has zero size, but this bug prevents that method:
+
+
+vals_a = LOAD 'test/data/pigunit/top_queries_input_data.txt' AS (name:chararray, val:int); 
+vals_b = LOAD 'test/data/pigunit/top_queries_input_data.txt' AS (name:chararray, val:int); 
+a_xor_b = FILTER (COGROUP vals_a BY name, vals_b BY name)
+  BY ((COUNT_STAR(vals_a) == 0L) OR (COUNT_STAR(vals_b) == 0L));
+-- doesn't work, a_xor_b has no rows if the sets are equal
+a_equals_b = FOREACH (GROUP a_xor_b ALL) GENERATE
+  ((COUNT_STAR(a_xor_b) == 0) ? 1 : 0) AS is_equal; 
+DUMP a_equals_b;
+

@@ -1,0 +1,71 @@
+The ManagedServerProxy class in the host-controller module contains a memory leak, which can be easily reproduced using the RBAC soak test, like so:
+
+
+
+
+
+
+cd wildfly-core # checkout WildFly Core 2.0.0.CR1, which is in WildFly 10.0.0.CR1, or current master
+
+
+
+
+mvn clean install -DskipTests
+
+
+
+
+cd testsuite/domain
+
+
+
+
+mvn clean test -Dts.noSmoke -Dts.domain -Prbac-soak -Djboss.test.rbac.soak.clients=100 -Djboss.test.rbac.soak.iterations=50
+
+
+
+
+
+
+
+After acquiring a heap dump (-XX:+HeapDumpOnOutOfMemoryError), it's clear that out of the 512 MB of heap space a host controller has, more than 400 MB is taken by a single instance of the ManagedServerProxy class, specifically by its activeRequests field. This Map has a single entry whose value is a Set of "pending" futures. I added a couple of debug prints to the places where this Set is modified, only to see this:
+
+
+
+
+
+
+2015-09-21 12:32:00,704 INFO  [stdout] (management-handler-thread - 4) !!! added org.jboss.as.controller.remote.TransactionalProtocolClientImpl$1@142a1c24
+
+
+
+
+2015-09-21 12:32:00,707 INFO  [stdout] (Remoting "master:MANAGEMENT" task-3) !!! removed org.jboss.as.protocol.mgmt.ActiveOperationSupport$ActiveOperationImpl@5bfbf423
+
+
+
+
+2015-09-21 12:32:00,707 INFO  [stdout] (management-handler-thread - 4) !!! added org.jboss.as.controller.remote.TransactionalProtocolClientImpl$1@27e2e96c
+
+
+
+
+2015-09-21 12:32:00,708 INFO  [stdout] (Remoting "master:MANAGEMENT" task-2) !!! removed org.jboss.as.protocol.mgmt.ActiveOperationSupport$ActiveOperationImpl@72817a0d
+
+
+
+
+2015-09-21 12:32:00,713 INFO  [stdout] (management-handler-thread - 2) !!! added org.jboss.as.controller.remote.TransactionalProtocolClientImpl$1@73d373a7
+
+
+
+
+2015-09-21 12:32:00,718 INFO  [stdout] (Remoting "master:MANAGEMENT" task-9) !!! removed org.jboss.as.protocol.mgmt.ActiveOperationSupport$ActiveOperationImpl@20bd6db1
+
+
+
+
+
+
+
+Skipping a few intermediate steps, the root cause is that AbstractDelegatingAsyncFuture delegates addListener directly to an underlying future, so the callbacks don't get the original instance, but the underlying one.
