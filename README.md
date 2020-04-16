@@ -43,6 +43,3 @@ Run JINGO with the following configuration:
 
 ### Results
 Results for each project are stored in _results/project_name_ folder.
-
-### References
-
