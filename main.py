@@ -55,13 +55,6 @@ logger = logging.getLogger('main')
 @click.option('--save-model',
               is_flag=True,
               help='Save model after training')
-@click.option('--level',
-              help='Granularity level to run experiment on',
-              type=click.Choice(['file', 'method']),
-              default='file')
-@click.option('--all-bugs',
-              help='Use all JIRA issues for training',
-              is_flag=True)
 @click.option('--links-limit',
               help='Limit number of links used to build T matrix',
               type=click.Choice(['None', 'min', 'omega']),
