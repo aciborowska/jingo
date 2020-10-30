@@ -1,0 +1,195 @@
+Hi,
+
+similar to the issue reported in #1905 and merged by #1922 , there is another place in MapProxySupport where near cache entries should be locally invalidated.
+
+The following test reproduces the problem:
+
+```
+package com.nm.test.hazelcast;
+
+import com.hazelcast.config.*;
+import com.hazelcast.core.Hazelcast;
+import com.hazelcast.core.HazelcastInstance;
+import com.hazelcast.core.IMap;
+import com.hazelcast.map.AbstractEntryProcessor;
+import org.apache.log4j.BasicConfigurator;
+import org.apache.log4j.Logger;
+import java.io.Serializable;
+import java.util.Map.Entry;
+import junit.framework.TestCase;
+
+public class TestLocalNearCache2 extends TestCase {
+
+    private static final Logger logger = Logger.getLogger(TestLocalNearCache2.class);
+
+    private static final int numIterations = 5000;
+
+    public static void main(String[] args) throws Exception {
+
+        // configure logging
+        BasicConfigurator.configure();
+
+        // setup test
+        TestLocalNearCache2 test2 = new TestLocalNearCache2();
+        test2.setUp();
+
+        // try-finally to stop Hazelcast
+        try {
+            test2.testExecuteOnKey();
+
+        } finally {
+
+            // tear down test
+            test2.tearDown();
+        }
+        logger.info("main done.");
+    }
+
+    private HazelcastInstance hcInstance;
+
+    @Override
+    protected void setUp() throws Exception {
+
+        // create config
+        Config config = new XmlConfigBuilder().build();
+        config.setProperty("hazelcast.logging.type", "log4j");
+
+        // configure near cache
+        MapConfig mapConfig = config.getMapConfig("testMap");
+        NearCacheConfig nearCacheConfig = new NearCacheConfig();
+        nearCacheConfig.setEvictionPolicy("NONE");
+        nearCacheConfig.setInMemoryFormat(InMemoryFormat.OBJECT);
+        nearCacheConfig.setCacheLocalEntries(true); // this enables the local caching
+        mapConfig.setNearCacheConfig(nearCacheConfig);
+
+        // create Hazelcast instances
+        hcInstance = Hazelcast.newHazelcastInstance(config);
+    }
+
+    @Override
+    protected void tearDown() throws Exception {
+        hcInstance.getLifecycleService().shutdown();
+    }
+
+    public void testExecuteOnKey() {
+        final IMap<String, Text> map = hcInstance.getMap("testMap");
+
+        // loop over several keys to make sure we have keys on both instances
+        for (int k = 0; k < numIterations; k++) {
+            String key = "executeOnKey_" + String.valueOf(k);
+            Text value0 = new Text("content" + k);
+
+            // put and get to make sure entry exists *and* is in local near cache
+            map.put(key, value0);
+            map.get(key);
+
+            Text value1 = map.get(key);
+            Text value2 = map.get(key);
+            assertTrue("reference in local near cache must be the same", value1 == value2);
+
+            // execute reading entry processor (no invalidation required)
+            map.executeOnKey(key, new ReadingEntryProcessor());
+
+            // the following assertion is not necessary for correctnes,
+            // it would be merely an optimization for the local near cache
+            //Text value3 = map.get(key);
+            //assertTrue("reference must not change by reading (k=" + k + ")", value1 == value3);
+
+            // execute writing entry processor (this must locally invalidate near cache)
+            map.executeOnKey(key, new WritingEntryProcessor());
+
+            Text value4 = map.get(key);
+            assertTrue("reference must change by writing (k=" + k + ")", value1 != value4);
+        }
+    }
+
+    /**
+     * An entry processor which only reads.
+     */
+    public static class ReadingEntryProcessor extends AbstractEntryProcessor<String, Text> {
+
+        private static final long serialVersionUID = 1L;
+
+        @Override
+        public Object process(Entry<String, Text> entry) {
+            return "read";
+        }
+
+    }
+
+    /**
+     * An entry processor which writes (changes the value and calls Entry.setValue()).
+     */
+    public static class WritingEntryProcessor extends AbstractEntryProcessor<String, Text> {
+
+        private static final long serialVersionUID = 1L;
+
+        @Override
+        public Object process(Entry<String, Text> entry) {
+            Text text = entry.getValue();
+            text.setContent("new content");
+            entry.setValue(text);
+            return "written";
+        }
+
+    }
+
+    public static class Text implements Serializable {
+
+        private static final long serialVersionUID = 1L;
+
+        private String content = "original content";
+
+        public Text(String content) {
+            this.content = content;
+        }
+
+        public String getContent() {
+            return content;
+        }
+
+        public void setContent(String content) {
+            this.content = content;
+        }
+
+    }
+
+}
+```
+
+I currently see two possible solutions (maybe there are more:-)
+
+1st solution:
+This is very easy to implement and should guarantee correctness - however at the cost of possiblly invalidating near cache entries even if not needed:
+
+in MapProxySupport.executeOnKeyInternal() change
+
+```
+            return (Data) future.get();
+```
+
+to
+
+```
+            Data result = (Data) future.get();
+            invalidateLocalNearCache(key);
+            return result;
+```
+
+2nd solution:
+This solution does only invalidate the near cache if the executeOnKey actually modified the map entry - unfortunately, it seams to be quite difficult to implement:
+
+(note: this would allow to uncomment the assertion 'reference must not change by reading' in the test above)
+
+The idea of the solution is simple: return the modified flag after the execution of the operation.
+
+This information is still available after the execution of the operation in BasicOperationService:379 where the NormalResponse object is created. The Operation object op has an eventType member which is 'UPDATED' if the value was modified. Add this to NormalResponse.
+
+To transport the modified information back to the caller, in BasicInvocation$InvocationFuture:563 where the response is unwrapped, keep the information as a flag in InvocationFuture.
+
+The InvocationFuture object is then returned to the MapProxySupport.executeOnKeyInternal() method and could there be read. However, as BasicInvocation$InvocationFuture is a private inner class, I currently don't see how to actually check this information... I guess this private class could be made a public class and then the modified flag could be read - but ja, not so nice.
+
+What do you think? Do you have a better solution? Otherwise, it would be nice if you could implement solution 1.
+
+Thanks and best,
+Lukas

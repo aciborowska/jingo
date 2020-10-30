@@ -1,0 +1,64 @@
+Steps to reproduce:
+
+
+	install server with default sample entries: by default entryUUID is indexed
+	perform an LDAP search which attempts to perform a substring match against entryUUID (the exact substring doesn't matter):
+
+
+
+
+~/opendj$ ./bin/ldapsearch -h localhost -p 1389 -D cn=directory\ manager -w password -b 'dc=example,dc=com' "(entryUUID=101e*)" entryUUID
+SEARCH operation failed
+Result Code:  80 (Other)
+Additional Information:  java.lang.NullPointerException
+
+
+
+The index querying code assumes that all attribute types have substring matching rules, see org.opends.server.backends.pluggable.AttributeIndex:
+
+
+
+  private static IndexQuery getIndexQuery(IndexQueryFactory<IndexQuery> indexQueryFactory,
+      IndexFilterType indexFilterType, SearchFilter filter) throws DecodeException
+  {
+    MatchingRule rule;
+    Assertion assertion;
+    switch (indexFilterType)
+    {
+    case EQUALITY:
+      rule = filter.getAttributeType().getEqualityMatchingRule();
+      assertion = rule.getAssertion(filter.getAssertionValue());
+      return assertion.createIndexQuery(indexQueryFactory);
+
+    case PRESENCE:
+      return indexQueryFactory.createMatchAllQuery();
+
+    case GREATER_OR_EQUAL:
+      rule = filter.getAttributeType().getOrderingMatchingRule();
+      assertion = rule.getGreaterOrEqualAssertion(filter.getAssertionValue());
+      return assertion.createIndexQuery(indexQueryFactory);
+
+    case LESS_OR_EQUAL:
+      rule = filter.getAttributeType().getOrderingMatchingRule();
+      assertion = rule.getLessOrEqualAssertion(filter.getAssertionValue());
+      return assertion.createIndexQuery(indexQueryFactory);
+
+    case SUBSTRING:
+      rule = filter.getAttributeType().getSubstringMatchingRule();
+      assertion = rule.getSubstringAssertion(
+          filter.getSubInitialElement(), filter.getSubAnyElements(), filter.getSubFinalElement());
+      return assertion.createIndexQuery(indexQueryFactory);
+
+    case APPROXIMATE:
+      rule = filter.getAttributeType().getApproximateMatchingRule();
+      assertion = rule.getAssertion(filter.getAssertionValue());
+      return assertion.createIndexQuery(indexQueryFactory);
+
+    default:
+      return null;
+    }
+  }
+
+
+
+We should not assume that all attributes have a complete set of matching rules. Many only have equality matching defined. I think the correct behavior is to use an UNDEFINED_ASSERTION when the matching rule is not supported. We may want to consider implementing an "undefined matching rule" rather than return null from methods like AttributeType.getSubstringMatchingRule(). Before doing that we'll need to check to see if there is code which depends on these methods returning null.

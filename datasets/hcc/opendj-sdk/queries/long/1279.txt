@@ -1,0 +1,61 @@
+The customer is reporting that certain PATCH operations are failing with:
+
+
+{
+    "code" : 500,
+    "reason" : "Internal Server Error",
+    "message" : "java.util.concurrent.TimeoutException"
+}
+
+
+
+Repeating the operation will usually succeed.
+
+It is possible to reproduce it by running a script such as this:
+
+
+#!/bin/sh
+
+for i in `seq 1 1000000`; do
+	echo "PATCH $i"
+	curl --fail --user esb:password --request PATCH \
+		--header "Accept: application/json" \
+		--header "Content-Type: application/json; charset=utf-8" \
+		--header "Host: laptop.local" \
+		--header "Expect: 100-continue" \
+		--data '[{ "operation":"replace","field":"givenName","value":"Johnny"},{"operation":"replace","field":"sn","value":"English"}]' \
+		http://laptop.local:8080/users/GEN1-3824?_prettyPrint=true
+	rc=$?
+	if [ "$rc" != 0 ]; then
+		echo "Failed!!!"
+		exit 1
+	fi
+done
+
+
+
+It takes a variable number of iterations to fail, e.g. 20000. NB this uses an http-config.json which exposes givenName and sn as attributes:
+
+
+    "givenName"   : { "simple"   : { "ldapAttribute" : "givenName", "isSingleValued" : true, "isRequired" : true } },
+    "sn"          : { "simple"   : { "ldapAttribute" : "sn", "isSingleValued" : true, "isRequired" : true } },
+
+
+
+A stack trace taken during the 30s timeout shows that we are trying to read the first characters of the JSON payload:
+
+
+	at org.codehaus.jackson.impl.ByteSourceBootstrapper.ensureLoaded(ByteSourceBootstrapper.java:507)
+	at org.codehaus.jackson.impl.ByteSourceBootstrapper.detectEncoding(ByteSourceBootstrapper.java:129)
+	at org.codehaus.jackson.impl.ByteSourceBootstrapper.constructParser(ByteSourceBootstrapper.java:224)
+	at org.codehaus.jackson.JsonFactory._createJsonParser(JsonFactory.java:785)
+	at org.codehaus.jackson.JsonFactory.createJsonParser(JsonFactory.java:561)
+	at org.codehaus.jackson.map.ObjectMapper.readValue(ObjectMapper.java:1900)
+	at org.forgerock.json.resource.servlet.HttpUtils.getJsonPatchContent(HttpUtils.java:339)
+	at org.forgerock.json.resource.servlet.HttpServletAdapter.doPatch(HttpServletAdapter.java:394)
+
+
+
+Using netstat I can see that the recv-q for the server's socket is at 0 when the error occurs, so it looks like the server's read the packets.
+
+The problem only seems to occur with the built-in grizzly implementation. I cannot reproduce this if I run the servlet inside Tomcat 7.

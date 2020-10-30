@@ -1,0 +1,51 @@
+When a task is submitted to multiple members then a local execution might alter its initial state before it's sent to remote members. 
+Example:
+
+```
+public class ExecutorTest {
+
+    private HazelcastInstance instance1;
+    private IExecutorService executorService;
+
+    @Before
+    public void setUp() {
+        instance1 = Hazelcast.newHazelcastInstance();
+        Hazelcast.newHazelcastInstance();
+        executorService = instance1.getExecutorService("myExecutorService");
+    }
+
+    @After
+    public void tearDown() {
+        Hazelcast.shutdownAll();
+    }
+
+    @Test
+    public void submit() throws Exception {
+        MyTask myTask = new MyTask();
+        final CountDownLatch completedLatch = new CountDownLatch(1);
+        final AtomicBoolean failed = new AtomicBoolean();
+        executorService.submitToAllMembers(myTask, new MultiExecutionCallback() {
+            @Override
+            public void onResponse(Member member, Object value) {
+                if ((Integer)value != 1) {
+                    failed.set(true);
+                }
+            }
+            @Override
+            public void onComplete(Map<Member, Object> values) {
+                completedLatch.countDown();
+            }
+        });
+        completedLatch.await(1, TimeUnit.MINUTES);
+        assertFalse(failed.get());
+    }
+
+    private static class MyTask implements Callable<Integer>, Serializable {
+        private int state;
+        @Override
+        public Integer call() throws Exception {
+            return ++state;
+        }
+    }
+}
+```

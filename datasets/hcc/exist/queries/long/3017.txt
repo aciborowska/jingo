@@ -1,0 +1,66 @@
+When doing a distribution build, XSLT is used to create the correct Jetty config.
+
+If two Maven targets are invoked which call the XSLT (without `clean` between them), then the XSLT corrupts the Jetty config. This leads to Jetty trying to serve the `/etc` directory.
+
+* This will cause a problem: `cd exist-distribution && mvn clean install package`
+* This will NOT cause a problem: `cd exist-distribution && mvn clean install && mvn clean package`
+
+Each of the `install` and `package` targets will call the XSLT transformation once each on `exist-distribution/target/exist-distribution-5.1.0-SNAPSHOT-dir/etc/jetty/webapps/exist-webapp-context.xml`.
+
+The correctly transformed `exist-webapp-context.xml` should look like:
+```
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE Configure
+  PUBLIC "-//Jetty//Configure//EN" "http://www.eclipse.org/jetty/configure_9_3.dtd">
+<Configure id="exist-webapp-context" class="org.exist.jetty.WebAppContext">
+    <!-- contextPath can be set to either '/exist' or '/' -->
+    <Set name="contextPath">/exist</Set>
+    <Set name="war"><Property name="jetty.home" default="."/>/etc/webapp</Set>
+    <Set name="defaultsDescriptor"><Property name="jetty.home" default="."/>/etc/jetty/webdefault.xml</Set>
+    <Set name="securityHandler">
+        <New class="org.eclipse.jetty.security.ConstraintSecurityHandler">
+            <Set name="loginService">
+                <New class="org.eclipse.jetty.jaas.JAASLoginService">
+                    <Set name="name">Test JAAS Realm</Set>
+                    <Set name="loginModuleName">JAASLoginService</Set>
+                </New>
+            </Set>
+        </New>
+    </Set>
+    <Call name="setAttribute">
+        <Arg>org.eclipse.jetty.server.webapp.ContainerIncludeJarPattern</Arg>
+        <Arg>.*/[^/]*servlet-api-[^/]*\.jar$|.*/javax.servlet.jsp.jstl-.*\.jar$|.*/org.apache.taglibs.taglibs-standard-impl-.*\.jar$|.*/content/.*\.jar$</Arg>
+    </Call>
+</Configure>
+```
+
+The corrupted `exist-webapp-context.xml` (after two transformations) looks like:
+```
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE Configure
+  PUBLIC "-//Jetty//Configure//EN" "http://www.eclipse.org/jetty/configure_9_3.dtd">
+<Configure id="exist-webapp-context" class="org.exist.jetty.WebAppContext">
+    <!-- contextPath can be set to either '/exist' or '/' -->
+    <Set name="contextPath">/exist</Set>
+    <Set name="war">/etc/</Set>
+    <Set name="defaultsDescriptor"><Property name="jetty.home" default="."/>/etc/jetty/webdefault.xml</Set>
+    <Set name="securityHandler">
+        <New class="org.eclipse.jetty.security.ConstraintSecurityHandler">
+            <Set name="loginService">
+                <New class="org.eclipse.jetty.jaas.JAASLoginService">
+                    <Set name="name">Test JAAS Realm</Set>
+                    <Set name="loginModuleName">JAASLoginService</Set>
+                </New>
+            </Set>
+        </New>
+    </Set>
+    <Call name="setAttribute">
+        <Arg>org.eclipse.jetty.server.webapp.ContainerIncludeJarPattern</Arg>
+        <Arg>.*/[^/]*servlet-api-[^/]*\.jar$|.*/javax.servlet.jsp.jstl-.*\.jar$|.*/org.apache.taglibs.taglibs-standard-impl-.*\.jar$|.*/content/.*\.jar$</Arg>
+    </Call>
+</Configure>
+```
+
+Note the incorrect `<Set name="war">/etc/</Set>` vs the correct `<Set name="war"><Property name="jetty.home" default="."/>/etc/webapp</Set>`.
+
+To fix it we likely need to add some further conditions to the templates in `jetty-deploy.xslt`

@@ -1,0 +1,132 @@
+## Abstract
+
+ILock.isLocked() will block forever when called from a Java Client within a LifecycleListener.
+## Version Regression
+
+This seems like an issue that has appeared from 3.5 onwards, in 3.4.5 the test works.
+## Steps
+
+(1) Start 1 Hazelcast Cluster Member
+(2) Create a Hazelcast Java Client.
+(3) Register a LifecycleListener in the Java Client.
+(4) Within that LifecycleListener perform an ILock.isLocked() call, only perform this if the LifecycleEvent is a CLIENT_CONNECTED.  Idea here is that if a client gets disconnected and reconnects it wants to perform some state checks back in the cluster.
+(5) Shutdown Hazelcast Cluster Member
+(6) Start another Hazelcast Cluster Member
+(7) When new cluster member joins a CLIENT_CONNECTED lifecycle event is thrown where ILock.isLocked() is called. 
+## Sample Test
+
+See the code to reproduce this error, try in 3.5 and then 3.4.5.  
+
+In 3.5 onwards you'll see that it will block inside the lifecycle listener on the ILock.isLocked call.  It works in 3.4.5 and returns true/false appropriately.  
+
+For verboseness I've included a client and cluster instances inside one JVM.  I have split out client and cluster nodes into separate JVM and the issue still exists. As at first I thought it might have something to do with all of this running in one JVM.
+
+``` java
+
+import java.io.IOException;
+import java.util.concurrent.atomic.AtomicReference;
+
+import com.hazelcast.client.HazelcastClient;
+import com.hazelcast.client.config.ClientConfig;
+import com.hazelcast.client.config.ClientNetworkConfig;
+import com.hazelcast.config.ListenerConfig;
+import com.hazelcast.core.Hazelcast;
+import com.hazelcast.core.HazelcastInstance;
+import com.hazelcast.core.ILock;
+import com.hazelcast.core.IMap;
+import com.hazelcast.core.LifecycleEvent;
+import com.hazelcast.core.LifecycleListener;
+
+public class DistributedLockTest {
+
+    private static final String TEST_LOCK = "testLock";
+    private static final AtomicReference<HazelcastInstance> clientRef = new AtomicReference<>();
+
+    public static void main(String[] args) throws InterruptedException, IOException {
+
+        final HazelcastInstance hazelcastInstance1 = Hazelcast.newHazelcastInstance();
+
+        final IMap<Object, Object> testMap = hazelcastInstance1.getMap("testMap");
+        testMap.put("A","B");
+
+        // Create a Client that has a LifecycleListener
+
+        final ClientNetworkConfig networkConfig = new ClientNetworkConfig();
+        networkConfig.setConnectionTimeout(5000);
+        networkConfig.setConnectionAttemptPeriod(3000);
+        networkConfig.setConnectionAttemptLimit(0);
+        final ClientConfig clientConfig = new ClientConfig();
+        clientConfig.setNetworkConfig(networkConfig);
+
+        clientConfig.addListenerConfig(new ListenerConfig(new LifecycleListener() {
+            @Override
+            public void stateChanged(final LifecycleEvent event) {
+
+                System.out.println("STATE CHANGED");
+
+                if (event.getState() == LifecycleEvent.LifecycleState.CLIENT_CONNECTED && clientRef.get() != null) {
+                    System.out.println("before acquiring the lock " + Thread.currentThread().getName());
+                    // In 3.5 will block on the ILock isLocked call.  Earlier versions like 3.4.5 work.
+                    System.out.println("stat change lock state " + clientRef.get().getLock(TEST_LOCK).isLocked());
+                    System.out.println("after acquiring the lock");
+                }
+            }
+        }));
+
+        final HazelcastInstance hazelcastClientInstance = HazelcastClient.newHazelcastClient(clientConfig);
+
+        clientRef.set(hazelcastClientInstance);
+
+
+        // Get the lock from Cluster instance 1
+        final ILock testServerLock1 = hazelcastInstance1.getLock(TEST_LOCK);
+        testServerLock1.tryLock();
+        testServerLock1.unlock();
+        System.out.println("hazelcastInstance1 " + testServerLock1.isLocked());
+
+        // Showdown Cluster Instance 1
+        hazelcastInstance1.shutdown();
+
+        // Start Cluster Instance 2
+        final HazelcastInstance hazelcastInstance2 = Hazelcast.newHazelcastInstance();
+
+        // Try to get the ILock in Cluster Instance 2
+        final ILock testLock2 = hazelcastInstance2.getLock(TEST_LOCK);
+
+        System.out.print("server hazelcastInstance2 lock state " + testLock2.isLocked());
+        Thread.yield();
+
+    }
+
+}
+```
+## Thread Dump
+
+You can see from the thread dump it looks like the client is waiting on a future from the cluster that never arrives...
+
+```
+"hz.client_0_dev.internal-1" prio=5 tid=0x00007fdd90a17000 nid=0x6f07 in Object.wait() [0x000070000227c000]
+   java.lang.Thread.State: TIMED_WAITING (on object monitor)
+    at java.lang.Object.wait(Native Method)
+    - waiting on <0x00000007aceaa760> (a com.hazelcast.client.spi.impl.ClientInvocationFuture)
+    at com.hazelcast.client.spi.impl.ClientInvocationFuture.get(ClientInvocationFuture.java:104)
+    - locked <0x00000007aceaa760> (a com.hazelcast.client.spi.impl.ClientInvocationFuture)
+    at com.hazelcast.client.spi.impl.ClientInvocationFuture.get(ClientInvocationFuture.java:89)
+    at com.hazelcast.client.spi.ProxyManager.initialize(ProxyManager.java:210)
+    at com.hazelcast.client.spi.ProxyManager.getOrCreateProxy(ProxyManager.java:192)
+    at com.hazelcast.client.impl.HazelcastClientInstanceImpl.getDistributedObject(HazelcastClientInstanceImpl.java:466)
+    at com.hazelcast.client.impl.HazelcastClientInstanceImpl.getLock(HazelcastClientInstanceImpl.java:324)
+    at com.hazelcast.client.impl.HazelcastClientProxy.getLock(HazelcastClientProxy.java:138)
+    at com.craftedbytes.lock.DistributedLockTest$1.stateChanged(DistributedLockTest.java:47)
+    at com.hazelcast.client.impl.LifecycleServiceImpl.fireLifecycleEvent(LifecycleServiceImpl.java:86)
+    at com.hazelcast.client.spi.impl.ClusterListenerSupport.fireConnectionEvent(ClusterListenerSupport.java:228)
+    at com.hazelcast.client.spi.impl.ClusterListenerSupport.connect(ClusterListenerSupport.java:215)
+    at com.hazelcast.client.spi.impl.ClusterListenerSupport.connectToOne(ClusterListenerSupport.java:182)
+    at com.hazelcast.client.spi.impl.ClusterListenerSupport.connectToCluster(ClusterListenerSupport.java:134)
+    at com.hazelcast.client.spi.impl.ClusterListenerSupport$1.run(ClusterListenerSupport.java:246)
+    at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1145)
+    at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:615)
+    at java.lang.Thread.run(Thread.java:745)
+    at com.hazelcast.util.executor.HazelcastManagedThread.executeRun(HazelcastManagedThread.java:76)
+    at com.hazelcast.util.executor.HazelcastManagedThread.run(HazelcastManagedThread.java:92)
+```

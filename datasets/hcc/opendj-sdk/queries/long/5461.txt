@@ -1,0 +1,84 @@
+With stress tests using DS 6.5.0 rev. (184c8eb5a80) I discovered that we have a regression in replication. After one hour of modrate we have divergences between instances.
+
+To reproduce the problem it is possible to run following jobs:
+
+	replication_modrate_substring
+
+
+
+
+	replication_split_dsrs
+
+
+
+Above tests were stable.
+
+I will describe the modrate_substring, because this test use 1 modrate client in comparison with split_dsrs test which use 2 clients. Both fails on divergences in servers's content.
+
+In test we use 2 DSRS servers and after configuration of replication a modrate client is started with following command:
+
+
+./modrate -h comte.internal.forgerock.com -p 1389 -D "cn=Directory Manager" -w password -d 3600 -b uid=user.{1},ou=People,o=example -S -g "rand(0,99999)" -c 40 -t 3 -i 30 -F -g "randstr(200)" "description:{2}"	
+
+
+After one hour a status of replication is checked:
+
+
+dsreplication status -h comte.internal.forgerock.com -p 4444 -b o=example -I admin -w password --script-friendly -X -n	
+o=example	comte.internal.forgerock.com:4444	100002	true	4	4	8989	0	false 
+o=example	comte.internal.forgerock.com:4445	100002	true	5	5	8990	0	false
+
+
+ 
+
+Stability of last changenumber during last 60 seconds:
+
+
+ldapsearch -h comte.internal.forgerock.com -p 1389 -D "cn=Directory Manager" -w password -b "" -s base "(objectclass=*)" lastchangenumber
+dn: 
+lastchangenumber: 1808160
+
+
+Next check tests content on both servers and compare output files from export-ldif:
+
+
+export-ldif -h comte.internal.forgerock.com -p 4444 -D "cn=Directory Manager" -w password -X -l /tmp/Modrate_Substring_data_DJ1.ldif -n userRoot -e ds-sync-state
+
+export-ldif -h comte.internal.forgerock.com -p 4445 -D "cn=Directory Manager" -w password -X -l /tmp/Modrate_Substring_data_DJ2.ldif -n userRoot -e ds-sync-state
+
+ldifdiff -o /tmp/diff_Modrate_Substring_data_DJ1_DJ2.ldif /tmp/Modrate_Substring_data_DJ1.ldif /tmp/Modrate_Substring_data_DJ2.ldif
+
+Content of servers differs, differences can be found at: /tmp/diff_Modrate_Substring_data_DJ1_DJ2.ldif
+
+ 
+
+An example from a diff file:
+
+
+dn: uid=user.10125,ou=People,o=example 
+changetype: modify 
+delete: description 
+description: JWF10e3EgvAy7jAEUtQ5bwOOtsNTMgfAAAI7vJFlgWtw77yUvEqR4t7DFlvYyccixFonesSunQCU6DHLc8emqDZyzuIono8bcNTXHsup9JZbklBt9fK0kg0BUssLCCjqNhE8lX3uVqU3QY4nIYbyLABdE4huWGK4Glr8Q9PjLQI0eFXTk1GO2G2m8W4bUFOWDD4K95dq 
+- 
+add: description 
+description: SRZHbSLkzq46LXPimhRZ61L54kIiQ9hqI9mX1LaIzk3lunPRRT0hy3JaDAg6Rf59pCgUR4gddewZr2vhBkszcAzsliqHE6Oa7Sfi8nT7j5CwKDfyCkl4mOU34qIx2qJm8svkZiU35pBIvHmU8On6peUHZoiomaQkGOeIlFqwGoXZu5ncNogrD9eHI884ietrhc0MNLZr 
+- 
+delete: ds-sync-hist 
+ds-sync-hist: description:01010165db790839001b535f4:repl:JWF10e3EgvAy7jAEUtQ5bwOOtsNTMgfAAAI7vJFlgWtw77yUvEqR4t7DFlvYyccixFonesSunQCU6DHLc8emqDZyzuIono8bcNTXHsup9JZbklBt9fK0kg0BUssLCCjqNhE8lX3uVqU3QY4nIYbyLABdE4huWGK4Glr8Q9PjLQI0eFXTk1GO2G2m8W4bUFOWDD4K95dq 
+ds-sync-hist: modifiersName:01010165db790839001b535f4:repl:cn=Directory Manager 
+ds-sync-hist: modifyTimestamp:01010165db790839001b535f4:repl:20180915042426Z 
+- 
+add: ds-sync-hist 
+ds-sync-hist: description:01010165db6e24800015e9414:repl:SRZHbSLkzq46LXPimhRZ61L54kIiQ9hqI9mX1LaIzk3lunPRRT0hy3JaDAg6Rf59pCgUR4gddewZr2vhBkszcAzsliqHE6Oa7Sfi8nT7j5CwKDfyCkl4mOU34qIx2qJm8svkZiU35pBIvHmU8On6peUHZoiomaQkGOeIlFqwGoXZu5ncNogrD9eHI884ietrhc0MNLZr 
+ds-sync-hist: modifiersName:01010165db6e24800015e9414:repl:cn=Directory Manager 
+ds-sync-hist: modifyTimestamp:01010165db6e24800015e9414:repl:20180915041233Z 
+- 
+delete: modifyTimestamp 
+modifyTimestamp: 20180915042426Z 
+- 
+add: modifyTimestamp 
+modifyTimestamp: 20180915041233Z 
+-
+
+
+Last check is check on changelog content which seems to be ok.

@@ -1,0 +1,123 @@
+Bug description
+
+Sustained concurrent changePassword requests to the users REST endpoint results in a high proportion of incorrect failures due to insufficient access rights.
+How to reproduce the issue
+
+There is a JMeter test plan attached (ChangePassword.jmx) and user list (users.csv) that can be used to reproduce the issue with default sample data in an external OpenDJ userstore (users.ldif). Environment specifics such as FQDN and realm name need to be set to suit the environment.
+
+The test authenticates a user to retrieve a token, then issues a changePassword action on the users REST endpoint.
+
+The test is configured to iterate through 1000 unique users and starts a second thread after a 5 second ramp-up time to introduce concurrent requests.
+
+The flow for each test iteration is:
+
+Authenticate user.x
+
+POST http://am1.macbook.com:8080/openam/json/realms/test1/authenticate
+
+POST data:
+
+
+[no cookies]
+
+Request Headers:
+Connection: keep-alive
+Content-Type: application/json
+X-OpenAM-Username: user.1992
+X-OpenAM-Password: password
+Accept-API-Version: resource=2.0, protocol=1.0
+Content-Length: 0
+Host: am1.macbook.com:8080
+User-Agent: Apache-HttpClient/4.5.3 (Java/1.8.0_60)
+
+
+changePassword for user.x
+
+POST http://am1.macbook.com:8080/openam/json/realms/test1/users/user.1992?_action=changePassword
+
+POST data:
+{
+ "currentpassword":"password", "userpassword":"newpassword" 
+}
+
+Cookie Data:
+amlbcookie=01; iPlanetDirectoryPro=xlhjVjg00YDQFmfqUJXBZiC-Vu0.*AAJTSQACMDEAAlNLABwxQ2Q2eHh0dHBWZ0dBMExZeWFQUkFsc1MzYTA9AAJTMQAA*
+
+Request Headers:
+Connection: close
+Content-Type: application/json
+Accept-API-Version: resource=2.0, protocol=1.0
+: 
+Content-Length: 66
+Host: am1.macbook.com:8080
+User-Agent: Apache-HttpClient/4.5.3 (Java/1.8.0_60)
+
+
+
+	 Set up 1 AM with external OpenDJ userstore (Tested with AM 5.5.0 and DS 5.5.0)
+	 Import sample user data ldif into OpenDJ (users.ldif)
+	 Run JMeter test
+
+
+
+EXPECTED BEHAVIOUR
+
+All changePassword attempts should pass
+CURRENT BEHAVIOUR
+
+A large proportion of failures are observed under a sustained load of concurrent requests by individual users. In my tests >25% failure rate with 2 JMeter test threads. Increasing the number of threads increases the number of failures. Failures are due to "Insufficient Access Rights" errors, i.e.
+
+AM IdRepo log:
+
+{DJLDAPv3Repo:06/06/2018 10:59:15:024 AM BST: Thread[http-bio-8080-exec-13,5,main]: TransactionId[a14d71fb-5ba2-40ba-bac6-ddc65e319d28-51249]
+ERROR: An error occurred while trying to change password for identity: user.1999
+org.forgerock.opendj.ldap.AuthorizationException: Insufficient Access Rights: The entry uid=user.1999,ou=People,dc=example,dc=com cannot be modified due to insufficient access rights
+        at org.forgerock.opendj.ldap.LdapException.newLdapException(LdapException.java:169)
+        at org.forgerock.opendj.ldap.LdapClientImpl$Exchange.onNext(LdapClientImpl.java:640)
+        at org.forgerock.opendj.ldap.LdapClientImpl$Exchange.onNext(LdapClientImpl.java:554)
+        at org.forgerock.opendj.ldap.DemultiplexerImpl$DemultiplexedStream.tryOnNextFastPath(DemultiplexerImpl.java:432)
+        at org.forgerock.opendj.ldap.DemultiplexerImpl$DemultiplexedStream.onNextAndOptionallyComplete(DemultiplexerImpl.java:392)
+        at org.forgerock.opendj.ldap.DemultiplexerImpl.onNext(DemultiplexerImpl.java:162)
+        at io.reactivex.internal.operators.flowable.FlowableDoFinally$DoFinallySubscriber.onNext(FlowableDoFinally.java:85)
+        at io.reactivex.internal.operators.flowable.FlowableDoOnEach$DoOnEachSubscriber.onNext(FlowableDoOnEach.java:91)
+        at io.reactivex.internal.operators.flowable.FlowableOnErrorNext$OnErrorNextSubscriber.onNext(FlowableOnErrorNext.java:69)
+        at io.reactivex.internal.operators.flowable.FlowableFilter$FilterSubscriber.tryOnNext(FlowableFilter.java:74)
+        at io.reactivex.internal.operators.flowable.FlowableFilter$FilterSubscriber.onNext(FlowableFilter.java:52)
+        at io.reactivex.internal.operators.flowable.FlowableDoOnEach$DoOnEachConditionalSubscriber.onNext(FlowableDoOnEach.java:208)
+        at org.forgerock.opendj.grizzly.GrizzlyLdapSocketFilter$GrizzlyReader.handleRead(GrizzlyLdapSocketFilter.java:201)
+        at org.forgerock.opendj.grizzly.GrizzlyLdapSocketFilter.handleRead(GrizzlyLdapSocketFilter.java:102)
+        at org.glassfish.grizzly.filterchain.ExecutorResolver$9.execute(ExecutorResolver.java:119)
+        at org.glassfish.grizzly.filterchain.DefaultFilterChain.executeFilter(DefaultFilterChain.java:284)
+        at org.glassfish.grizzly.filterchain.DefaultFilterChain.executeChainPart(DefaultFilterChain.java:201)
+        at org.glassfish.grizzly.filterchain.DefaultFilterChain.execute(DefaultFilterChain.java:133)
+        at org.glassfish.grizzly.filterchain.DefaultFilterChain.process(DefaultFilterChain.java:112)
+        at org.glassfish.grizzly.ProcessorExecutor.execute(ProcessorExecutor.java:77)
+        at org.glassfish.grizzly.nio.transport.TCPNIOTransport.fireIOEvent(TCPNIOTransport.java:539)}
+
+
+In the OpenDJ access logs, some MODIFY requests are on different connection IDs to the BIND. Note there are 2 BINDS for each user, one for the Authentication and one for the change password event.
+
+The MODIFY operation (change password) should be on the same connection ID as the BIND for each changePassword event.
+
+One failure from DJ access logs, with the MODIFY on different connID (conn=6) to either BIND:
+
+[06/Jun/2018:14:47:25 +0100] BIND REQ conn=7 op=1838 msgID=1839 version=3 type=SIMPLE dn="uid=user.1999,ou=People,dc=example,dc=com"
+[06/Jun/2018:14:47:25 +0100] BIND RES conn=7 op=1838 msgID=1839 result=0 authDN="uid=user.1999,ou=People,dc=example,dc=com" etime=0
+[06/Jun/2018:14:47:25 +0100] BIND REQ conn=4 op=2206 msgID=2207 version=3 type=SIMPLE dn="uid=user.1999,ou=People,dc=example,dc=com"
+[06/Jun/2018:14:47:25 +0100] BIND RES conn=4 op=2206 msgID=2207 result=0 authDN="uid=user.1999,ou=People,dc=example,dc=com" etime=1
+[06/Jun/2018:14:47:25 +0100] MODIFY REQ conn=6 op=1953 msgID=1954 dn="uid=user.1999,ou=People,dc=example,dc=com"
+[06/Jun/2018:14:47:25 +0100] MODIFY RES conn=6 op=1953 msgID=1954 result=50 message="The entry uid=user.1999,ou=People,dc=example,dc=com cannot be modified due to insufficient access rights" etime=0
+
+
+A successful result from the same test run:
+
+[06/Jun/2018:14:47:24 +0100] BIND REQ conn=6 op=1880 msgID=1881 version=3 type=SIMPLE dn="uid=user.1927,ou=People,dc=example,dc=com"
+[06/Jun/2018:14:47:24 +0100] BIND RES conn=6 op=1880 msgID=1881 result=0 authDN="uid=user.1927,ou=People,dc=example,dc=com" etime=1
+[06/Jun/2018:14:47:24 +0100] BIND REQ conn=4 op=2133 msgID=2134 version=3 type=SIMPLE dn="uid=user.1927,ou=People,dc=example,dc=com"
+[06/Jun/2018:14:47:24 +0100] BIND RES conn=4 op=2133 msgID=2134 result=0 authDN="uid=user.1927,ou=People,dc=example,dc=com" etime=1
+[06/Jun/2018:14:47:24 +0100] MODIFY REQ conn=6 op=1881 msgID=1882 dn="uid=user.1927,ou=People,dc=example,dc=com"
+
+
+Observations
+
+If all requests are made in series there are no changePassword failures observed. Running the attached JMeter test with 1 thread results in 100% pass rate.

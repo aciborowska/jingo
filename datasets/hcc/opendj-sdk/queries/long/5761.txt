@@ -1,0 +1,179 @@
+This issue occurs only when using jdk11 and the same test works with jdk8.
+
+The core of the test is a configuration of DJ and SoftHSM and check that we can do an ldapsearch on secured port with SSL.
+
+The configuration is done in the following steps:
+
+1. Initialization of token
+
+
+./softhsm-2.4.0/softhsm-product/bin/softhsm2-util --init-token --slot 0 --label "My token 1" --pin password --so-pin password
+
+
+ 
+
+2. Generation of the config file with the slot number from point 1 (1472140508) and sofHsm library path
+
+
+name = SoftHSM
+library = /pyforge/results/20181129-142130/security_group/HardwareSecurityModule/HSM1/softhsm-2.4.0/softhsm-product/lib/softhsm/libsofthsm2.so
+slot = 1472140508
+attributes(generate, *, *) = {
+CKA_TOKEN = true
+}
+attributes(generate, CKO_CERTIFICATE, *) = {
+CKA_PRIVATE = false
+}
+attributes(generate, CKO_PUBLIC_KEY, *) = {
+CKA_PRIVATE = false
+}
+attributes(*, CKO_SECRET_KEY, *) = {
+CKA_PRIVATE = false
+CKA_EXTRACTABLE = false
+}
+
+
+3. Generation of key-pair
+
+
+/usr/lib/jvm/openjdk11/bin/keytool -genkey -alias server-cert -keyalg RSA -keysize 2048 -ext "san=dns:pyforge.example.com" -dname "CN=opendj.example.com,O=Example Corp,C=FR" -keystore NONE -storetype PKCS11 -storepass password -providerClass sun.security.pkcs11.SunPKCS11 -providerArg /pyforge/results/20181129-142130/security_group/HardwareSecurityModule/HSM1/softhsm-2.4.0/conf/hsm.conf
+
+
+ 
+
+4. Self-sign of the cert
+
+
+/usr/lib/jvm/openjdk11/bin/keytool -selfcert -alias server-cert -keystore NONE -storetype PKCS11 -storepass password -providerClass sun.security.pkcs11.SunPKCS11 -providerArg /pyforge/results/20181129-142130/security_group/HardwareSecurityModule/HSM1/softhsm-2.4.0/conf/hsm.conf
+
+
+ 
+
+5. Modification of java.properties with security.provider
+
+
+start-ds.java-args= -Djava.security.properties=file:///pyforge/results/20181129-142130/security_group/DJ1/opendj/config/java.security -server
+
+
+ 
+
+6. DS restart
+
+
+/pyforge/results/20181129-142130/security_group/DJ1/opendj/bin/stop-ds -R
+
+
+ 
+
+7. Creation of key manager provider
+
+ 
+
+
+/pyforge/results/20181129-142130/security_group/DJ1/opendj/bin/dsconfig -h pyforge.example.com -p 4444 -D "cn=Directory Manager" -w password -X create-key-manager-provider --provider-name SoftHSM --type pkcs11 --set enabled:true --set key-store-pin:password -n
+
+ 
+
+8. Setting LDAPS connection handler
+
+ 
+
+
+/pyforge/results/20181129-142130/security_group/DJ1/opendj/bin/dsconfig -h pyforge.example.com -p 4444 -D "cn=Directory Manager" -w password -X set-connection-handler-prop --handler-name "LDAPS" --set listen-port:1636 --set enabled:true --set use-ssl:true --set key-manager-provider:SoftHSM -n
+
+ 
+
+ 
+
+The final step is following ldapsearch*:*
+
+ 
+
+
+/home/fuchsik/forks/pyforge/results/20181129-142130/security_group/DJ1/opendj/bin/ldapsearch -h pyforge.example.com -p 1636 -D "cn=Directory Manager" -w password -b "dc=com" --useSSL -X "(uid=dmiller)" cn	
+
+
+ 
+
+The result is:
+
+
+-- rc -- 
+returned 91, expected to be in [0] 
+-- stdout -- 
+-- stderr -- 
+Unable to connect to the server: 91 (Connect Error) Additional Information: The LDAP connection has failed because an error occurred during the SSL handshake: java.io.EOFException
+
+
+With debug info enabled I was able to get the handshake error:
+
+
+javax.net.ssl|ERROR|2B|LDAPS 0.0.0.0 port 1636(2) SelectorRunner|2018-11-29 09:13:35.274 CET|TransportContext.java:313|Fatal (HANDSHAKE_FAILURE): Cannot produce CertificateVerify signature (
+"throwable" : {
+java.security.InvalidKeyException: No installed provider supports this key: sun.security.pkcs11.P11Key$P11PrivateKey
+at java.base/java.security.Signature$Delegate.chooseProvider(Signature.java:1163)
+at java.base/java.security.Signature$Delegate.engineInitSign(Signature.java:1204)
+at java.base/java.security.Signature.initSign(Signature.java:546)
+at java.base/sun.security.ssl.SignatureScheme.getSignature(SignatureScheme.java:473)
+at java.base/sun.security.ssl.CertificateVerify$T13CertificateVerifyMessage.<init>(CertificateVerify.java:895)
+at java.base/sun.security.ssl.CertificateVerify$T13CertificateVerifyProducer.onProduceCertificateVerify(CertificateVerify.java:1077)
+at java.base/sun.security.ssl.CertificateVerify$T13CertificateVerifyProducer.produce(CertificateVerify.java:1070)
+at java.base/sun.security.ssl.SSLHandshake.produce(SSLHandshake.java:436)
+at java.base/sun.security.ssl.ClientHello$T13ClientHelloConsumer.goServerHello(ClientHello.java:1189)
+at java.base/sun.security.ssl.ClientHello$T13ClientHelloConsumer.consume(ClientHello.java:1125)
+at java.base/sun.security.ssl.ClientHello$ClientHelloConsumer.onClientHello(ClientHello.java:831)
+at java.base/sun.security.ssl.ClientHello$ClientHelloConsumer.consume(ClientHello.java:792)
+at java.base/sun.security.ssl.SSLHandshake.consume(SSLHandshake.java:392)
+at java.base/sun.security.ssl.HandshakeContext.dispatch(HandshakeContext.java:444)
+at java.base/sun.security.ssl.SSLEngineImpl$DelegatedTask$DelegatedAction.run(SSLEngineImpl.java:1065)
+at java.base/sun.security.ssl.SSLEngineImpl$DelegatedTask$DelegatedAction.run(SSLEngineImpl.java:1052)
+at java.base/java.security.AccessController.doPrivileged(Native Method)
+at java.base/sun.security.ssl.SSLEngineImpl$DelegatedTask.run(SSLEngineImpl.java:999)
+at org.glassfish.grizzly.ssl.SSLUtils.executeDelegatedTask(SSLUtils.java:274)
+at org.glassfish.grizzly.ssl.SSLBaseFilter.doHandshakeStep(SSLBaseFilter.java:709)
+at org.glassfish.grizzly.ssl.SSLFilter.doHandshakeStep(SSLFilter.java:332)
+at org.glassfish.grizzly.ssl.SSLBaseFilter.doHandshakeStep(SSLBaseFilter.java:623)
+at org.glassfish.grizzly.ssl.SSLBaseFilter.handleRead(SSLBaseFilter.java:335)
+at org.glassfish.grizzly.filterchain.ExecutorResolver$9.execute(ExecutorResolver.java:119)
+at org.glassfish.grizzly.filterchain.DefaultFilterChain.executeFilter(DefaultFilterChain.java:284)
+at org.glassfish.grizzly.filterchain.DefaultFilterChain.executeChainPart(DefaultFilterChain.java:201)
+at org.glassfish.grizzly.filterchain.DefaultFilterChain.execute(DefaultFilterChain.java:133)
+at org.glassfish.grizzly.filterchain.DefaultFilterChain.process(DefaultFilterChain.java:112)
+at org.glassfish.grizzly.ProcessorExecutor.execute(ProcessorExecutor.java:77)
+at org.glassfish.grizzly.nio.transport.TCPNIOTransport.fireIOEvent(TCPNIOTransport.java:539)
+at org.glassfish.grizzly.strategies.AbstractIOStrategy.fireIOEvent(AbstractIOStrategy.java:112)
+at org.glassfish.grizzly.strategies.SameThreadIOStrategy.executeIoEvent(SameThreadIOStrategy.java:103)
+at org.glassfish.grizzly.strategies.AbstractIOStrategy.executeIoEvent(AbstractIOStrategy.java:89)
+at org.glassfish.grizzly.nio.SelectorRunner.iterateKeyEvents(SelectorRunner.java:415)
+at org.glassfish.grizzly.nio.SelectorRunner.iterateKeys(SelectorRunner.java:384)
+at org.glassfish.grizzly.nio.SelectorRunner.doSelect(SelectorRunner.java:348)
+at org.glassfish.grizzly.nio.SelectorRunner.run(SelectorRunner.java:279)
+at org.glassfish.grizzly.threadpool.AbstractThreadPool$Worker.doWork(AbstractThreadPool.java:593)
+at org.glassfish.grizzly.threadpool.AbstractThreadPool$Worker.run(AbstractThreadPool.java:573)
+at java.base/java.lang.Thread.run(Thread.java:834)}
+)
+
+
+I can attach full debug info if needed.
+
+As said before this works fine with jdk1.8.
+
+This issue is reproducible with:
+
+ 
+
+
+python3 run-pybot -s security_group.hardwareSecurityModule -v dj
+
+
+Please make sure that config.cfg contains correct path to your jdk11.
+
+It's useful to let instances run after the test finish with -n option:
+
+
+python3 run-pybot -s security_group.hardwareSecurityModule -v -n dj
+
+
+In such a case, it's possible to stop DS, edit the java.properties to log SSL handshake info to server.out and start it again. After that, run the ldapsearch from report.html and see details of the handshake.
+
+ 

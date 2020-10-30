@@ -1,0 +1,49 @@
+This description is focused on GSSAPI SASL authentication, but I believe this problem may be generic to any SASL authentication method with multiple stages.
+
+To reproduce:
+
+Initial setup:
+
+Configure OpenDJ with GSSAPI authentication and ensure this is working with server ldapsearch
+
+Test 1 (end SASL pre-maturely)
+
+Run the toolkit ldapsearch against OpenDJ. Before the SASL process has completed, ldapsearch will send the search request which will trigger an immediate disconnect:
+
+
+
+[06/Feb/2016:13:39:27 +0000] DISCONNECT conn=28 reason="Server Error" msg="An unexpected failure occurred while trying to process a request of type Search Request (LDAP message ID 2): org.opends.server.types.DirectoryException: A SASL bind operation is currently in progress on the associated client connection. No other requests may be made on this client connection until the SASL bind processing has completed. The client connection will be terminated"
+
+
+
+Test 2 (infinite loop)
+
+Move away your GSSAPI keytab file so that the SASL process will never complete. Run the same ldapsearch again. Observe that the ldapsearch continues to send the same SASL message in an infinite loop:
+
+
+
+[06/Feb/2016:14:05:56 +0000] BIND RES conn=31 op=4765 msgID=4766 result=49 authFailureReason="SASL GSSAPI protocol error: SaslException(GSS initiate failed)" authDN="" etime=0
+[06/Feb/2016:14:05:56 +0000] BIND REQ conn=31 op=4766 msgID=4767 version=3 type=SASL mechanism=GSSAPI dn=""
+[06/Feb/2016:14:05:56 +0000] BIND RES conn=31 op=4766 msgID=4767 result=49 authFailureReason="SASL GSSAPI protocol error: SaslException(GSS initiate failed)" authDN="" etime=1
+[06/Feb/2016:14:05:56 +0000] BIND REQ conn=31 op=4767 msgID=4768 version=3 type=SASL mechanism=GSSAPI dn=""
+[06/Feb/2016:14:05:56 +0000] BIND RES conn=31 op=4767 msgID=4768 result=49 authFailureReason="SASL GSSAPI protocol error: SaslException(GSS initiate failed)" authDN="" etime=1
+[06/Feb/2016:14:05:56 +0000] BIND REQ conn=31 op=4768 msgID=4769 version=3 type=SASL mechanism=GSSAPI dn=""
+[06/Feb/2016:14:05:56 +0000] BIND RES conn=31 op=4768 msgID=4769 result=49 authFailureReason="SASL GSSAPI protocol error: SaslException(GSS initiate failed)" authDN="" etime=1
+[06/Feb/2016:14:05:56 +0000] BIND REQ conn=31 op=4769 msgID=4770 version=3 type=SASL mechanism=GSSAPI dn=""
+[06/Feb/2016:14:05:56 +0000] BIND RES conn=31 op=4769 msgID=4770 result=49 authFailureReason="SASL GSSAPI protocol error: SaslException(GSS initiate failed)" authDN="" etime=0
+[06/Feb/2016:14:05:56 +0000] BIND REQ conn=31 op=4770 msgID=4771 version=3 type=SASL mechanism=GSSAPI dn=""
+[06/Feb/2016:14:05:56 +0000] BIND RES conn=31 op=4770 msgID=4771 result=49 authFailureReason="SASL GSSAPI protocol error: SaslException(GSS initiate failed)" authDN="" etime=0
+[06/Feb/2016:14:05:56 +0000] BIND REQ conn=31 op=4771 msgID=4772 version=3 type=SASL mechanism=GSSAPI dn=""
+[06/Feb/2016:14:05:56 +0000] BIND RES conn=31 op=4771 msgID=4772 result=49 authFailureReason="SASL GSSAPI protocol error: SaslException(GSS initiate failed)" authDN="" etime=0
+
+
+
+Initial analysis:
+
+It looks like the reason for both problems is the same.
+
+In each SASLBindRequestImpl, 'evaluateResult/evaluateAction' is called at each stage of the authentication. In the server ldapsearch (working), the metric for deciding if the SASL auth is complete is a SASL_BIND_IN_PROGRESS result code on the previous message. In the SDK implementations (broken), SaslClient.isComplete() is used instead.
+
+In the Test 1 case, isComplete becomes true before the final message has been sent to the server. The async bind process in LDAPClientFilter never sends it.
+
+In the Test 2 case, isComplete will never become true because the server is always sending back an unexpected error. Therefore the client repeats the same message data back to the server over and over.

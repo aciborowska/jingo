@@ -1,0 +1,381 @@
+Hi,
+
+while testing 3.6.2-SNAPSHOT, I discovered that the MapStore persists map entries with roughly twice the write delay than what is configured. In 3.5.x this was not the case.
+
+Please see the attached testcase which shows the problem.
+
+Thanks and best,
+Lukas
+
+``` java
+package com.nm.test.hazelcast.mapstore;
+
+import com.hazelcast.config.Config;
+import com.hazelcast.config.MapConfig;
+import com.hazelcast.config.MapStoreConfig;
+import com.hazelcast.config.XmlConfigBuilder;
+import com.hazelcast.core.Hazelcast;
+import com.hazelcast.core.HazelcastInstance;
+import com.hazelcast.core.IMap;
+import com.nm.test.hazelcast.TestHazelcast;
+import com.nm.test.hazelcast.utils.RecordingMapStore;
+import com.nm.test.hazelcast.utils.Sleep;
+import org.apache.log4j.BasicConfigurator;
+import org.apache.log4j.Logger;
+import java.util.concurrent.atomic.AtomicInteger;
+import junit.framework.TestCase;
+
+/**
+ * A test to ensure the write-behind interval is more or less respected.
+ */
+public class TestMapStore28 extends TestCase {
+
+    private static final Logger logger = Logger.getLogger(TestMapStore28.class);
+
+    private static final String mapName = "testMap" + TestMapStore28.class.getSimpleName();
+
+    @Override
+    protected void setUp() throws Exception {
+
+        // configure logging
+        if (!TestHazelcast.loggingInitialized) {
+            TestHazelcast.loggingInitialized = true;
+            BasicConfigurator.configure();
+        }
+    }
+
+    public void test1s() throws Exception {
+        execute(1);
+    }
+
+    public void test2s() throws Exception {
+        execute(2);
+    }
+
+    public void test3s() throws Exception {
+        execute(3);
+    }
+
+    public void test4s() throws Exception {
+        execute(4);
+    }
+
+    public void test5s() throws Exception {
+        execute(5);
+    }
+
+    public void test10s() throws Exception {
+        execute(10);
+    }
+
+    private void execute(int writeDelaySeconds) throws Exception {
+
+        // create hazelcast config
+        Config config = new XmlConfigBuilder().build();
+        config.setProperty("hazelcast.logging.type", "log4j");
+        config.setProperty("hazelcast.version.check.enabled", "false");
+        config.setProperty("hazelcast.phone.home.enabled", "false");
+
+        // disable multicast for faster startup
+        config.getNetworkConfig().getJoin().getMulticastConfig().setEnabled(false);
+
+        // create map store
+        RecordingMapStore store = new RecordingMapStore(false, false);
+
+        // configure map store
+        MapStoreConfig mapStoreConfig = new MapStoreConfig();
+        mapStoreConfig.setEnabled(true);
+        mapStoreConfig.setWriteDelaySeconds(writeDelaySeconds);
+        mapStoreConfig.setClassName(null);
+        mapStoreConfig.setImplementation(store);
+        MapConfig mapConfig = config.getMapConfig(mapName);
+        mapConfig.setMapStoreConfig(mapStoreConfig);
+
+        // start hazelcast instance
+        HazelcastInstance hcInstance = Hazelcast.newHazelcastInstance(config);
+
+        // --------------------------------------------------------------- {5s}
+
+        // execute put
+        logger.info("Before put().");
+        final String key = "keyA";
+        IMap<String, String> map = hcInstance.getMap(mapName);
+        map.put(key, "valueA");
+        logger.info("After put()");
+
+        // loop until entry was written
+        logger.info("Configured write delay is = " + writeDelaySeconds);
+        int index = 0;
+        while (true) {
+
+            // get store count
+            AtomicInteger storeCountAtomic = store.getStoreCounts().get(key);
+            int storeCount = storeCountAtomic == null ? 0 : storeCountAtomic.get();
+            logger.info("Store count after " + index + "s = " + storeCount);
+
+            // decide if continue waiting, good, or fail
+            if (storeCount == 0) {
+                // for write delay  1s the entry was written after ~ 1.5s
+                // for write delay  2s the entry was written after ~ 3.5s
+                // for write delay  3s the entry was written after ~ 5.5s
+                // for write delay  4s the entry was written after ~ 7.5s
+                // for write delay  5s the entry was written after ~ 9.5s
+                // for write delay 10s the entry was written after ~19.5s
+                if (index > writeDelaySeconds + 2) {
+                    fail("Entry was not written for " + index + " seconds.");
+                }
+            } else if (storeCount == 1) {
+                // good
+                break;
+            } else {
+                fail("Exactly one write expected, but " + storeCount + " writes were executed!");
+            }
+
+            // sleep and loop
+            Sleep.sleep(1000, false);
+            index++;
+        }
+
+        // shutdown hazelcast instance
+        hcInstance.getLifecycleService().terminate();
+    }
+
+}
+
+package com.nm.test.hazelcast.utils;
+
+import com.hazelcast.core.MapStore;
+import org.apache.log4j.Logger;
+import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
+
+/**
+ * A map store which counts the number of load/store/delete operations.
+ */
+public class RecordingMapStore implements MapStore<String, String> {
+
+    private static final Logger logger = Logger.getLogger(RecordingMapStore.class);
+
+    private final boolean warnOnUpdate;
+
+    private final boolean infoOnLoad;
+
+    private ConcurrentHashMap<String, String> store = new ConcurrentHashMap<String, String>();
+
+    /**
+     * Load counts per key.
+     * <p>
+     * A map from key to its load count.
+     */
+    private ConcurrentHashMap<String, AtomicInteger> loadCounts = new ConcurrentHashMap<String, AtomicInteger>();
+
+    /**
+     * Store counts per key.
+     * <p>
+     * A map from key to its store count.
+     */
+    private ConcurrentHashMap<String, AtomicInteger> storeCounts = new ConcurrentHashMap<String, AtomicInteger>();
+
+    /**
+     * Delete counts per key.
+     * <p>
+     * A map from key to its delete count.
+     */
+    private ConcurrentHashMap<String, AtomicInteger> deleteCounts = new ConcurrentHashMap<String, AtomicInteger>();
+
+    /**
+     * Default constructor.
+     * <p>
+     * This will log a INFO message upon every operation.
+     */
+    public RecordingMapStore() {
+        this.warnOnUpdate = false;
+        this.infoOnLoad = true;
+    }
+
+    /**
+     * Constructor.
+     * 
+     * @param warnOnUpdate if set to true, a WARN message is printed if a single store() call
+     *            resulted in updating a existing value.
+     * @param infoOnLoad if set to true, a INFO message is printed on load().
+     */
+    public RecordingMapStore(boolean warnOnUpdate, boolean infoOnLoad) {
+        this.warnOnUpdate = warnOnUpdate;
+        this.infoOnLoad = infoOnLoad;
+    }
+
+    public ConcurrentHashMap<String, String> getStore() {
+        return store;
+    }
+
+    public ConcurrentHashMap<String, AtomicInteger> getLoadCounts() {
+        return loadCounts;
+    }
+
+    public int getTotalLoadCounts() {
+        return getTotalCount(loadCounts);
+    }
+
+    public ConcurrentHashMap<String, AtomicInteger> getStoreCounts() {
+        return storeCounts;
+    }
+
+    public int getTotalStoreCounts() {
+        return getTotalCount(storeCounts);
+    }
+
+    public ConcurrentHashMap<String, AtomicInteger> getDeleteCounts() {
+        return deleteCounts;
+    }
+
+    public int getTotalDeleteCounts() {
+        return getTotalCount(deleteCounts);
+    }
+
+    @Override
+    public String load(String key) {
+        if (infoOnLoad) {
+            logger.info("load(" + key + ") called.");
+        }
+        String result = store.get(key);
+        incrementCount(loadCounts, key);
+        return result;
+    }
+
+    @Override
+    public Map<String, String> loadAll(Collection<String> keys) {
+        List<String> keysList = new ArrayList<String>(keys);
+        Collections.sort(keysList);
+        logger.info("loadAll(" + keysList + ") called.");
+        Map<String, String> result = new HashMap<String, String>();
+        for (String key : keys) {
+            String value = store.get(key);
+            incrementCount(loadCounts, key);
+            if (value != null) {
+                result.put(key, value);
+            }
+        }
+        return result;
+    }
+
+    @Override
+    public Set<String> loadAllKeys() {
+        logger.info("loadAllKeys() called.");
+        Set<String> result = new HashSet<String>(store.keySet());
+        logger.info("loadAllKeys result = " + result);
+        return result;
+    }
+
+    @Override
+    public void store(String key, String value) {
+        logger.info("store(" + key + ") called.");
+        String valuePrev = store.put(key, value);
+        if (warnOnUpdate && valuePrev != null) {
+            logger.warn("- Unexpected Update (operations reordered?): " + key);
+        }
+        incrementCount(storeCounts, key);
+    }
+
+    @Override
+    public void storeAll(Map<String, String> map) {
+        TreeSet<String> setSorted = new TreeSet<String>(map.keySet());
+        logger.info("storeAll(" + setSorted + ") called.");
+        store.putAll(map);
+        for (String key : map.keySet()) {
+            incrementCount(storeCounts, key);
+        }
+    }
+
+    @Override
+    public void delete(String key) {
+        logger.info("delete(" + key + ") called.");
+        String valuePrev = store.remove(key);
+        incrementCount(deleteCounts, key);
+        if (valuePrev == null) {
+            logger.warn("- Unnecessary delete (operations reordered?): " + key);
+        }
+    }
+
+    @Override
+    public void deleteAll(Collection<String> keys) {
+        List<String> keysList = new ArrayList<String>(keys);
+        Collections.sort(keysList);
+        logger.info("deleteAll(" + keysList + ") called.");
+        for (String key : keys) {
+            String valuePrev = store.remove(key);
+            incrementCount(deleteCounts, key);
+            if (valuePrev == null) {
+                logger.warn("- Unnecessary delete (operations reordered?): " + key);
+            }
+        }
+    }
+
+    // -------------------------------------------------------- private methods
+
+    /**
+     * Increment count for given key in given map.
+     * 
+     * @param counts map to count.
+     * @param key key to increment count for.
+     */
+    private void incrementCount(ConcurrentHashMap<String, AtomicInteger> counts, String key) {
+        AtomicInteger count = counts.get(key);
+        if (count == null) {
+            count = new AtomicInteger(0);
+            AtomicInteger prev = counts.putIfAbsent(key, count);
+            if (prev != null) {
+                count = prev;
+            }
+        }
+        count.incrementAndGet();
+    }
+
+    /**
+     * Get sum of all individual key counts from given map.
+     * 
+     * @param counts the map to build the sum on.
+     * @return total increment count on given map.
+     */
+    private int getTotalCount(ConcurrentHashMap<String, AtomicInteger> counts) {
+        int result = 0;
+        for (AtomicInteger value : counts.values()) {
+            result += value.get();
+        }
+        return result;
+    }
+
+}
+
+package com.nm.test.hazelcast.utils;
+
+import org.apache.log4j.Logger;
+
+public class Sleep {
+
+    private static final Logger logger = Logger.getLogger(Sleep.class);
+
+    /**
+     * Tries to sleep for the desired number of milliseconds, throwing a
+     * RuntimeException in case the thread is interrupted.
+     * 
+     * @param ms Number of milliseconds to sleep
+     * @param log true to log, false otherwise.
+     */
+    public static void sleep(long ms, boolean log) {
+        if (ms <= 0) {
+            return;
+        }
+        try {
+            Thread.sleep(ms);
+            if (log) {
+                logger.info("Slept " + (ms / 1000) + "s.");
+            }
+        } catch (InterruptedException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+}
+```

@@ -1,0 +1,106 @@
+There are several ways to retrieve certain information about the DIT contents even if this part of the DIT is protected by access controls. As it results in an unauthorized disclosure of the server's contents, I consider this a security issue.
+Even if it were not a security issue, it would make sense to discuss how the server should react in the described scenarios.
+
+These issues can be reproduced with the following setup:
+
+./setup -i -n -d 10 -b "dc=example,dc=com" -w secret -q
+
+
+
+The following aci should deny access to the dc=example,dc=com subtree
+
+dn: dc=example,dc=com
+changetype: modify
+add: aci
+aci: (target ="ldap:///dc=example,dc=com")(version 3.0;acl "Deny anonymous access";
+ deny (all)(userdn = "ldap:///anyone");)
+
+
+
+1.) unauthorized disclosure in matchedDN
+Searching with a base object that does not exist discloses information about the presence of superior objects in the matchedDN field.
+
+ldapsearch -h localhost -p 1389 -x -b "cn=this does not exist,ou=people,dc=example,dc=com" -LLL
+No such object (32)
+Matched DN: ou=people,dc=example,dc=com
+Additional information: The search base entry 'cn=this does not exist,ou=people,dc=example,dc=com' does not exist
+
+
+
+RFC4511, section 6 ("Security Considerations") describes the following about this behavior:
+
+   The matchedDN and diagnosticMessage fields, as well as some
+   resultCode values (e.g., attributeOrValueExists and
+   entryAlreadyExists), could disclose the presence or absence of
+   specific data in the directory that is subject to access and other
+   administrative controls.  Server implementations should restrict
+   access to protected information equally under both normal and error
+   conditions.
+
+
+
+Suggestion: Introduce a server wide "disclose-on-error" setting (true/false) which controls this behavior.
+In this case, it should be verified, if the DN disclosed in the matchedDN field is subject to any access control.
+
+2.) unauthorized disclosure in return code
+The presence of specific objects is disclosed by error code 50 when trying to delete the entry, whereas non-existent entries result in error 32.
+
+
+ldapdelete -h localhost -p 1389 -x "uid=user.9,ou=people,dc=example,dc=com"
+ldap_delete: Insufficient access (50)
+  additional info: The entry uid=user.9,ou=people,dc=example,dc=com cannot be deleted due to insufficient access rights
+
+
+
+Suggestion: Introduce a server wide "disclose-on-error" setting (true/false) which controls this behavior.
+In this case, the server should always return result code 32 if the user is not allowed to see this entry.
+
+As mentioned in RFC4511, Appendix A.:
+
+   The descriptions provided here do not fully account for result code
+   substitutions used to prevent unauthorized disclosures (such as
+   substitution of noSuchObject for insufficientAccessRights, or
+   invalidCredentials for insufficientAccessRights).
+
+
+
+3.) unauthorized disclosure about attribute values
+This is a minimal variation of issue 2.). Trying to add an attribute value which already exists reveals the information that this value is already there (return code 20) even if the user is not allowed to see the entry/attribute.
+
+
+ldapmodify -h localhost -p 1389 -x
+dn: uid=user.9,ou=people,dc=example,dc=com
+changetype: modify
+add: employeenumber
+employeenumber: 9
+
+modifying entry "uid=user.9,ou=people,dc=example,dc=com"
+ldap_modify: Type or value exists (20)
+  additional info: Entry uid=user.9,ou=people,dc=example,dc=com cannot be modified because it would have resulted in one or more duplicate values for attribute employeenumber:  9
+
+
+
+Suggestion: Introduce a server wide "disclose-on-error" setting (true/false) which controls this behavior.
+In this case, the server should always return result code 32 if the user is not allowed to see this entry. If the user is allowed to read the entry but not the attribute, result code 50 would be more appropriate.
+
+4.) unauthorized disclosure via debugsearchindex
+Using the "debugsearchindex" feature, it is possible to determine the number of entries within a specific subtree.
+
+
+ldapsearch -LLL -h localhost -p 1389 -x -b "ou=people,dc=example,dc=com"  debugsearchindex
+dn: cn=debugsearch
+debugsearchindex: filter=(objectClass=*)[NOT-INDEXED] scope=wholeSubtree[COUNT
+ :11] final=[COUNT:11]
+
+
+
+Additionally, we can also determine how many entries match a specific (substring) filter even if we do not have read access to the entries/attributes.
+
+
+ldapsearch -LLL -h localhost -p 1389 -x '(cn=a*)' debugsearchindex
+dn: cn=debugsearch
+debugsearchindex: filter=(cn=a*)[INDEX:cn.equality][COUNT:10] final=[COUNT:10]
+
+
+
+Suggestion: Provide an ability to control who can use the debugsearchindex feature (e.g. by an additional privilege).

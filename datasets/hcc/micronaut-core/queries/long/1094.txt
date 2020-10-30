@@ -1,0 +1,89 @@
+Micronaut returns a a 415 Unsupported Media Type on GET requests if the client provides the content type header and it doesn't match the acceptable content types for the endpoint. I believe this is a bug. The content type in a request should only be checked for PUT and POST requests, according to MDN:
+[Content-Type Header doco](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Content-Type)
+
+It makes sense to ignore the content type on GET's because the client isn't sending content.
+
+```
+package my.controller
+
+import io.micronaut.http.HttpResponse
+import io.micronaut.http.annotation.Controller
+import io.micronaut.http.annotation.Get
+
+@Controller
+class MyController() {
+
+    @Get("/blah")
+    fun getBlah(): HttpResponse<*> {
+        return HttpResponse.ok("stuff")
+    }
+}
+```
+
+Here's what the client sees:
+```
+curl -v http://localhost:8080/blah -H "Content-Type: text/plain"
+*   Trying ::1...
+* TCP_NODELAY set
+* Connected to localhost (::1) port 8080 (#0)
+> GET /blah HTTP/1.1
+> Host: localhost:8080
+> User-Agent: curl/7.54.0
+> Accept: */*
+> Content-Type: text/plain
+> 
+< HTTP/1.1 415 Unsupported Media Type
+< Date: Wed, 9 Jan 2019 11:33:17 GMT
+< transfer-encoding: chunked
+< connection: close
+< 
+* Closing connection 0
+```
+
+On a related note, if the client sends an empty content type Micronaut throws a 500. Not sure if this is ok behavior:
+```
+curl -v http://localhost:8080/blah -H "Content-Type;"           
+*   Trying ::1...
+* TCP_NODELAY set
+* Connected to localhost (::1) port 8080 (#0)
+> GET /blah HTTP/1.1
+> Host: localhost:8080
+> User-Agent: curl/7.54.0
+> Accept: */*
+> Content-Type:
+> 
+< HTTP/1.1 500 Internal Server Error
+< Date: Wed, 9 Jan 2019 11:34:27 GMT
+< content-type: application/json
+< content-length: 56
+< connection: close
+< 
+* Closing connection 0
+{"message":"Internal Server Error: Invalid mime type: "}
+```
+
+Stacktrace caused by empty content type:
+```
+java.lang.IllegalArgumentException: Invalid mime type: 
+	at io.micronaut.http.MediaType.<init>(MediaType.java:361)
+	at io.micronaut.http.MediaType.<init>(MediaType.java:305)
+	at java.util.Optional.map(Optional.java:215)
+	at io.micronaut.http.HttpHeaders.contentType(HttpHeaders.java:487)
+	at io.micronaut.http.HttpMessage.getContentType(HttpMessage.java:120)
+	at io.micronaut.http.netty.AbstractNettyHttpRequest.getContentType(AbstractNettyHttpRequest.java:95)
+	at io.micronaut.http.util.HttpUtil.resolveCharset(HttpUtil.java:61)
+	at io.micronaut.http.HttpMessage.getCharacterEncoding(HttpMessage.java:66)
+	at io.micronaut.http.netty.AbstractNettyHttpRequest.getCharacterEncoding(AbstractNettyHttpRequest.java:110)
+	at io.micronaut.http.netty.AbstractNettyHttpRequest.createDecoder(AbstractNettyHttpRequest.java:169)
+	at io.micronaut.http.netty.AbstractNettyHttpRequest.decodePath(AbstractNettyHttpRequest.java:174)
+	at io.micronaut.http.netty.AbstractNettyHttpRequest.getPath(AbstractNettyHttpRequest.java:150)
+	at io.micronaut.http.server.netty.RoutingInBoundHandler.channelRead0(RoutingInBoundHandler.java:351)
+<snip>
+```
+
+
+### Environment Information
+
+- **Operating System**: MacOS High Sierra
+- **Micronaut Version:** 1.0.3
+- **JDK Version:** 1.8.0_121

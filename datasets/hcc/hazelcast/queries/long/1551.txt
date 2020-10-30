@@ -1,0 +1,137 @@
+Hello,
+
+More details about this issue here: https://groups.google.com/forum/#!msg/hazelcast/snHGeHaQmDU/t7AnZx9JdxwJ
+- Test code to reproduce:
+
+``` java
+package com.hazelcast.map.mapstore;
+
+import static org.junit.Assert.assertTrue;
+
+import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.atomic.AtomicInteger;
+
+import org.apache.log4j.Logger;
+import org.junit.Test;
+import org.junit.experimental.categories.Category;
+import org.junit.runner.RunWith;
+
+import com.hazelcast.config.Config;
+import com.hazelcast.config.MapStoreConfig;
+import com.hazelcast.core.HazelcastInstance;
+import com.hazelcast.core.IMap;
+import com.hazelcast.map.mapstore.MapStoreTest.SimpleMapStore;
+import com.hazelcast.query.SampleObjects.Employee;
+import com.hazelcast.test.HazelcastJUnit4ClassRunner;
+import com.hazelcast.test.HazelcastTestSupport;
+import com.hazelcast.test.TestHazelcastInstanceFactory;
+import com.hazelcast.test.annotation.ParallelTest;
+
+@RunWith(HazelcastJUnit4ClassRunner.class)
+@Category(ParallelTest.class)
+public class BigMapStoreTest extends HazelcastTestSupport {
+
+    private static final Logger LOG = Logger.getLogger(BigMapStoreTest.class);
+
+    @Test   
+    public void testTwoMembersWriteBehind() throws Exception {
+
+        int size = 400000;
+
+        ThreadSleepTestMapStore tstms = new ThreadSleepTestMapStore(size);
+
+        Config config = new Config();
+        config.getMapConfig("map")
+                .setMapStoreConfig(new MapStoreConfig()
+                        .setWriteDelaySeconds(30)
+                        .setImplementation(tstms));
+
+        TestHazelcastInstanceFactory nodeFactory = createHazelcastInstanceFactory(2);
+
+        HazelcastInstance h1 = nodeFactory.newHazelcastInstance(config);
+        HazelcastInstance h2 = nodeFactory.newHazelcastInstance(config);
+//        HazelcastInstance h3 = nodeFactory.newHazelcastInstance(config);
+
+        IMap map = h1.getMap("map");
+        for (int i = 0; i < size; i++) {
+            map.put(i, new Employee("joe", i, true, 100.00));
+
+        }
+
+        LOG.info("done loading map; waiting MapStore write delay...");
+
+        tstms.latchStoreAll.await();
+
+        assertTrue(String.valueOf(tstms.storeAllCallCount.get()), tstms.storeAllCallCount.get() == size);
+        assertTrue(map.size() == size);
+
+    }
+
+
+    public static class ThreadSleepTestMapStore extends SimpleMapStore {
+
+        final AtomicInteger storeAllCallCount = new AtomicInteger();
+        final CountDownLatch latchStoreAll;
+
+        public ThreadSleepTestMapStore(int size) {
+            latchStoreAll = new CountDownLatch(size);
+
+        }
+
+        public void storeAll(Map map) {
+            storeAllCallCount.addAndGet(map.size());
+
+            for (int i = 0; i < map.size(); i++) {
+                latchStoreAll.countDown();
+
+            }
+
+            try {
+                long d = 200;
+
+                LOG.info("storeAll.size() = " + map.size() + "; delaying " + d + "ms to simulate database...");
+                Thread.sleep(d);
+
+            } catch (InterruptedException e) {
+                // TODO Auto-generated catch block
+                e.printStackTrace();
+            }
+
+        }
+
+    }
+
+}
+
+```
+- Log:
+
+```
+12:49:24,914  WARN [ClusterService] - [127.0.0.1]:5002 [dev] Master node has timed out its heartbeat and will be removed
+12:49:24,914  INFO [BigMapStoreTest] - storeAll.size() = 2335; delaying 200ms to simulate database...
+12:49:24,914  INFO [ClusterService] - [127.0.0.1]:5002 [dev] Master Address[127.0.0.1]:5001 left the cluster. Assigning new master Member [127.0.0.1]:5002 this
+12:49:24,914 DEBUG [Node] - [127.0.0.1]:5002 [dev] ** setting master address to Address[127.0.0.1]:5002
+12:49:24,914 DEBUG [ClusterService] - [127.0.0.1]:5002 [dev] Now Master Address[127.0.0.1]:5002
+12:49:24,914  INFO [ClusterService] - [127.0.0.1]:5002 [dev] Removing Member [127.0.0.1]:5001
+12:49:24,928  INFO [BigMapStoreTest] - storeAll.size() = 6; delaying 200ms to simulate database...
+12:49:24,930  WARN [ClusterService] - [127.0.0.1]:5001 [dev] Added Address[127.0.0.1]:5002 to list of dead addresses because of timeout since last read
+12:49:24,931 DEBUG [ClusterService] - [127.0.0.1]:5001 [dev] No heartbeat should remove Address[127.0.0.1]:5002
+12:49:24,931  INFO [ClusterService] - [127.0.0.1]:5001 [dev] Removing Member [127.0.0.1]:5002
+12:49:24,954  WARN [PartitionService] - [127.0.0.1]:5002 [dev] This is the master node and received a PartitionRuntimeState from Address[127.0.0.1]:5001. Ignoring incoming state! 
+12:49:24,970 DEBUG [Backup] - [127.0.0.1]:5002 [dev] com.hazelcast.spi.exception.CallerNotMemberException: Not Member! caller:Address[127.0.0.1]:5001, partitionId: 158, operation: com.hazelcast.spi.impl.Backup, service: hz:impl:mapService
+12:49:24,974  INFO [BigMapStoreTest] - storeAll.size() = 4383; delaying 200ms to simulate database...
+12:49:24,982 DEBUG [ClusterService] - [127.0.0.1]:5001 [dev] Member [127.0.0.1]:5002 is dead. Sending remove to all other members.
+12:49:24,982  INFO [ClusterService] - [127.0.0.1]:5001 [dev] 
+
+Members [1] {
+    Member [127.0.0.1]:5001 this
+}
+
+12:49:24,982 DEBUG [ClusterService] - [127.0.0.1]:5002 [dev] Member [127.0.0.1]:5001 is dead. Sending remove to all other members.
+12:49:24,982  INFO [ClusterService] - [127.0.0.1]:5002 [dev] 
+
+Members [1] {
+    Member [127.0.0.1]:5002 this
+}
+```

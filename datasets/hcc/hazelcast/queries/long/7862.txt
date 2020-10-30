@@ -1,0 +1,272 @@
+To reproduce the problem is enough to start few Hazlecast instances that do nothing, one instance of HazlecastClient that just register a ReliableMessageListener on a reliable topic, and after to shutdown randomly some of the cluster members. It seems that is more easy to reproduce the problem if the cluster members are closed in reverse opening order.
+
+```
+  public static void main(String[] args) throws InterruptedException {
+    Hazelcast.newHazelcastInstance();
+  }
+
+```
+
+```
+  public static void main(String[] args) throws InterruptedException {
+    HazelcastInstance hz = HazelcastClient.newHazelcastClient();
+
+    ITopic<Long> topic = hz.getReliableTopic("sometopic");
+    topic.addMessageListener(new MessageListenerImpl());
+  }
+
+  private static class MessageListenerImpl implements ReliableMessageListener<Long> {
+    public void onMessage(Message<Long> m) {
+    }
+    public boolean isLossTolerant() {
+      return false;
+    }
+    public boolean isTerminal(Throwable arg0) {
+      return false;
+    }
+    public long retrieveInitialSequence() {
+      return 0;
+    }
+    public void storeSequence(long arg0) {
+    }
+  }
+```
+
+```
+ Mar 29, 2016 11:02:52 AM com.hazelcast.client.config.XmlClientConfigLocator
+INFO: Loading 'hazelcast-client-default.xml' from classpath.
+Mar 29, 2016 11:02:53 AM com.hazelcast.core.LifecycleService
+INFO: HazelcastClient[hz.client_0_dev][3.6] is STARTING
+Mar 29, 2016 11:02:53 AM com.hazelcast.core.LifecycleService
+INFO: HazelcastClient[hz.client_0_dev][3.6] is STARTED
+Mar 29, 2016 11:02:53 AM com.hazelcast.core.LifecycleService
+INFO: HazelcastClient[hz.client_0_dev][3.6] is CLIENT_CONNECTED
+Mar 29, 2016 11:02:53 AM com.hazelcast.client.spi.impl.ClientMembershipListener
+INFO: 
+
+Members [2] {
+    Member [192.168.190.190]:5701
+    Member [192.168.190.190]:5702
+}
+
+Mar 29, 2016 11:03:01 AM com.hazelcast.client.connection.nio.ClientConnection
+WARNING: Connection [/192.168.190.190:5702] lost. Reason: Socket explicitly closed
+Mar 29, 2016 11:03:01 AM com.hazelcast.client.connection.nio.ClientReadHandler
+WARNING: hz.client_0_dev.ClientInSelector Closing socket to endpoint Address[192.168.190.190]:5702, Cause:java.io.IOException: An existing connection was forcibly closed by the remote host
+Mar 29, 2016 11:03:01 AM com.hazelcast.client.proxy.ClientReliableTopicProxy
+WARNING: Terminating MessageListener SubscribedMember$MessageListenerImpl@6387b618 on topic: sometopic. Reason: Unhandled exception, message: com.hazelcast.spi.exception.TargetDisconnectedException: Target[Address[192.168.190.190]:5702] disconnected.
+java.util.concurrent.ExecutionException: com.hazelcast.spi.exception.TargetDisconnectedException: Target[Address[192.168.190.190]:5702] disconnected.
+    at com.hazelcast.client.spi.impl.ClientInvocationFuture.resolveResponse(ClientInvocationFuture.java:146)
+    at com.hazelcast.client.spi.impl.ClientInvocationFuture.access$000(ClientInvocationFuture.java:38)
+    at com.hazelcast.client.spi.impl.ClientInvocationFuture$1.run(ClientInvocationFuture.java:178)
+    at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1142)
+    at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:617)
+    at java.lang.Thread.run(Thread.java:745)
+    at com.hazelcast.util.executor.HazelcastManagedThread.executeRun(HazelcastManagedThread.java:76)
+    at com.hazelcast.util.executor.HazelcastManagedThread.run(HazelcastManagedThread.java:92)
+Caused by: com.hazelcast.spi.exception.TargetDisconnectedException: Target[Address[192.168.190.190]:5702] disconnected.
+    at com.hazelcast.client.spi.impl.ClientInvocationServiceSupport$CleanResourcesTask$1.createNew(ClientInvocationServiceSupport.java:230)
+    at com.hazelcast.client.spi.impl.ClientInvocationServiceSupport$CleanResourcesTask$1.createNew(ClientInvocationServiceSupport.java:227)
+    at com.hazelcast.client.spi.impl.ClientInvocationServiceSupport.cleanResources(ClientInvocationServiceSupport.java:174)
+    at com.hazelcast.client.spi.impl.ClientSmartInvocationServiceImpl.cleanResources(ClientSmartInvocationServiceImpl.java:31)
+    at com.hazelcast.client.spi.impl.ClientInvocationServiceSupport$CleanResourcesTask.run(ClientInvocationServiceSupport.java:227)
+    at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1142)
+    at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:617)
+    at java.lang.Thread.run(Thread.java:745)
+    at com.hazelcast.util.executor.HazelcastManagedThread.executeRun(HazelcastManagedThread.java:76)
+    at com.hazelcast.util.executor.HazelcastManagedThread.run(HazelcastManagedThread.java:92)
+    at ------ End remote and begin local stack-trace ------.(Unknown Source)
+    at com.hazelcast.client.spi.impl.ClientInvocationFuture.resolveResponse(ClientInvocationFuture.java:133)
+    ... 7 more
+
+Mar 29, 2016 11:03:16 AM com.hazelcast.client.spi.impl.ClientMembershipListener
+INFO: 
+
+Members [1] {
+    Member [192.168.190.190]:5701
+}
+```
+
+Enabling redo operations on the client,
+
+```
+  public static void main(String[] args) throws InterruptedException {
+    ClientConfig config = new ClientConfig();
+    config.getNetworkConfig().setRedoOperation(true);
+    HazelcastInstance hz = HazelcastClient.newHazelcastClient(config);
+
+    ITopic<Long> topic = hz.getReliableTopic("sometopic");
+    topic.addMessageListener(new MessageListenerImpl());
+  }
+
+  private static class MessageListenerImpl implements ReliableMessageListener<Long> {
+    ...
+  }
+```
+
+it doesn't help too much. It just makes the problem more difficult to reproduce.
+
+```
+ Mar 29, 2016 2:58:26 PM com.hazelcast.core.LifecycleService
+INFO: HazelcastClient[hz.client_0_dev][3.6.2] is STARTING
+Mar 29, 2016 2:58:26 PM com.hazelcast.core.LifecycleService
+INFO: HazelcastClient[hz.client_0_dev][3.6.2] is STARTED
+Mar 29, 2016 2:58:27 PM com.hazelcast.core.LifecycleService
+INFO: HazelcastClient[hz.client_0_dev][3.6.2] is CLIENT_CONNECTED
+Mar 29, 2016 2:58:27 PM com.hazelcast.client.spi.impl.ClientMembershipListener
+INFO: 
+
+Members [3] {
+    Member [192.168.190.190]:5702
+    Member [192.168.190.190]:5703
+    Member [192.168.190.190]:5701
+}
+
+Mar 29, 2016 2:58:44 PM com.hazelcast.client.connection.nio.ClientConnection
+WARNING: Connection [/192.168.190.190:5703] lost. Reason: java.io.IOException[An existing connection was forcibly closed by the remote host]
+Mar 29, 2016 2:58:47 PM com.hazelcast.client.connection.nio.ClientConnection
+WARNING: Connection [/127.0.0.1:5702] lost. Reason: java.io.IOException[An existing connection was forcibly closed by the remote host]
+Mar 29, 2016 2:58:47 PM com.hazelcast.core.LifecycleService
+INFO: HazelcastClient[hz.client_0_dev][3.6.2] is CLIENT_DISCONNECTED
+Mar 29, 2016 2:58:49 PM com.hazelcast.core.LifecycleService
+INFO: HazelcastClient[hz.client_0_dev][3.6.2] is CLIENT_CONNECTED
+Mar 29, 2016 2:58:49 PM com.hazelcast.client.spi.impl.ClientMembershipListener
+INFO: 
+
+Members [3] {
+    Member [192.168.190.190]:5702
+    Member [192.168.190.190]:5703
+    Member [192.168.190.190]:5701
+}
+
+Mar 29, 2016 2:58:50 PM com.hazelcast.client.spi.impl.ClientMembershipListener
+INFO: 
+
+Members [2] {
+    Member [192.168.190.190]:5702
+    Member [192.168.190.190]:5701
+}
+
+Mar 29, 2016 2:58:57 PM com.hazelcast.client.spi.impl.ClientMembershipListener
+INFO: 
+
+Members [1] {
+    Member [192.168.190.190]:5701
+}
+
+Mar 29, 2016 2:59:29 PM com.hazelcast.client.spi.impl.ClientMembershipListener
+INFO: 
+
+Members [2] {
+    Member [192.168.190.190]:5701
+    Member [192.168.190.190]:5702
+}
+
+Mar 29, 2016 2:59:29 PM com.hazelcast.client.spi.impl.ClientMembershipListener
+INFO: 
+
+Members [3] {
+    Member [192.168.190.190]:5701
+    Member [192.168.190.190]:5702
+    Member [192.168.190.190]:5703
+}
+
+Mar 29, 2016 2:59:29 PM com.hazelcast.client.spi.impl.ClientMembershipListener
+INFO: 
+
+Members [4] {
+    Member [192.168.190.190]:5701
+    Member [192.168.190.190]:5702
+    Member [192.168.190.190]:5703
+    Member [192.168.190.190]:5704
+}
+
+Mar 29, 2016 2:59:51 PM com.hazelcast.client.connection.nio.ClientConnection
+WARNING: Connection [/192.168.190.190:5701] lost. Reason: java.io.IOException[An existing connection was forcibly closed by the remote host]
+Mar 29, 2016 2:59:51 PM com.hazelcast.core.LifecycleService
+INFO: HazelcastClient[hz.client_0_dev][3.6.2] is CLIENT_DISCONNECTED
+Mar 29, 2016 2:59:52 PM com.hazelcast.core.LifecycleService
+INFO: HazelcastClient[hz.client_0_dev][3.6.2] is CLIENT_CONNECTED
+Mar 29, 2016 2:59:52 PM com.hazelcast.client.spi.impl.ClientMembershipListener
+INFO: 
+
+Members [4] {
+    Member [192.168.190.190]:5701
+    Member [192.168.190.190]:5702
+    Member [192.168.190.190]:5703
+    Member [192.168.190.190]:5704
+}
+
+Mar 29, 2016 3:00:00 PM com.hazelcast.client.spi.impl.ClientMembershipListener
+INFO: 
+
+Members [3] {
+    Member [192.168.190.190]:5702
+    Member [192.168.190.190]:5703
+    Member [192.168.190.190]:5704
+}
+
+Mar 29, 2016 3:01:05 PM com.hazelcast.client.connection.nio.ClientConnection
+WARNING: Connection [/127.0.0.1:5702] lost. Reason: java.io.IOException[An existing connection was forcibly closed by the remote host]
+Mar 29, 2016 3:01:05 PM com.hazelcast.core.LifecycleService
+INFO: HazelcastClient[hz.client_0_dev][3.6.2] is CLIENT_DISCONNECTED
+Mar 29, 2016 3:01:05 PM com.hazelcast.core.LifecycleService
+INFO: HazelcastClient[hz.client_0_dev][3.6.2] is CLIENT_CONNECTED
+Mar 29, 2016 3:01:05 PM com.hazelcast.client.spi.impl.ClientMembershipListener
+INFO: 
+
+Members [3] {
+    Member [192.168.190.190]:5702
+    Member [192.168.190.190]:5703
+    Member [192.168.190.190]:5704
+}
+
+Mar 29, 2016 3:01:12 PM com.hazelcast.client.spi.impl.ClientMembershipListener
+INFO: 
+
+Members [2] {
+    Member [192.168.190.190]:5703
+    Member [192.168.190.190]:5704
+}
+
+Mar 29, 2016 3:01:30 PM com.hazelcast.client.connection.nio.ClientConnection
+WARNING: Connection [/192.168.190.190:5704] lost. Reason: java.io.IOException[An existing connection was forcibly closed by the remote host]
+Mar 29, 2016 3:01:31 PM com.hazelcast.client.proxy.ClientReliableTopicProxy
+WARNING: Terminating MessageListener SubscribedMember$MessageListenerImpl@6b5f57c2 on topic: sometopic. Reason: Unhandled exception, message: com.hazelcast.spi.exception.TargetDisconnectedException: Target[Address[192.168.190.190]:5704] disconnected.
+java.util.concurrent.ExecutionException: com.hazelcast.spi.exception.TargetDisconnectedException: Target[Address[192.168.190.190]:5704] disconnected.
+    at com.hazelcast.client.spi.impl.ClientInvocationFuture.resolveResponse(ClientInvocationFuture.java:141)
+    at com.hazelcast.client.spi.impl.ClientInvocationFuture.access$000(ClientInvocationFuture.java:37)
+    at com.hazelcast.client.spi.impl.ClientInvocationFuture$1.run(ClientInvocationFuture.java:173)
+    at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1142)
+    at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:617)
+    at java.lang.Thread.run(Thread.java:745)
+    at com.hazelcast.util.executor.HazelcastManagedThread.executeRun(HazelcastManagedThread.java:76)
+    at com.hazelcast.util.executor.HazelcastManagedThread.run(HazelcastManagedThread.java:92)
+Caused by: com.hazelcast.spi.exception.TargetDisconnectedException: Target[Address[192.168.190.190]:5704] disconnected.
+    at com.hazelcast.client.spi.impl.ClientInvocationServiceSupport$CleanResourcesTask.run(ClientInvocationServiceSupport.java:209)
+    at java.util.concurrent.Executors$RunnableAdapter.call(Executors.java:511)
+    at java.util.concurrent.FutureTask.runAndReset(FutureTask.java:308)
+    at java.util.concurrent.ScheduledThreadPoolExecutor$ScheduledFutureTask.access$301(ScheduledThreadPoolExecutor.java:180)
+    at java.util.concurrent.ScheduledThreadPoolExecutor$ScheduledFutureTask.run(ScheduledThreadPoolExecutor.java:294)
+    at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1142)
+    at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:617)
+    at java.lang.Thread.run(Thread.java:745)
+    at com.hazelcast.util.executor.HazelcastManagedThread.executeRun(HazelcastManagedThread.java:76)
+    at com.hazelcast.util.executor.HazelcastManagedThread.run(HazelcastManagedThread.java:92)
+    at ------ End remote and begin local stack-trace ------.(Unknown Source)
+    at com.hazelcast.client.spi.impl.ClientInvocationFuture.resolveResponse(ClientInvocationFuture.java:128)
+    ... 7 more
+
+Mar 29, 2016 3:01:42 PM com.hazelcast.client.spi.impl.ClientMembershipListener
+INFO: 
+
+Members [1] {
+    Member [192.168.190.190]:5703
+}
+
+```
+
+Notes: 
+- Test environment: Hazelcast 3.6; Java 1.8.0_45; Windows 10;
+- The problem can be reproduced also when all cluster members are publishing messages on the reliable topic and client consumes them;
+- The problem can be reproduced also with Hazelcast 3.6.2;

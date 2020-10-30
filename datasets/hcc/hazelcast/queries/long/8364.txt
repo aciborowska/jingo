@@ -1,0 +1,34 @@
+In `EntryOperation`, method `nullifyOldValueIfNecessary()` defensively clears `oldValue` _just in case_ it's the same objects as the new value (`response`). This not only breaks the contract and makes the behavior different depending on the chosen in-memory-format, but it's also impossible to recover from, since the old value is gone, even if not using the same object (e.g. using immutable objects).
+
+On the other hand, if someone is using mutable objects and passing the same reference AND they also need both old and new values in the EntryEvent, then it's simply a matter of them _not_ doing that.
+The current implementation offers no workaround, since the old value is _gone_.
+
+Furthermore, the old value is removed for _anyting_ not `REMOVED`, including `EVICTED`, `EXPIRED`, `INVALIDATION`, `EVICT_ALL`, and `CLEAR_ALL`. That doesn't seem right either.
+
+I think that method should be either removed entirely, or at least check if it's actually the same instance, e.g.:
+
+``` java
+// Semi pseudo code
+public class EntryOperation {
+    // New field:
+    private boolean isOldAndNewSameRef;
+
+    // Somewhere after calling "private Data process(Map.Entry entry)",
+    // possibly in "public void run()"
+    {
+        isOldAndNewSameRef = oldValue != null && oldValue == entry.getValue();
+    }
+
+    // Now, we can null only if identical reference:
+    private void nullifyOldValueIfNecessary() {
+        final MapConfig mapConfig = mapContainer.getMapConfig();
+        final InMemoryFormat format = mapConfig.getInMemoryFormat();
+        if (format == InMemoryFormat.OBJECT && isOldAndNewSameRef) {
+            oldValue = null;
+        }
+    }
+
+}
+```
+
+I still think the proper thing would be to remove `nullifyOldValueIfNecessary` entirely and keep the contract, but if we _must_ remove the old value, at least only do it when it's actually needed.

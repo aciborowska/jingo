@@ -1,0 +1,95 @@
+Consider the following code:
+
+For "`server`":
+
+``` java
+public class WorkersServer {
+    public static void main(String[] args) throws InterruptedException {
+        Config config = new Config();
+        config.getNetworkConfig().setPort(5900);
+        config.getNetworkConfig().setPortAutoIncrement(true);
+
+        NetworkConfig network = config.getNetworkConfig();
+        JoinConfig join = network.getJoin();
+        join.getMulticastConfig().setEnabled(false);
+        join.getTcpIpConfig()
+                .addMember(args[0] + ":5900")
+                .addMember(args[0] + ":5901")
+                .setEnabled(true);
+
+        HazelcastInstance hz = Hazelcast.newHazelcastInstance(config);
+
+        IMap<Object, Object> map1 = hz.getMap("map1");
+        map1.putIfAbsent("key1", "key1");
+
+        System.out.println("Started.");
+
+        while (true)
+            Thread.sleep(1000);
+    }
+}
+```
+
+And for `client`:
+
+``` java
+public class WorkersClient {
+    public static void main(String[] args) throws InterruptedException {
+        ClientConfig config = new ClientConfig();
+        config.getNetworkConfig().addAddress(args[0] + ":5900", args[0] + ":5901");
+
+        HazelcastInstance hz = HazelcastClient.newHazelcastClient(config);
+
+        IMap<Object, Object> map1 = hz.getMap("map1");
+
+        boolean locked = false;
+        while (true) {
+            if (!locked)
+                if (map1.tryLock("key1")) {
+                    locked = true;
+                    System.out.println("Locked.");
+                } else {
+                    System.out.println("Failed.");
+                }
+            Thread.sleep(1000);
+        }
+    }
+}
+```
+
+I execute two instances of `server` and one instance of `client` on `machineA` and one client on `machineB`. Everything works, when I turn off either of `client`s (using `Ctrl-C`) another one immediately acquires the lock. But when the lock is acquired by `client` on `machineB` and I just unplug network cable from it, lock remains locked for too long so another client fails to acquire it for more than 3 hours (more than any timeouts that can be changed according to the documentation, or I missed something ? ).
+
+Finally one of the servers decides that client is dead and frees the lock, but I managed to observe this behaviour only by leaving servers and client on `machineA` overnight.
+
+Here is log of the server that client was connected to, when it finally detected disconnect
+
+```
+...... the same message for more than three hours (test started ~ at 0:40) .....
+Apr 14, 2015 3:54:48 AM com.hazelcast.client.impl.ClientHeartbeatMonitor
+WARNING: Client heartbeat is timed out , closing connection to Connection [0.0.0.0/0.0.0.0:5901 -> null], endpoint=Address[192.168.29.54]:50499, live=false, type=JAVA_CLIENT
+Apr 14, 2015 3:54:58 AM com.hazelcast.client.impl.ClientHeartbeatMonitor
+WARNING: Client heartbeat is timed out , closing connection to Connection [0.0.0.0/0.0.0.0:5901 -> null], endpoint=Address[192.168.29.54]:50499, live=false, type=JAVA_CLIENT
+Apr 14, 2015 3:55:08 AM com.hazelcast.client.impl.ClientHeartbeatMonitor
+WARNING: Client heartbeat is timed out , closing connection to Connection [0.0.0.0/0.0.0.0:5901 -> null], endpoint=Address[192.168.29.54]:50499, live=false, type=JAVA_CLIENT
+Apr 14, 2015 3:55:18 AM com.hazelcast.client.impl.ClientHeartbeatMonitor
+WARNING: Client heartbeat is timed out , closing connection to Connection [0.0.0.0/0.0.0.0:5901 -> null], endpoint=Address[192.168.29.54]:50499, live=false, type=JAVA_CLIENT
+Apr 14, 2015 3:55:28 AM com.hazelcast.client.impl.ClientHeartbeatMonitor
+WARNING: Client heartbeat is timed out , closing connection to Connection [0.0.0.0/0.0.0.0:5901 -> null], endpoint=Address[192.168.29.54]:50499, live=false, type=JAVA_CLIENT
+Apr 14, 2015 3:55:33 AM com.hazelcast.nio.tcp.TcpIpConnection
+INFO: [192.168.29.50]:5901 [dev] [3.4.2] Connection [Address[192.168.29.54]:50498] lost. Reason: java.io.IOException[Operation timed out]
+Apr 14, 2015 3:55:33 AM com.hazelcast.nio.tcp.ReadHandler
+WARNING: [192.168.29.50]:5901 [dev] [3.4.2] hz._hzInstance_1_dev.IO.thread-in-1 Closing socket to endpoint Address[192.168.29.54]:50498, Cause:java.io.IOException: Operation timed out
+Apr 14, 2015 3:55:33 AM com.hazelcast.client.ClientEndpointManager
+INFO: [192.168.29.50]:5901 [dev] [3.4.2] Destroying ClientEndpoint{conn=Connection [0.0.0.0/0.0.0.0:5901 -> 192.168.29.54/192.168.29.54:50498], endpoint=Address[192.168.29.54]:50498, live=false, type=JAVA_CLIENT, principal='ClientPrincipal{uuid='1fd77367-a793-466c-9459-fc5804c2917e', ownerUuid='48a818c6-57b3-45fe-b06e-293d60963b43'}', firstConnection=true, authenticated=true}
+Apr 14, 2015 3:55:33 AM com.hazelcast.client.ClientEndpointManager
+INFO: [192.168.29.50]:5901 [dev] [3.4.2] Destroying ClientEndpoint{conn=Connection [0.0.0.0/0.0.0.0:5901 -> null], endpoint=Address[192.168.29.54]:50499, live=false, type=JAVA_CLIENT, principal='ClientPrincipal{uuid='1fd77367-a793-466c-9459-fc5804c2917e', ownerUuid='48a818c6-57b3-45fe-b06e-293d60963b43'}', firstConnection=false, authenticated=true}
+```
+
+I suspect that this issue could have something to do with OS or JVM internal timeouts in NIO...
+
+Here is my test setup:
+
+`machineA` = Mac OS X 10.10.2 , Oracle JDK 8u40 x64, connected to LAN using WiFi
+`machineB` = CentOS 7 , Oracle JDK 8u40 x64, connected to LAN using Ethernet cable
+
+P.S. The same behaviour was observed using two Macs with the same Oracle JDK connected over WiFi...

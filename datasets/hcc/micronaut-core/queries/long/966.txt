@@ -1,0 +1,114 @@
+When using GORM 6.1.8/Micronaut 1.0.0 with an Entity and second-level caching enabled, Hibernate will not startup.  Hibernate gives a **NoCacheRegionFactoryAvailableException** (full stack below):
+
+I think that long-term, a production app needs the second level cache for a limited number of domain classes.  This looks like the configuration is not making to the Hibernate layer.
+
+I created an Entity class (Role) with this mapping value (See Example Application below for whole class):
+
+    static mapping = {
+      cache true
+    }
+
+If I change the mapping to 'cache false', Hibernate starts up fine.
+
+The **application.yml** has this hibernate entry:
+
+    hibernate:
+      hbm2ddl:
+        auto: update
+      cache:
+        queries: false
+        use_second_level_cache: true
+        use_query_cache: false
+        region.factory_class: org.hibernate.cache.ehcache.SingletonEhCacheRegionFactory
+
+
+
+After a lot of debug time, I found that the micronaut/gorm logic is not passing the 'hibernate.cache' configuration options to Hibernate. Even when I set 'use_second_level_cache' to false, hibernate still uses the default (true) value.
+
+I also noticed that the 'hibernate.hbm2ddl' option is being passed to Hibernate as expected.
+
+
+
+
+### Steps to Reproduce
+
+1. Create a simple app with gorm support.
+2. Create Entity with mapping 'cache true' option.
+3. Start app: gradlew run
+
+### Expected Behaviour
+
+App should start with hibernate second level cache enabled.
+
+### Actual Behaviour
+
+Exception is thrown and app does not start:
+
+    org.hibernate.cache.NoCacheRegionFactoryAvailableException: Second-level cache is used in the application, ...
+
+
+### Environment Information
+
+- **Operating System**: Windows 7
+- **Micronaut Version:** 1.0.0
+- **JDK Version:** 1.8.0_191
+
+### Example Application
+
+- See [gorm-cache-issue](https://github.com/mphouston/mn-issues/tree/master/gorm-cache-issue)
+
+### Stack Trace
+
+    > Task :run
+    15:19:03.928 [main] INFO  i.m.c.h.g.HibernateDatastoreFactory - Starting GORM for Hibernate
+    15:19:04.490 [main] INFO  org.hibernate.Version - HHH000412: Hibernate Core {5.1.9.Final}
+    15:19:04.490 [main] INFO  org.hibernate.cfg.Environment - HHH000206: hibernate.properties not found
+    15:19:04.490 [main] INFO  org.hibernate.cfg.Environment - HHH000021: Bytecode provider name : javassist
+    15:19:04.521 [main] INFO  o.h.validator.internal.util.Version - HV000001: Hibernate Validator 6.0.13.Final
+    15:19:04.536 [main] INFO  o.h.v.i.engine.ConfigurationImpl - HV000002: Ignoring XML configuration.
+    15:19:04.692 [main] INFO  o.h.annotations.common.Version - HCANN000001: Hibernate Commons Annotations {5.0.1.Final}
+    15:19:04.755 [main] INFO  org.hibernate.dialect.Dialect - HHH000400: Using dialect: org.hibernate.dialect.H2Dialect
+    15:19:05.067 [main] ERROR io.micronaut.runtime.Micronaut - Error starting Micronaut server: Bean definition [org.grails.orm.hibernate.HibernateDatastore] could not be loaded: Error instantiating bean of type [org.grails.orm.hibernate.HibernateDatastore]: Second-level cache is used in the application, but property hibernate.cache.region.factory_class is not given; please either disable second level cache or set correct region factory using the hibernate.cache.region.factory_class setting and make sure the second level cache provider (hibernate-infinispan, e.g.) is available on the classpath.
+    io.micronaut.context.exceptions.BeanInstantiationException: Bean definition [org.grails.orm.hibernate.HibernateDatastore] could not be loaded: Error instantiating bean of type [org.grails.orm.hibernate.HibernateDatastore]: Second-level cache is used in the application, but property hibernate.cache.region.factory_class is not given; please either disable second level cache or set correct region factory using the hibernate.cache.region.factory_class setting and make sure the second level cache provider (hibernate-infinispan, e.g.) is available on the classpath.
+    at io.micronaut.context.DefaultBeanContext.initializeContext(DefaultBeanContext.java:1032)
+    at io.micronaut.context.DefaultApplicationContext.initializeContext(DefaultApplicationContext.java:190)
+    at io.micronaut.context.DefaultBeanContext.readAllBeanDefinitionClasses(DefaultBeanContext.java:1999)
+    at io.micronaut.context.DefaultBeanContext.start(DefaultBeanContext.java:156)
+    at io.micronaut.context.DefaultApplicationContext.start(DefaultApplicationContext.java:138)
+    at io.micronaut.runtime.Micronaut.start(Micronaut.java:67)
+    at io.micronaut.runtime.Micronaut.run(Micronaut.java:271)
+    at io.micronaut.runtime.Micronaut.run(Micronaut.java:257)
+    at example.Application.main(Application.groovy:9)
+    Caused by: io.micronaut.context.exceptions.BeanInstantiationException: Error instantiating bean of type [org.grails.orm.hibernate.HibernateDatastore]: Second-level cache is used in the application, but property hibernate.cache.region.factory_class is not given; please either disable second level cache or set correct region factory using the hibernate.cache.region.factory_class setting and make sure the second level cache provider (hibernate-infinispan, e.g.) is available on the classpath.
+      at io.micronaut.context.DefaultBeanContext.doCreateBean(DefaultBeanContext.java:1326)
+      at io.micronaut.context.DefaultBeanContext.createAndRegisterSingleton(DefaultBeanContext.java:1868)
+      at io.micronaut.context.DefaultBeanContext.loadContextScopeBean(DefaultBeanContext.java:1524)
+      at io.micronaut.context.DefaultBeanContext.initializeContext(DefaultBeanContext.java:1030)
+      ... 8 common frames omitted
+    Caused by: org.hibernate.cache.NoCacheRegionFactoryAvailableException: Second-level cache is used in the application, but property hibernate.cache.region.factory_class is not given; please either disable second level cache or set correct region factory using the hibernate.cache.region.factory_class setting and make sure the second level cache provider (hibernate-infinispan, e.g.) is available on the classpath.
+      at org.hibernate.cache.internal.NoCachingRegionFactory.buildEntityRegion(NoCachingRegionFactory.java:66)
+      at org.hibernate.internal.SessionFactoryImpl.determineEntityRegionAccessStrategy(SessionFactoryImpl.java:636)
+      at org.hibernate.internal.SessionFactoryImpl.<init>(SessionFactoryImpl.java:335)
+      at org.hibernate.boot.internal.SessionFactoryBuilderImpl.build(SessionFactoryBuilderImpl.java:422)
+      at org.hibernate.cfg.Configuration.buildSessionFactory(Configuration.java:711)
+      at org.grails.orm.hibernate.cfg.HibernateMappingContextConfiguration.buildSessionFactory(HibernateMappingContextConfiguration.java:274)
+      at org.grails.orm.hibernate.connections.HibernateConnectionSourceFactory.create(HibernateConnectionSourceFactory.java:86)
+      at org.grails.orm.hibernate.connections.AbstractHibernateConnectionSourceFactory.create(AbstractHibernateConnectionSourceFactory.java:39)
+      at org.grails.orm.hibernate.connections.AbstractHibernateConnectionSourceFactory.create(AbstractHibernateConnectionSourceFactory.java:23)
+      at org.grails.datastore.mapping.core.connections.AbstractConnectionSourceFactory.create(AbstractConnectionSourceFactory.java:64)
+      at org.grails.datastore.mapping.core.connections.AbstractConnectionSourceFactory.create(AbstractConnectionSourceFactory.java:52)
+      at org.grails.datastore.mapping.core.connections.ConnectionSourcesInitializer.create(ConnectionSourcesInitializer.groovy:24)
+      at org.grails.orm.hibernate.HibernateDatastore.<init>(HibernateDatastore.java:196)
+      at org.grails.orm.hibernate.HibernateDatastore.<init>(HibernateDatastore.java:217)
+      at io.micronaut.configuration.hibernate.gorm.HibernateDatastoreFactory.hibernateDatastore(HibernateDatastoreFactory.groovy:62)
+      at io.micronaut.configuration.hibernate.gorm.$HibernateDatastoreFactory$HibernateDatastoreDefinition.build(Unknown Source)
+      at io.micronaut.context.DefaultBeanContext.doCreateBean(DefaultBeanContext.java:1310)
+      ... 11 common frames omitted
+
+
+### Task List
+
+- [X] Steps to reproduce provided
+- [X] Stacktrace (if present) provided
+- [X] Example that reproduces the problem uploaded to Github
+- [X] Full description of the issue provided (see below)

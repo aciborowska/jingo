@@ -1,0 +1,396 @@
+It is a bit of a rare case, but the following can currently happen:
+
+  1. Jobs runs for a while, some tasks are already finished.
+  2. Job fails, goes to state failing and restarting. Non-finished tasks fail or are canceled.
+  3. For the finished tasks, ask-futures from certain messages (for example for releasing intermediate result partitions) can fail (timeout) and cause the execution to go from FINISHED to FAILED
+  4. This triggers the execution graph to go to FAILING without ever going further into RESTARTING again
+  5. The job is stuck
+
+It initially looks like this is mainly an issue for batch jobs (jobs where tasks do finish, rather than run infinitely).
+
+The log that shows how this manifests:
+
+--------------------------------------------------------------------------------
+17:19:19,782 INFO  akka.event.slf4j.Slf4jLogger                                  - Slf4jLogger started
+17:19:19,844 INFO  Remoting                                                      - Starting remoting
+17:19:20,065 INFO  Remoting                                                      - Remoting started; listening on addresses :[akka.tcp://flink@127.0.0.1:56722]
+17:19:20,090 INFO  org.apache.flink.runtime.blob.BlobServer                      - Created BLOB server storage directory /tmp/blobStore-6766f51a-1c51-4a03-acfb-08c2c29c11f0
+17:19:20,096 INFO  org.apache.flink.runtime.blob.BlobServer                      - Started BLOB server at 0.0.0.0:43327 - max concurrent requests: 50 - max backlog: 1000
+17:19:20,113 INFO  org.apache.flink.runtime.jobmanager.MemoryArchivist           - Started memory archivist akka://flink/user/archive
+17:19:20,115 INFO  org.apache.flink.runtime.checkpoint.SavepointStoreFactory     - No savepoint state backend configured. Using job manager savepoint state backend.
+17:19:20,118 INFO  org.apache.flink.runtime.jobmanager.JobManager                - Starting JobManager at akka.tcp://flink@127.0.0.1:56722/user/jobmanager.
+17:19:20,123 INFO  org.apache.flink.runtime.jobmanager.JobManager                - JobManager akka.tcp://flink@127.0.0.1:56722/user/jobmanager was granted leadership with leader session ID None.
+17:19:25,605 INFO  org.apache.flink.runtime.instance.InstanceManager             - Registered TaskManager at testing-worker-linux-docker-e6d6931f-3200-linux-4 (akka.tcp://flink@172.17.0.253:43702/user/taskmanager) as f213232054587f296a12140d56f63ed1. Current number of registered hosts is 1. Current number of alive task slots is 2.
+17:19:26,758 INFO  org.apache.flink.runtime.instance.InstanceManager             - Registered TaskManager at testing-worker-linux-docker-e6d6931f-3200-linux-4 (akka.tcp://flink@172.17.0.253:43956/user/taskmanager) as f9e78baa14fb38c69517fb1bcf4f419c. Current number of registered hosts is 2. Current number of alive task slots is 4.
+17:19:27,064 INFO  org.apache.flink.api.java.ExecutionEnvironment                - The job has 0 registered types and 0 default Kryo serializers
+17:19:27,071 INFO  org.apache.flink.client.program.Client                        - Starting client actor system
+17:19:27,072 INFO  org.apache.flink.runtime.client.JobClient                     - Starting JobClient actor system
+17:19:27,110 INFO  akka.event.slf4j.Slf4jLogger                                  - Slf4jLogger started
+17:19:27,121 INFO  Remoting                                                      - Starting remoting
+17:19:27,143 INFO  org.apache.flink.runtime.client.JobClient                     - Started JobClient actor system at 127.0.0.1:51198
+17:19:27,145 INFO  Remoting                                                      - Remoting started; listening on addresses :[akka.tcp://flink@127.0.0.1:51198]
+17:19:27,325 INFO  org.apache.flink.runtime.client.JobClientActor                - Disconnect from JobManager null.
+17:19:27,362 INFO  org.apache.flink.runtime.client.JobClientActor                - Received job Flink Java Job at Mon Jan 18 17:19:27 UTC 2016 (fa05fd25993a8742da09cc5023c1e38d).
+17:19:27,362 INFO  org.apache.flink.runtime.client.JobClientActor                - Could not submit job Flink Java Job at Mon Jan 18 17:19:27 UTC 2016 (fa05fd25993a8742da09cc5023c1e38d), because there is no connection to a JobManager.
+17:19:27,379 INFO  org.apache.flink.runtime.client.JobClientActor                - Connect to JobManager Actor[akka.tcp://flink@127.0.0.1:56722/user/jobmanager#-1489998809].
+17:19:27,379 INFO  org.apache.flink.runtime.client.JobClientActor                - Connected to new JobManager akka.tcp://flink@127.0.0.1:56722/user/jobmanager.
+17:19:27,379 INFO  org.apache.flink.runtime.client.JobClientActor                - Sending message to JobManager akka.tcp://flink@127.0.0.1:56722/user/jobmanager to submit job Flink Java Job at Mon Jan 18 17:19:27 UTC 2016 (fa05fd25993a8742da09cc5023c1e38d) and wait for progress
+17:19:27,380 INFO  org.apache.flink.runtime.client.JobClientActor                - Upload jar files to job manager akka.tcp://flink@127.0.0.1:56722/user/jobmanager.
+17:19:27,380 INFO  org.apache.flink.runtime.client.JobClientActor                - Submit job to the job manager akka.tcp://flink@127.0.0.1:56722/user/jobmanager.
+17:19:27,453 INFO  org.apache.flink.runtime.jobmanager.JobManager                - Submitting job fa05fd25993a8742da09cc5023c1e38d (Flink Java Job at Mon Jan 18 17:19:27 UTC 2016).
+17:19:27,591 INFO  org.apache.flink.runtime.jobmanager.JobManager                - Scheduling job fa05fd25993a8742da09cc5023c1e38d (Flink Java Job at Mon Jan 18 17:19:27 UTC 2016).
+17:19:27,592 INFO  org.apache.flink.runtime.executiongraph.ExecutionGraph        - DataSource (at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73) (org.apache.flink.api.java.io.ParallelIteratorInputFormat)) (1/4) (c79bf4381462c690f5999f2d1949ab50) switched from CREATED to SCHEDULED
+17:19:27,596 INFO  org.apache.flink.runtime.executiongraph.ExecutionGraph        - DataSource (at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73) (org.apache.flink.api.java.io.ParallelIteratorInputFormat)) (1/4) (c79bf4381462c690f5999f2d1949ab50) switched from SCHEDULED to DEPLOYING
+17:19:27,597 INFO  org.apache.flink.runtime.executiongraph.ExecutionGraph        - Deploying DataSource (at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73) (org.apache.flink.api.java.io.ParallelIteratorInputFormat)) (1/4) (attempt #0) to testing-worker-linux-docker-e6d6931f-3200-linux-4
+17:19:27,606 INFO  org.apache.flink.runtime.client.JobClientActor                - Job was successfully submitted to the JobManager akka.tcp://flink@127.0.0.1:56722/user/jobmanager.
+17:19:27,630 INFO  org.apache.flink.runtime.jobmanager.JobManager                - Status of job fa05fd25993a8742da09cc5023c1e38d (Flink Java Job at Mon Jan 18 17:19:27 UTC 2016) changed to RUNNING.
+17:19:27,637 INFO  org.apache.flink.runtime.executiongraph.ExecutionGraph        - DataSource (at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73) (org.apache.flink.api.java.io.ParallelIteratorInputFormat)) (2/4) (e73af91028cb76f7d3cd887cb6d66755) switched from CREATED to SCHEDULED
+17:19:27,654 INFO  org.apache.flink.runtime.client.JobClientActor                - 01/18/2016 17:19:27	Job execution switched to status RUNNING.
+17:19:27,655 INFO  org.apache.flink.runtime.client.JobClientActor                - 01/18/2016 17:19:27	DataSource (at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73) (org.apache.flink.api.java.io.ParallelIteratorInputFormat))(1/4) switched to SCHEDULED 
+17:19:27,656 INFO  org.apache.flink.runtime.client.JobClientActor                - 01/18/2016 17:19:27	DataSource (at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73) (org.apache.flink.api.java.io.ParallelIteratorInputFormat))(1/4) switched to DEPLOYING 
+17:19:27,666 INFO  org.apache.flink.runtime.executiongraph.ExecutionGraph        - DataSource (at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73) (org.apache.flink.api.java.io.ParallelIteratorInputFormat)) (2/4) (e73af91028cb76f7d3cd887cb6d66755) switched from SCHEDULED to DEPLOYING
+17:19:27,667 INFO  org.apache.flink.runtime.executiongraph.ExecutionGraph        - Deploying DataSource (at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73) (org.apache.flink.api.java.io.ParallelIteratorInputFormat)) (2/4) (attempt #0) to testing-worker-linux-docker-e6d6931f-3200-linux-4
+17:19:27,667 INFO  org.apache.flink.runtime.client.JobClientActor                - 01/18/2016 17:19:27	DataSource (at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73) (org.apache.flink.api.java.io.ParallelIteratorInputFormat))(2/4) switched to SCHEDULED 
+17:19:27,669 INFO  org.apache.flink.runtime.client.JobClientActor                - 01/18/2016 17:19:27	DataSource (at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73) (org.apache.flink.api.java.io.ParallelIteratorInputFormat))(2/4) switched to DEPLOYING 
+17:19:27,681 INFO  org.apache.flink.runtime.executiongraph.ExecutionGraph        - DataSource (at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73) (org.apache.flink.api.java.io.ParallelIteratorInputFormat)) (3/4) (807daf978da9dc347dca930822c78f8f) switched from CREATED to SCHEDULED
+17:19:27,682 INFO  org.apache.flink.runtime.executiongraph.ExecutionGraph        - DataSource (at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73) (org.apache.flink.api.java.io.ParallelIteratorInputFormat)) (3/4) (807daf978da9dc347dca930822c78f8f) switched from SCHEDULED to DEPLOYING
+17:19:27,682 INFO  org.apache.flink.runtime.executiongraph.ExecutionGraph        - Deploying DataSource (at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73) (org.apache.flink.api.java.io.ParallelIteratorInputFormat)) (3/4) (attempt #0) to testing-worker-linux-docker-e6d6931f-3200-linux-4
+17:19:27,682 INFO  org.apache.flink.runtime.executiongraph.ExecutionGraph        - DataSource (at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73) (org.apache.flink.api.java.io.ParallelIteratorInputFormat)) (4/4) (ba45c37065b67fc8f5005a50d0e88fff) switched from CREATED to SCHEDULED
+17:19:27,682 INFO  org.apache.flink.runtime.executiongraph.ExecutionGraph        - DataSource (at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73) (org.apache.flink.api.java.io.ParallelIteratorInputFormat)) (4/4) (ba45c37065b67fc8f5005a50d0e88fff) switched from SCHEDULED to DEPLOYING
+17:19:27,685 INFO  org.apache.flink.runtime.executiongraph.ExecutionGraph        - Deploying DataSource (at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73) (org.apache.flink.api.java.io.ParallelIteratorInputFormat)) (4/4) (attempt #0) to testing-worker-linux-docker-e6d6931f-3200-linux-4
+17:19:27,686 INFO  org.apache.flink.runtime.client.JobClientActor                - 01/18/2016 17:19:27	DataSource (at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73) (org.apache.flink.api.java.io.ParallelIteratorInputFormat))(3/4) switched to SCHEDULED 
+17:19:27,687 INFO  org.apache.flink.runtime.client.JobClientActor                - 01/18/2016 17:19:27	DataSource (at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73) (org.apache.flink.api.java.io.ParallelIteratorInputFormat))(3/4) switched to DEPLOYING 
+17:19:27,687 INFO  org.apache.flink.runtime.client.JobClientActor                - 01/18/2016 17:19:27	DataSource (at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73) (org.apache.flink.api.java.io.ParallelIteratorInputFormat))(4/4) switched to SCHEDULED 
+17:19:27,692 INFO  org.apache.flink.runtime.client.JobClientActor                - 01/18/2016 17:19:27	DataSource (at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73) (org.apache.flink.api.java.io.ParallelIteratorInputFormat))(4/4) switched to DEPLOYING 
+17:19:27,833 INFO  org.apache.flink.runtime.executiongraph.ExecutionGraph        - DataSource (at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73) (org.apache.flink.api.java.io.ParallelIteratorInputFormat)) (4/4) (ba45c37065b67fc8f5005a50d0e88fff) switched from DEPLOYING to RUNNING
+17:19:27,839 INFO  org.apache.flink.runtime.client.JobClientActor                - 01/18/2016 17:19:27	DataSource (at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73) (org.apache.flink.api.java.io.ParallelIteratorInputFormat))(4/4) switched to RUNNING 
+17:19:27,840 INFO  org.apache.flink.runtime.executiongraph.ExecutionGraph        - DataSource (at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73) (org.apache.flink.api.java.io.ParallelIteratorInputFormat)) (2/4) (e73af91028cb76f7d3cd887cb6d66755) switched from DEPLOYING to RUNNING
+17:19:27,852 INFO  org.apache.flink.runtime.client.JobClientActor                - 01/18/2016 17:19:27	DataSource (at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73) (org.apache.flink.api.java.io.ParallelIteratorInputFormat))(2/4) switched to RUNNING 
+17:19:27,896 INFO  org.apache.flink.runtime.executiongraph.ExecutionGraph        - DataSource (at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73) (org.apache.flink.api.java.io.ParallelIteratorInputFormat)) (1/4) (c79bf4381462c690f5999f2d1949ab50) switched from DEPLOYING to RUNNING
+17:19:27,898 INFO  org.apache.flink.runtime.executiongraph.ExecutionGraph        - DataSource (at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73) (org.apache.flink.api.java.io.ParallelIteratorInputFormat)) (3/4) (807daf978da9dc347dca930822c78f8f) switched from DEPLOYING to RUNNING
+17:19:27,901 INFO  org.apache.flink.runtime.client.JobClientActor                - 01/18/2016 17:19:27	DataSource (at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73) (org.apache.flink.api.java.io.ParallelIteratorInputFormat))(1/4) switched to RUNNING 
+17:19:27,905 INFO  org.apache.flink.runtime.client.JobClientActor                - 01/18/2016 17:19:27	DataSource (at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73) (org.apache.flink.api.java.io.ParallelIteratorInputFormat))(3/4) switched to RUNNING 
+17:19:28,114 INFO  org.apache.flink.runtime.executiongraph.ExecutionGraph        - CHAIN Partition -> Map (Map at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73)) -> Combine (Reduce at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73)) (3/4) (7997918330ecf2610b3298a8c8ef2852) switched from CREATED to SCHEDULED
+17:19:28,126 INFO  org.apache.flink.runtime.executiongraph.ExecutionGraph        - CHAIN Partition -> Map (Map at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73)) -> Combine (Reduce at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73)) (1/4) (6421c8f88b191ea844619a40a523773b) switched from CREATED to SCHEDULED
+17:19:28,134 INFO  org.apache.flink.runtime.executiongraph.ExecutionGraph        - CHAIN Partition -> Map (Map at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73)) -> Combine (Reduce at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73)) (1/4) (6421c8f88b191ea844619a40a523773b) switched from SCHEDULED to DEPLOYING
+17:19:28,134 INFO  org.apache.flink.runtime.executiongraph.ExecutionGraph        - Deploying CHAIN Partition -> Map (Map at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73)) -> Combine (Reduce at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73)) (1/4) (attempt #0) to testing-worker-linux-docker-e6d6931f-3200-linux-4
+17:19:28,126 INFO  org.apache.flink.runtime.executiongraph.ExecutionGraph        - CHAIN Partition -> Map (Map at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73)) -> Combine (Reduce at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73)) (2/4) (d0d011dc0a0823bcec5a57a369b334ed) switched from CREATED to SCHEDULED
+17:19:28,139 INFO  org.apache.flink.runtime.executiongraph.ExecutionGraph        - CHAIN Partition -> Map (Map at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73)) -> Combine (Reduce at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73)) (2/4) (d0d011dc0a0823bcec5a57a369b334ed) switched from SCHEDULED to DEPLOYING
+17:19:28,139 INFO  org.apache.flink.runtime.executiongraph.ExecutionGraph        - Deploying CHAIN Partition -> Map (Map at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73)) -> Combine (Reduce at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73)) (2/4) (attempt #0) to testing-worker-linux-docker-e6d6931f-3200-linux-4
+17:19:28,117 INFO  org.apache.flink.runtime.executiongraph.ExecutionGraph        - CHAIN Partition -> Map (Map at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73)) -> Combine (Reduce at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73)) (4/4) (c928d19f73d700e80cdfad650689febb) switched from CREATED to SCHEDULED
+17:19:28,134 INFO  org.apache.flink.runtime.executiongraph.ExecutionGraph        - CHAIN Partition -> Map (Map at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73)) -> Combine (Reduce at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73)) (3/4) (7997918330ecf2610b3298a8c8ef2852) switched from SCHEDULED to DEPLOYING
+17:19:28,140 INFO  org.apache.flink.runtime.executiongraph.ExecutionGraph        - Deploying CHAIN Partition -> Map (Map at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73)) -> Combine (Reduce at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73)) (3/4) (attempt #0) to testing-worker-linux-docker-e6d6931f-3200-linux-4
+17:19:28,140 INFO  org.apache.flink.runtime.executiongraph.ExecutionGraph        - CHAIN Partition -> Map (Map at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73)) -> Combine (Reduce at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73)) (4/4) (c928d19f73d700e80cdfad650689febb) switched from SCHEDULED to DEPLOYING
+17:19:28,141 INFO  org.apache.flink.runtime.executiongraph.ExecutionGraph        - Deploying CHAIN Partition -> Map (Map at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73)) -> Combine (Reduce at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73)) (4/4) (attempt #0) to testing-worker-linux-docker-e6d6931f-3200-linux-4
+17:19:28,147 INFO  org.apache.flink.runtime.client.JobClientActor                - 01/18/2016 17:19:28	CHAIN Partition -> Map (Map at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73)) -> Combine (Reduce at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73))(3/4) switched to SCHEDULED 
+17:19:28,153 INFO  org.apache.flink.runtime.client.JobClientActor                - 01/18/2016 17:19:28	CHAIN Partition -> Map (Map at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73)) -> Combine (Reduce at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73))(1/4) switched to SCHEDULED 
+17:19:28,153 INFO  org.apache.flink.runtime.client.JobClientActor                - 01/18/2016 17:19:28	CHAIN Partition -> Map (Map at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73)) -> Combine (Reduce at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73))(1/4) switched to DEPLOYING 
+17:19:28,153 INFO  org.apache.flink.runtime.client.JobClientActor                - 01/18/2016 17:19:28	CHAIN Partition -> Map (Map at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73)) -> Combine (Reduce at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73))(2/4) switched to SCHEDULED 
+17:19:28,153 INFO  org.apache.flink.runtime.client.JobClientActor                - 01/18/2016 17:19:28	CHAIN Partition -> Map (Map at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73)) -> Combine (Reduce at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73))(2/4) switched to DEPLOYING 
+17:19:28,156 INFO  org.apache.flink.runtime.client.JobClientActor                - 01/18/2016 17:19:28	CHAIN Partition -> Map (Map at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73)) -> Combine (Reduce at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73))(3/4) switched to DEPLOYING 
+17:19:28,158 INFO  org.apache.flink.runtime.client.JobClientActor                - 01/18/2016 17:19:28	CHAIN Partition -> Map (Map at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73)) -> Combine (Reduce at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73))(4/4) switched to SCHEDULED 
+17:19:28,165 INFO  org.apache.flink.runtime.client.JobClientActor                - 01/18/2016 17:19:28	CHAIN Partition -> Map (Map at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73)) -> Combine (Reduce at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73))(4/4) switched to DEPLOYING 
+17:19:28,238 INFO  org.apache.flink.runtime.executiongraph.ExecutionGraph        - DataSource (at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73) (org.apache.flink.api.java.io.ParallelIteratorInputFormat)) (2/4) (e73af91028cb76f7d3cd887cb6d66755) switched from RUNNING to FINISHED
+17:19:28,242 INFO  org.apache.flink.runtime.client.JobClientActor                - 01/18/2016 17:19:28	DataSource (at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73) (org.apache.flink.api.java.io.ParallelIteratorInputFormat))(2/4) switched to FINISHED 
+17:19:28,308 INFO  org.apache.flink.runtime.executiongraph.ExecutionGraph        - DataSource (at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73) (org.apache.flink.api.java.io.ParallelIteratorInputFormat)) (3/4) (807daf978da9dc347dca930822c78f8f) switched from RUNNING to FINISHED
+17:19:28,315 INFO  org.apache.flink.runtime.executiongraph.ExecutionGraph        - DataSource (at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73) (org.apache.flink.api.java.io.ParallelIteratorInputFormat)) (1/4) (c79bf4381462c690f5999f2d1949ab50) switched from RUNNING to FINISHED
+17:19:28,317 INFO  org.apache.flink.runtime.client.JobClientActor                - 01/18/2016 17:19:28	DataSource (at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73) (org.apache.flink.api.java.io.ParallelIteratorInputFormat))(3/4) switched to FINISHED 
+17:19:28,318 INFO  org.apache.flink.runtime.client.JobClientActor                - 01/18/2016 17:19:28	DataSource (at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73) (org.apache.flink.api.java.io.ParallelIteratorInputFormat))(1/4) switched to FINISHED 
+17:19:28,328 INFO  org.apache.flink.runtime.executiongraph.ExecutionGraph        - CHAIN Partition -> Map (Map at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73)) -> Combine (Reduce at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73)) (1/4) (6421c8f88b191ea844619a40a523773b) switched from DEPLOYING to RUNNING
+17:19:28,336 INFO  org.apache.flink.runtime.client.JobClientActor                - 01/18/2016 17:19:28	CHAIN Partition -> Map (Map at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73)) -> Combine (Reduce at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73))(1/4) switched to RUNNING 
+17:19:28,338 INFO  org.apache.flink.runtime.executiongraph.ExecutionGraph        - CHAIN Partition -> Map (Map at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73)) -> Combine (Reduce at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73)) (3/4) (7997918330ecf2610b3298a8c8ef2852) switched from DEPLOYING to RUNNING
+17:19:28,341 INFO  org.apache.flink.runtime.client.JobClientActor                - 01/18/2016 17:19:28	CHAIN Partition -> Map (Map at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73)) -> Combine (Reduce at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73))(3/4) switched to RUNNING 
+17:19:28,459 INFO  org.apache.flink.runtime.executiongraph.ExecutionGraph        - DataSource (at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73) (org.apache.flink.api.java.io.ParallelIteratorInputFormat)) (4/4) (ba45c37065b67fc8f5005a50d0e88fff) switched from RUNNING to FINISHED
+17:19:28,463 INFO  org.apache.flink.runtime.client.JobClientActor                - 01/18/2016 17:19:28	DataSource (at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73) (org.apache.flink.api.java.io.ParallelIteratorInputFormat))(4/4) switched to FINISHED 
+17:19:28,520 INFO  org.apache.flink.runtime.executiongraph.ExecutionGraph        - CHAIN Partition -> Map (Map at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73)) -> Combine (Reduce at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73)) (4/4) (c928d19f73d700e80cdfad650689febb) switched from DEPLOYING to RUNNING
+17:19:28,529 INFO  org.apache.flink.runtime.client.JobClientActor                - 01/18/2016 17:19:28	CHAIN Partition -> Map (Map at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73)) -> Combine (Reduce at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73))(4/4) switched to RUNNING 
+17:19:28,540 INFO  org.apache.flink.runtime.executiongraph.ExecutionGraph        - CHAIN Partition -> Map (Map at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73)) -> Combine (Reduce at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73)) (2/4) (d0d011dc0a0823bcec5a57a369b334ed) switched from DEPLOYING to RUNNING
+17:19:28,545 INFO  org.apache.flink.runtime.client.JobClientActor                - 01/18/2016 17:19:28	CHAIN Partition -> Map (Map at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73)) -> Combine (Reduce at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73))(2/4) switched to RUNNING 
+17:19:32,384 INFO  org.apache.flink.runtime.instance.InstanceManager             - Registered TaskManager at testing-worker-linux-docker-e6d6931f-3200-linux-4 (akka.tcp://flink@172.17.0.253:60852/user/taskmanager) as 5848d44035a164a0302da6c8701ff748. Current number of registered hosts is 3. Current number of alive task slots is 6.
+17:19:32,598 INFO  org.apache.flink.runtime.executiongraph.ExecutionGraph        - Reduce (Reduce at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73)) (1/1) (d0f8f69f9047c3154b860850955de20f) switched from CREATED to SCHEDULED
+17:19:32,598 INFO  org.apache.flink.runtime.executiongraph.ExecutionGraph        - Reduce (Reduce at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73)) (1/1) (d0f8f69f9047c3154b860850955de20f) switched from SCHEDULED to DEPLOYING
+17:19:32,598 INFO  org.apache.flink.runtime.executiongraph.ExecutionGraph        - Deploying Reduce (Reduce at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73)) (1/1) (attempt #0) to testing-worker-linux-docker-e6d6931f-3200-linux-4
+17:19:32,605 INFO  org.apache.flink.runtime.client.JobClientActor                - 01/18/2016 17:19:32	Reduce (Reduce at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73))(1/1) switched to SCHEDULED 
+17:19:32,605 INFO  org.apache.flink.runtime.client.JobClientActor                - 01/18/2016 17:19:32	Reduce (Reduce at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73))(1/1) switched to DEPLOYING 
+17:19:32,611 INFO  org.apache.flink.runtime.executiongraph.ExecutionGraph        - CHAIN Partition -> Map (Map at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73)) -> Combine (Reduce at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73)) (4/4) (c928d19f73d700e80cdfad650689febb) switched from RUNNING to FINISHED
+17:19:32,614 INFO  org.apache.flink.runtime.client.JobClientActor                - 01/18/2016 17:19:32	CHAIN Partition -> Map (Map at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73)) -> Combine (Reduce at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73))(4/4) switched to FINISHED 
+17:19:32,717 INFO  org.apache.flink.runtime.executiongraph.ExecutionGraph        - CHAIN Partition -> Map (Map at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73)) -> Combine (Reduce at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73)) (1/4) (6421c8f88b191ea844619a40a523773b) switched from RUNNING to FINISHED
+17:19:32,719 INFO  org.apache.flink.runtime.client.JobClientActor                - 01/18/2016 17:19:32	CHAIN Partition -> Map (Map at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73)) -> Combine (Reduce at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73))(1/4) switched to FINISHED 
+17:19:32,724 INFO  org.apache.flink.runtime.executiongraph.ExecutionGraph        - Reduce (Reduce at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73)) (1/1) (d0f8f69f9047c3154b860850955de20f) switched from DEPLOYING to RUNNING
+17:19:32,726 INFO  org.apache.flink.runtime.client.JobClientActor                - 01/18/2016 17:19:32	Reduce (Reduce at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73))(1/1) switched to RUNNING 
+17:19:32,843 INFO  org.apache.flink.runtime.executiongraph.ExecutionGraph        - CHAIN Partition -> Map (Map at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73)) -> Combine (Reduce at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73)) (2/4) (d0d011dc0a0823bcec5a57a369b334ed) switched from RUNNING to FINISHED
+17:19:32,845 INFO  org.apache.flink.runtime.client.JobClientActor                - 01/18/2016 17:19:32	CHAIN Partition -> Map (Map at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73)) -> Combine (Reduce at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73))(2/4) switched to FINISHED 
+17:19:33,092 WARN  akka.remote.ReliableDeliverySupervisor                        - Association with remote system [akka.tcp://flink@172.17.0.253:43702] has failed, address is now gated for [5000] ms. Reason is: [Disassociated].
+17:19:39,111 WARN  Remoting                                                      - Tried to associate with unreachable remote address [akka.tcp://flink@172.17.0.253:43702]. Address is now gated for 5000 ms, all messages to this address will be delivered to dead letters. Reason: Connection refused: /172.17.0.253:43702
+17:19:39,113 INFO  org.apache.flink.runtime.jobmanager.JobManager                - Task manager akka.tcp://flink@172.17.0.253:43702/user/taskmanager terminated.
+17:19:39,114 INFO  org.apache.flink.runtime.executiongraph.ExecutionGraph        - CHAIN Partition -> Map (Map at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73)) -> Combine (Reduce at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73)) (3/4) (7997918330ecf2610b3298a8c8ef2852) switched from RUNNING to FAILED
+17:19:39,120 INFO  org.apache.flink.runtime.client.JobClientActor                - 01/18/2016 17:19:39	CHAIN Partition -> Map (Map at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73)) -> Combine (Reduce at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73))(3/4) switched to FAILED 
+java.lang.Exception: The slot in which the task was executed has been released. Probably loss of TaskManager f213232054587f296a12140d56f63ed1 @ testing-worker-linux-docker-e6d6931f-3200-linux-4 - 2 slots - URL: akka.tcp://flink@172.17.0.253:43702/user/taskmanager
+	at org.apache.flink.runtime.instance.SimpleSlot.releaseSlot(SimpleSlot.java:151)
+	at org.apache.flink.runtime.instance.SlotSharingGroupAssignment.releaseSharedSlot(SlotSharingGroupAssignment.java:547)
+	at org.apache.flink.runtime.instance.SharedSlot.releaseSlot(SharedSlot.java:119)
+	at org.apache.flink.runtime.instance.Instance.markDead(Instance.java:156)
+	at org.apache.flink.runtime.instance.InstanceManager.unregisterTaskManager(InstanceManager.java:215)
+	at org.apache.flink.runtime.jobmanager.JobManager$$anonfun$handleMessage$1.applyOrElse(JobManager.scala:792)
+	at scala.runtime.AbstractPartialFunction$mcVL$sp.apply$mcVL$sp(AbstractPartialFunction.scala:33)
+	at scala.runtime.AbstractPartialFunction$mcVL$sp.apply(AbstractPartialFunction.scala:33)
+	at scala.runtime.AbstractPartialFunction$mcVL$sp.apply(AbstractPartialFunction.scala:25)
+	at org.apache.flink.runtime.LeaderSessionMessageFilter$$anonfun$receive$1.applyOrElse(LeaderSessionMessageFilter.scala:44)
+	at scala.runtime.AbstractPartialFunction$mcVL$sp.apply$mcVL$sp(AbstractPartialFunction.scala:33)
+	at scala.runtime.AbstractPartialFunction$mcVL$sp.apply(AbstractPartialFunction.scala:33)
+	at scala.runtime.AbstractPartialFunction$mcVL$sp.apply(AbstractPartialFunction.scala:25)
+	at org.apache.flink.runtime.LogMessages$$anon$1.apply(LogMessages.scala:33)
+	at org.apache.flink.runtime.LogMessages$$anon$1.apply(LogMessages.scala:28)
+	at scala.PartialFunction$class.applyOrElse(PartialFunction.scala:118)
+	at org.apache.flink.runtime.LogMessages$$anon$1.applyOrElse(LogMessages.scala:28)
+	at akka.actor.Actor$class.aroundReceive(Actor.scala:465)
+	at org.apache.flink.runtime.jobmanager.JobManager.aroundReceive(JobManager.scala:100)
+	at akka.actor.ActorCell.receiveMessage(ActorCell.scala:516)
+	at akka.actor.dungeon.DeathWatch$class.receivedTerminated(DeathWatch.scala:46)
+	at akka.actor.ActorCell.receivedTerminated(ActorCell.scala:369)
+	at akka.actor.ActorCell.autoReceiveMessage(ActorCell.scala:501)
+	at akka.actor.ActorCell.invoke(ActorCell.scala:486)
+	at akka.dispatch.Mailbox.processMailbox(Mailbox.scala:254)
+	at akka.dispatch.Mailbox.run(Mailbox.scala:221)
+	at akka.dispatch.Mailbox.exec(Mailbox.scala:231)
+	at scala.concurrent.forkjoin.ForkJoinTask.doExec(ForkJoinTask.java:260)
+	at scala.concurrent.forkjoin.ForkJoinPool$WorkQueue.runTask(ForkJoinPool.java:1339)
+	at scala.concurrent.forkjoin.ForkJoinPool.runWorker(ForkJoinPool.java:1979)
+	at scala.concurrent.forkjoin.ForkJoinWorkerThread.run(ForkJoinWorkerThread.java:107)
+
+17:19:39,129 INFO  org.apache.flink.runtime.executiongraph.ExecutionGraph        - Reduce (Reduce at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73)) (1/1) (d0f8f69f9047c3154b860850955de20f) switched from RUNNING to CANCELING
+17:19:39,132 INFO  org.apache.flink.runtime.executiongraph.ExecutionGraph        - DataSink (collect()) (1/1) (895e1ea552281a665ae390c966cdb3b7) switched from CREATED to CANCELED
+17:19:39,149 INFO  org.apache.flink.runtime.client.JobClientActor                - 01/18/2016 17:19:39	Job execution switched to status FAILING.
+java.lang.Exception: The slot in which the task was executed has been released. Probably loss of TaskManager f213232054587f296a12140d56f63ed1 @ testing-worker-linux-docker-e6d6931f-3200-linux-4 - 2 slots - URL: akka.tcp://flink@172.17.0.253:43702/user/taskmanager
+	at org.apache.flink.runtime.instance.SimpleSlot.releaseSlot(SimpleSlot.java:151)
+	at org.apache.flink.runtime.instance.SlotSharingGroupAssignment.releaseSharedSlot(SlotSharingGroupAssignment.java:547)
+	at org.apache.flink.runtime.instance.SharedSlot.releaseSlot(SharedSlot.java:119)
+	at org.apache.flink.runtime.instance.Instance.markDead(Instance.java:156)
+	at org.apache.flink.runtime.instance.InstanceManager.unregisterTaskManager(InstanceManager.java:215)
+	at org.apache.flink.runtime.jobmanager.JobManager$$anonfun$handleMessage$1.applyOrElse(JobManager.scala:792)
+	at scala.runtime.AbstractPartialFunction$mcVL$sp.apply$mcVL$sp(AbstractPartialFunction.scala:33)
+	at scala.runtime.AbstractPartialFunction$mcVL$sp.apply(AbstractPartialFunction.scala:33)
+	at scala.runtime.AbstractPartialFunction$mcVL$sp.apply(AbstractPartialFunction.scala:25)
+	at org.apache.flink.runtime.LeaderSessionMessageFilter$$anonfun$receive$1.applyOrElse(LeaderSessionMessageFilter.scala:44)
+	at scala.runtime.AbstractPartialFunction$mcVL$sp.apply$mcVL$sp(AbstractPartialFunction.scala:33)
+	at scala.runtime.AbstractPartialFunction$mcVL$sp.apply(AbstractPartialFunction.scala:33)
+	at scala.runtime.AbstractPartialFunction$mcVL$sp.apply(AbstractPartialFunction.scala:25)
+	at org.apache.flink.runtime.LogMessages$$anon$1.apply(LogMessages.scala:33)
+	at org.apache.flink.runtime.LogMessages$$anon$1.apply(LogMessages.scala:28)
+	at scala.PartialFunction$class.applyOrElse(PartialFunction.scala:118)
+	at org.apache.flink.runtime.LogMessages$$anon$1.applyOrElse(LogMessages.scala:28)
+	at akka.actor.Actor$class.aroundReceive(Actor.scala:465)
+	at org.apache.flink.runtime.jobmanager.JobManager.aroundReceive(JobManager.scala:100)
+	at akka.actor.ActorCell.receiveMessage(ActorCell.scala:516)
+	at akka.actor.dungeon.DeathWatch$class.receivedTerminated(DeathWatch.scala:46)
+	at akka.actor.ActorCell.receivedTerminated(ActorCell.scala:369)
+	at akka.actor.ActorCell.autoReceiveMessage(ActorCell.scala:501)
+	at akka.actor.ActorCell.invoke(ActorCell.scala:486)
+	at akka.dispatch.Mailbox.processMailbox(Mailbox.scala:254)
+	at akka.dispatch.Mailbox.run(Mailbox.scala:221)
+	at akka.dispatch.Mailbox.exec(Mailbox.scala:231)
+	at scala.concurrent.forkjoin.ForkJoinTask.doExec(ForkJoinTask.java:260)
+	at scala.concurrent.forkjoin.ForkJoinPool$WorkQueue.runTask(ForkJoinPool.java:1339)
+	at scala.concurrent.forkjoin.ForkJoinPool.runWorker(ForkJoinPool.java:1979)
+	at scala.concurrent.forkjoin.ForkJoinWorkerThread.run(ForkJoinWorkerThread.java:107)
+17:19:39,173 INFO  org.apache.flink.runtime.client.JobClientActor                - 01/18/2016 17:19:39	Reduce (Reduce at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73))(1/1) switched to CANCELING 
+17:19:39,173 INFO  org.apache.flink.runtime.client.JobClientActor                - 01/18/2016 17:19:39	DataSink (collect())(1/1) switched to CANCELED 
+17:19:39,174 INFO  org.apache.flink.runtime.executiongraph.ExecutionGraph        - Reduce (Reduce at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73)) (1/1) (d0f8f69f9047c3154b860850955de20f) switched from CANCELING to FAILED
+17:19:39,177 INFO  org.apache.flink.runtime.client.JobClientActor                - 01/18/2016 17:19:39	Reduce (Reduce at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73))(1/1) switched to FAILED 
+java.lang.Exception: The slot in which the task was executed has been released. Probably loss of TaskManager f213232054587f296a12140d56f63ed1 @ testing-worker-linux-docker-e6d6931f-3200-linux-4 - 2 slots - URL: akka.tcp://flink@172.17.0.253:43702/user/taskmanager
+	at org.apache.flink.runtime.instance.SimpleSlot.releaseSlot(SimpleSlot.java:151)
+	at org.apache.flink.runtime.instance.SlotSharingGroupAssignment.releaseSharedSlot(SlotSharingGroupAssignment.java:547)
+	at org.apache.flink.runtime.instance.SharedSlot.releaseSlot(SharedSlot.java:119)
+	at org.apache.flink.runtime.instance.Instance.markDead(Instance.java:156)
+	at org.apache.flink.runtime.instance.InstanceManager.unregisterTaskManager(InstanceManager.java:215)
+	at org.apache.flink.runtime.jobmanager.JobManager$$anonfun$handleMessage$1.applyOrElse(JobManager.scala:792)
+	at scala.runtime.AbstractPartialFunction$mcVL$sp.apply$mcVL$sp(AbstractPartialFunction.scala:33)
+	at scala.runtime.AbstractPartialFunction$mcVL$sp.apply(AbstractPartialFunction.scala:33)
+	at scala.runtime.AbstractPartialFunction$mcVL$sp.apply(AbstractPartialFunction.scala:25)
+	at org.apache.flink.runtime.LeaderSessionMessageFilter$$anonfun$receive$1.applyOrElse(LeaderSessionMessageFilter.scala:44)
+	at scala.runtime.AbstractPartialFunction$mcVL$sp.apply$mcVL$sp(AbstractPartialFunction.scala:33)
+	at scala.runtime.AbstractPartialFunction$mcVL$sp.apply(AbstractPartialFunction.scala:33)
+	at scala.runtime.AbstractPartialFunction$mcVL$sp.apply(AbstractPartialFunction.scala:25)
+	at org.apache.flink.runtime.LogMessages$$anon$1.apply(LogMessages.scala:33)
+	at org.apache.flink.runtime.LogMessages$$anon$1.apply(LogMessages.scala:28)
+	at scala.PartialFunction$class.applyOrElse(PartialFunction.scala:118)
+	at org.apache.flink.runtime.LogMessages$$anon$1.applyOrElse(LogMessages.scala:28)
+	at akka.actor.Actor$class.aroundReceive(Actor.scala:465)
+	at org.apache.flink.runtime.jobmanager.JobManager.aroundReceive(JobManager.scala:100)
+	at akka.actor.ActorCell.receiveMessage(ActorCell.scala:516)
+	at akka.actor.dungeon.DeathWatch$class.receivedTerminated(DeathWatch.scala:46)
+	at akka.actor.ActorCell.receivedTerminated(ActorCell.scala:369)
+	at akka.actor.ActorCell.autoReceiveMessage(ActorCell.scala:501)
+	at akka.actor.ActorCell.invoke(ActorCell.scala:486)
+	at akka.dispatch.Mailbox.processMailbox(Mailbox.scala:254)
+	at akka.dispatch.Mailbox.run(Mailbox.scala:221)
+	at akka.dispatch.Mailbox.exec(Mailbox.scala:231)
+	at scala.concurrent.forkjoin.ForkJoinTask.doExec(ForkJoinTask.java:260)
+	at scala.concurrent.forkjoin.ForkJoinPool$WorkQueue.runTask(ForkJoinPool.java:1339)
+	at scala.concurrent.forkjoin.ForkJoinPool.runWorker(ForkJoinPool.java:1979)
+	at scala.concurrent.forkjoin.ForkJoinWorkerThread.run(ForkJoinWorkerThread.java:107)
+
+17:19:39,179 INFO  org.apache.flink.runtime.client.JobClientActor                - 01/18/2016 17:19:39	Job execution switched to status RESTARTING.
+17:19:39,179 INFO  org.apache.flink.runtime.executiongraph.ExecutionGraph        - Delaying retry of job execution for 10000 ms ...
+17:19:39,179 INFO  org.apache.flink.runtime.instance.InstanceManager             - Unregistered task manager akka.tcp://flink@172.17.0.253:43702/user/taskmanager. Number of registered task managers 2. Number of available slots 4.
+17:19:39,179 INFO  org.apache.flink.runtime.jobmanager.JobManager                - Status of job fa05fd25993a8742da09cc5023c1e38d (Flink Java Job at Mon Jan 18 17:19:27 UTC 2016) changed to FAILING.
+java.lang.Exception: The slot in which the task was executed has been released. Probably loss of TaskManager f213232054587f296a12140d56f63ed1 @ testing-worker-linux-docker-e6d6931f-3200-linux-4 - 2 slots - URL: akka.tcp://flink@172.17.0.253:43702/user/taskmanager
+	at org.apache.flink.runtime.instance.SimpleSlot.releaseSlot(SimpleSlot.java:151)
+	at org.apache.flink.runtime.instance.SlotSharingGroupAssignment.releaseSharedSlot(SlotSharingGroupAssignment.java:547)
+	at org.apache.flink.runtime.instance.SharedSlot.releaseSlot(SharedSlot.java:119)
+	at org.apache.flink.runtime.instance.Instance.markDead(Instance.java:156)
+	at org.apache.flink.runtime.instance.InstanceManager.unregisterTaskManager(InstanceManager.java:215)
+	at org.apache.flink.runtime.jobmanager.JobManager$$anonfun$handleMessage$1.applyOrElse(JobManager.scala:792)
+	at scala.runtime.AbstractPartialFunction$mcVL$sp.apply$mcVL$sp(AbstractPartialFunction.scala:33)
+	at scala.runtime.AbstractPartialFunction$mcVL$sp.apply(AbstractPartialFunction.scala:33)
+	at scala.runtime.AbstractPartialFunction$mcVL$sp.apply(AbstractPartialFunction.scala:25)
+	at org.apache.flink.runtime.LeaderSessionMessageFilter$$anonfun$receive$1.applyOrElse(LeaderSessionMessageFilter.scala:44)
+	at scala.runtime.AbstractPartialFunction$mcVL$sp.apply$mcVL$sp(AbstractPartialFunction.scala:33)
+	at scala.runtime.AbstractPartialFunction$mcVL$sp.apply(AbstractPartialFunction.scala:33)
+	at scala.runtime.AbstractPartialFunction$mcVL$sp.apply(AbstractPartialFunction.scala:25)
+	at org.apache.flink.runtime.LogMessages$$anon$1.apply(LogMessages.scala:33)
+	at org.apache.flink.runtime.LogMessages$$anon$1.apply(LogMessages.scala:28)
+	at scala.PartialFunction$class.applyOrElse(PartialFunction.scala:118)
+	at org.apache.flink.runtime.LogMessages$$anon$1.applyOrElse(LogMessages.scala:28)
+	at akka.actor.Actor$class.aroundReceive(Actor.scala:465)
+	at org.apache.flink.runtime.jobmanager.JobManager.aroundReceive(JobManager.scala:100)
+	at akka.actor.ActorCell.receiveMessage(ActorCell.scala:516)
+	at akka.actor.dungeon.DeathWatch$class.receivedTerminated(DeathWatch.scala:46)
+	at akka.actor.ActorCell.receivedTerminated(ActorCell.scala:369)
+	at akka.actor.ActorCell.autoReceiveMessage(ActorCell.scala:501)
+	at akka.actor.ActorCell.invoke(ActorCell.scala:486)
+	at akka.dispatch.Mailbox.processMailbox(Mailbox.scala:254)
+	at akka.dispatch.Mailbox.run(Mailbox.scala:221)
+	at akka.dispatch.Mailbox.exec(Mailbox.scala:231)
+	at scala.concurrent.forkjoin.ForkJoinTask.doExec(ForkJoinTask.java:260)
+	at scala.concurrent.forkjoin.ForkJoinPool$WorkQueue.runTask(ForkJoinPool.java:1339)
+	at scala.concurrent.forkjoin.ForkJoinPool.runWorker(ForkJoinPool.java:1979)
+	at scala.concurrent.forkjoin.ForkJoinWorkerThread.run(ForkJoinWorkerThread.java:107)
+17:19:39,180 INFO  org.apache.flink.runtime.jobmanager.JobManager                - Status of job fa05fd25993a8742da09cc5023c1e38d (Flink Java Job at Mon Jan 18 17:19:27 UTC 2016) changed to RESTARTING.
+17:19:42,766 INFO  org.apache.flink.runtime.executiongraph.ExecutionGraph        - CHAIN Partition -> Map (Map at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73)) -> Combine (Reduce at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73)) (2/4) (d0d011dc0a0823bcec5a57a369b334ed) switched from FINISHED to FAILED
+17:19:42,773 INFO  org.apache.flink.runtime.client.JobClientActor                - 01/18/2016 17:19:42	CHAIN Partition -> Map (Map at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73)) -> Combine (Reduce at testTaskManagerFailure(TaskManagerProcessFailureBatchRecoveryITCase.java:73))(2/4) switched to FAILED 
+java.lang.IllegalStateException: Update task on instance f213232054587f296a12140d56f63ed1 @ testing-worker-linux-docker-e6d6931f-3200-linux-4 - 2 slots - URL: akka.tcp://flink@172.17.0.253:43702/user/taskmanager failed due to:
+	at org.apache.flink.runtime.executiongraph.Execution$5.onFailure(Execution.java:915)
+	at akka.dispatch.OnFailure.internal(Future.scala:228)
+	at akka.dispatch.OnFailure.internal(Future.scala:227)
+	at akka.dispatch.japi$CallbackBridge.apply(Future.scala:174)
+	at akka.dispatch.japi$CallbackBridge.apply(Future.scala:171)
+	at scala.PartialFunction$class.applyOrElse(PartialFunction.scala:118)
+	at scala.runtime.AbstractPartialFunction.applyOrElse(AbstractPartialFunction.scala:25)
+	at scala.concurrent.Future$$anonfun$onFailure$1.apply(Future.scala:136)
+	at scala.concurrent.Future$$anonfun$onFailure$1.apply(Future.scala:134)
+	at scala.concurrent.impl.CallbackRunnable.run(Promise.scala:32)
+	at scala.concurrent.impl.ExecutionContextImpl$$anon$3.exec(ExecutionContextImpl.scala:107)
+	at scala.concurrent.forkjoin.ForkJoinTask.doExec(ForkJoinTask.java:260)
+	at scala.concurrent.forkjoin.ForkJoinPool$WorkQueue.runTask(ForkJoinPool.java:1339)
+	at scala.concurrent.forkjoin.ForkJoinPool.runWorker(ForkJoinPool.java:1979)
+	at scala.concurrent.forkjoin.ForkJoinWorkerThread.run(ForkJoinWorkerThread.java:107)
+Caused by: akka.pattern.AskTimeoutException: Ask timed out on [Actor[akka.tcp://flink@172.17.0.253:43702/user/taskmanager#-1712955384]] after [10000 ms]
+	at akka.pattern.PromiseActorRef$$anonfun$1.apply$mcV$sp(AskSupport.scala:333)
+	at akka.actor.Scheduler$$anon$7.run(Scheduler.scala:117)
+	at scala.concurrent.Future$InternalCallbackExecutor$.scala$concurrent$Future$InternalCallbackExecutor$$unbatchedExecute(Future.scala:694)
+	at scala.concurrent.Future$InternalCallbackExecutor$.execute(Future.scala:691)
+	at akka.actor.LightArrayRevolverScheduler$TaskHolder.executeTask(Scheduler.scala:467)
+	at akka.actor.LightArrayRevolverScheduler$$anon$8.executeBucket$1(Scheduler.scala:419)
+	at akka.actor.LightArrayRevolverScheduler$$anon$8.nextTick(Scheduler.scala:423)
+	at akka.actor.LightArrayRevolverScheduler$$anon$8.run(Scheduler.scala:375)
+	at java.lang.Thread.run(Thread.java:745)
+
+17:19:42,774 INFO  org.apache.flink.runtime.jobmanager.JobManager                - Status of job fa05fd25993a8742da09cc5023c1e38d (Flink Java Job at Mon Jan 18 17:19:27 UTC 2016) changed to FAILING.
+java.lang.IllegalStateException: Update task on instance f213232054587f296a12140d56f63ed1 @ testing-worker-linux-docker-e6d6931f-3200-linux-4 - 2 slots - URL: akka.tcp://flink@172.17.0.253:43702/user/taskmanager failed due to:
+	at org.apache.flink.runtime.executiongraph.Execution$5.onFailure(Execution.java:915)
+	at akka.dispatch.OnFailure.internal(Future.scala:228)
+	at akka.dispatch.OnFailure.internal(Future.scala:227)
+	at akka.dispatch.japi$CallbackBridge.apply(Future.scala:174)
+	at akka.dispatch.japi$CallbackBridge.apply(Future.scala:171)
+	at scala.PartialFunction$class.applyOrElse(PartialFunction.scala:118)
+	at scala.runtime.AbstractPartialFunction.applyOrElse(AbstractPartialFunction.scala:25)
+	at scala.concurrent.Future$$anonfun$onFailure$1.apply(Future.scala:136)
+	at scala.concurrent.Future$$anonfun$onFailure$1.apply(Future.scala:134)
+	at scala.concurrent.impl.CallbackRunnable.run(Promise.scala:32)
+	at scala.concurrent.impl.ExecutionContextImpl$$anon$3.exec(ExecutionContextImpl.scala:107)
+	at scala.concurrent.forkjoin.ForkJoinTask.doExec(ForkJoinTask.java:260)
+	at scala.concurrent.forkjoin.ForkJoinPool$WorkQueue.runTask(ForkJoinPool.java:1339)
+	at scala.concurrent.forkjoin.ForkJoinPool.runWorker(ForkJoinPool.java:1979)
+	at scala.concurrent.forkjoin.ForkJoinWorkerThread.run(ForkJoinWorkerThread.java:107)
+Caused by: akka.pattern.AskTimeoutException: Ask timed out on [Actor[akka.tcp://flink@172.17.0.253:43702/user/taskmanager#-1712955384]] after [10000 ms]
+	at akka.pattern.PromiseActorRef$$anonfun$1.apply$mcV$sp(AskSupport.scala:333)
+	at akka.actor.Scheduler$$anon$7.run(Scheduler.scala:117)
+	at scala.concurrent.Future$InternalCallbackExecutor$.scala$concurrent$Future$InternalCallbackExecutor$$unbatchedExecute(Future.scala:694)
+	at scala.concurrent.Future$InternalCallbackExecutor$.execute(Future.scala:691)
+	at akka.actor.LightArrayRevolverScheduler$TaskHolder.executeTask(Scheduler.scala:467)
+	at akka.actor.LightArrayRevolverScheduler$$anon$8.executeBucket$1(Scheduler.scala:419)
+	at akka.actor.LightArrayRevolverScheduler$$anon$8.nextTick(Scheduler.scala:423)
+	at akka.actor.LightArrayRevolverScheduler$$anon$8.run(Scheduler.scala:375)
+	at java.lang.Thread.run(Thread.java:745)
+17:19:42,780 INFO  org.apache.flink.runtime.client.JobClientActor                - 01/18/2016 17:19:42	Job execution switched to status FAILING.
+java.lang.IllegalStateException: Update task on instance f213232054587f296a12140d56f63ed1 @ testing-worker-linux-docker-e6d6931f-3200-linux-4 - 2 slots - URL: akka.tcp://flink@172.17.0.253:43702/user/taskmanager failed due to:
+	at org.apache.flink.runtime.executiongraph.Execution$5.onFailure(Execution.java:915)
+	at akka.dispatch.OnFailure.internal(Future.scala:228)
+	at akka.dispatch.OnFailure.internal(Future.scala:227)
+	at akka.dispatch.japi$CallbackBridge.apply(Future.scala:174)
+	at akka.dispatch.japi$CallbackBridge.apply(Future.scala:171)
+	at scala.PartialFunction$class.applyOrElse(PartialFunction.scala:118)
+	at scala.runtime.AbstractPartialFunction.applyOrElse(AbstractPartialFunction.scala:25)
+	at scala.concurrent.Future$$anonfun$onFailure$1.apply(Future.scala:136)
+	at scala.concurrent.Future$$anonfun$onFailure$1.apply(Future.scala:134)
+	at scala.concurrent.impl.CallbackRunnable.run(Promise.scala:32)
+	at scala.concurrent.impl.ExecutionContextImpl$$anon$3.exec(ExecutionContextImpl.scala:107)
+	at scala.concurrent.forkjoin.ForkJoinTask.doExec(ForkJoinTask.java:260)
+	at scala.concurrent.forkjoin.ForkJoinPool$WorkQueue.runTask(ForkJoinPool.java:1339)
+	at scala.concurrent.forkjoin.ForkJoinPool.runWorker(ForkJoinPool.java:1979)
+	at scala.concurrent.forkjoin.ForkJoinWorkerThread.run(ForkJoinWorkerThread.java:107)
+Caused by: akka.pattern.AskTimeoutException: Ask timed out on [Actor[akka.tcp://flink@172.17.0.253:43702/user/taskmanager#-1712955384]] after [10000 ms]
+	at akka.pattern.PromiseActorRef$$anonfun$1.apply$mcV$sp(AskSupport.scala:333)
+	at akka.actor.Scheduler$$anon$7.run(Scheduler.scala:117)
+	at scala.concurrent.Future$InternalCallbackExecutor$.scala$concurrent$Future$InternalCallbackExecutor$$unbatchedExecute(Future.scala:694)
+	at scala.concurrent.Future$InternalCallbackExecutor$.execute(Future.scala:691)
+	at akka.actor.LightArrayRevolverScheduler$TaskHolder.executeTask(Scheduler.scala:467)
+	at akka.actor.LightArrayRevolverScheduler$$anon$8.executeBucket$1(Scheduler.scala:419)
+	at akka.actor.LightArrayRevolverScheduler$$anon$8.nextTick(Scheduler.scala:423)
+	at akka.actor.LightArrayRevolverScheduler$$anon$8.run(Scheduler.scala:375)
+	at java.lang.Thread.run(Thread.java:745)
+17:19:49,152 WARN  Remoting                                                      - Tried to associate with unreachable remote address [akka.tcp://flink@172.17.0.253:43702]. Address is now gated for 5000 ms, all messages to this address will be delivered to dead letters. Reason: Connection refused: /172.17.0.253:43702
+17:19:59,172 WARN  Remoting                                                      - Tried to associate with unreachable remote address [akka.tcp://flink@172.17.0.253:43702]. Address is now gated for 5000 ms, all messages to this address will be delivered to dead letters. Reason: Connection refused: /172.17.0.253:43702
+17:20:09,191 WARN  Remoting                                                      - Tried to associate with unreachable remote address [akka.tcp://flink@172.17.0.253:43702]. Address is now gated for 5000 ms, all messages to this address will be delivered to dead letters. Reason: Connection refused: /172.17.0.253:43702
+17:24:32,423 INFO  org.apache.flink.runtime.jobmanager.JobManager                - Stopping JobManager akka.tcp://flink@127.0.0.1:56722/user/jobmanager.
+17:24:32,440 ERROR org.apache.flink.test.recovery.TaskManagerProcessFailureBatchRecoveryITCase  - 
+--------------------------------------------------------------------------------
+Test testTaskManagerProcessFailure[0](org.apache.flink.test.recovery.TaskManagerProcessFailureBatchRecoveryITCase) failed with:
+java.lang.AssertionError: The program did not finish in time
+	at org.junit.Assert.fail(Assert.java:88)
+	at org.junit.Assert.assertTrue(Assert.java:41)
+	at org.junit.Assert.assertFalse(Assert.java:64)
+	at org.apache.flink.test.recovery.AbstractTaskManagerProcessFailureRecoveryTest.testTaskManagerProcessFailure(AbstractTaskManagerProcessFailureRecoveryTest.java:212)
+	at sun.reflect.NativeMethodAccessorImpl.invoke0(Native Method)
+	at sun.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:57)
+	at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)
+	at java.lang.reflect.Method.invoke(Method.java:606)
+	at org.junit.runners.model.FrameworkMethod$1.runReflectiveCall(FrameworkMethod.java:47)
+	at org.junit.internal.runners.model.ReflectiveCallable.run(ReflectiveCallable.java:12)
+	at org.junit.runners.model.FrameworkMethod.invokeExplosively(FrameworkMethod.java:44)
+	at org.junit.internal.runners.statements.InvokeMethod.evaluate(InvokeMethod.java:17)
+	at org.junit.rules.TestWatcher$1.evaluate(TestWatcher.java:55)
+	at org.junit.rules.RunRules.evaluate(RunRules.java:20)
+	at org.junit.runners.ParentRunner.runLeaf(ParentRunner.java:271)
+	at org.junit.runners.BlockJUnit4ClassRunner.runChild(BlockJUnit4ClassRunner.java:70)
+	at org.junit.runners.BlockJUnit4ClassRunner.runChild(BlockJUnit4ClassRunner.java:50)
+	at org.junit.runners.ParentRunner$3.run(ParentRunner.java:238)
+	at org.junit.runners.ParentRunner$1.schedule(ParentRunner.java:63)
+	at org.junit.runners.ParentRunner.runChildren(ParentRunner.java:236)
+	at org.junit.runners.ParentRunner.access$000(ParentRunner.java:53)
+	at org.junit.runners.ParentRunner$2.evaluate(ParentRunner.java:229)
+	at org.junit.runners.ParentRunner.run(ParentRunner.java:309)
+	at org.junit.runners.Suite.runChild(Suite.java:127)
+	at org.junit.runners.Suite.runChild(Suite.java:26)
+	at org.junit.runners.ParentRunner$3.run(ParentRunner.java:238)
+	at org.junit.runners.ParentRunner$1.schedule(ParentRunner.java:63)
+	at org.junit.runners.ParentRunner.runChildren(ParentRunner.java:236)
+	at org.junit.runners.ParentRunner.access$000(ParentRunner.java:53)
+	at org.junit.runners.ParentRunner$2.evaluate(ParentRunner.java:229)
+	at org.junit.runners.ParentRunner.run(ParentRunner.java:309)
+	at org.apache.maven.surefire.junit4.JUnit4Provider.execute(JUnit4Provider.java:283)
+	at org.apache.maven.surefire.junit4.JUnit4Provider.executeWithRerun(JUnit4Provider.java:173)
+	at org.apache.maven.surefire.junit4.JUnit4Provider.executeTestSet(JUnit4Provider.java:153)
+	at org.apache.maven.surefire.junit4.JUnit4Provider.invoke(JUnit4Provider.java:128)
+

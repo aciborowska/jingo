@@ -1,0 +1,102 @@
+Hello,
+Recently, I've found an issue with QueryCache which might be some other edge case of #12572 
+Hazelcast version: **3.10-20180416**
+What I do:
+1. Run one hazelcast instance
+2. Run a second hazelcast instance
+3. Submit task to all members in which I put some values to the IMap
+4. Kill the first node and wait some time to let do repartition
+5. Submit task to all members in which I modify existing objects from IMap
+
+As a result of this, I see that hazelcast try to recover data even if previously (just after killing the first node) repartitioning was ok:
+
+> Members {size:1, ver:3} [
+	Member [192.168.1.38]:5702 - 28203b3d-7f4f-4304-a284-cfa3720b490d this
+]
+
+>16:25:32,497  INFO MembershipManager:65 - [192.168.1.38]:5702 [dev] [3.10-SNAPSHOT] Mastership is claimed with: MembersView{version=3, members=[MemberInfo{address=[192.168.1.38]:5702, uuid=28203b3d-7f4f-4304-a284-cfa3720b490d, liteMember=false, memberListJoinVersion=2}]}
+16:25:32,498  INFO InternalPartitionService:65 - [192.168.1.38]:5702 [dev] [3.10-SNAPSHOT] Fetching most recent partition table! my version: 678
+16:25:32,498  INFO InternalPartitionService:65 - [192.168.1.38]:5702 [dev] [3.10-SNAPSHOT] Most recent partition table version: 678
+16:25:32,498  INFO TransactionManagerService:65 - [192.168.1.38]:5702 [dev] [3.10-SNAPSHOT] Committing/rolling-back alive transactions of Member [192.168.1.38]:5701 - 655b5d83-c113-4ee5-bdc1-28faea92f405, UUID: 655b5d83-c113-4ee5-bdc1-28faea92f405
+16:25:32,530  INFO MigrationManager:65 - [192.168.1.38]:5702 [dev] [3.10-SNAPSHOT] Partition balance is ok, no need to re-partition cluster data... 
+
+And the logs after killing node and submitting new task:
+>16:25:53,967  WARN SubscriberAccumulator:50 - Event lost detected for partitionId=183, expectedSequence=4 but foundSequence=2, cacheSize=200
+16:25:53,968  WARN MyHazelcast:56 - lost event 67e6177c-fc59-4ba2-a986-fd26cbc3090b from member null partition 263, trying to recover
+
+This appers about every 5 seconds for lots of partitionIds. And what's worth to mention - it looks like recovery is succesfull - see that `QueryCache#tryRecover()` returns true.
+
+Here is my configuration:
+```java
+    static HazelcastInstance hazelcastInstance() {
+        HazelcastInstance hazelcastInstance = Hazelcast.newHazelcastInstance(configuration());
+        addEventLostListener(hazelcastInstance);
+        log.info("started hazelcast node");
+        return hazelcastInstance;
+    }
+
+    private static void addEventLostListener(HazelcastInstance hazelcastInstance) {
+        IMap<Long, String> map = hazelcastInstance.getMap(MAP_NAME);
+        final QueryCache<Long, String> qc = map.getQueryCache(MAP_NAME);
+        String id = qc.addEntryListener(eventListenerFor(qc), false);
+        log.info("added event lost listener with {} id", id);
+    }
+
+    private static Config configuration() {
+        return new Config()
+                .setProperty("hazelcast.logging.type", "slf4j")
+                .addMapConfig(new MapConfig(MAP_NAME)
+                        .setBackupCount(1)
+                        .setReadBackupData(true)
+                        .addQueryCacheConfig(new QueryCacheConfig()
+                                .setName(MAP_NAME)
+                                .setPredicateConfig(new PredicateConfig(INSTANCE))
+                                .setIncludeValue(true)
+                                .setPopulate(true)
+                                .setDelaySeconds(0)
+                                .setBufferSize(1_000)
+                        )
+                );
+    }
+
+    private static EventLostListener eventListenerFor(QueryCache qc) {
+        return event -> {
+            log.warn("lost event {} from member {} partition {}, trying to recover", event.getName(), event.getMember(), event.getPartitionId());
+            boolean recoveryFailed = !qc.tryRecover();
+            if (recoveryFailed) {
+                log.error("unable to recover lost event {} from member {} partition {}", event.getName(), event.getMember(), event.getPartitionId());
+            }
+        };
+    }
+```
+And my main test method:
+```java
+    public static void main(String[] args) throws Exception {
+        HazelcastInstance hazelcast = hazelcastInstance();
+        IMap<Long, String> iMap = hazelcast.getMap(MAP_NAME);
+        iMap.clear();
+
+        log.info("create some entries on all members");
+        IExecutorService executor = hazelcast.getExecutorService(EXECUTOR_SERVICE);
+        Map<Member, Future<Void>> tasks = executor.submitToAllMembers(new PutTask(100));
+        for (Future<Void> future : tasks.values()) {
+            future.get();
+        }
+        log.info("entries created, map size is {}", iMap.size());
+
+        log.info("gonna sleep for {}s, please kill secondary node", 15);
+        sleep(15_000);
+
+        log.info("about to submit dummy task on map size {}", iMap.size());
+        Map<Member, Future<Void>> dummyTasks2 = executor.submitToAllMembers(new ChangeTask("||change-two"));
+        for (Future<Void> future : dummyTasks2.values()) {
+            future.get();
+        }
+        log.info("everything done");
+    }
+```
+
+Additional info:
+I put to the map 100 objects and have `QueryCacheConfig#bufferSize` set to 1000. In the situation when I have smaller buffer size and a lot more objects in map I get logs that recovery was unsuccessfull.
+
+Regards

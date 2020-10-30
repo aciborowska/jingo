@@ -1,0 +1,116 @@
+ 
+
+
+//代码占位符
+public static void main(String[] args) throws Exception {
+    StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+    EnvironmentSettings settings = EnvironmentSettings.newInstance().useBlinkPlanner().inStreamingMode().build();
+    StreamTableEnvironment tableEnv = StreamTableEnvironment.create(env, settings);
+    env.setParallelism(1);
+
+    DataStreamSource<String> stringDataStreamSource1 = env.fromElements(
+            "HA"
+    );
+    String[] fields1 = new String[]{"ORD_ID", "PS_PARTKEY", "PS_SUPPKEY", "PS_AVAILQTY", "PS_SUPPLYCOST", "PS_COMMENT"
+            // key
+            , "PS_INT", "PS_LONG"
+            , "PS_DOUBLE8", "PS_DOUBLE14", "PS_DOUBLE15"
+            , "PS_NUMBER1", "PS_NUMBER2", "PS_NUMBER3", "PS_NUMBER4"
+            , "PS_DATE", "PS_TIMESTAMP", "PS_DATE_EVENT", "PS_TIMESTAMP_EVENT"};
+    TypeInformation<?>[] types1 = new TypeInformation[]{Types.STRING, Types.INT, Types.LONG, Types.LONG, Types.DOUBLE, Types.STRING
+            // key
+            , Types.INT, Types.LONG
+            , Types.DOUBLE, Types.DOUBLE, Types.DOUBLE
+            , Types.LONG, Types.LONG, Types.DOUBLE, Types.DOUBLE
+            , Types.SQL_DATE, Types.SQL_TIMESTAMP, Types.SQL_DATE, Types.SQL_TIMESTAMP};
+    RowTypeInfo typeInformation1 = new RowTypeInfo(types1, fields1);
+    DataStream<Row> stream1 = stringDataStreamSource1.map(new MapFunction<String, Row>() {
+        private static final long serialVersionUID = 2349572544179673356L;
+
+        @Override
+        public Row map(String s) {
+            return new Row(typeInformation1.getArity());
+        }
+    }).returns(typeInformation1);
+    tableEnv.registerDataStream("FUN_1", stream1, String.join(",", typeInformation1.getFieldNames()) + ",PROCTIME.proctime");
+
+    DataStreamSource<String> stringDataStreamSource2 = env.fromElements(
+            "HA"
+    );
+    String[] fields2 = new String[]{"C_NAME", "C_ADDRESS", "C_NATIONKEY"
+            // key
+            , "C_INT", "C_LONG"
+            , "C_DOUBLE8", "C_DOUBLE14"
+            , "C_DATE_EVENT", "C_TIMESTAMP_EVENT"};
+    TypeInformation<?>[] types2 = new TypeInformation[]{Types.STRING, Types.STRING, Types.LONG
+            // key
+            , Types.INT, Types.LONG
+            , Types.DOUBLE, Types.DOUBLE
+            , Types.SQL_DATE, Types.SQL_TIMESTAMP};
+    RowTypeInfo typeInformation2 = new RowTypeInfo(types2, fields2);
+
+    DataStream<Row> stream2 = stringDataStreamSource2.map(new MapFunction<String, Row>() {
+        private static final long serialVersionUID = 2349572544179673349L;
+
+        @Override
+        public Row map(String s) {
+            return new Row(typeInformation2.getArity());
+        }
+    }).returns(typeInformation2);
+    tableEnv.registerDataStream("FUN_2", stream2, String.join(",", typeInformation2.getFieldNames()) + ",PROCTIME.proctime");
+
+    MyLookupTableSource tableSource = MyLookupTableSource.newBuilder()
+            .withFieldNames(new String[]{
+                    "S_NAME", "S_ADDRESS", "S_PHONE"
+                    , "S_ACCTBAL", "S_COMMENT"
+                    // key
+                    , "S_INT", "S_LONG"
+                    , "S_DOUBLE8", "S_DOUBLE14"
+                    , "S_DOUBLE15", "S_DATE_EVENT", "S_TIMESTAMP_EVENT"})
+            .withFieldTypes(new TypeInformation[]{
+                    Types.STRING, Types.STRING, Types.STRING
+                    , Types.DOUBLE, Types.STRING
+                    // key
+                    , Types.INT, Types.LONG
+                    , Types.DOUBLE, Types.DOUBLE
+                    , Types.DOUBLE, Types.SQL_DATE, Types.SQL_TIMESTAMP})
+            .build();
+
+    tableEnv.registerTableSource("INFO", tableSource);
+
+    String sql = "SELECT LN(F.PS_INT),LOG(F2.C_INT,1)\n" +
+            "  FROM (SELECT *\n" +
+            "          FROM FUN_1 F1\n" +
+            "      JOIN INFO FOR SYSTEM_TIME AS OF F1.PROCTIME D1\n" +
+            " ON F1.PS_INT = D1.S_INT AND F1.PS_LONG - 5700000 = D1.S_LONG \n" +
+            ") F\n" +
+            "JOIN FUN_2 F2 ON F.PS_INT = F2.C_INT AND F.PS_LONG - 1500000 = F2.C_LONG\n" +
+            " WHERE 1=1\n" +
+            " AND F.PS_INT BETWEEN 1000 AND 5000\n" +
+            " AND F.S_LONG < 2147792600\n" + // I find this cause the Exception
+            " AND F.PS_COMMENT LIKE '%FILY%'\n" +
+            " AND F2.C_INT IS NOT NULL\n" +
+            " AND LN(F.PS_INT)<8";
+
+    Table table = tableEnv.sqlQuery(sql);
+
+    DataStream<Row> result = tableEnv.toAppendStream(table, Row.class);
+
+    result.print().setParallelism(1);
+
+    tableEnv.execute("LookUpTest");
+}
+
+
+ 
+
+ 
+
+Exception
+
+
+//代码占位符
+Exception in thread "main" java.lang.RuntimeException: while converting 1 = 1 AND `F`.`PS_INT` BETWEEN ASYMMETRIC 1000 AND 5000 AND `F`.`S_LONG` < 2147792600 AND `F`.`PS_COMMENT` LIKE '%FILY%' AND `F2`.`C_INT` IS NOT NULL AND LN(`F`.`PS_INT`) < 8Exception in thread "main" java.lang.RuntimeException: while converting 1 = 1 AND `F`.`PS_INT` BETWEEN ASYMMETRIC 1000 AND 5000 AND `F`.`S_LONG` < 2147792600 AND `F`.`PS_COMMENT` LIKE '%FILY%' AND `F2`.`C_INT` IS NOT NULL AND LN(`F`.`PS_INT`) < 8 at org.apache.calcite.sql2rel.ReflectiveConvertletTable.lambda$registerNodeTypeMethod$0(ReflectiveConvertletTable.java:86) at org.apache.calcite.sql2rel.SqlNodeToRexConverterImpl.convertCall(SqlNodeToRexConverterImpl.java:63) at org.apache.calcite.sql2rel.SqlToRelConverter$Blackboard.visit(SqlToRelConverter.java:4772) at org.apache.calcite.sql2rel.SqlToRelConverter$Blackboard.visit(SqlToRelConverter.java:4077) at org.apache.calcite.sql.SqlCall.accept(SqlCall.java:139) at org.apache.calcite.sql2rel.SqlToRelConverter$Blackboard.convertExpression(SqlToRelConverter.java:4641) at org.apache.calcite.sql2rel.SqlToRelConverter.convertWhere(SqlToRelConverter.java:981) at org.apache.calcite.sql2rel.SqlToRelConverter.convertSelectImpl(SqlToRelConverter.java:649) at org.apache.calcite.sql2rel.SqlToRelConverter.convertSelect(SqlToRelConverter.java:627) at org.apache.calcite.sql2rel.SqlToRelConverter.convertQueryRecursive(SqlToRelConverter.java:3166) at org.apache.calcite.sql2rel.SqlToRelConverter.convertQuery(SqlToRelConverter.java:563) at org.apache.flink.table.planner.calcite.FlinkPlannerImpl.rel(FlinkPlannerImpl.scala:139) at org.apache.flink.table.planner.operations.SqlToOperationConverter.toQueryOperation(SqlToOperationConverter.java:212) at org.apache.flink.table.planner.operations.SqlToOperationConverter.convertSqlQuery(SqlToOperationConverter.java:161) at org.apache.flink.table.planner.operations.SqlToOperationConverter.convert(SqlToOperationConverter.java:91) at org.apache.flink.table.planner.delegation.PlannerBase.parse(PlannerBase.scala:132) at org.apache.flink.table.api.internal.TableEnvironmentImpl.sqlQuery(TableEnvironmentImpl.java:298) at com.rock.test.LookUpTest.main(LookUpTest.java:99)Caused by: java.lang.reflect.InvocationTargetException at sun.reflect.NativeMethodAccessorImpl.invoke0(Native Method) at sun.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:62) at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43) at java.lang.reflect.Method.invoke(Method.java:498) at org.apache.calcite.sql2rel.ReflectiveConvertletTable.lambda$registerNodeTypeMethod$0(ReflectiveConvertletTable.java:83) ... 17 moreCaused by: java.lang.RuntimeException: while converting 1 = 1 AND `F`.`PS_INT` BETWEEN ASYMMETRIC 1000 AND 5000 AND `F`.`S_LONG` < 2147792600 AND `F`.`PS_COMMENT` LIKE '%FILY%' AND `F2`.`C_INT` IS NOT NULL at org.apache.calcite.sql2rel.ReflectiveConvertletTable.lambda$registerNodeTypeMethod$0(ReflectiveConvertletTable.java:86) at org.apache.calcite.sql2rel.SqlNodeToRexConverterImpl.convertCall(SqlNodeToRexConverterImpl.java:63) at org.apache.calcite.sql2rel.SqlToRelConverter$Blackboard.visit(SqlToRelConverter.java:4772) at org.apache.calcite.sql2rel.SqlToRelConverter$Blackboard.visit(SqlToRelConverter.java:4077) at org.apache.calcite.sql.SqlCall.accept(SqlCall.java:139) at org.apache.calcite.sql2rel.SqlToRelConverter$Blackboard.convertExpression(SqlToRelConverter.java:4641) at org.apache.calcite.sql2rel.StandardConvertletTable.convertExpressionList(StandardConvertletTable.java:787) at org.apache.calcite.sql2rel.StandardConvertletTable.convertCall(StandardConvertletTable.java:763) at org.apache.calcite.sql2rel.StandardConvertletTable.convertCall(StandardConvertletTable.java:750) ... 22 moreCaused by: java.lang.reflect.InvocationTargetException at sun.reflect.NativeMethodAccessorImpl.invoke0(Native Method) at sun.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:62) at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43) at java.lang.reflect.Method.invoke(Method.java:498) at org.apache.calcite.sql2rel.ReflectiveConvertletTable.lambda$registerNodeTypeMethod$0(ReflectiveConvertletTable.java:83) ... 30 moreCaused by: java.lang.RuntimeException: while converting 1 = 1 AND `F`.`PS_INT` BETWEEN ASYMMETRIC 1000 AND 5000 AND `F`.`S_LONG` < 2147792600 AND `F`.`PS_COMMENT` LIKE '%FILY%' at org.apache.calcite.sql2rel.ReflectiveConvertletTable.lambda$registerNodeTypeMethod$0(ReflectiveConvertletTable.java:86) at org.apache.calcite.sql2rel.SqlNodeToRexConverterImpl.convertCall(SqlNodeToRexConverterImpl.java:63) at org.apache.calcite.sql2rel.SqlToRelConverter$Blackboard.visit(SqlToRelConverter.java:4772) at org.apache.calcite.sql2rel.SqlToRelConverter$Blackboard.visit(SqlToRelConverter.java:4077) at org.apache.calcite.sql.SqlCall.accept(SqlCall.java:139) at org.apache.calcite.sql2rel.SqlToRelConverter$Blackboard.convertExpression(SqlToRelConverter.java:4641) at org.apache.calcite.sql2rel.StandardConvertletTable.convertExpressionList(StandardConvertletTable.java:787) at org.apache.calcite.sql2rel.StandardConvertletTable.convertCall(StandardConvertletTable.java:763) at org.apache.calcite.sql2rel.StandardConvertletTable.convertCall(StandardConvertletTable.java:750) ... 35 moreCaused by: java.lang.reflect.InvocationTargetException at sun.reflect.NativeMethodAccessorImpl.invoke0(Native Method) at sun.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:62) at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43) at java.lang.reflect.Method.invoke(Method.java:498) at org.apache.calcite.sql2rel.ReflectiveConvertletTable.lambda$registerNodeTypeMethod$0(ReflectiveConvertletTable.java:83) ... 43 moreCaused by: java.lang.RuntimeException: while converting 1 = 1 AND `F`.`PS_INT` BETWEEN ASYMMETRIC 1000 AND 5000 AND `F`.`S_LONG` < 2147792600 at org.apache.calcite.sql2rel.ReflectiveConvertletTable.lambda$registerNodeTypeMethod$0(ReflectiveConvertletTable.java:86) at org.apache.calcite.sql2rel.SqlNodeToRexConverterImpl.convertCall(SqlNodeToRexConverterImpl.java:63) at org.apache.calcite.sql2rel.SqlToRelConverter$Blackboard.visit(SqlToRelConverter.java:4772) at org.apache.calcite.sql2rel.SqlToRelConverter$Blackboard.visit(SqlToRelConverter.java:4077) at org.apache.calcite.sql.SqlCall.accept(SqlCall.java:139) at org.apache.calcite.sql2rel.SqlToRelConverter$Blackboard.convertExpression(SqlToRelConverter.java:4641) at org.apache.calcite.sql2rel.StandardConvertletTable.convertExpressionList(StandardConvertletTable.java:787) at org.apache.calcite.sql2rel.StandardConvertletTable.convertCall(StandardConvertletTable.java:763) at org.apache.calcite.sql2rel.StandardConvertletTable.convertCall(StandardConvertletTable.java:750) ... 48 moreCaused by: java.lang.reflect.InvocationTargetException at sun.reflect.NativeMethodAccessorImpl.invoke0(Native Method) at sun.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:62) at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43) at java.lang.reflect.Method.invoke(Method.java:498) at org.apache.calcite.sql2rel.ReflectiveConvertletTable.lambda$registerNodeTypeMethod$0(ReflectiveConvertletTable.java:83) ... 56 moreCaused by: java.lang.RuntimeException: while converting `F`.`S_LONG` < 2147792600 at org.apache.calcite.sql2rel.ReflectiveConvertletTable.lambda$registerNodeTypeMethod$0(ReflectiveConvertletTable.java:86) at org.apache.calcite.sql2rel.SqlNodeToRexConverterImpl.convertCall(SqlNodeToRexConverterImpl.java:63) at org.apache.calcite.sql2rel.SqlToRelConverter$Blackboard.visit(SqlToRelConverter.java:4772) at org.apache.calcite.sql2rel.SqlToRelConverter$Blackboard.visit(SqlToRelConverter.java:4077) at org.apache.calcite.sql.SqlCall.accept(SqlCall.java:139) at org.apache.calcite.sql2rel.SqlToRelConverter$Blackboard.convertExpression(SqlToRelConverter.java:4641) at org.apache.calcite.sql2rel.StandardConvertletTable.convertExpressionList(StandardConvertletTable.java:787) at org.apache.calcite.sql2rel.StandardConvertletTable.convertCall(StandardConvertletTable.java:763) at org.apache.calcite.sql2rel.StandardConvertletTable.convertCall(StandardConvertletTable.java:750) ... 61 moreCaused by: java.lang.reflect.InvocationTargetException at sun.reflect.NativeMethodAccessorImpl.invoke0(Native Method) at sun.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:62) at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43) at java.lang.reflect.Method.invoke(Method.java:498) at org.apache.calcite.sql2rel.ReflectiveConvertletTable.lambda$registerNodeTypeMethod$0(ReflectiveConvertletTable.java:83) ... 69 moreCaused by: java.lang.AssertionError: Field ordinal 26 is invalid for  type 'RecordType(VARCHAR(2147483647) ORD_ID, INTEGER PS_PARTKEY, BIGINT PS_SUPPKEY, BIGINT PS_AVAILQTY, DOUBLE PS_SUPPLYCOST, VARCHAR(2147483647) PS_COMMENT, INTEGER PS_INT, BIGINT PS_LONG, DOUBLE PS_DOUBLE8, DOUBLE PS_DOUBLE14, DOUBLE PS_DOUBLE15, BIGINT PS_NUMBER1, BIGINT PS_NUMBER2, DOUBLE PS_NUMBER3, DOUBLE PS_NUMBER4, DATE PS_DATE, TIMESTAMP(3) PS_TIMESTAMP, DATE PS_DATE_EVENT, TIMESTAMP(3) PS_TIMESTAMP_EVENT, TIME ATTRIBUTE(PROCTIME) PROCTIME)' at org.apache.calcite.rex.RexBuilder.makeFieldAccess(RexBuilder.java:197) at org.apache.calcite.sql2rel.SqlToRelConverter.convertIdentifier(SqlToRelConverter.java:3710) at org.apache.calcite.sql2rel.SqlToRelConverter.access$2200(SqlToRelConverter.java:217) at org.apache.calcite.sql2rel.SqlToRelConverter$Blackboard.visit(SqlToRelConverter.java:4781) at org.apache.calcite.sql2rel.SqlToRelConverter$Blackboard.visit(SqlToRelConverter.java:4077) at org.apache.calcite.sql.SqlIdentifier.accept(SqlIdentifier.java:317) at org.apache.calcite.sql2rel.SqlToRelConverter$Blackboard.convertExpression(SqlToRelConverter.java:4641) at org.apache.calcite.sql2rel.StandardConvertletTable.convertExpressionList(StandardConvertletTable.java:787) at org.apache.calcite.sql2rel.StandardConvertletTable.convertCall(StandardConvertletTable.java:763) at org.apache.calcite.sql2rel.StandardConvertletTable.convertCall(StandardConvertletTable.java:750) ... 74 more
+
+
+I have uploaded a jar file， Did I use the wrong way ?

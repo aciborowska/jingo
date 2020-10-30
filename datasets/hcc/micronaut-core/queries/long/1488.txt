@@ -1,0 +1,153 @@
+### Steps to Reproduce
+
+- Create app `mn create-app example.micronaut.app`
+
+Create a Controller with a POJO in an endpoint method: 
+
+```
+package example.micronaut;
+
+import io.micronaut.http.HttpStatus;
+import io.micronaut.http.annotation.Body;
+import io.micronaut.http.annotation.Controller;
+import io.micronaut.http.annotation.Post;
+import io.micronaut.http.annotation.Status;
+
+@Controller
+public class HomeController {
+
+    @Post
+    @Status(HttpStatus.OK)
+    public void index(@Body SavePuzzleChallenge dto) {
+
+    }
+}
+```
+
+POJO is annotated with `@Introspected` and contains a field of type `LocalDateTime`
+
+```
+package example.micronaut;
+
+import io.micronaut.core.annotation.Introspected;
+
+import javax.annotation.Nonnull;
+import javax.validation.constraints.NotNull;
+import java.time.LocalDateTime;
+
+@Introspected
+public class SavePuzzleChallenge {
+
+    @Nonnull
+    @NotNull
+    private LocalDateTime dateSent;
+
+    public SavePuzzleChallenge() {
+
+    }
+    public SavePuzzleChallenge(LocalDateTime dateSent) {
+        this.dateSent = dateSent;
+    }
+
+
+    public LocalDateTime getDateSent() {
+        return dateSent;
+    }
+
+    public void setDateSent(LocalDateTime dateSent) {
+        this.dateSent = dateSent;
+    }
+}
+```
+
+Create a test:
+
+```
+package example.micronaut
+
+import io.micronaut.context.ApplicationContext
+import io.micronaut.http.HttpRequest
+import io.micronaut.http.client.BlockingHttpClient
+import io.micronaut.http.client.HttpClient
+import io.micronaut.runtime.server.EmbeddedServer
+import spock.lang.AutoCleanup
+import spock.lang.Shared
+import spock.lang.Specification
+
+import java.time.LocalDateTime
+
+class HomeControllerSpec extends Specification {
+
+    @AutoCleanup
+    @Shared
+    EmbeddedServer embeddedServer = ApplicationContext.run(EmbeddedServer)
+
+    @AutoCleanup
+    @Shared
+    HttpClient httpClient = embeddedServer.applicationContext.createBean(HttpClient, embeddedServer.URL)
+
+    BlockingHttpClient getClient() {
+        httpClient.toBlocking()
+    }
+
+    void "can post with a POJO with a LocalDateTime property"() {
+        when:
+        client.exchange(HttpRequest.POST("/", new SavePuzzleChallenge(LocalDateTime.now())))
+
+        then:
+        noExceptionThrown()
+    }
+}
+```
+
+If you set `jackson.module-scan: true` test pass. 
+
+if you set it to false: 
+
+`src/main/resources/application.yml`
+
+```
+micronaut:
+    application:
+        name: app
+jackson:
+    bean-introspection-module: true
+    module-scan: true
+```
+
+and set http-client logger to trace:
+
+```
+    <logger name="io.micronaut.http.client" level="TRACE"/>
+```
+
+I get the following exception `Cannot construct instance of `java.time.LocalDateTime` (no Creators, like default construct, exist): cannot deserialize from Object value (no delegate- or property-based Creator)`: 
+
+```
+09:44:08.366 [nioEventLoopGroup-1-3] TRACE i.m.http.client.DefaultHttpClient - {"message":"Failed to convert argument [dto] for value [null] due to: Cannot construct instance of `java.time.LocalDateTime` (no Creators, like default construct, exist): cannot deserialize from Object value (no delegate- or property-based Creator)\n at [Source: UNKNOWN; line: -1, column: -1] (through reference chain: example.micronaut.SavePuzzleChallenge[\"dateSent\"])","logref":{"present":false},"path":{"present":true},"_links":{"self":{"href":"/","templated":false,"profile":{"present":false},"deprecation":{"present":false},"title":{"present":false},"hreflang":{"present":false},"type":{"present":false},"name":{"present":false}}}}
+09:44:08.366 [nioEventLoopGroup-1-3] TRACE i.m.http.client.DefaultHttpClient - ----
+09:44:08.382 [nioEventLoopGroup-1-3] DEBUG i.m.http.client.DefaultHttpClient - Unable to decode response body using codec JsonMediaTypeCodec:Error decoding JSON stream for type [class io.micronaut.http.hateoas.JsonError]: Cannot deserialize instance of `java.lang.String` out of START_OBJECT token
+ at [Source: (byte[])"{"message":"Failed to convert argument [dto] for value [null] due to: Cannot construct instance of `java.time.LocalDateTime` (no Creators, like default construct, exist): cannot deserialize from Object value (no delegate- or property-based Creator)\n at [Source: UNKNOWN; line: -1, column: -1] (through reference chain: example.micronaut.SavePuzzleChallenge[\"dateSent\"])","logref":{"present":false},"path":{"present":true},"_links":{"self":{"href":"/","templated":false,"profile":{"present":false},"[truncated 139 bytes]; line: 1, column: 384] (through reference chain: io.micronaut.http.hateoas.JsonError["logref"])
+io.micronaut.http.codec.CodecException: Error decoding JSON stream for type [class io.micronaut.http.hateoas.JsonError]: Cannot deserialize instance of `java.lang.String` out of START_OBJECT token
+ at [Source: (byte[])"{"message":"Failed to convert argument [dto] for value [null] due to: Cannot construct instance of `java.time.LocalDateTime` (no Creators, like default construct, exist): cannot deserialize from Object value (no delegate- or property-based Creator)\n at [Source: UNKNOWN; line: -1, column: -1] (through reference chain: example.micronaut.SavePuzzleChallenge[\"dateSent\"])","logref":{"present":false},"path":{"present":true},"_links":{"self":{"href":"/","templated":false,"profile":{"present":false},"[truncated 139 bytes]; line: 1, column: 384] (through reference chain: io.micronaut.http.hateoas.JsonError["logref"])
+	at io.micronaut.jackson.codec.JsonMediaTypeCodec.decode(JsonMediaTypeCodec.java:139)
+	at io.micronaut.http.client.FullNettyClientHttpResponse.convertByteBuf(FullNettyClientHttpResponse.java:238)
+	at io.micronaut.http.client.FullNettyClientHttpResponse.lambda$getBody$1(FullNettyClientHttpResponse.java:188)
+	at java.util.HashMap.computeIfAbsent(HashMap.java:1127)
+	at io.micronaut.http.client.FullNettyClientHttpResponse.getBody(FullNettyClientHttpResponse.java:166)
+	at io.micronaut.http.client.FullNettyClientHttpResponse.getBody(FullNettyClientHttpResponse.java:136)
+	at io.micronaut.http.client.exceptions.HttpClientResponseException.initResponse(HttpClientResponseException.java:93)
+	at io.micronaut.http.client.exceptions.HttpClientResponseException.<init>(HttpClientResponseException.java:62)
+	at io.micronaut.http.client.exceptions.HttpClientResponseException.<init>(HttpClientResponseException.java:49)
+
+```
+
+### Sample App
+
+[app.zip](https://github.com/micronaut-projects/micronaut-core/files/3042283/app.zip)
+
+### Environment Information
+
+- **Operating System**: MacOS
+- **Micronaut Version:** 1.1.0.RC2
+- **JDK Version:** 1.8.0_191"

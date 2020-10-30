@@ -1,0 +1,96 @@
+This issue may also impact 4.0.0.
+
+Steps to reproduce:
+
+	install opendj with 2000 sample entries
+	perform anonymous searchrate that reconnects for each request:
+
+$ ./bin/searchrate -h 127.0.0.1 -p 1389 -c 32 -b "dc=example,dc=com" -g "rand(0,2000)" "(uid=user.%d)"
+
+	observe terrible throughput:
+
+--------------------------------------------------------------------------------------------
+| Throughput | Response Time | Additional | 
+| (ops/second) | (milliseconds) | Statistics | 
+| recent average | recent average 99.9% 99.99% 99.999% | err/sec Entries/Srch | 
+--------------------------------------------------------------------------------------------
+| 728.7 728.7 | 23.035 22.835 88.08 92.27 92.27 | 0.0 1.0 | 
+| 741.5 735.2 | 22.736 22.784 90.70 113.77 113.77 | 0.0 1.0 | 
+| 861.8 777.9 | 19.398 21.518 92.27 113.77 120.59 | 0.0 1.0 | 
+| 849.0 796.0 | 19.302 20.918 95.42 113.77 120.59 | 0.0 1.0 | 
+| 847.3 806.4 | 19.847 20.690 99.09 113.77 120.59 | 0.0 1.0 | 
+
+	observe searchrate failing after a short amount of time:
+
+Connect Error: Cannot assign requested address
+Stopping...
+
+	observe many ports remain in TIME_WAIT state:
+
+$ netstat -a
+....
+tcp6 0 0 localhost:59485 localhost:1389 TIME_WAIT 
+tcp6 0 0 localhost:51839 localhost:1389 TIME_WAIT 
+tcp6 0 0 localhost:51546 localhost:1389 TIME_WAIT 
+tcp6 0 0 localhost:49889 localhost:1389 TIME_WAIT 
+tcp6 0 0 localhost:55963 localhost:1389 TIME_WAIT 
+tcp6 0 0 localhost:33311 localhost:1389 TIME_WAIT 
+tcp6 0 0 localhost:36499 localhost:1389 TIME_WAIT 
+tcp6 0 0 localhost:36093 localhost:1389 TIME_WAIT 
+tcp6 0 0 localhost:34152 localhost:1389 TIME_WAIT 
+tcp6 0 0 localhost:38660 localhost:1389 TIME_WAIT 
+....
+
+
+
+
+There are probably at least two bugs causing this behavior: one leading to the performance regression, and one leading to the final connect error. The performance regression may be caused by the LDAP listener inadvertently reloading the key store for every new connection, which would be bad enough if we were creating SSL connections, but we're not even doing that. Sample stack:
+
+"LDAP Connection Handler 0.0.0.0 port 1389(4) SelectorRunner" #57 daemon prio=5 os_prio=0 tid=0x00007ff13d536000 nid=0x76ae runnable [0x00007ff239bdd000]
+ java.lang.Thread.State: RUNNABLE
+ at java.util.HashMap.getNode(HashMap.java:571)
+ at java.util.LinkedHashMap.get(LinkedHashMap.java:440)
+ at sun.security.util.MemoryCache.get(Cache.java:387)
+ - locked <0x00000005ccbeda48> (a sun.security.util.MemoryCache)
+ at sun.security.provider.X509Factory.getFromCache(X509Factory.java:221)
+ - locked <0x00000005ccbed998> (a java.lang.Class for sun.security.provider.X509Factory)
+ at sun.security.provider.X509Factory.engineGenerateCertificate(X509Factory.java:98)
+ at java.security.cert.CertificateFactory.generateCertificate(CertificateFactory.java:339)
+ at sun.security.provider.JavaKeyStore.engineLoad(JavaKeyStore.java:755)
+ - locked <0x0000000791572518> (a java.util.Hashtable)
+ at sun.security.provider.JavaKeyStore$JKS.engineLoad(JavaKeyStore.java:56)
+ at sun.security.provider.KeyStoreDelegator.engineLoad(KeyStoreDelegator.java:224)
+ at sun.security.provider.JavaKeyStore$DualFormatJKS.engineLoad(JavaKeyStore.java:70)
+ at java.security.KeyStore.load(KeyStore.java:1445)
+ at sun.security.ssl.TrustManagerFactoryImpl.getCacertsKeyStore(TrustManagerFactoryImpl.java:226)
+ at sun.security.ssl.TrustManagerFactoryImpl.engineInit(TrustManagerFactoryImpl.java:50)
+ at javax.net.ssl.TrustManagerFactory.init(TrustManagerFactory.java:250)
+ at sun.security.ssl.SSLContextImpl.engineInit(SSLContextImpl.java:71)
+ at javax.net.ssl.SSLContext.init(SSLContext.java:282)
+ at org.glassfish.grizzly.ssl.SSLContextConfigurator.createSSLContext(SSLContextConfigurator.java:610)
+ at org.glassfish.grizzly.ssl.SSLFilter.<init>(SSLFilter.java:126)
+ at org.glassfish.grizzly.ssl.SSLFilter.<init>(SSLFilter.java:103)
+ at org.glassfish.grizzly.ssl.SSLFilter.<init>(SSLFilter.java:92)
+ at org.forgerock.opendj.grizzly.StartTlsFilter.<init>(StartTlsFilter.java:47)
+ at org.forgerock.opendj.grizzly.LdapServerFilter.handleAccept(LdapServerFilter.java:170)
+ at org.glassfish.grizzly.filterchain.ExecutorResolver$7.execute(ExecutorResolver.java:103)
+ at org.glassfish.grizzly.filterchain.DefaultFilterChain.executeFilter(DefaultFilterChain.java:284)
+ at org.glassfish.grizzly.filterchain.DefaultFilterChain.executeChainPart(DefaultFilterChain.java:201)
+ at org.glassfish.grizzly.filterchain.DefaultFilterChain.execute(DefaultFilterChain.java:133)
+ at org.glassfish.grizzly.filterchain.DefaultFilterChain.process(DefaultFilterChain.java:112)
+ at org.glassfish.grizzly.ProcessorExecutor.execute(ProcessorExecutor.java:77)
+ at org.glassfish.grizzly.nio.transport.TCPNIOTransport.fireIOEvent(TCPNIOTransport.java:539)
+ at org.glassfish.grizzly.nio.transport.TCPNIOServerConnection$RegisterAcceptedChannelCompletionHandler.completed(TCPNIOServerConnection.java:353)
+ at org.glassfish.grizzly.nio.transport.TCPNIOServerConnection$RegisterAcceptedChannelCompletionHandler.completed(TCPNIOServerConnection.java:320)
+ at org.glassfish.grizzly.nio.DefaultSelectorHandler.registerChannel0(DefaultSelectorHandler.java:336)
+ at org.glassfish.grizzly.nio.DefaultSelectorHandler.access$400(DefaultSelectorHandler.java:64)
+ at org.glassfish.grizzly.nio.DefaultSelectorHandler$RegisterChannelOperation.run(DefaultSelectorHandler.java:467)
+ at org.glassfish.grizzly.nio.DefaultSelectorHandler.processPendingTaskQueue(DefaultSelectorHandler.java:301)
+ at org.glassfish.grizzly.nio.DefaultSelectorHandler.processPendingTasks(DefaultSelectorHandler.java:293)
+ at org.glassfish.grizzly.nio.DefaultSelectorHandler.preSelect(DefaultSelectorHandler.java:101)
+ at org.glassfish.grizzly.nio.SelectorRunner.doSelect(SelectorRunner.java:335)
+ at org.glassfish.grizzly.nio.SelectorRunner.run(SelectorRunner.java:279)
+ at org.glassfish.grizzly.threadpool.AbstractThreadPool$Worker.doWork(AbstractThreadPool.java:593)
+ at org.glassfish.grizzly.threadpool.AbstractThreadPool$Worker.run(AbstractThreadPool.java:573)
+ at java.lang.Thread.run(Thread.java:748)
+

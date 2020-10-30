@@ -1,0 +1,27 @@
+There is a bug and performance issue in the `com.hazelcast.nio.IOUtil#newObjectInputStream` method because of how it is resolving classes. As a result, the supplied classloader (via `com.hazelcast.config.Config#setClassLoader`) is not being used to resolve array declarations like `[Lmy.custom.Type;`.
+
+The default implementation of `java.io.ObjectInputStream#resolveClass` uses `java.lang.Class#forName(java.lang.String, boolean, java.lang.ClassLoader)` to resolve classes. This is done to handle array declarations.
+
+However, the implementation of `com.hazelcast.nio.IOUtil#newObjectInputStream` calls `com.hazelcast.nio.ClassLoaderUtil#loadClass`, which will first try to load the class using:
+
+``` java
+                return theClassLoader.loadClass(className);
+```
+
+This call will _always_ fail for array declarations. We have found that this call is expensive in the Tomcat web application server, as the `WebappClassLoader` needs to search all the application JAR files looking for a match. Given the frequency that this method is called (and fails), it becomes a bottleneck.
+
+Later in the `com.hazelcast.nio.IOUtil#newObjectInputStream` method, the following lines are used to handle array declarations:
+
+``` java
+        if (theClassLoader != null) {
+            if (className.startsWith("[")) {
+                return Class.forName(className, true, theClassLoader);
+            } else {
+                return theClassLoader.loadClass(className);
+            }
+        }
+```
+
+However, by this stage `theClassLoader` has been changed to be either `Thread.currentThread().getContextClassLoader()` or ClassLoaderUtil.class.getClassLoader()`, which is not the configured classloader!
+
+This bug is in version 3.2.1

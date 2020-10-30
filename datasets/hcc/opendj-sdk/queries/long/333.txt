@@ -1,0 +1,63 @@
+After creating a 3-way topology there are differences between the replicas:
+
+
+./bin/ldif-diff -s config/admin-backend.ldif -t ../../m3/OpenDJ-2.4.4/config/admin-backend.ldif
+dn: cn=admin data
+changetype: modify
+add: entryUUID
+entryUUID: 46e489f6-1f92-3120-990f-54a178e95b21
+
+dn: cn=Administrators,cn=admin data
+changetype: modify
+add: entryUUID
+entryUUID: 80faa47a-77d6-3c78-a3c1-ea6ccbd2f735
+
+dn: cn=instance keys,cn=admin data
+changetype: modify
+add: entryUUID
+entryUUID: 66ceef12-f0d6-355e-9e9b-9bdcfe536d8c
+
+dn: cn=secret keys,cn=admin data
+changetype: modify
+add: entryUUID
+entryUUID: 26176404-8825-3f77-9efd-c52bd4061f3b
+
+dn: cn=Server Groups,cn=admin data
+changetype: modify
+add: entryUUID
+entryUUID: 9ee2aa25-d738-31fc-9fde-145fe9a53ae0
+
+dn: cn=all-servers,cn=Server Groups,cn=admin data
+changetype: modify
+add: entryUUID
+entryUUID: 00450d2d-26b0-3d92-b9e8-f616539697fa
+
+This is because the backend is initially populated with LDIF which does not contain the entryUUID attribute. After replication initialization is performed a total update copies the content to the other replicas which add the entryUUID attributes as part of their local import processing. At the end of the replication initialization the initialized replicas contain the entryUUID attribute but the source replica does not.
+
+This has serious implications for subsequent replicated operations: any changes to entries which do not contain the entryUUID attribute are forwarded to other replicas with a faked up entryUUID (the DN by the looks of things). Replaying the change on a replica containing a valid entryUUID fails (noSuchObject) here:
+
+org.opends.server.replication.plugin.LDAPReplicationDomain.handleConflictResolution(PreOperationModifyOperation):
+
+      // Replication ctxt attached => this is a replicated operation being
+      // replayed here, it is necessary to
+      // - check if the entry has been renamed
+      // - check for conflicts
+      String modifiedEntryUUID = ctx.getEntryUid();
+      String currentEntryUUID = EntryHistorical.getEntryUuid(modifiedEntry);
+      if ((currentEntryUUID != null) &&
+          (!currentEntryUUID.equals(modifiedEntryUUID)))
+      {
+        /*
+         * The current modified entry is not the same entry as the one on
+         * the original modification was performed.
+         * Probably the original entry was renamed and replaced with
+         * another entry.
+         * We must not let the modification proceed, return a negative
+         * result and set the result code to NO_SUCH_OBJET.
+         * When the operation will return, the thread that started the
+         * operation will try to find the correct entry and restart a new
+         * operation.
+         */
+         return new SynchronizationProviderResult.StopProcessing(
+              ResultCode.NO_SUCH_OBJECT, null);
+      }

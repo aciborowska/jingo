@@ -1,0 +1,41 @@
+A customer using IDM is performing repeated range queries under cn=changelog looking for new sets of changes. They have observed that if they start from a certain changenumber the searches are fast, but when they start a new search from a later changenumber the searches are very slow. For example, 40 minutes to return 5000 results, with a changelogDb on a relatively slow disk. Note that the fix in bc9bd0a3b42 which improves BlockLogReader efficiency did not help significantly.
+
+Steps to reproduce
+
+Create 2 servers holding dc=example,dc=com and configure replication. Stop the servers. Replace the changelogDb contents on both servers with the contents from google drive. Restart the servers.
+
+ build.sh does all the above, but may need a little local tweaking.
+
+Run these two test searches:
+
+
+dj1/bin/ldapsearch -h localhost -p 389 -D 'cn=Directory Manager' -w password -b 'cn=changelog' '(&(changeNumber>=1693651)(changeNumber<=1694150))' > /dev/null
+dj1/bin/ldapsearch -h localhost -p 389 -D 'cn=Directory Manager' -w password -b 'cn=changelog' '(&(changeNumber>=1694151)(changeNumber<=1694650))' > /dev/null
+
+
+
+Expected results
+
+Both searches should return 500 changes, in a second or two.
+
+Actual results
+
+The first search returns the changes in 2 seconds, the second search returns the changes in  1 minute 20s. The etimes logged are 686ms and 78725ms respectively. Times are from my laptop using an SSD, which is quicker than the customer's disk.
+
+Analysis
+
+In the fast case the first changenumber is for 0102016e4b55328700c755d820, which is a change at Nov 8 14:05 GMT. The schema and admin data domains have some changes just after that time, so the search proceeds with three non-exhausted cursors.
+
+In the slow case the first changenumber is for 0102016e4c67d14e00c77a5320 which is at Nov 8 19:05 GMT. The schema and admin data domains do not have any changes after that time, so those two domaindb cursors are (correctly) exhausted.
+
+CompositeDBBCursor.recycleExhaustedCursors() will attempt to call addCursor() on each exhausted cursor, which will end up calling the cursor.next() method.
+
+In FileReplicaDBCursor.next() we find that the cursor needs positioning. We call cursor.positionTo() which ultimately ends in BlockLogReader.searchClosestBlockStartToKey(). This does a binary search through the last log file, which causes a relatively large number of seeks and record reads, before failing.
+
+This results in FileReplicaDBCursor returning false, and leaving needsPositioning still false. Consequently every call to recycle this cursor repeats all of this again and again.
+
+Workaround
+
+Adding a new change to the admin data and schema domains will cause the slow search to not start with any exhausted cursors. Restarting one of the DSes is sufficient for this, as it will record a ReplicaOfflineMsg in the changelog.
+
+This workaround is not reasonable for a production environment.

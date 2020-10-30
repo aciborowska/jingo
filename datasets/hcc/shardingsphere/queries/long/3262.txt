@@ -1,0 +1,63 @@
+## Bug Report
+
+**For English only**, other languages will not accept.
+
+### Bug
+When logic encrypt column has owner in Query SQL, its assistedQueryColumn, cipherColumn and plainColumn can not be rewrite in actual SQLs correctly.
+
+### Which version of ShardingSphere did you use?
+**4.0.0-RC2**
+
+### Description
+Considering Encrypt Rule is,
+```
+encryptRule:
+  tables:
+    t_account_bak:
+      columns:
+        password:
+          cipherColumn: cipher_password
+          assistedQueryColumn: assisted_query_password
+          plainColumn: plain_password
+          encryptor: assisted_query
+        amount:
+          cipherColumn: cipher_amount
+          plainColumn: plain_amount
+          encryptor: normal
+props:
+  query.with.cipher.column: true
+```
+And SQL is,
+> SELECT a.account_id, a.password, a.amount AS a, a.status AS s FROM t_account_bak AS a WHERE a.account_id = 1 AND a.password = 'aaa' AND a.amount = 1000 AND a.status = 'OK'
+
+The correct rewritten SQL is,
+> SELECT a.account_id, a.cipher_password, a.cipher_amount AS a, a.status AS s FROM t_account_bak AS a WHERE a.account_id = 1 AND a.assisted_query_password = 'assisted_query_aaa' AND a.cipher_amount = 'encrypt_1000' AND a.status = 'OK'
+
+But currently it is rewritten as,
+>SELECT a.account_id, a.cipher_password, a.cipher_amount AS a, a.status AS s FROM t_account_bak AS a WHERE a.account_id = 1 AND assisted_query_password = 'assisted_query_aaa' AND cipher_amount = 'encrypt_1000' AND a.status = 'OK'
+
+**As you can see, the table owner,`a` of `assisted_query_password` and `cipher_amount` is lost.** 😢 
+
+### How to make it recurred?
+1. Modify [select_for_query_with_cipher.xml](https://github.com/apache/incubator-shardingsphere/blob/dev/sharding-core/sharding-core-rewrite/src/test/resources/encrypt/select_for_query_with_cipher.xml) in ShardingSphere project, and make `the correct ouput` valid.
+Here it is,
+```
+ <!--Here is the correct rewritten SQL. If you want to test and fix me, please note the above output, and make me valid.-->
+ <!--<output sql="SELECT a.account_id, a.cipher_password, a.cipher_amount AS a, a.status AS s FROM t_account_bak AS a WHERE a.account_id = 1 AND a.assisted_query_password = 'assisted_query_aaa' AND a.cipher_amount = 'encrypt_1000' AND a.status = 'OK'" />-->
+```
+2.Run [Related tests](https://github.com/apache/incubator-shardingsphere/blob/dev/sharding-core/sharding-core-rewrite/src/test/java/org/apache/shardingsphere/core/rewrite/parameterized/engine/EncryptSQLRewriteEngineParameterizedTest.java)
+3.AssertionError brings up.
+
+❗️ **Therefore our task is to make this AssertionError disappear.**
+
+### Why does it happen?
+1.After parsing, the objects of cipherColumn, assistedQueryColumn, plainColumn will be stored as 
+`EncryptPredicateToken`, which does not keep `table owner`. 
+2.When rewriting SQL, rewriter will call `toString()` of `EncryptPredicateToken`, but there is no `table owner`, so the result of `toString()` is `assisted_query_password` and `cipher_amount`, not `a.assisted_query_password` and `a.cipher_amount`.
+
+### How to fix it?
+1. To make `EncryptPredicateToken` keep `table owner`, instead of putting `columnName` in it, you should make `ColumnSegment` as its member.
+2. `Table owner` and `column name` are the members of `ColumnSegment`.
+3.Modify toString() of `EncryptPredicateToken` to append `tableName` from `ColumnSegment` to result.
+
+#### Looking forward to your participation. 

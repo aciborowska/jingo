@@ -1,0 +1,35 @@
+When job is cancelled, we expect to see it in flink's history server. But I can not see my job after it is cancelled.
+
+After digging into the problem, I find that the function archiveExecutionGraph is not executed. Below is the brief log:
+log
+2020-08-14 15:10:06,406 INFO org.apache.flink.runtime.executiongraph.ExecutionGraph [flink-akka.actor.default-dispatcher- 15] - Job EtlAndWindow (6f784d4cc5bae88a332d254b21660372) switched from state RUNNING to CANCELLING.
+
+2020-08-14 15:10:06,415 DEBUG org.apache.flink.runtime.dispatcher.MiniDispatcher [flink-akka.actor.default-dispatcher-3] - Shutting down per-job cluster because the job was canceled.
+
+2020-08-14 15:10:06,629 INFO org.apache.flink.runtime.dispatcher.MiniDispatcher [flink-akka.actor.default-dispatcher-3] - Stopping dispatcher akka.tcp://flink@bjfk-c9865.yz02:38663/user/dispatcher.
+
+2020-08-14 15:10:06,629 INFO org.apache.flink.runtime.dispatcher.MiniDispatcher [flink-akka.actor.default-dispatcher-3] - Stopping all currently running jobs of dispatcher akka.tcp://flink@bjfk-c9865.yz02:38663/user/dispatcher.
+
+2020-08-14 15:10:06,631 INFO org.apache.flink.runtime.jobmaster.JobMaster [flink-akka.actor.default-dispatcher-29] - Stopping the JobMaster for job EtlAndWindow(6f784d4cc5bae88a332d254b21660372).
+
+2020-08-14 15:10:06,632 DEBUG org.apache.flink.runtime.jobmaster.JobMaster [flink-akka.actor.default-dispatcher-29] - Disconnect TaskExecutor container_e144_1590060720089_2161_01_000006 because: Stopping JobMaster for job EtlAndWindow(6f784d4cc5bae88a332d254b21660372).
+
+2020-08-14 15:10:06,646 INFO org.apache.flink.runtime.executiongraph.ExecutionGraph [flink-akka.actor.default-dispatcher-29] - Job EtlAndWindow (6f784d4cc5bae88a332d254b21660372) switched from state CANCELLING to CANCELED.
+
+2020-08-14 15:10:06,664 DEBUG org.apache.flink.runtime.dispatcher.MiniDispatcher [flink-akka.actor.default-dispatcher-4] - There is a newer JobManagerRunner for the job 6f784d4cc5bae88a332d254b21660372.
+
+From the log, we can see that job is not finished when dispatcher closes. The process is as following:
+
+	Receive cancel command and send it to all tasks async.
+	In MiniDispatcher, begin to shutting down per-job cluster.
+	Stopping dispatcher and remove job.
+	Job is cancelled and callback is executed in method startJobManagerRunner.
+	Because job is removed before, so currentJobManagerRunner is null which not equals to the original jobManagerRunner. In this case, archivedExecutionGraph will not be uploaded.
+
+
+
+In normal cases, I find that job is cancelled first and then dispatcher is stopped so that archivedExecutionGraph will succeed. But I think that the order is not constrained and it is hard to know which comes first. 
+
+Above is what I suspected. If so, then we should fix it.
+
+ 

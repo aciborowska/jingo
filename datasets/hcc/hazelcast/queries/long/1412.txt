@@ -1,0 +1,164 @@
+Version: Hazelcast community edition 3.1.3
+
+When two instances of Hazelcast are running and IQueue.offer is called QueueStore.store is called once only.  However, when TransactionalQueue.offer is called QueueStore.store is called twice.
+
+Please find attached testcase:
+
+package com.test.hazelcast.integration;
+
+import static org.junit.Assert.assertEquals;
+
+import java.util.Collection;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.TimeUnit;
+
+import org.junit.Test;
+
+import com.hazelcast.client.HazelcastClient;
+import com.hazelcast.client.config.ClientConfig;
+import com.hazelcast.config.Config;
+import com.hazelcast.config.QueueConfig;
+import com.hazelcast.config.QueueStoreConfig;
+import com.hazelcast.core.Hazelcast;
+import com.hazelcast.core.HazelcastInstance;
+import com.hazelcast.core.IQueue;
+import com.hazelcast.core.QueueStore;
+import com.hazelcast.core.TransactionalQueue;
+import com.hazelcast.transaction.TransactionContext;
+
+public class QueueOfferCallsStoreMultipleTimes
+{
+    private static final String QUEUENAME = "test";
+    @Test
+    public void testStore() throws InterruptedException {
+        Config config = new Config();
+
+```
+    QueueConfig queueConfig = new QueueConfig();
+    queueConfig.setName("test");
+    queueConfig.setMaxSize(500);
+    queueConfig.setBackupCount(1);
+    queueConfig.setEmptyQueueTtl(-1);
+    queueConfig.setAsyncBackupCount(0);
+
+    QueueStoreConfig queueStoreConfig = new QueueStoreConfig();
+    queueStoreConfig.setClassName(CountQueueStore.class.getName());
+    queueStoreConfig.setProperty("binary", "false");
+    queueStoreConfig.setProperty("memory-limit","500");
+    queueStoreConfig.setProperty("bulk-load", "500");
+
+
+    queueConfig.setQueueStoreConfig(queueStoreConfig);
+    config.addQueueConfig(queueConfig);
+    // Two instances
+    HazelcastInstance instance1 = Hazelcast.newHazelcastInstance(config);
+    HazelcastInstance instance2 = Hazelcast.newHazelcastInstance(config);
+
+    // configure client
+    ClientConfig clientConfig = new ClientConfig();
+    clientConfig.addAddress("127.0.0.1:5701");
+    HazelcastInstance client1 = HazelcastClient.newHazelcastClient(clientConfig);
+
+    IQueue<String> queue = client1.getQueue(QUEUENAME);
+    queue.offer("test", 60l, TimeUnit.SECONDS );
+
+    assertEquals(1,CountQueueStore.count);
+
+    // Reset counter.
+    CountQueueStore.count = 0;
+
+
+    // Perform offer
+    TransactionContext context = client1.newTransactionContext();
+    context.beginTransaction();
+
+    try
+    {
+       TransactionalQueue<String> txnQueue = context.getQueue(QUEUENAME);
+       boolean result = txnQueue.offer("test" , 60l, TimeUnit.SECONDS );
+       if (!result) {
+          throw new Exception("Queue is still full after 60 seconds");
+       }
+
+       context.commitTransaction();
+    }
+    catch(Throwable t) 
+    {
+       //context.rollbackTransaction();
+       t.printStackTrace();
+
+    }
+
+    // Expect that the queue count should be equal to 1.
+    assertEquals(1,CountQueueStore.count);
+
+    instance1.shutdown();
+    instance2.shutdown();
+}
+
+
+private static class CountQueueStore 
+implements QueueStore<String>
+{
+    public static int count;
+
+    @SuppressWarnings("unused")
+    public CountQueueStore()
+    {
+        count = 0;
+    }
+
+    @Override
+    public void delete(Long arg0)
+    {
+        // TODO Auto-generated method stub
+
+    }
+
+    @Override
+    public void deleteAll(Collection<Long> arg0)
+    {
+        // TODO Auto-generated method stub
+
+    }
+
+    @Override
+    public String load(Long arg0)
+    {
+        // TODO Auto-generated method stub
+        return null;
+    }
+
+    @Override
+    public Map<Long,String> loadAll(Collection<Long> arg0)
+    {
+        // TODO Auto-generated method stub
+        return null;
+    }
+
+    @Override
+    public Set<Long> loadAllKeys()
+    {
+        // TODO Auto-generated method stub
+        return null;
+    }
+
+    @Override
+    public void store(Long arg0, String arg1)
+    {
+
+        count++;
+    }
+
+    @Override
+    public void storeAll(Map<Long,String> arg0)
+    {
+        // TODO Auto-generated method stub
+
+    }
+
+}
+```
+
+}

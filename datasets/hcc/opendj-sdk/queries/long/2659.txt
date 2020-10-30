@@ -1,0 +1,28 @@
+An admin account is allowed to write userPassword attributes, and is assigned the password-reset privilege via a collective attribute subentry. (See the attached LDIF file for details) The admin account's password policy is set to update the entry's last-login-time-attribute, set up by following the admin guide.
+
+Run one modrate to change a bunch of userPasswords randomly:
+
+
+bin/modrate -h rih.local -p 1389 -D "uid=amadmin,dc=example,dc=com" -w password -F -c 20 -t 20 -b "uid=user.%d,ou=people,dc=example,dc=com" -g "rand(0,2000)" -g "randstr(16)" 'userPassword:%2$s'
+
+
+
+Note 20 connections are being used.
+
+After a while, start an identical modrate in another shell. The connections in the first modrate immediately start to fail:
+
+
+8732.1   8678.0  46.208   46.427  302.452  549.738  1046.194      0.0
+8623.0   8676.6  46.826   46.438  301.924  554.596  1047.377      0.0
+8634.0   8675.5  46.464   46.438  301.204  554.825  1049.835      0.0
+7215.1   8638.9  55.510   46.628  300.960  555.709  1049.032   3365.2
+4910.3   8546.2  81.747   47.130  300.457  555.357  1049.032   4910.3
+3851.5   8432.1  104.052   47.762  313.550  555.349  1049.032   3851.5
+
+
+
+The second modrate's connections continue working fine. After killing the second modrate, the first modrate's connections continue to fail.
+
+I suspect this may be caused by the org.opends.server.core.AuthenticatedUsers.postResponse(ModifyOperation) method, which is getting called on the first modrate's connections when the second modrate's connections bind and update the admin account's entry. This method iterates through all the client connections authenticated as the admin account, and calls conn.updateAuthenticationInfo(oldEntry, newEntry) on each one.
+
+The postResponse()/updateAuthenticationInfo() methods do not have access to the entry's virtual attributes, so are effectively dropping all the privileges.

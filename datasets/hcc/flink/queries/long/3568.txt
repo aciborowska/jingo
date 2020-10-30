@@ -1,0 +1,79 @@
+Hi,
+first of all, this is my first time filing a bug report for Apache Flink. If you need any additional information or something else, please let me know. 
+
+Background
+I was trying to process Wikipedia's XML dumps with Apache Flink. To save disk space I decided to use the bziped versions. 
+
+Apache Flink is compatible to Hadoop's InputFormats  and Hadoop's TextInputFormat supports compressed files. Bzip2 files are splittable and thus perfect for parallel processing.
+
+Problem
+I started to test the decompression with a simple Job based on the Apache Flink Quickstart code:
+
+
+    public static void main(String[] args) throws Exception {
+
+        if(args.length != 2) {
+            System.err.println("USAGE: Job <wikipediadump.xml.bz2> <output.txt>");
+            return;
+        }
+
+        // set up the execution environment
+        final ExecutionEnvironment env = ExecutionEnvironment.getExecutionEnvironment();
+
+        DataSet<Tuple2<LongWritable, Text>> input =
+                env.readHadoopFile(new TextInputFormat(), LongWritable.class, Text.class, args[0]);
+
+        input.writeAsText(args[1]);
+
+
+        // execute program
+        env.execute("Bzip compression test");
+}
+
+
+When starting the job, I get the following exception:
+
+02/29/2016 11:59:50 CHAIN DataSource (at createInput(ExecutionEnvironment.java:508) (org.apache.flink.api.java.hadoop.mapred.HadoopInputFormat)) -> Map (Map at main(Job.java:67))(1/2) switched to FAILED 
+java.lang.ArrayIndexOutOfBoundsException: 18002
+    at org.apache.hadoop.io.compress.bzip2.CBZip2InputStream.recvDecodingTables(CBZip2InputStream.java:730)
+    at org.apache.hadoop.io.compress.bzip2.CBZip2InputStream.getAndMoveToFrontDecode(CBZip2InputStream.java:801)
+    at org.apache.hadoop.io.compress.bzip2.CBZip2InputStream.initBlock(CBZip2InputStream.java:504)
+    at org.apache.hadoop.io.compress.bzip2.CBZip2InputStream.changeStateToProcessABlock(CBZip2InputStream.java:333)
+    at org.apache.hadoop.io.compress.bzip2.CBZip2InputStream.read(CBZip2InputStream.java:399)
+    at org.apache.hadoop.io.compress.BZip2Codec$BZip2CompressionInputStream.read(BZip2Codec.java:483)
+    at java.io.InputStream.read(InputStream.java:101)
+    at org.apache.hadoop.mapreduce.lib.input.CompressedSplitLineReader.fillBuffer(CompressedSplitLineReader.java:130)
+    at org.apache.hadoop.util.LineReader.readDefaultLine(LineReader.java:216)
+    at org.apache.hadoop.util.LineReader.readLine(LineReader.java:174)
+    at org.apache.hadoop.mapreduce.lib.input.CompressedSplitLineReader.readLine(CompressedSplitLineReader.java:159)
+    at org.apache.hadoop.mapred.LineRecordReader.next(LineRecordReader.java:209)
+    at org.apache.hadoop.mapred.LineRecordReader.next(LineRecordReader.java:47)
+    at org.apache.flink.api.java.hadoop.mapred.HadoopInputFormatBase.fetchNext(HadoopInputFormatBase.java:185)
+    at org.apache.flink.api.java.hadoop.mapred.HadoopInputFormatBase.reachedEnd(HadoopInputFormatBase.java:179)
+    at org.apache.flink.runtime.operators.DataSourceTask.invoke(DataSourceTask.java:166)
+    at org.apache.flink.runtime.taskmanager.Task.run(Task.java:584)
+    at java.lang.Thread.run(Thread.java:745)
+
+
+This does not happen with "-p 1", but a parallelism greater 1.
+
+Research
+Googling the error message leads to some spark/hadoop mailing lists and it looks like the used "compress.bzip2.CBZip2InputStream" class is not threadsafe:
+
+
+	Link one
+	Link two
+	Link three
+	Link four
+
+
+
+Especially Link one is the most interesting one, because the Hadoop project resolved the issue:
+
+
+Hadoop uses CBZip2InputStream to decode bzip2 files. However, the implementation is not threadsafe. This is not a really problem for Hadoop MapReduce because Hadoop runs each task in a separate JVM. But for other libraries that utilize multithreading and use Hadoop's InputFormat, e.g., Spark, it will cause exceptions like the following:
+
+My guess is that Apache Flink needs to update/patch the CBZip2InputStream class to resolve the problem? 
+
+All the best,
+Sebastian

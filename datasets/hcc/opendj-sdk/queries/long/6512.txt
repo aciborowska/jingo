@@ -1,0 +1,84 @@
+A customer reports that after upgrading from 2.6 to 6.5, they see occasional "hangs" in DJ when it is under load, and DJ does not recover even after "several hours".
+
+To reproduce the problem configure a standalone (not replicating) server with a default queue size of 1000 (the default), and then run a searchrate with more than 1000 connections. For example:
+
+
+$ ./searchrate -h hostname -p 1389 -c 1100 --warmUpDuration 15 -m 1000000000 -s sub -b "dc=example,dc=com" "(&(objectClass=inetOrgPerson)(uid=user.0))" uid
+
+
+
+After some time, the 4 worker threads are all apparently stuck with the following stack trace:
+
+
+"Worker Thread 3" #78 prio=5 os_prio=0 tid=0x00007fa404d15000 nid=0x296c waiting on condition [0x00007fa3ab9fa000]
+   java.lang.Thread.State: TIMED_WAITING (parking)
+	at sun.misc.Unsafe.park(Native Method)
+	- parking to wait for  <0x000000009770d330> (a java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject)
+	at java.util.concurrent.locks.LockSupport.parkNanos(LockSupport.java:215)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.awaitNanos(AbstractQueuedSynchronizer.java:2078)
+	at java.util.concurrent.LinkedBlockingQueue.offer(LinkedBlockingQueue.java:385)
+	at org.opends.server.extensions.TraditionalWorkQueue.submitOperation(TraditionalWorkQueue.java:251)
+	at org.opends.server.extensions.TraditionalWorkQueue.submitOperation(TraditionalWorkQueue.java:218)
+	at org.opends.server.core.DirectoryServer.enqueueRequest(DirectoryServer.java:2933)
+	at org.opends.server.core.WorkQueueStrategy.enqueueRequest(WorkQueueStrategy.java:33)
+	at org.opends.server.protocols.ldap.LdapClientConnection.addOperationInProgress(LdapClientConnection.java:441)
+	at org.opends.server.protocols.ldap.LdapClientConnection.access$500(LdapClientConnection.java:114)
+	at org.opends.server.protocols.ldap.LdapClientConnection$2.processOperation(LdapClientConnection.java:725)
+	at org.opends.server.protocols.ldap.LdapClientConnection$2.visitRequest(LdapClientConnection.java:697)
+	at org.opends.server.protocols.ldap.LdapClientConnection$2.visitRequest(LdapClientConnection.java:548)
+	at org.forgerock.opendj.ldap.messages.SearchRequestImpl.accept(SearchRequestImpl.java:62)
+	at org.opends.server.protocols.ldap.LdapClientConnection.handleRequestAccept(LdapClientConnection.java:548)
+	at org.opends.server.protocols.ldap.LdapClientConnection.handleRequest(LdapClientConnection.java:528)
+	at org.opends.server.protocols.ldap.LdapClientConnection.lambda$handle$1(LdapClientConnection.java:491)
+	at org.opends.server.protocols.ldap.LdapClientConnection$$Lambda$302/4502779.subscribe(Unknown Source)
+	at io.reactivex.internal.operators.flowable.FlowableCreate.subscribeActual(FlowableCreate.java:72)
+	at io.reactivex.Flowable.subscribe(Flowable.java:13234)
+	at io.reactivex.internal.operators.flowable.FlowableDoOnLifecycle.subscribeActual(FlowableDoOnLifecycle.java:38)
+	at io.reactivex.Flowable.subscribe(Flowable.java:13234)
+	at io.reactivex.Flowable.subscribe(Flowable.java:13183)
+	at io.reactivex.internal.operators.flowable.FlowableLift.subscribeActual(FlowableLift.java:49)
+	at io.reactivex.Flowable.subscribe(Flowable.java:13234)
+	at io.reactivex.internal.operators.flowable.FlowableOnErrorNext.subscribeActual(FlowableOnErrorNext.java:39)
+	at io.reactivex.Flowable.subscribe(Flowable.java:13234)
+	at io.reactivex.internal.operators.flowable.FlowableOnErrorNext.subscribeActual(FlowableOnErrorNext.java:39)
+	at io.reactivex.Flowable.subscribe(Flowable.java:13234)
+	at io.reactivex.internal.operators.flowable.FlowableDoOnEach.subscribeActual(FlowableDoOnEach.java:50)
+	at io.reactivex.Flowable.subscribe(Flowable.java:13234)
+	at io.reactivex.Flowable.subscribe(Flowable.java:13180)
+	at io.reactivex.internal.operators.flowable.FlowableConcatMap$ConcatMapImmediate.drain(FlowableConcatMap.java:344)
+	at io.reactivex.internal.operators.flowable.FlowableConcatMap$BaseConcatMapSubscriber.innerComplete(FlowableConcatMap.java:171)
+	at io.reactivex.internal.operators.flowable.FlowableConcatMap$ConcatMapInner.onComplete(FlowableConcatMap.java:617)
+	at io.reactivex.internal.operators.flowable.FlowableDoOnEach$DoOnEachSubscriber.onComplete(FlowableDoOnEach.java:135)
+	at io.reactivex.internal.operators.flowable.FlowableOnErrorNext$OnErrorNextSubscriber.onComplete(FlowableOnErrorNext.java:119)
+	at io.reactivex.internal.operators.flowable.FlowableOnErrorNext$OnErrorNextSubscriber.onComplete(FlowableOnErrorNext.java:119)
+	at org.opends.server.protocols.BlockingBackpressureOperator$BlockingSubscriberWrapper.onComplete(BlockingBackpressureOperator.java:136)
+	at io.reactivex.internal.util.HalfSerializer.onComplete(HalfSerializer.java:91)
+	at io.reactivex.internal.subscribers.StrictSubscriber.onComplete(StrictSubscriber.java:109)
+	at io.reactivex.internal.operators.flowable.FlowableDoOnLifecycle$SubscriptionLambdaSubscriber.onComplete(FlowableDoOnLifecycle.java:94)
+	at io.reactivex.internal.operators.flowable.FlowableCreate$BaseEmitter.complete(FlowableCreate.java:262)
+	at io.reactivex.internal.operators.flowable.FlowableCreate$BaseEmitter.onComplete(FlowableCreate.java:254)
+	at org.opends.server.protocols.ReactiveHandlersUtils.emitResult(ReactiveHandlersUtils.java:388)
+	at org.opends.server.protocols.ldap.LdapClientConnection.sendResponse(LdapClientConnection.java:282)
+	at org.opends.server.core.SearchOperation.sendSearchResultDone(SearchOperation.java:636)
+	at org.opends.server.core.SearchOperation.run(SearchOperation.java:779)
+	at org.opends.server.extensions.TraditionalWorkQueue$WorkerThread.run(TraditionalWorkQueue.java:462)
+
+
+
+It looks like the completion of a search (sendSearchResultDone) is causing another read of an incoming request (via the call to drain), which is apparently deadlocking because the queue is full (see the top of the stack) and all the other threads are also doing the same thing.
+
+We don't reject LDAP operations when the queue is full.
+
+The customer has several hierarchically related backends, which may be contributing to the issue as the search has to be decomposed into each backend:
+
+
+	ou=core,ou=forgerockam,dc=example,dc=com
+	ou=dmz,ou=forgerockam,dc=example,dc=com
+	ou=core,ou=openam,dc=example,dc=com
+	ou=dmz,ou=openam,dc=example,dc=com
+	dc=example,dc=com
+	ou=rdmz,ou=openam,dc=example,dc=com
+
+
+
+The claim is that this workload did not hang a 2.6.x instance.

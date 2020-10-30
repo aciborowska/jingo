@@ -1,0 +1,70 @@
+Found with 6.5.0 rev 0bb3f4a81aa
+
+We have 2 DJs in a DSRS topology, with some data.
+We do a ldapmodify on server 1:
+
+
+./DJ1/opendj/bin/ldapmodify -h nameserver.example.com -p 1389 -D "cn=Directory Manager" -w password 	
+dn: cn=A1,ou=People,dc=example,dc=com
+objectclass:top
+objectclass:organizationalperson
+objectclass:inetorgperson
+objectclass:person
+sn: User
+cn: Test User
+description: 3
+description: 2
+
+
+
+Then we disconnect both RS this way:
+
+
+/DJ1/opendj/bin/dsconfig -h nameserver.example.com -p 4444 -D "cn=Directory Manager" -w password -X set-replication-server-prop --provider-name "Multimaster Synchronization" --reset replication-server -n
+
+/DJ2/opendj/bin/dsconfig -h nameserver.example.com -p 4445 -D "cn=Directory Manager" -w password -X set-replication-server-prop --provider-name "Multimaster Synchronization" --reset replication-server -n
+
+
+
+We do ldapmodify on both servers:
+
+/DJ1/opendj/bin/ldapmodify -h nameserver.example.com -p 1389 -D "cn=Directory Manager" -w password 	
+dn: cn=A1,ou=People,dc=example,dc=com
+changetype: modify
+replace: description
+description:3
+description:4 	
+
+/DJ2/opendj/bin/ldapmodify -h nameserver.example.com -p 1390 -D "cn=Directory Manager" -w password 	
+dn: cn=A1,ou=People,dc=example,dc=com
+changetype: modify
+replace: description
+description:5
+description:6 	
+
+
+
+
+We reconnect RS1:
+
+/DJ1/opendj/bin/dsconfig -h nameserver.example.com -p 4444 -D "cn=Directory Manager" -w password -X set-replication-server-prop --provider-name "Multimaster Synchronization" --add "replication-server:nameserver.example.com:8989" --add "replication-server:nameserver.example.com:8990" -n
+
+
+
+Then RS2:
+
+/DJ2/opendj/bin/dsconfig -h nameserver.example.com -p 4445 -D "cn=Directory Manager" -w password -X set-replication-server-prop --provider-name "Multimaster Synchronization" --add "replication-server:nameserver.example.com:8989" --add "replication-server:nameserver.example.com:8990" -n
+
+
+
+When doing so, we get an exception in DJ2 error logs:
+
+[04/May/2018:16:14:39 +0200] category=CORE severity=ERROR msgID=140 msg=An uncaught exception during processing for thread Change number indexer has caused it to terminate abnormally. The stack trace for that exception is: IllegalStateException: Expected the new change (baseDN=dc=com, csn=000001632b81209200010000003c (sid=1,tsd=Fri May 04 16:14:32 CEST 2018,ts=1525443272850,seqnum=60)) to be newer than the newest change in the change number index DB (baseDN=dc=com, csn=000001632b8125e4000200000026 (sid=2,tsd=Fri May 04 16:14:34 CEST 2018,ts=1525443274212,seqnum=38)), but it was not. changelogCookie is "dc=com:000001632b810aab000100000031 000001632b8125e4000200000026;" (ChangeNumberIndexer.java:433 ChangeNumberIndexer.java:394)
+
+
+
+to reproduce:
+
+
+./run-pybot.py -s replication_group1.Conflict -t replication_conflict_002 OpenDJ
+

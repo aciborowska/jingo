@@ -1,0 +1,73 @@
+There appears to be a regression in password policy, where subentry password policies used to fall back to the configuration in the default password policy to find a password generator, and the fallback mechanism no longer works as of today.
+
+In the following example, rather than "unwilling to perform" I'd expect a random password to be generated for the ldappasswordmodify command:
+
+$ cd /path/to
+$ unzip -q ~/.m2/repository/org/forgerock/opendj/opendj-server/7.0.0-SNAPSHOT/opendj-server-7.0.0-SNAPSHOT.zip 
+$ /path/to/opendj/setup \
+ --serverId first-ds \
+ --deploymentKeyPassword password \
+ --rootUserDn uid=admin \
+ --rootUserPassword password \
+ --monitorUserPassword password \
+ --hostname localhost \
+ --ldapPort 1389 \
+ --ldapsPort 1636 \
+ --httpsPort 8443 \
+ --adminConnectorPort 4444 \
+ --profile ds-evaluation \
+ --acceptLicense
+$ echo password > /tmp/10k_most_common
+$ gzip /tmp/10k_most_common 
+$ ldapmodify \
+ --hostname localhost \
+ --port 1636 \
+ --useSsl \
+ --usePkcs12TrustStore /path/to/opendj/config/keystore \
+ --trustStorePasswordFile /path/to/opendj/config/keystore.pin \
+ --bindDN uid=admin \
+ --bindPassword password << EOF
+dn: cn=NIST inspired policy,dc=example,dc=com
+objectClass: top
+objectClass: subentry
+objectClass: pwdPolicy
+objectClass: ds-pwp-password-policy
+objectClass: ds-pwp-validator
+objectClass: ds-pwp-length-based-validator
+objectClass: ds-pwp-dictionary-validator
+cn: NIST inspired policy
+pwdAttribute: userPassword
+ds-pwp-default-password-storage-scheme: PBKDF2-HMAC-SHA512
+ds-pwp-min-password-length: 8
+ds-pwp-dictionary-data:<file:///tmp/10k_most_common.gz
+subtreeSpecification: {base "ou=people", specificationFilter "(objectclass=person)" }
+EOF
+# ADD operation successful for DN cn=NIST inspired policy,dc=example,dc=com
+
+$ ldapsearch \
+ --hostname localhost \
+ --port 1636 \
+ --useSsl \
+ --usePkcs12TrustStore /path/to/opendj/config/keystore \
+ --trustStorePasswordFile /path/to/opendj/config/keystore.pin \
+ --bindDN uid=admin \
+ --bindPassword password \
+ --baseDN dc=example,dc=com \
+ "(uid=bjensen)" \
+ pwdPolicySubentry
+dn: uid=bjensen,ou=People,dc=example,dc=com
+pwdPolicySubentry: cn=NIST inspired policy,dc=example,dc=com
+
+$ ldappasswordmodify \
+ --hostname localhost \
+ --port 1636 \
+ --useSsl \
+ --usePkcs12TrustStore /path/to/opendj/config/keystore \
+ --trustStorePasswordFile /path/to/opendj/config/keystore.pin \
+ --bindDN uid=admin \
+ --bindPassword password \
+ --authzID "u:bjensen"
+The LDAP password modify operation failed: 53 (Unwilling to Perform)
+Additional Information:  No new password was provided, and no password
+generator has been defined that may be used to automatically create a new
+password

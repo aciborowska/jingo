@@ -1,0 +1,44 @@
+Found using 6.0.0-SNAPSHOT 3974ff782b4
+
+When updating proxy's Static Discovery Mechanism by just changing the port, the proxy registers the change, but keeps running searches on the old port as well.
+
+Steps to reproduce:
+
+1. Setup a simple Proxy -> DS topology, with a static discovery mechanism.
+
+2. Create 2 additional LDAP Connection Handlers on the DS
+
+
+/bin/dsconfig -h viktor.internal.forgerock.com -p 4444 -D "cn=Directory Manager" -w password -X create-connection-handler --handler-name "LDAP Handler 1" --type ldap --set listen-port:1391 --set enabled:true -n
+
+/bin/dsconfig -h viktor.internal.forgerock.com -p 4444 -D "cn=Directory Manager" -w password -X create-connection-handler --handler-name "LDAP Handler 2" --type ldap --set listen-port:1392 --set enabled:true -n
+
+
+3. Update the Service Discovery Mechanism on the Proxy to point to the first new connection handler
+
+
+/bin/dsconfig -h viktor.internal.forgerock.com -p 4445 -D "cn=Directory Manager" -w password -X set-service-discovery-mechanism-prop --mechanism-name "Static Servers Service Discovery Mechanism" --set primary-server:viktor.internal.forgerock.com:1391 -n
+
+
+4. Wait for 60s for the change to take effect, and repeat with the second handler
+
+
+/bin/dsconfig -h viktor.internal.forgerock.com -p 4445 -D "cn=Directory Manager" -w password -X set-service-discovery-mechanism-prop --mechanism-name "Static Servers Service Discovery Mechanism" --set primary-server:viktor.internal.forgerock.com:1392 -n
+
+
+5. See the changes happen in the Proxy errors logs:
+
+
+[14/Feb/2018:16:38:18 +0100] category=BACKEND severity=NOTICE msgID=620 msg=Remote servers changed for the proxy backend 'proxyRoot'. The proxy was using: primary servers=[viktor.internal.forgerock.com:1389], secondary servers=[]; and it will now be using: primary servers=[viktor.internal.forgerock.com:1391], secondary servers=[]
+[14/Feb/2018:16:38:18 +0100] category=BACKEND severity=WARNING msgID=613 msg=Proxy backend 'proxyRoot' cannot failover: only primary servers have been discovered via the service discovery mechanism 'Static Servers Service Discovery Mechanism'. Primary servers are [viktor.internal.forgerock.com:1391]
+[14/Feb/2018:16:39:18 +0100] category=BACKEND severity=NOTICE msgID=620 msg=Remote servers changed for the proxy backend 'proxyRoot'. The proxy was using: primary servers=[viktor.internal.forgerock.com:1391], secondary servers=[]; and it will now be using: primary servers=[viktor.internal.forgerock.com:1392], secondary servers=[]
+[14/Feb/2018:16:39:18 +0100] category=BACKEND severity=WARNING msgID=613 msg=Proxy backend 'proxyRoot' cannot failover: only primary servers have been discovered via the service discovery mechanism 'Static Servers Service Discovery Mechanism'. Primary servers are [viktor.internal.forgerock.com:1392]
+
+
+6. See searches from the proxy on all 3 ports in the DS logs, even after the second change occured, and the proxy should only be connected to the last port (notice the timestamps) :
+
+
+{"eventName":"DJ-LDAP","client":{"ip":"127.0.0.1","port":35432},"server":{"ip":"127.0.0.1","port":1392},"request":{"protocol":"LDAP","operation":"SEARCH","connId":14,"msgId":3,"dn":"","scope":"base","filter":"(objectClass=*)","attrs":["1.1"]},"transactionId":"edf63e3e-256c-48d8-a0ce-b8909e6544ac-242","response":{"status":"SUCCESSFUL","statusCode":"0","elapsedTime":1,"elapsedTimeUnits":"MILLISECONDS","nentries":1},"timestamp":"2018-02-14T15:39:29.238Z","_id":"edf63e3e-256c-48d8-a0ce-b8909e6544ac-246"}
+{"eventName":"DJ-LDAP","client":{"ip":"127.0.0.1","port":56220},"server":{"ip":"127.0.0.1","port":1389},"request":{"protocol":"LDAP","operation":"SEARCH","connId":6,"msgId":15,"dn":"","scope":"base","filter":"(objectClass=*)","attrs":["1.1"]},"transactionId":"edf63e3e-256c-48d8-a0ce-b8909e6544ac-247","response":{"status":"SUCCESSFUL","statusCode":"0","elapsedTime":2,"elapsedTimeUnits":"MILLISECONDS","nentries":1},"timestamp":"2018-02-14T15:39:29.244Z","_id":"edf63e3e-256c-48d8-a0ce-b8909e6544ac-249"}
+{"eventName":"DJ-LDAP","client":{"ip":"127.0.0.1","port":48188},"server":{"ip":"127.0.0.1","port":1391},"request":{"protocol":"LDAP","operation":"SEARCH","connId":12,"msgId":8,"dn":"","scope":"base","filter":"(objectClass=*)","attrs":["1.1"]},"transactionId":"edf63e3e-256c-48d8-a0ce-b8909e6544ac-250","response":{"status":"SUCCESSFUL","statusCode":"0","elapsedTime":1,"elapsedTimeUnits":"MILLISECONDS","nentries":1},"timestamp":"2018-02-14T15:39:33.452Z","_id":"edf63e3e-256c-48d8-a0ce-b8909e6544ac-252"}
+

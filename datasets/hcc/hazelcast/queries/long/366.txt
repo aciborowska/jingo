@@ -1,0 +1,73 @@
+ItemListener is not invoked on Hazelcast instance, which was ungracefully shut down and then started again.
+
+Affected version: 2.3, 2.4, 2.4.1-SNAPSHOT (git version v2.4-43-g6056be4)
+
+How to reproduce:
+Setup a cluster of two members. The role of the first member is observer (it has a registered ItemListener which observes events on a given queue), the role of the second member is producer (it publishes items to queue). The second member also registers a listener on the same queue. Kill the observer and start it again. The observer's ItemListener is no more invoked.
+
+Test case implementation:
+
+```
+import com.hazelcast.config.Config;
+import com.hazelcast.config.ItemListenerConfig;
+import com.hazelcast.config.QueueConfig;
+import com.hazelcast.core.Hazelcast;
+import com.hazelcast.core.HazelcastInstance;
+import com.hazelcast.core.ItemEvent;
+import com.hazelcast.core.ItemListener;
+
+public class HcQueueListenerFail {
+
+    public static void main(String[] args) throws Exception {
+        HazelcastInstance hazelcastInstance = setupHazelcast();
+        if ((args.length == 1) && ("publisher".equals(args[0]))) {
+            runPublisherLoop(hazelcastInstance);
+        }
+    }
+
+    public static void runPublisherLoop(HazelcastInstance hazelcastInstance) throws Exception {
+        while (true) {
+            hazelcastInstance.getQueue("testQueue").put("Item:" + System.currentTimeMillis());
+            Thread.sleep(5000);
+        }
+    }
+
+    public static HazelcastInstance setupHazelcast() {
+        Config cfg = new Config();
+
+        ItemListenerConfig itemListenerConfig = new ItemListenerConfig();
+        itemListenerConfig.setImplementation(new SimpleItemListener());
+        itemListenerConfig.setIncludeValue(true);
+
+        QueueConfig qConfig = new QueueConfig();
+        qConfig.setMaxSizePerJVM(10000);
+        qConfig.setName("testQueue");
+        qConfig.addItemListenerConfig(itemListenerConfig);
+
+        cfg.addQueueConfig(qConfig);
+
+        HazelcastInstance hazelcastInstance = Hazelcast.newHazelcastInstance(cfg);
+        System.out.println("Local member: " + hazelcastInstance.getCluster().getLocalMember());
+        return  hazelcastInstance;
+    }
+
+    private static class SimpleItemListener implements ItemListener {
+
+        @Override
+        public void itemAdded(ItemEvent itemEvent) {
+            System.out.println("Item added: " + itemEvent);
+        }
+
+        @Override
+        public void itemRemoved(ItemEvent itemEvent) {
+            System.out.println("Item removed: " + itemEvent);
+        }
+
+    }
+
+}
+```
+
+Run the main method of HcQueueListenerFail without parameters to start observer. Then run the same with "publisher" argument to start producer. You should see periodic messages about item being added to queue on both observer's and publisher's outputs. Kill observer, start it again. There are no messages printed on observer's output.
+
+This is maybe related to issue #269.

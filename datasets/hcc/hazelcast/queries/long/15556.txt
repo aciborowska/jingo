@@ -1,0 +1,41 @@
+
+just using caches http://jenkins.hazelcast.com/view/shutdown/job/shutdown-members-2/2/console fails in 7 mins
+
+leak http://54.147.27.51/~jenkins/workspace/shutdown-members-2/3.12.2-visa/2019_09_17-11_00_33/shutdown-all-members/gc.html
+
+
+run with just map async put ops running for 30 mins
+gc is good http://54.147.27.51/~jenkins/workspace/shutdown-members-3/3.12.2-visa/2019_09_17-10_20_19/shutdown-all-members/gc.html
+
+
+notes from @mdogan 
+```
+but these byte[]a are created by createCacheConfig calls, not the async puts.
+this is the stack trace creating those byte[]s:
+java stack of hz.client_0.cluster-
+    at com.hazelcast.client.cache.impl.ClientCacheHelper.createCacheConfig(com.hazelcast.client.impl.clientside.HazelcastClientInstanceImpl, com.hazelcast.config.CacheConfig) (line: 120)
+    at com.hazelcast.client.cache.impl.ClientCacheProxyFactory.recreateCachesOnCluster() (line: 58)
+    at com.hazelcast.client.spi.ProxyManager.createCachesOnCluster() (line: 495)
+    at com.hazelcast.client.spi.ProxyManager.createDistributedObjectsOnCluster(com.hazelcast.nio.Connection) (line: 489)
+    at com.hazelcast.client.impl.clientside.HazelcastClientInstanceImpl.onClusterConnect(com.hazelcast.nio.Connection) (line: 445)
+    at com.hazelcast.client.connection.nio.ClusterConnectorServiceImpl.connectAsOwner(com.hazelcast.nio.Address) (line: 150)
+    at com.hazelcast.client.connection.nio.ClusterConnectorServiceImpl.connectToCandidate(com.hazelcast.client.impl.clientside.CandidateClusterContext) (line: 252)
+    at com.hazelcast.client.connection.nio.ClusterConnectorServiceImpl.connectToClusterInternal() (line: 192)
+    at com.hazelcast.client.connection.nio.ClusterConnectorServiceImpl.access$000(com.hazelcast.client.connection.nio.ClusterConnectorServiceImpl) (line: 62)
+    at com.hazelcast.client.connection.nio.ClusterConnectorServiceImpl$1.call() (line: 279)
+    at com.hazelcast.client.connection.nio.ClusterConnectorServiceImpl$1.call() (line: 275)
+    at java.util.concurrent.FutureTask.run() (line: 266)
+    at java.util.concurrent.ThreadPoolExecutor.runWorker(java.util.concurrent.ThreadPoolExecutor$Worker) (line: 1149)
+    at java.util.concurrent.ThreadPoolExecutor$Worker.run() (line: 624)
+    at java.lang.Thread.run() (line: 748)
+    at com.hazelcast.util.executor.HazelcastManagedThread.executeRun() (line: 64)
+    at com.hazelcast.util.executor.HazelcastManagedThread.run() (line: 80)
+```
+
+```
+there are also byte[]s originated from putAsync, but these are small (24 bytes) as expected.
+the ones related to createCacheConfig are big, 131kb
+and there are 352 instances of this 131kb byte[]
+```
+
+cache creation on connect was introduced with https://github.com/hazelcast/hazelcast/pull/13810/files, in 3.11

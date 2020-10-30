@@ -1,0 +1,62 @@
+On 3.2 it is sometimes possible to get #1276 exception.
+It is really hard to redroduce with default JVM settings, but it much easer with 
+-Xmx1G -server -Xcomp it is much easier.
+Sorry for such hard nut.
+
+```
+public static void main(String[] args) throws InterruptedException {
+    int N = 3;
+    //  -Xmx1G -server -Xcomp
+    List<HazelcastInstance> instances = Stream.generate(() -> null).limit(N).map(x -> Hazelcast.newHazelcastInstance()).collect(Collectors.toList());
+
+
+    CountDownLatch countDownLatch = new CountDownLatch(N + 1);
+    List<Thread> threads = instances.stream().map(instance ->
+                    new Thread(() -> {
+                        countDownLatch.countDown();
+                        try {
+                            countDownLatch.await();
+                        } catch (InterruptedException e) {
+                            e.printStackTrace();
+                        }
+                        for (int q = 0; q < 10; q++) {
+                            TransactionContext ctx1 = instance.newTransactionContext();
+                            ctx1.beginTransaction();
+                            TransactionalMultiMap<Integer, Integer> txProfileTasks1 = ctx1.getMultiMap("myMultimap");
+                            txProfileTasks1.put(1, 1);
+                            ctx1.commitTransaction();
+                        }
+                    })
+    ).collect(Collectors.toList());
+
+    threads.forEach(Thread::start);
+    countDownLatch.countDown();
+    threads.forEach(Uninterruptibles::joinUninterruptibly);
+
+    Hazelcast.shutdownAll();
+}
+```
+
+Gradle:
+
+```
+dependencies {
+    compile 'com.hazelcast:hazelcast:3.2'    
+    compile 'com.google.guava:guava:16.0.1'            
+}
+```
+
+пр 09, 2014 6:19:40 PM com.hazelcast.multimap.txn.TxnPrepareBackupOperation
+SEVERE: [192.168.1.5]:5701 [header-test] [3.2] Lock is not owned by the transaction! -> Owner: 8fd9adf4-32be-438d-95c6-f4ca5be852e9, thread-id: 85
+com.hazelcast.transaction.TransactionException: Lock is not owned by the transaction! -> Owner: 8fd9adf4-32be-438d-95c6-f4ca5be852e9, thread-id: 85
+    at com.hazelcast.multimap.txn.TxnPrepareBackupOperation.run(TxnPrepareBackupOperation.java:51)
+    at com.hazelcast.spi.impl.BasicOperationService.processOperation(BasicOperationService.java:363)
+    at com.hazelcast.spi.impl.BasicOperationService.runOperation(BasicOperationService.java:228)
+    at com.hazelcast.spi.impl.Backup.run(Backup.java:98)
+    at com.hazelcast.spi.impl.BasicOperationService.processOperation(BasicOperationService.java:363)
+    at com.hazelcast.spi.impl.BasicOperationService.processPacket(BasicOperationService.java:309)
+    at com.hazelcast.spi.impl.BasicOperationService.access$400(BasicOperationService.java:102)
+    at com.hazelcast.spi.impl.BasicOperationService$BasicOperationProcessorImpl.process(BasicOperationService.java:756)
+    at com.hazelcast.spi.impl.BasicOperationScheduler$PartitionThread.process(BasicOperationScheduler.java:276)
+    at com.hazelcast.spi.impl.BasicOperationScheduler$PartitionThread.doRun(BasicOperationScheduler.java:270)
+    at com.hazelcast.spi.impl.BasicOperationScheduler$PartitionThread.run(BasicOperationScheduler.java:245)

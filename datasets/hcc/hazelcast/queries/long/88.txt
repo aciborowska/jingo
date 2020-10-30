@@ -1,0 +1,75 @@
+<b>What steps will reproduce the problem?</b>
+- In OSGi transaction commit does not release locks. They remain reentrant. If I try to relock the same map key on the same thread lock succeeds. Otherwise it blocks indefinitely.
+- Running the same code standalone works fine.
+- I think this deadlock issue started with 1.9.4.
+
+1.build attached maven bundle. This also runs standalone test that otherwise hangs on karaf
+2.deploy HZ 2.0.RC2 (you have to fix original 2.0.RC2 package since it contains errors that prevent it deploying to karaf)
+3.deploy bundle
+4.run single thread test: on karaf command line run: deadlock single
+5.command should complete within few seconds
+6.run multi thread test: on karaf command line run: deadlock multi
+7.command should hang
+
+<b>What is the expected output? What do you see instead?</b>
+See above
+
+<b>What version of the product are you using? On what operating system?</b>
+Windows 7, Karaf 2.2.4, HZ 2.0.RC2, jdk1.6.0_24
+
+<b>Please provide any additional information below.</b>
+- 2.0.RC2 HZ cannot be deployed to karaf because bundle version must contain numerical values for major, minor and micro component.
+- Also MANIFEST.MF is missing Import-Package: javax.security.auth.login I suggest using bundle plugin tool that automatically generates imports instead of fixed manifest file.<p>Migrated from http://code.google.com/p/hazelcast/issues/detail?id=803</p><hr/><h2>earlier comments</h2>
+  
+  <p><strong>mehmetdoghan said, at 2012-03-01T14:48:30.000Z:</strong></p>
+  
+  <p>As a rule of thumb; you should unlock a lock, if you lock something explicitly. Hazelcast's locks are no exception. 
+
+Transaction transaction = hazelcastInstance.getTransaction ();
+transaction.begin ();
+subscribersMap.lock ("12345");  
+try {
+    subscribersMap.put ("12345", subscriber);
+} finally {
+    subscribersMap.unlock ("12345");  
+}
+transaction.commit ();
+
+</p><p><strong>ludvikk said, at 2012-03-01T18:55:16.000Z:</strong></p>
+
+<p>What if another node manages to squeeze a lock in between unlock and commit in you example? I presume it would read and update stale data, resulting in an inconsistency on its commit.
+
+If commit doesn't release locks, why would you want to hold locks after transaction commit anyway? Commit means I am done with changing records. Most systems I know release locks on commit.
+
+Even HZ documentation states that commit releases locks.
+
+Even standalone HZ releases locks properly on commit – no unlock is necessary.
+
+I lock records as I go, locking what is required on different and unrelated places. Why would I have to manage locks myself if HZ already knows which locks were applied?
+
+This brings me to the second issue: consistency of updates. I am having great difficulty achieving it. Using explicit locking without any facility for atomic locking of several records from several maps at once can lead to deadlocks. And HZ lacks any deadlock detection.
+
+To be honest, I don’t quite understand how you envisioned HZ to be used in a an easy way to achieve consistent updates across multiple maps.
+</p><p><strong>mehmetdoghan said, at 2012-03-02T07:16:50.000Z:</strong></p>
+<p>There would be no inconsistency because Hazelcast implicitly locks updated keys under transaction and unlocks after commit. Documentation about releasing locks is about locks that are acquired before modification.
+
+"Hazelcast first acquires the locks for the write operations (put, remove) and holds the differences (what is added/removed/updated) locally for each transaction. When transaction is set to commit, Hazelcast will release the locks and apply the differences."
+
+If you explicitly lock anything then you should unlock it too when you need.</p><p><strong>ludvikk said, at 2012-03-02T08:05:32.000Z:</strong></p>
+<p>In order for application to change a map entry, it has to read it, modify it and put it back to the map.
+
+HZ implicitely locks an entry only at the last step, which does not prevent one node from overwriting the update of another.
+
+Try incrementing a counter of one map entry 100 times from two nodes at the same time without using explicit locking - end result will be 120 at best, not 200 as expected. This means 80 updates were lost.
+
+---
+
+But this discussion is really going in the wrong direction. My question is why does HZ behave differently under OSGi than standalone? It shouldn't.
+
+You obviously do not test it on OSGi as the build will not even deploy for the reasons stated in the ticket.
+
+There is clearly a bug somewhere that causes HZ to behave differently under OSGi that in standalone jvm.
+
+The reason may be multitude of classloaders in OSGi, the fact that thread context class loader differes from inherited, or something else...
+
+</p>

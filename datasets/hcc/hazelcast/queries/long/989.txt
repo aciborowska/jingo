@@ -1,0 +1,37 @@
+We are currently using HZ 3.1 in production and our cluster members start dieing after a few hours requiring a restart.
+
+We are (basically) storing user activity in HZ for some period of time so the records vary in size from a few bytes to over 50MB based on user activity before we truncate them. And HZ had been working great for us until we added more information to this record.
+
+After looking through heap dumps I believe the problem is in:
+com.hazelcast.nio.serialization.ByteArrayObjectDataOutput.clear() .
+
+which reads:
+
+```
+  public void clear() {
+        pos = 0;
+    }
+```
+
+This is causing the outputPool to keep growing over time even after we truncate the record.
+
+I believe it should be something like:
+
+```
+  public void clear() {
+       if(buffer.length > DEFAULT_SIZE * 10){
+           buffer = new byte[len > DEFAULT_SIZE / 2 ? len * 2 : DEFAULT_SIZE];
+        }else{
+          pos = 0;
+        }
+    }
+```
+
+Which preserves the existing logic for smaller buffer sizes but clears out large ones.
+
+I am sure there are other places and ways this logic could be implemented to ensure that outputPool does not just keep growing however there should be a mechanism to keep the pool size in check.
+
+Please let me know if you need more information or anything else. 
+
+Thanks,
+Mike E

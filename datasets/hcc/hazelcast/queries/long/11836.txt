@@ -1,0 +1,27 @@
+A user reported the issue below:
+
+I have a 2 members Hazelcast cluster on the same computer.
+
+There a few computers (about 5-6 other developers' machines) in the same network with similar clusters (but different ones, that is they have different group name/password).
+
+The seems to lead to a situation when `SplitBrainJoinMessage` deque in my Hazelcast cluster's master is flooded with messages. My master node might be contributing to this situation resulting in some kind of chain reaction since judging by the code MulticastJoiner, it sends another `SplitBrainJoinMessage` in response.
+
+I can see in my log, thousands of similar messages:
+
+```
+2017-10-25 07:45:45,799 odeMulticastListener [ster.MulticastThread] - [10.10.6.102]:5702 [my-cluster] [3.8.2] Dropped: SplitBrainJoinMessage{packetVersion=4, buildNumber=20170518, memberVersion=3.8.2, clusterVersion=3.8, address=[10.10.6.54]:5702, uuid='5c3a81a6-d31b-42b9-8b9d-19f73324ac6e', liteMember=false, memberCount=1, dataMemberCount=1}
+```
+
+Eventually, free heap runs out and CPU utilization goes to 100% and "OutOfMemoryError: GC overhead limit exceeded" ensue.
+
+In my opinion, the problem might be in sending of another `SplitBrainJoinMessage` at the end of the while loop's body ignoring the delay (https://github.com/hazelcast/hazelcast/blob/master/hazelcast/src/main/java/com/hazelcast/internal/cluster/impl/MulticastJoiner.java#L140). What I see is that that statement might create a positive feedback loop in the network and given the nature of multicast this might lead to self-amplification effect.
+
+Here is my assumption:
+1. 5 clusters send 5 multicast messages in next.run.delay seconds.
+2. at this point in the deque of each cluster there are 5 messages
+3. each master processes the deque 5 times generating another 5 messages in total at the end of the while loop resulting in 5 messages * 4 clusters = 20 additional messages in each deque
+4. when the MulticastJoiner is iterating over the deque, it ignores the next.run.delay and sends another bunch of 20 messages, resulting in 80 messages in each deque (taking into account we have 5 clusters).
+
+Provided some clusters are running for a long time, I think this is what I see when I start the hazelcast member and see that it is flooded with messages and OOMEs in virtually minutes.
+
+I tried experimenting with a small test program at home and while I don't see the same magnitudes, I see the increase in the amount of messages accumulating in the deque with each memory snapshot I make in one of the clusters. Probably, give it time and it will eventually result in the same situation.

@@ -1,0 +1,52 @@
+When Hazelcast is installed as an OSGI bundle on GlassFish (i.e. on the System classpath) and you deploy a war file that uses Hazelcast. A ClassNotFoundException is thrown when trying to put an object in the cache using the JCache api when that object is an instance of a class contained in the war.
+
+When using the Hazelcast api raw it is possible to place an object into the Hazelcast cache. It is only the JCache api that fails.
+
+JCache fails even if you specify the ClassLoader when creating the CacheManager e.g.
+
+``` java
+        ClassLoader tccl = Thread.currentThread().getContextClassLoader();
+        Thread.currentThread().setContextClassLoader(HazelcastInstance.class.getClassLoader());
+        HazelcastInstance instance = Hazelcast.newHazelcastInstance();
+        Thread.currentThread().setContextClassLoader(tccl);
+        cp = HazelcastServerCachingProvider.createCachingProvider(instance);
+        CacheManager cm = cp.getCacheManager(cp.getDefaultURI(), Thread.currentThread().getContextClassLoader());
+```
+
+Exception is;
+
+```
+  StandardWrapperValve[TestServlet]: Servlet.service() for servlet TestServlet threw exception
+com.hazelcast.nio.serialization.HazelcastSerializationException: java.lang.ClassNotFoundException: fish.payara.jsr107.test.TestPojo not found by com.hazelcast [304]
+    at com.hazelcast.nio.serialization.DefaultSerializers$ObjectSerializer.read(DefaultSerializers.java:201)
+    at com.hazelcast.nio.serialization.StreamSerializerAdapter.toObject(StreamSerializerAdapter.java:65)
+    at com.hazelcast.nio.serialization.SerializationServiceImpl.toObject(SerializationServiceImpl.java:260)
+    at com.hazelcast.cache.impl.CacheRecordStore.dataToValue(CacheRecordStore.java:112)
+    at com.hazelcast.cache.impl.CacheRecordStore.recordToValue(CacheRecordStore.java:124)
+    at com.hazelcast.cache.impl.AbstractCacheRecordStore.get(AbstractCacheRecordStore.java:766)
+    at com.hazelcast.cache.impl.operation.CacheGetOperation.run(CacheGetOperation.java:50)
+    at com.hazelcast.spi.impl.BasicOperationService$OperationHandler.handle(BasicOperationService.java:733)
+    at com.hazelcast.spi.impl.BasicOperationService$OperationHandler.access$500(BasicOperationService.java:709)
+    at com.hazelcast.spi.impl.BasicOperationService$BasicDispatcherImpl.dispatch(BasicOperationService.java:560)
+    at com.hazelcast.spi.impl.BasicOperationScheduler$OperationThread.process(BasicOperationScheduler.java:466)
+    at com.hazelcast.spi.impl.BasicOperationScheduler$OperationThread.doRun(BasicOperationScheduler.java:458)
+    at com.hazelcast.spi.impl.BasicOperationScheduler$OperationThread.run(BasicOperationScheduler.java:432)
+Caused by: java.lang.ClassNotFoundException: fish.payara.jsr107.test.TestPojo not found by com.hazelcast [304]
+    at org.apache.felix.framework.BundleWiringImpl.findClassOrResourceByDelegation(BundleWiringImpl.java:1532)
+    at org.apache.felix.framework.BundleWiringImpl.access$400(BundleWiringImpl.java:75)
+    at org.apache.felix.framework.BundleWiringImpl$BundleClassLoader.loadClass(BundleWiringImpl.java:1955)
+    at java.lang.ClassLoader.loadClass(ClassLoader.java:357)
+    at com.hazelcast.nio.ClassLoaderUtil.tryLoadClass(ClassLoaderUtil.java:124)
+    at com.hazelcast.nio.ClassLoaderUtil.loadClass(ClassLoaderUtil.java:113)
+    at com.hazelcast.nio.IOUtil$1.resolveClass(IOUtil.java:113)
+    at java.io.ObjectInputStream.readNonProxyDesc(ObjectInputStream.java:1613)
+    at java.io.ObjectInputStream.readClassDesc(ObjectInputStream.java:1518)
+    at java.io.ObjectInputStream.readOrdinaryObject(ObjectInputStream.java:1774)
+    at java.io.ObjectInputStream.readObject0(ObjectInputStream.java:1351)
+    at java.io.ObjectInputStream.readObject(ObjectInputStream.java:371)
+    at com.hazelcast.nio.serialization.DefaultSerializers$ObjectSerializer.read(DefaultSerializers.java:196)
+    ... 12 more
+|#]
+```
+
+It looks like the ClassLoader is not carried over in the CacheGetOperation and therefore is not setup correctly on the BasicOperationScheduler thread before attempting to load the object.

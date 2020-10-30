@@ -1,0 +1,65 @@
+How to reproduce: 
+
+submit tasks from client to ExecutorService using `submitToKeyOwner` method: 
+
+                    IExecutorService es = client.getExecutorService("es1");
+                    Future result = es.submitToKeyOwner(new SimpleExecutorImpl(), partitionKey);
+
+Then get the result using timeout. If it timeouts, cancel the task: 
+
+                    try {
+                        Object resultValue = result.get(20, TimeUnit.MILLISECONDS);
+                    } catch (TimeoutException e) {
+                        result.cancel(false);
+                    } 
+
+While continuously sending tasks from the client side, kill 1 of the members in the cluster to initiate partition migrations. 
+
+
+-------------
+
+
+
+ExecutorServiceCancelOnPartitionMessageTask creates CancellationOperation which runs on partition threads. 
+However, it doesn't retry when the partition is migrating. See below stack traces. 
+
+The result is stuck migration operation. 
+
+Why don't we call `ExecutorService.cancel`  instead of creating CancellationOperation which runs on partition threads? 
+
+The task is routed to the member using the partition ID. However, the partition could migrate to another member but the task would still be running at the same member. In this case, cancel operation would route to the wrong member to cancel the task. Wdyt? 
+
+Blocked partition thread: 
+
+```
+"hz._hzInstance_1_oz.partition-operation.thread-0" #17 prio=5 os_prio=31 tid=0x00007f9d8a313800 nid=0x6203 waiting on condition [0x0000700005ed8000]
+   java.lang.Thread.State: WAITING (parking)
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:304)
+	at com.hazelcast.spi.impl.AbstractInvocationFuture.get(AbstractInvocationFuture.java:161)
+	at com.hazelcast.client.impl.protocol.task.executorservice.AbstractExecutorServiceCancelMessageTask.call(AbstractExecutorServiceCancelMessageTask.java:52)
+	at com.hazelcast.client.impl.protocol.task.AbstractCallableMessageTask.processMessage(AbstractCallableMessageTask.java:35)
+	at com.hazelcast.client.impl.protocol.task.AbstractMessageTask.initializeAndProcessMessage(AbstractMessageTask.java:129)
+	at com.hazelcast.client.impl.protocol.task.AbstractMessageTask.run(AbstractMessageTask.java:109)
+	at com.hazelcast.spi.impl.operationservice.impl.OperationRunnerImpl.run(OperationRunnerImpl.java:163)
+	at com.hazelcast.spi.impl.operationexecutor.impl.OperationThread.process(OperationThread.java:159)
+	at com.hazelcast.spi.impl.operationexecutor.impl.OperationThread.process(OperationThread.java:127)
+	at com.hazelcast.spi.impl.operationexecutor.impl.OperationThread.run(OperationThread.java:110)
+```
+
+Blocked migration thread: 
+
+```
+"hz._hzInstance_1_oz.migration" #38 prio=5 os_prio=31 tid=0x00007f9d8a312800 nid=0x5f03 waiting on condition [0x0000700005bcf000]
+   java.lang.Thread.State: WAITING (parking)
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:304)
+	at com.hazelcast.spi.impl.AbstractInvocationFuture.get(AbstractInvocationFuture.java:161)
+	at com.hazelcast.internal.partition.impl.MigrationManager$MigrateTask.executeMigrateOperation(MigrationManager.java:1116)
+	at com.hazelcast.internal.partition.impl.MigrationManager$MigrateTask.run(MigrationManager.java:1003)
+	at com.hazelcast.internal.partition.impl.MigrationThread.processTask(MigrationThread.java:122)
+	at com.hazelcast.internal.partition.impl.MigrationThread.doRun(MigrationThread.java:98)
+	at com.hazelcast.internal.partition.impl.MigrationThread.run(MigrationThread.java:67)
+```
+
+

@@ -1,0 +1,52 @@
+After upgrading my cluster using the official Docker image for Flink from 1.9 to 1.10.1 I noticed that all checkpoints failed for my existing pipelines. Checkpoints are saved in a local (NFS backed) directory, so full UNIX permissions apply.
+
+I went onto the jobmanager pod and saw that it created the checkpoint folder with root:root as the owner. Even after fixing this or giving the top-folder it super relaxed permissions (chmod 777) I couldn't make it work.
+
+I checked the changes in the Flink Docker repository on GitHub, but couldn't spot any {{gosu }}or similar related changes. I tried 1.10.2 too, but the issue remained. Downgrading to the 1.9.1 docker image made the issue disappear.
+
+The web interface just gives me
+
+Failure Message: The job has failed. 
+
+The logs show that there is in fact a permission problem: 
+
+ 
+
+2020-09-01 10:44:02,226 INFO org.apache.flink.runtime.checkpoint.CheckpointCoordinator - Discarding checkpoint 29 of job 5be99250cdea84d1ce400a4d0939bafa. 
+java.lang.Exception: Could not materialize checkpoint 29 for operator Source: BigQueryIO.Write/BatchLoads/CreateEmptyFailedInserts/Read(CreateSource) -> BigQueryIO.Write/BatchLoads/View.AsSingleton/Combine.GloballyAsSingletonView/DropInputs/ParMultiDo(NoOp) (1/1). 
+ at org.apache.flink.streaming.runtime.tasks.StreamTask$AsyncCheckpointRunnable.handleExecutionException(StreamTask.java:1221) 
+ at org.apache.flink.streaming.runtime.tasks.StreamTask$AsyncCheckpointRunnable.run(StreamTask.java:1163) 
+ at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1149) 
+ at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:624) 
+ at java.lang.Thread.run(Thread.java:748) 
+Caused by: java.util.concurrent.ExecutionException: java.io.IOException: Could not flush and close the file system output stream to null in order to obtain the stream state handle 
+ at java.util.concurrent.FutureTask.report(FutureTask.java:122) 
+ at java.util.concurrent.FutureTask.get(FutureTask.java:192) 
+ at org.apache.flink.runtime.concurrent.FutureUtils.runIfNotDoneAndGet(FutureUtils.java:461) 
+ at org.apache.flink.streaming.api.operators.OperatorSnapshotFinalizer.<init>(OperatorSnapshotFinalizer.java:53) 
+ at org.apache.flink.streaming.runtime.tasks.StreamTask$AsyncCheckpointRunnable.run(StreamTask.java:1126) 
+ ... 3 more 
+Caused by: java.io.IOException: Could not flush and close the file system output stream to null in order to obtain the stream state handle 
+ at org.apache.flink.runtime.state.filesystem.FsCheckpointStreamFactory$FsCheckpointStateOutputStream.closeAndGetHandle(FsCheckpointStreamFactory.java:334) 
+ at org.apache.flink.runtime.state.DefaultOperatorStateBackendSnapshotStrategy$1.callInternal(DefaultOperatorStateBackendSnapshotStrategy.java:179) 
+ at org.apache.flink.runtime.state.DefaultOperatorStateBackendSnapshotStrategy$1.callInternal(DefaultOperatorStateBackendSnapshotStrategy.java:108) 
+ at org.apache.flink.runtime.state.AsyncSnapshotCallable.call(AsyncSnapshotCallable.java:75) 
+ at java.util.concurrent.FutureTask.run(FutureTask.java:266) 
+ at org.apache.flink.runtime.concurrent.FutureUtils.runIfNotDoneAndGet(FutureUtils.java:458) 
+ ... 5 more 
+Caused by: java.io.IOException: Could not open output stream for state backend 
+ at org.apache.flink.runtime.state.filesystem.FsCheckpointStreamFactory$FsCheckpointStateOutputStream.createStream(FsCheckpointStreamFactory.java:367) 
+ at org.apache.flink.runtime.state.filesystem.FsCheckpointStreamFactory$FsCheckpointStateOutputStream.flush(FsCheckpointStreamFactory.java:234)
+ at org.apache.flink.runtime.state.filesystem.FsCheckpointStreamFactory$FsCheckpointStateOutputStream.closeAndGetHandle(FsCheckpointStreamFactory.java:309) 
+ ... 10 more 
+Caused by: java.io.FileNotFoundException: /mnt/checkpoints/5be99250cdea84d1ce400a4d0939bafa/chk-29/218d235b-bcd0-497b-8925-12d6d4bbc4f5 (Permission denied)
+ at java.io.FileOutputStream.open0(Native Method) 
+ at java.io.FileOutputStream.open(FileOutputStream.java:270) 
+ at java.io.FileOutputStream.<init>(FileOutputStream.java:213) 
+ at java.io.FileOutputStream.<init>(FileOutputStream.java:162) 
+ at org.apache.flink.core.fs.local.LocalDataOutputStream.<init>(LocalDataOutputStream.java:47)
+ at org.apache.flink.core.fs.local.LocalFileSystem.create(LocalFileSystem.java:273) 
+ at org.apache.flink.core.fs.SafetyNetWrapperFileSystem.create(SafetyNetWrapperFileSystem.java:126)
+ at org.apache.flink.core.fs.EntropyInjector.createEntropyAware(EntropyInjector.java:61) 
+ at org.apache.flink.runtime.state.filesystem.FsCheckpointStreamFactory$FsCheckpointStateOutputStream.createStream(FsCheckpointStreamFactory.java:356)
+ ... 12 more

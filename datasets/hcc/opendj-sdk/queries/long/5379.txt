@@ -1,0 +1,149 @@
+Adding a third replica breaks key ordering of the changelogDb on all but the original master.
+
+Reproduction is simple...always add a third or more replicas to the topology
+
+	Start with an existing 2 master DS+RS topology with 10 entries.
+	Add entries to Master 1
+	Install Master 3 and enable/init replication to it from Master 1
+	Install Master 4 and enable/init replication to it from Master 1
+	Add entries to Master 1 again
+
+
+
+You can see after 40 new entries are added throughout the process, all DS's are up to date.
+
+ 
+
+Suffix DN : Server : Entries : Replication enabled : DS ID : RS ID : RS Port (1) : M.C. (2) : A.O.M.C. (3) : Security (4)
+------------------:--------------------------:---------:---------------------:-------:-------:-------------:----------:--------------:-------------
+dc=example,dc=com : master1.example.com:4444 : 50 : true : 7830 : 3246 : 8989 : 0 : : true
+dc=example,dc=com : master2.example.com:5444 : 50 : true : 27452 : 24484 : 9989 : 0 : : true
+dc=example,dc=com : master3.example.com:6444 : 50 : true : 7078 : 3506 : 10989 : 0 : : true
+dc=example,dc=com : master4.example.com:7444 : 50 : true : 10038 : 21495 : 11989 : 0 : : true
+
+ 
+
+Upon enabling replication from Master 1 to Master 3, Master 1 sends writes even though Master 3 has not yet been initialized or restored.
+
+ 
+
+[23/Feb/2018:07:25:27 -0700] category=SYNC severity=INFORMATION msgID=207 msg=Replication server RS(3506) has accepted a connection from directory server DS(7078) for domain "dc=example,dc=com" at master1.example.com/192.168.0.105:62163
+[23/Feb/2018:07:25:27 -0700] category=SYNC severity=WARNING msgID=136 msg=Replication server RS(3506) not sending update 00000161c30d167b1e9600000001 for domain "dc=example,dc=com" to directory server DS(7078) at master1.example.com/192.168.0.105:62163 because its generation ID 8970 is different to the local generation ID 361125
+[23/Feb/2018:07:25:27 -0700] category=SYNC severity=WARNING msgID=136 msg=Replication server RS(3506) not sending update 00000161c30d167b1e9600000002 for domain "dc=example,dc=com" to directory server DS(7078) at master1.example.com/192.168.0.105:62163 because its generation ID 8970 is different to the local generation ID 361125
+[23/Feb/2018:07:25:27 -0700] category=SYNC severity=WARNING msgID=136 msg=Replication server RS(3506) not sending update 00000161c30d167b1e9600000003 for domain "dc=example,dc=com" to directory server DS(7078) at master1.example.com/192.168.0.105:62163 because its generation ID 8970 is different to the local generation ID 361125
+[23/Feb/2018:07:25:27 -0700] category=SYNC severity=WARNING msgID=136 msg=Replication server RS(3506) not sending update 00000161c30d167b1e9600000004 for domain "dc=example,dc=com" to directory server DS(7078) at master1.example.com/192.168.0.105:62163 because its generation ID 8970 is different to the local generation ID 361125
+[23/Feb/2018:07:25:27 -0700] category=SYNC severity=WARNING msgID=136 msg=Replication server RS(3506) not sending update 00000161c30d167b1e9600000005 for domain "dc=example,dc=com" to directory server DS(7078) at master1.example.com/192.168.0.105:62163 because its generation ID 8970 is different to the local generation ID 361125
+[23/Feb/2018:07:25:27 -0700] category=SYNC severity=WARNING msgID=136 msg=Replication server RS(3506) not sending update 00000161c30d167b1e9600000006 for domain "dc=example,dc=com" to directory server DS(7078) at master1.example.com/192.168.0.105:62163 because its generation ID 8970 is different to the local generation ID 361125
+[23/Feb/2018:07:25:27 -0700] category=SYNC severity=WARNING msgID=136 msg=Replication server RS(3506) not sending update 00000161c30d167b1e9600000007 for domain "dc=example,dc=com" to directory server DS(7078) at master1.example.com/192.168.0.105:62163 because its generation ID 8970 is different to the local generation ID 361125
+[23/Feb/2018:07:25:27 -0700] category=SYNC severity=WARNING msgID=96 msg=Directory server DS(7078) has connected to replication server RS(3506) for domain "dc=example,dc=com" at 192.168.0.105:10989, but the generation IDs do not match, indicating that a full re-initialization is required. The local (DS) generation ID is 8970 and the remote (RS) generation ID is 361125
+[23/Feb/2018:07:25:27 -0700] category=SYNC severity=WARNING msgID=136 msg=Replication server RS(3506) not sending update 00000161c30d167b1e9600000008 for domain "dc=example,dc=com" to directory server DS(7078) at master1.example.com/192.168.0.105:62163 because its generation ID 8970 is different to the local generation ID 361125
+[23/Feb/2018:07:25:27 -0700] category=SYNC severity=WARNING msgID=136 msg=Replication server RS(3506) not sending update 00000161c30d167b1e9600000009 for domain "dc=example,dc=com" to directory server DS(7078) at master1.example.com/192.168.0.105:62163 because its generation ID 8970 is different to the local generation ID 361125
+[23/Feb/2018:07:25:27 -0700] category=SYNC severity=WARNING msgID=136 msg=Replication server RS(3506) not sending update 00000161c30d167b1e960000000a for domain "dc=example,dc=com" to directory server DS(7078) at master1.example.com/192.168.0.105:62163 because its generation ID 8970 is different to the local generation ID 361125
+[23/Feb/2018:07:25:27 -0700] category=SYNC severity=WARNING msgID=146 msg=Directory server DS(6233) at master1.example.com/192.168.0.105:62176 presented generation ID 83956 for domain "cn=admin data", but the generation ID of this replication server RS(3506) is 157455. This usually indicates that one or more directory servers in the replication topology have not been initialized with the same data, and re-initialization is required
+
+ 
+
+Once it has been finally initialized and new changes are sent, the RS starts filtering out changes because it would break ordering.
+
+ 
+
+[23/Feb/2018:07:25:35 -0700] category=SYNC severity=NOTICE msgID=78 msg=The generation ID for domain "dc=example,dc=com" has been reset to 361125
+
+
+[23/Feb/2018:07:26:45 -0700] category=SYNC severity=INFORMATION msgID=296 msg=Filtering out from log file '/opt/instances/opendj/master3/changelogDb/1.dom/3755.server/head.log' the record 'Record [00000161c30f241e0eab00000008:AddMsg content: protocolVersion: 8 dn: cn=master4.example.com:7444,cn=Servers,cn=admin data csn: 00000161c30f241e0eab00000008 uniqueId: e79e34e6-e4f0-4c07-84e4-1ab3a0aceef0 assuredFlag: false assuredMode: SAFE_DATA_MODE safeDataLevel: 1]' because it would break ordering. Last key appended is '00000161c30f241e0eab0000000d'
+[23/Feb/2018:07:26:45 -0700] category=SYNC severity=INFORMATION msgID=296 msg=Filtering out from log file '/opt/instances/opendj/master3/changelogDb/1.dom/3755.server/head.log' the record 'Record [00000161c30f241e0eab00000009:AddMsg content: protocolVersion: 8 dn: ds-cfg-key-id=BFD19E9F344449E0BAFD175E80BB694C,cn=instance keys,cn=admin data csn: 00000161c30f241e0eab00000009 uniqueId: 90905ba0-d258-465c-a983-8379327f3d73 assuredFlag: false assuredMode: SAFE_DATA_MODE safeDataLevel: 1]' because it would break ordering. Last key appended is '00000161c30f241e0eab0000000d'
+[23/Feb/2018:07:26:45 -0700] category=SYNC severity=INFORMATION msgID=296 msg=Filtering out from log file '/opt/instances/opendj/master3/changelogDb/1.dom/3755.server/head.log' the record 'Record [00000161c30f241e0eab0000000a:ModifyMsg content: protocolVersion: 8 dn: cn=master4.example.com:7444,cn=Servers,cn=admin data csn: 00000161c30f241e0eab0000000a uniqueId: e79e34e6-e4f0-4c07-84e4-1ab3a0aceef0 assuredFlag: false assuredMode: SAFE_DATA_MODE safeDataLevel: 1 size: 167]' because it would break ordering. Last key appended is '00000161c30f241e0eab0000000d'
+
+ 
+
+The same "...break ordering. Last key appended is..." errors are then seen on Master 2. When you add in a fourth master, the errors are then seen on it as well.
+
+Once the changelog key ordering issue take place, all subsequent writes throw the same error, filling the replication logs.
+
+Note: entries were only added to Master 1 DSID 7830, yet the changelogs contain DSID.server data from Master 2 and 3.
+
+ 
+
+opendj; changelogDb /$ cat /opt/instances/opendj/master1/changelogDb/domains.state
+2:cn=admin data
+1:dc=example,dc=com
+3:cn=schema
+opendj; changelogDb /$ cd /opt/instances/opendj/master1/changelogDb/1.dom/
+opendj; 1.dom /$ lls
+total 0
+drwxr-xr-x 3 opendj opendj 96 Feb 23 07:26 7830.server
+-rw-r--r-- 1 opendj opendj 0 Feb 23 07:24 generation361125.id
+opendj; 1.dom /$ cat /opt/instances/opendj/master2/changelogDb/domains.state
+2:cn=admin data
+1:dc=example,dc=com
+3:cn=schema
+opendj; 1.dom /$ cd /opt/instances/opendj/master2/changelogDb/1.dom/
+opendj; 1.dom /$ lls
+total 0
+drwxr-xr-x 3 opendj opendj 96 Feb 23 07:26 27452.server
+drwxr-xr-x 3 opendj opendj 96 Feb 23 07:25 7830.server
+-rw-r--r-- 1 opendj opendj 0 Feb 23 07:24 generation361125.id
+opendj; 1.dom /$ cat /opt/instances/opendj/master3/changelogDb/domains.state
+1:cn=admin data
+2:dc=example,dc=com
+3:cn=schema
+opendj; 1.dom /$ cd /opt/instances/opendj/master3/changelogDb/2.dom/
+opendj; 2.dom /$ lls
+total 0
+drwxr-xr-x 3 opendj opendj 96 Feb 23 07:26 7078.server
+drwxr-xr-x 3 opendj opendj 96 Feb 23 07:25 7830.server
+-rw-r--r-- 1 opendj opendj 0 Feb 23 07:25 generation361125.id
+opendj; 2.dom /$ cat /opt/instances/opendj/master4/changelogDb/domains.state
+2:cn=admin data
+1:dc=example,dc=com
+3:cn=schema
+opendj; 2.dom /$ cd /opt/instances/opendj/master4/changelogDb/1.dom/
+opendj; 1.dom /$ lls
+total 0
+drwxr-xr-x 3 opendj opendj 96 Feb 23 07:26 7830.server
+-rw-r--r-- 1 opendj opendj 0 Feb 23 07:26 generation361125.id
+
+ 
+
+..also note the head.log in these bad DSID.server are empty.
+
+Changelog Dumps provided.
+
+ 
+
+./1.dom:
+total 0
+drwxr-xr-x 5 opendj server 160 Feb 23 07:25 .
+drwxr-xr-x 10 opendj server 320 Feb 23 07:27 ..
+drwxr-xr-x 3 opendj server 96 Feb 23 07:26 27452.server
+drwxr-xr-x 3 opendj server 96 Feb 23 07:25 7830.server
+-rw-r--r-- 1 opendj server 0 Feb 23 07:24 generation361125.id
+
+./1.dom/27452.server:
+total 0
+drwxr-xr-x 3 opendj server 96 Feb 23 07:26 .
+drwxr-xr-x 5 opendj server 160 Feb 23 07:25 ..
+-rw-r--r-- 1 opendj server 0 Feb 23 07:25 head.log
+...
+
+
+
+ 
+
+Support extracts and changelog dumps provided
+
+-rw-r--r-- 1 opendj opendj 15619 Feb 23 07:28 changelogdumps.zip
+-rw-r--r-- 1 opendj opendj 246037 Feb 23 07:40 opendj-support-data-20180223-073925.zip
+-rw-r--r-- 1 opendj opendj 221370 Feb 23 07:41 opendj-support-data-20180223-074016.zip
+-rw-r--r-- 1 opendj opendj 215407 Feb 23 07:41 opendj-support-data-20180223-074114.zip
+-rw-r--r-- 1 opendj opendj 209208 Feb 23 07:43 opendj-support-data-20180223-074217.zip
+
+Observations:
+
+	Replication is always in sync - dsreplication status shows no issues.
+	The changelogDb is populated with all changes
+	The main backend is populated with all changes
+
+
+
+ 

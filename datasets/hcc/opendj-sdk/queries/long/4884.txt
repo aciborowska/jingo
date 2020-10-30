@@ -1,0 +1,95 @@
+Steps to reproduce:
+
+1. Setup one directory server with some sample entries and a monitor user:
+
+/path/to/ds/setup directory-server \
+          --rootUserDn cn=Directory\ Manager \
+          --rootUserPassword password \
+          --monitorUserPassword monitoring \
+          --hostname localhost \
+          --adminConnectorPort 4444 \
+          --ldapPort 1389 \
+          --enableStartTls \
+          --httpPort 8080 \
+          --sampleData 20 \
+          --baseDn dc=example,dc=com
+
+
+
+2. Add a proxy user (with monitor-read privilege) with needed ACIs
+
+$ bin/ldapmodify -p 1389 -D cn=directory\ manager -w password
+dn: cn=proxy,dc=example,dc=com
+objectClass: person
+objectClass: inetorgperson
+objectClass: organizationalperson
+objectClass: top
+cn: proxy
+userPassword: password
+sn: proxy
+ds-privilege-name: proxied-auth
+ds-privilege-name: monitor-read
+
+dn: dc=example,dc=com
+changetype: modify
+add: aci
+aci: (target="ldap:///dc=example,dc=com")(targetattr = "*")(version 3.0; acl "Allow proxy user to use proxy auth"; allow(proxy) userdn = "ldap:///cn=proxy,dc=example,dc=com";)
+
+dn: dc=example,dc=com
+changetype: modify
+add: aci
+aci: (targetcontrol="2.16.840.1.113730.3.4.18")(version 3.0; acl "proxy user can use the Proxy Authorization Control";allow(read) userdn="ldap:///cn=proxy,dc=example,dc=com";)
+
+# ADD operation successful for DN cn=proxy,dc=example,dc=com
+# MODIFY operation successful for DN dc=example,dc=com
+# MODIFY operation successful for DN dc=example,dc=com
+
+
+
+3. Setup a proxy server (with a monitor user) which will proxy requests to the DS:
+
+
+/path/to/proxy/setup proxy-server \
+--rootUserDn cn=Directory\ Manager \
+--rootUserPassword password \
+--monitorUserDn uid=Monitor \
+--monitorUserPassword monitoringproxy \
+--hostname localhost \
+--adminConnectorPort 5444 \
+--ldapPort 2389 \
+--enableStartTls \
+--httpPort 9080 \
+--staticPrimaryServer localhost:1389 \
+--proxyUserBindDn cn=proxy,dc=example,dc=com \
+--proxyUserBindPassword password \
+--loadBalancingAlgorithm affinity
+
+
+
+4. Assert that the proxy works correctly
+
+$ bin/ldapsearch -p 2389 -b uid=user.0,ou=people,dc=example,dc=com "&" dn
+dn: uid=user.0,ou=People,dc=example,dc=com
+
+
+
+5. Use a REST client to access proxy monitoring endpoints http://localhost:9080/metrics/prometheus or http://localhost:9080/metrics/api?_queryFilter=true with basic auth with following credentials:
+
+	monitor/monitoring (monitoring user of the DS)
+	monitor/monitoringproxy (monitoring user of the Proxy)
+
+
+
+Expected behavior: Server returns 200 response with metrics in the entity object
+Observed behavior: Server returns 500 error with the following message:
+
+
+{
+  "code": 500,
+  "reason": "Internal Server Error",
+  "message": "Operations Error: Other: An internal failure occurred while attempting to resolve ID string monitor to a user entry: Unable to process request 'SearchRequest(name=dc=example,dc=com, scope=sub, dereferenceAliasesPolicy=never, sizeLimit=1, timeLimit=10, typesOnly=false, filter=(uid=monitor), attributes=[*, +])' received for internal client connection: IllegalArgumentException: No context of type org.forgerock.services.context.TransactionIdContext found. (AbstractContext.java:33 ProxyBackend.java:555 ProxyBackend.java:864 Router.java:117 Router.java:95 RequestFilterChain.java:85 ClientSideResultCodeRequestFilter.java:31 RequestFilterChain.java:103 AccessController.java:79 PolicyBasedAccessControlHandler.java:207 PolicyBasedAccessControlRequestFilter.java:34 RequestFilterChain.java:103 AddBinaryOptionReactiveFilter.java:43 RequestFilterChain.java:103 ReactiveFilterAccessLog.java:199 RequestFilterChain.java:63 RequestFilterChain.java:63 RequestFilterChain.java:63 RequestFilterChain.java:103 InternalClientConnection.java:264 InternalClientConnection.java:190 ...)"
+}
+
+
+
+Note that granted the monitor-read privilege to uid=user.0,ou=people,dc=example,dc=com and using it in the request does not work neither.

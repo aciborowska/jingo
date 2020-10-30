@@ -1,0 +1,83 @@
+When password default policy - passwords-expiration-warning-interval and max-password-age is set via dsconfig, password expires in passwords-expiration-warning-interval instead of in max-password-age. As documentation says, max-password-age is expiration time: https://qa-backstage.forgerock.com/docs/ds/7/configref/#objects-password-policy-max-password-age
+
+Found on 7.0.0-SNAPSHOT, revision number: 054825e4d76bff67e031554f373ac7e40e9aa745
+
+ 
+
+Steps to reproduce:
+
+	Setup new DJ instance
+
+ ./setup \
+      --instancePath pwd \
+      --serverId Rowan_Sartin \
+      --hostname localhost \
+      --adminConnectorPort 4444 \
+      --rootUserDn uid=admin \
+      --rootUserPassword password \
+      --ldapPort 1389 \
+      --enableStartTls \
+      --ldapsPort 1636 \
+      --httpPort 8080 \
+      --httpsPort 8443 \
+      --sampleData 100 \
+      --baseDn dc=example,dc=com
+
+	Enable HTTP endpoint
+
+./bin/dsconfig \
+ set-http-endpoint-prop \
+ --hostname localhost \
+ --port 4444 \
+ --bindDN "uid=admin" \
+ --bindPassword password \
+ --endpoint-name "/api" \
+ --set enabled:true \
+ --trustAll \
+ --no-prompt 
+
+	Add accountUsability in supported actions of http endpoint in /opendj/pwd/config/rest2ldap/endpoints/example-v1.json
+
+"supportedActions": [ "accountUsability", "modifyPassword", "resetPassword" ] 
+
+	Set password expiration and warning time
+
+./bin/dsconfig -h localhost -p 4444 \
+-D "uid=admin" \
+-w password \
+-X set-password-policy-prop \
+--policy-name "Default Password Policy" \
+--set "password-expiration-warning-interval:31 s" \
+--set "max-password-age:600 s" -n
+
+
+	Use this curl to request account usability of user.0
+
+curl --request POST --user admin:password --header "Content-Type: application/json"  --data '{}' http://localhost:8080/api/users/user.0?_action=accountUsability 
+
+	Reponse says {"isUsable":true,"passwordExpiresIn":31}
+	Login with user to trigger counter
+
+curl --user user.0:password http://localhost:8080/api/users/user.0?_fields=userName
+
+or
+
+​./bin/ldapsearch --port 1389 --baseDN dc=example,dc=com --bindDN "uid=user.0,ou=People,dc=example,dc=com" --bindPassword password  uid=user.0 cn
+
+	Use curl command from step 7 - no warning message to change password appears in response. Also counter starts counting down
+	Use ldapsearch command from step 7 - warning message to change password appears in response
+
+
+
+Expected results:
+
+	Step 6 - passwordExpiresIn should be 600s (- some time until you manage to do the steps) instead of 31s
+	Step 8 - warning message to change password should appear in response of curl as it appears in response of ldapsearch
+
+
+
+Current results:
+
+	Step 6 - password expires in password-expiration-warning-interval instead of max-password-age
+	Step 8 - no warning message appears in response of curl request
+

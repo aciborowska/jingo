@@ -1,0 +1,184 @@
+The default ConstraintExceptionHandler has imho the following limitations:
+* always cuts of the first propertyPath (e.g. assumes that method-validation lead to the ConstraintViolationException?)
+* fails with NPE on ConstraintViolationExceptions with null-ConstraintViolation HashSet
+* does not handle ConstraintViolationExceptions with empty-ConstraintViiolation HashSet correctly
+
+### Test Controller
+
+```java
+@Controller
+@Validated
+public class TestController {
+
+    private final ValidatorFactory validatorFactory;
+
+    public TestController(ValidatorFactory validatorFactory) {
+        this.validatorFactory = validatorFactory;
+    }
+
+    @Get(value = "/test1/{value}", produces = MediaType.TEXT_PLAIN)
+    public String test1(@Size(min = 2) String value) {
+        return "got some " + value;
+    }
+
+    @Get(value = "/test2/{value}", produces = MediaType.TEXT_PLAIN)
+    public String test2(String value) {
+        // here we do validation manually (e.g. within a controller method like here
+        // or maybe in a custom TypeConverter etc.)
+        Some some = new Some();
+
+        // this produces constraint-validation because some.thing is null
+        Set<ConstraintViolation<Some>> violations = validatorFactory.getValidator().validate(some);
+        if (!violations.isEmpty()) {
+            throw new ConstraintViolationException(violations);
+        }
+        return "will never reach this statement";
+    }
+
+    @Get(value = "/test3", produces = MediaType.TEXT_PLAIN)
+    public String test3() {
+        throw new ConstraintViolationException("something is invalid", null);
+    }
+
+    @Get(value = "/test4", produces = MediaType.TEXT_PLAIN)
+    public String test4() {
+        throw new ConstraintViolationException("another thing is invalid", Collections.emptySet());
+    }
+
+
+    public static class Some {
+
+        private String thing;
+
+        @NotNull
+        public String getThing() {
+            return thing;
+        }
+
+        public void setThing(String thing) {
+            this.thing = thing;
+        }
+    }
+}
+```
+### Test 1
+Invoke _localhost:8080/test1/x_ (throws ConstraintViolationException) yields (as expected, no problem here):
+
+code: 400
+json: ```{"_links":{"self":{"href":"/test1/x","templated":false}},"message":"value: size must be between 2 and 2147483647"}```
+
+### Test 2
+Invoke _localhost:8080/test2/x_ (throws ConstraintViolationException due to "manual" validation, e.g. validation not performed via ValidatingInterceptor) yields:
+
+code: 400
+json: ```{"_links":{"self":{"href":"/test2/x","templated":false}},"message":": must not be null"}```
+
+Note that the property-name was cut off message = **": must not be null"**
+
+### Test 3
+Invoke _localhost:8080/test3_ (throws ConstraintViolationException with null-ConstraintViolation HasSet) yields:
+
+code: 500
+json: ```{"message":"Internal Server Error: null"}```
+
+NPE thrown:
+```
+08:44:12.582 [nioEventLoopGroup-1-6] ERROR i.m.h.s.netty.RoutingInBoundHandler - Unexpected error occurred: null
+java.lang.NullPointerException: null
+	at io.micronaut.validation.exceptions.ConstraintExceptionHandler.handle(ConstraintExceptionHandler.java:53)
+	at io.micronaut.validation.exceptions.ConstraintExceptionHandler.handle(ConstraintExceptionHandler.java:44)
+	at io.micronaut.http.server.netty.RoutingInBoundHandler.exceptionCaught(RoutingInBoundHandler.java:310)
+```
+
+### Test 4
+
+Invoke _localhost:8080/test4_ (throws ConstraintViolationException with empty-ConstraintViolation HasSet) yields:
+
+code: 400
+json: ```{"_links":{"self":{"href":"/test4","templated":false}},"_embedded":{"_embedded":[]},"message":"Bad Request"}```
+
+Note the empty _embedded array.
+
+
+### Replacing the default ConstraintExceptionHandler with this implementation:
+
+```java
+@Produces
+@Singleton
+@Requires(classes = {ConstraintViolationException.class, ExceptionHandler.class})
+@Replaces(ConstraintExceptionHandler.class)
+public class CustomConstraintExceptionHandler implements ExceptionHandler<ConstraintViolationException, HttpResponse<JsonError>> {
+
+    @Override
+    public HttpResponse<JsonError> handle(HttpRequest request, ConstraintViolationException exception) {
+        Set<ConstraintViolation<?>> constraintViolations = exception.getConstraintViolations();
+
+        if (constraintViolations == null || constraintViolations.isEmpty()) {
+            JsonError error = new JsonError(exception.getMessage() == null ? HttpStatus.BAD_REQUEST.getReason() : exception.getMessage());
+            error.link(Link.SELF, Link.of(request.getUri()));
+            return HttpResponse.badRequest(error);
+        } else if (constraintViolations.size() == 1) {
+            ConstraintViolation<?> violation = constraintViolations.iterator().next();
+
+            JsonError error = new JsonError(buildMessage(violation));
+            error.link(Link.SELF, Link.of(request.getUri()));
+            return HttpResponse.badRequest(error);
+        } else {
+            JsonError error = new JsonError(HttpStatus.BAD_REQUEST.getReason());
+            List<Resource> errors = new ArrayList<>();
+            for (ConstraintViolation<?> violation : constraintViolations) {
+                errors.add(new JsonError(buildMessage(violation)));
+            }
+            error.embedded(Resource.EMBEDDED, errors);
+            error.link(Link.SELF, Link.of(request.getUri()));
+            return HttpResponse.badRequest(error);
+        }
+    }
+
+    private static String buildMessage(ConstraintViolation violation) {
+        StringBuilder message = new StringBuilder();
+        Path propertyPath = violation.getPropertyPath();
+        Iterator<Path.Node> i = propertyPath.iterator();
+        while (i.hasNext()) {
+            Path.Node node = i.next();
+
+            if (node.getKind() == ElementKind.METHOD || node.getKind() == ElementKind.CONSTRUCTOR) {
+                continue;
+            }
+            message.append(node);
+            if (i.hasNext()) {
+                message.append('.');
+            }
+        }
+        message.append(": ").append(violation.getMessage());
+        return message.toString();
+    }
+}
+```
+
+This implementation:
+* does not cut of the first propertyPath, but checks the path's type (ignores ElementKind.Method and ElementKind.Constructor paths)
+* handle ConstraintViolationExceptions with null- and emptyConstraintViolation HashSets
+
+### Results using the CustomConstraintExceptionHandler
+
+#### Test 1 
+yields same result as the default  ConstraintExceptionHandler (as expected)
+
+#### Test 2
+code: 400
+json: ```{"_links":{"self":{"href":"/test2/x","templated":false}},"message":"thing: must not be null"}```
+
+Note: this impl does not cut off the property-name.
+
+#### Test 3
+code: 400
+json: ```{"_links":{"self":{"href":"/test3","templated":false}},"message":"something is invalid"}```
+
+No NPE thrown and code = 400
+
+#### Test 4
+code: 400
+json: ```{"_links":{"self":{"href":"/test4","templated":false}},"message":"another thing is invalid"}```
+
+I think the default ConstraintExeptionHandler should be adjusted similar to/with the CustomConstraintExceptionHandler above - what do you think?

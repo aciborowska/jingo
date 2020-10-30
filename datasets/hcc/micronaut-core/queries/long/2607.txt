@@ -1,0 +1,84 @@
+I've upgraded a project from Micronaut 1.3.0.M1 to M2 and some constraints tests started to fail. 
+
+### Steps to Reproduce
+
+I have a service and an implementation:
+```java
+@DefaultImplementation(FooServiceImpl.class)
+public interface FooService {
+
+    @Nonnull
+    String methodWithString(@NotBlank String param);
+}
+```
+
+```java
+@Singleton
+public class FooServiceImpl implements FooService {
+
+    @Nonnull
+    @Override
+    @Transactional
+    public String methodWithString(@NotBlank String param) {
+        throw new RuntimeException("This should not be executed during test execution");
+    }
+}
+```
+
+And the following test:
+```groovy
+@MicronautTest
+class FooEntityServiceConstraintsSpec extends Specification {
+
+    @Inject
+    FooService fooService
+
+    @Unroll
+    void 'test "methodWithString(#param)" triggers ConstraintViolationException'() {
+        when:
+        fooService.methodWithString(param)
+
+        then:
+        def e = thrown(ConstraintViolationException)
+        e.constraintViolations.collect { it.propertyPath.toString() }.any { it.contains(field) }
+        e.constraintViolations.collect { it.message }.any { it.contains(errorMessage) }
+
+        where:
+        param | field                    | errorMessage
+        null  | 'methodWithString.param' | 'must not be blank'
+        ''    | 'methodWithString.param' | 'must not be blank'
+    }
+}
+```
+
+The test fails with `Expected exception of type 'javax.validation.ConstraintViolationException', but got 'java.lang.RuntimeException'` because the code is executed even if the parameter is not valid. 
+
+Also, during compilation I see the following warning:
+
+```
+> Task :compileJava
+/home/ivan/workspaces/micronaut-apps/constraints-npe/src/main/java/constraints/npe/FooServiceImpl.java:14: warning: Element extends or implements an internal or experimental API
+    public String methodWithString(@NotBlank String param) {
+                  ^
+warning: Overriding an internal API may result in breaking changes in minor or patch versions of the framework. Proceed with caution!
+Note: Creating bean classes for 1 type elements
+```
+
+It turns out this is because the `@Transactional` (or `@ReadOnly`) annotation in the implementation. If I remove the annotation the test passes again.
+
+This was working properly using `@Transactional` or `@ReadOnly` in 1.3.0.M1.
+
+### Expected Behaviour
+
+The test should pass and there should not be a warning during compilation.
+
+### Environment Information
+
+- **Operating System**: Linux Mint 19.3
+- **Micronaut Version:** 1.3.0.M2
+- **JDK Version:** OpenJDK 11
+
+### Example Application
+
+- https://github.com/ilopmar/mn-constraints-issue
+

@@ -1,0 +1,55 @@
+From _Todd Taomae_
+See post: https://groups.google.com/d/msg/hazelcast/dzXDh7_EU40/HzzJ62NABwAJ
+
+---
+
+Consider a transaction, T1, which calls `TransactionalMap.keySet()` while another transaction, T2, concurrently performs some kind write operation.
+Some examples:
+- T2 writes 100 entries to an initially empty map.
+  - I would expect T1 to find either 0 or 100 entries. However, it is possible for it to find some amount of entries between 0 and 100.
+- T2 removes X and puts Y into a map which initially contains X.
+  -I would expect T1 to find either X or Y. However, it is also possible for it to find both X and Y or an empty set.
+
+In both of these cases I would expect to only get the values that exist before or after the commit. The same applies to the `values()` method as well as their counterparts which take a `Predicate` argument. However, it appears that the read can occur during the middle of the commit.
+
+Below is an example based on the second example from above. However, T1 repeatedly performs the `keySet()` and T2 uses an integer as the key and repeatedly removes the previous value and puts the next value (i.e. remove 0 put 1, remove 1 put 2, remove 2 put 3, ...)
+
+``` java
+HazelcastInstance hz = Hazelcast.newHazelcastInstance();
+hz.getMap("map").put(0, "foo");
+
+ExecutorService exec = Executors.newCachedThreadPool();
+
+AtomicInteger currentKey = new AtomicInteger(0);
+final int maxKey = 10000;
+
+Future<?> txn1 = exec.submit(() -> {
+    while (currentKey.get() < maxKey) {
+        TransactionContext ctx = hz.newTransactionContext();
+        ctx.beginTransaction();
+        System.out.println(ctx.getMap("map").keySet());
+        ctx.commitTransaction();
+    }
+});
+
+Future<?> txn2 = exec.submit(() -> {
+    while (currentKey.get() < maxKey) {
+        int key = currentKey.getAndIncrement();
+        int nextKey = currentKey.get();
+        TransactionContext ctx1 = hz.newTransactionContext();
+        ctx1.beginTransaction();
+        ctx1.getMap("map").remove(key);
+        ctx1.getMap("map").put(nextKey, "foo");
+        ctx1.commitTransaction();
+    }
+});
+
+txn1.get();
+txn2.get();
+exec.shutdown();
+exec.awaitTermination(1, TimeUnit.MINUTES);
+Hazelcast.shutdownAll();
+```
+
+Based on my initial expectations, I would expect that any call to keySet() would return a exactly one key. Based on the two examples I gave at the start, finding an empty set or a set with two consecutive keys would not be surprising. However, during my testing I have found anywhere from 0 to 6 keys (although I assume this could theoretically be arbitrarily large), and if there are multiple keys they can be non-consecutive. I have attached a sample output using Hazelcast 3.6.4.
+## [keySet_output.txt](https://github.com/hazelcast/hazelcast/files/365904/keySet_output.txt)

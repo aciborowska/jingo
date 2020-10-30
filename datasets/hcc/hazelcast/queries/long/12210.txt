@@ -1,0 +1,49 @@
+Reproducer
+
+```
+        Hazelcast.newHazelcastInstance();
+        HazelcastInstance client = HazelcastClient.newHazelcastClient();
+
+        IMap<Integer, Integer> test = client.getMap("test");
+        test.values(new PartitionPredicate(1, new PagingPredicate(5)));
+```
+
+Exception
+
+```
+Exception in thread "main" com.hazelcast.nio.serialization.HazelcastSerializationException: Failed to serialize 'com.hazelcast.query.PartitionPredicate'
+	at com.hazelcast.internal.serialization.impl.SerializationUtil.handleSerializeException(SerializationUtil.java:75)
+	at com.hazelcast.internal.serialization.impl.AbstractSerializationService.toBytes(AbstractSerializationService.java:155)
+	at com.hazelcast.internal.serialization.impl.AbstractSerializationService.toData(AbstractSerializationService.java:122)
+	at com.hazelcast.internal.serialization.impl.AbstractSerializationService.toData(AbstractSerializationService.java:110)
+	at com.hazelcast.client.spi.ClientProxy.toData(ClientProxy.java:98)
+	at com.hazelcast.client.proxy.ClientMapProxy.values(ClientMapProxy.java:1227)
+	at com.oner.C1Exception.main(C1Exception.java:20)
+Caused by: com.hazelcast.nio.serialization.HazelcastSerializationException: Failed to serialize 'com.hazelcast.query.PagingPredicate'
+	at com.hazelcast.internal.serialization.impl.SerializationUtil.handleSerializeException(SerializationUtil.java:75)
+	at com.hazelcast.internal.serialization.impl.AbstractSerializationService.writeObject(AbstractSerializationService.java:252)
+	at com.hazelcast.internal.serialization.impl.ByteArrayObjectDataOutput.writeObject(ByteArrayObjectDataOutput.java:375)
+	at com.hazelcast.query.PartitionPredicate.writeData(PartitionPredicate.java:99)
+	at com.hazelcast.internal.serialization.impl.DataSerializableSerializer.write(DataSerializableSerializer.java:201)
+	at com.hazelcast.internal.serialization.impl.DataSerializableSerializer.write(DataSerializableSerializer.java:50)
+	at com.hazelcast.internal.serialization.impl.StreamSerializerAdapter.write(StreamSerializerAdapter.java:43)
+	at com.hazelcast.internal.serialization.impl.AbstractSerializationService.toBytes(AbstractSerializationService.java:152)
+	... 5 more
+Caused by: java.lang.NullPointerException
+	at com.hazelcast.query.PagingPredicate.writeData(PagingPredicate.java:343)
+	at com.hazelcast.internal.serialization.impl.DataSerializableSerializer.write(DataSerializableSerializer.java:201)
+	at com.hazelcast.internal.serialization.impl.DataSerializableSerializer.write(DataSerializableSerializer.java:50)
+	at com.hazelcast.internal.serialization.impl.StreamSerializerAdapter.write(StreamSerializerAdapter.java:43)
+	at com.hazelcast.internal.serialization.impl.AbstractSerializationService.writeObject(AbstractSerializationService.java:250)
+	... 11 more
+```
+
+Cause: `PagingPredicate` iterationType` is null. The client set this param if the original predicate is a `PaginngPredicate`. If not, its null by default.
+
+If the second instance changed to a member, it works since member checks first if its a `PartitionPredicate` & then creates a `Query` operation with correct iterationType.
+
+Both `PartitionPredicate` & `PagingPredicate` can contain inner predicate. But for `PagingPredicate` it's optional. So
+
+1 - On the client side, for all Predicate operations, the first check should be `PartitionPredicate` check. If it is, then inner predicate need to be compared to see if it's `PagingPredicate` or not.
+
+2 - To prevent too many inner predicates, we could put controls on `PagingPredicate` to prevent inner predicate to be another `PagingPredicate` or `PartitionPredicate`.

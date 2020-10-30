@@ -1,0 +1,10 @@
+The race condition issue happens as follow:
+
+	ch1 is received from network for one input channel by netty thread and schedule the ch1 into mailbox via #notifyBarrierReceived
+	ch2 is received from network for another input channel by netty thread, but before calling #notifyBarrierReceived this barrier was inserted into channel's data queue in advance. Then it would cause task thread process ch2 earlier than #notifyBarrierReceived by netty thread.
+	Task thread would execute checkpoint for ch2 immediately because ch2 > ch1.
+	After that, the previous scheduled ch1 is performed from mailbox by task thread, then it causes the IllegalArgumentException inside SubtaskCheckpointCoordinatorImpl#checkpointState because it breaks the initial assumption that checkpoint is executed in incremental way for aligned mode.
+
+
+
+The key problem is that we can not remove the checkpoint action from mailbox queue before the next checkpoint is going to execute now. One possible solution is that we record the previous aborted checkpoint id inside SubtaskCheckpointCoordinatorImpl#abortedCheckpointIds, then when the queued checkpoint inside mailbox is executing, it will exit directly if found the checkpoint id was already aborted before.

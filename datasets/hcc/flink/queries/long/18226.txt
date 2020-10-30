@@ -1,0 +1,32 @@
+Problem
+
+Currently on Kubernetes & Yarn deployment, the ResourceManager compares pending workers requested from Kubernetes/Yarn against pending workers required by SlotManager, for deciding whether new workers should be requested in case of a worker failure.
+
+	KubernetesResourceManager#requestKubernetesPodIfRequired
+	YarnResourceManager#requestYarnContainerIfRequired
+
+
+
+Pending workers requested from Kubernetes/Yarn is decreased when the worker is allocated, before the worker is actually started and registered.
+
+	Decreased in ActiveResourceManager#notifyNewWorkerAllocated, which is called in
+	KubernetesResourceManager#onAdded
+	YarnResourceManager#onContainersOfResourceAllocated
+
+
+
+On the other hand, pending workers required by SlotManager is derived from the number of pending slots inside SlotManager, which is decreased when the new workers/slots are registered.
+
+	SlotManagerImpl#registerSlot
+
+
+
+Therefore, if a worker w1 is failed after another worker w2 is allocated but before w2 is registered, the ResourceManager will request an unnecessary new worker for w2.
+
+Impact
+
+Normally, the extra worker should be released soon after allocated. But in cases where the Kubernetes/Yarn cluster does not have enough resources, it might create more and more pending pods/containers.
+
+It's even more severe for Kubernetes, because KubernetesResourceManager#onAdded only suggest that the pod spec has been successfully added to the cluster, but the pod may not actually been allocated due to lack of resources. Imagine there are N pending pods, a failure of a running pod means requesting another N new pods.
+
+In a session cluster, such pending pods could take long to be cleared even after all jobs in the session cluster have terminated.

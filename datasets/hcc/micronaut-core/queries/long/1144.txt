@@ -1,0 +1,90 @@
+Expression in Client annotation is not resolved and instead treated in whole as a service id.
+
+### Steps to Reproduce
+
+Create a bean and inject http client using an expression in Client annotation. Example:
+
+```java
+public class LowLevelClient {
+
+    @Inject @Client("${foo.bar}") // <-- this cause problem during injection
+    RxHttpClient client;
+
+    public String hello() {
+        HttpRequest<?> req = HttpRequest.GET("/");
+        return client.exchange(req, String.class).blockingFirst().body();
+    }
+}
+```
+
+### Expected Behaviour
+
+Expression should be resolved and the resolved value should be used as an URI.
+Declarative client like the one below works fine.
+
+```java
+@Client("${foo.bar}")
+public interface DeclarativeClient {
+
+  @Get
+  String hello();
+}
+```
+
+### Actual Behaviour
+
+Expression is not resolved and it is used as service id instead. This is shown by exception:
+
+```
+No available services for ID: ${foo.bar}
+io.micronaut.discovery.exceptions.NoAvailableServiceException: No available services for ID: ${foo.bar}
+	at io.micronaut.http.client.loadbalance.AbstractRoundRobinLoadBalancer.getNextAvailable(AbstractRoundRobinLoadBalancer.java:51)
+	at io.micronaut.core.async.publisher.Publishers$1.doOnNext(Publishers.java:139)
+[...]
+```
+
+### Environment Information
+- Micronaut 1.0.3
+
+### Example Application
+
+https://github.com/KrzysztofKowalczyk/micronaut-problems
+
+Test case: 
+https://github.com/KrzysztofKowalczyk/micronaut-problems/blob/master/src/test/groovy/micronaut/problems/ClientSpec.groovy
+
+Second test is failing
+
+### Workaround
+
+1. Use declarative Client 
+2. Use service id and configure url there
+```yaml
+micronaut:
+    http:
+        services:
+            foobar:
+                url: 'http://localhost:8080’
+```
+3. Setup client manually
+
+```java
+public class LowLevelClient {
+    RxHttpClient client;
+
+    @PostConstruct
+    void initialize() {
+        Optional<String> value = applicationContext.getProperty("foo.bar", String.class);
+        if (value.isEmpty()) {
+            throw new ConfigurationException("foo.bar is not configured");
+        }
+        try {
+            client = RxHttpClient.create(new URL(value.get()));
+        } catch (MalformedURLException e) {
+            throw new ConfigurationException("Http client could not be created");
+        }
+    }
+[...]
+```
+
+

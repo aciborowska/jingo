@@ -1,0 +1,85 @@
+Discovered with 7.0.0-SNAPSHOT rev. 16f7d186cfe in daily functional tests.
+We have following error message in log:
+
+(ERROR) [01/Aug/2019:01:44:06 +0000] category=SYNC severity=ERROR msgID=85 msg=Caught Exception during reinitialization of communication on domain cn=admin data : null ConcurrentModificationException (HashMap.java:1442 HashMap.java:1471 Topology.java:385 ReplicationBroker.java:621 ReplicationBroker.java:686 ReplicationBroker.java:1773 ReplicationBroker.java:1958 ReplicationDomain.java:743 ReplicationDomain.java:2089 Thread.java:748)	
+
+
+
+To reproduce the issue run:
+
+run-pybot.py -v -s replication_group2.externalChangelogBasic DJ
+
+
+
+The above error is logged while checking disk-low/full-thresholds with following steps:
+Topology consists of 2xDSRS.
+1. Get available disk space => returns X
+2. Set disk-low-threshold of DJ1 to be reached (X+2 gb)
+
+./DJ1/opendj/bin/dsconfig -h openam.example.com -p 4444 -D "cn=myself" -w password -X set-replication-server-prop --provider-name "Multimaster Synchronization" --set disk-low-threshold:"241 gb" -n
+
+
+3. Check for warning about disk-low-threshold being reached on DJ1 (30 seconds)
+4. Add an entry (DJ2), check it appears in changelog of both servers
+
+./DJ2/opendj/bin/ldapmodify -h openam.example.com -p 1390 -D "cn=myself" -w password 
+	dn: uid=user.100,ou=people,dc=example,dc=com
+changetype: add
+objectclass: inetorgperson
+cn: User Additional
+sn: Additional
+uid: user.100
+
+
+
+
+./DJ1/opendj/bin/ldapsearch -h openam.example.com -p 1389 -D "cn=myself" -w password -b "cn=changelog"  "(changenumber>=14)" "*" changeinitiatorsname targetentryuuid changelogcookie
+dn: changeNumber=14,cn=changelog
+objectclass: top
+objectclass: changeLogEntry
+changeNumber: 14
+changes:: b2JqZWN0Y2xhc3M6IGluZXRvcmdwZXJzb24Kb2JqZWN0Y2xhc3M6IG9yZ2FuaXphdGlvbmFsUGVyc29uCm9iamVjdGNsYXNzOiBwZXJzb24Kb2JqZWN0Y2xhc3M6IHRvcApjbjogVXNlciBBZGRpdGlvbmFsCnNuOiBBZGRpdGlvbmFsCnVpZDogdXNlci4xMDAKY3JlYXRlVGltZXN0YW1wOiAyMDE5MDgwMTAxNDM1MloKY3JlYXRvcnNOYW1lOiBjbj1teXNlbGYKZW50cnlVVUlEOiBkYWQwYzIwYi03MTgxLTRjYmItYTJjMS1hMzQ5NmUzNDg1ODUK
+changeTime: 20190801014352Z
+changeType: add
+targetDN: uid=user.100,ou=people,dc=example,dc=com
+changeinitiatorsname: cn=myself
+changelogcookie: dc=com:0103016c4ad7fad8000002f0dj1 0103016c4ad904ab00000341dj2;
+targetentryuuid: dad0c20b-7181-4cbb-a2c1-a3496e348585
+
+./DJ2/opendj/bin/ldapsearch -h openam.example.com -p 1390 -D "cn=myself" -w password -b "cn=changelog"  "(changenumber>=14)" "*" changeinitiatorsname targetentryuuid changelogcookie
+dn: changeNumber=14,cn=changelog
+objectclass: top
+objectclass: changeLogEntry
+changeNumber: 14
+changes:: b2JqZWN0Y2xhc3M6IGluZXRvcmdwZXJzb24Kb2JqZWN0Y2xhc3M6IG9yZ2FuaXphdGlvbmFsUGVyc29uCm9iamVjdGNsYXNzOiBwZXJzb24Kb2JqZWN0Y2xhc3M6IHRvcApjbjogVXNlciBBZGRpdGlvbmFsCnNuOiBBZGRpdGlvbmFsCnVpZDogdXNlci4xMDAKY3JlYXRlVGltZXN0YW1wOiAyMDE5MDgwMTAxNDM1MloKY3JlYXRvcnNOYW1lOiBjbj1teXNlbGYKZW50cnlVVUlEOiBkYWQwYzIwYi03MTgxLTRjYmItYTJjMS1hMzQ5NmUzNDg1ODUK
+changeTime: 20190801014352Z
+changeType: add
+targetDN: uid=user.100,ou=people,dc=example,dc=com
+changeinitiatorsname: cn=myself
+changelogcookie: dc=com:0103016c4ad7fad8000002f0dj1 0103016c4ad904ab00000341dj2;
+targetentryuuid: dad0c20b-7181-4cbb-a2c1-a3496e348585
+
+
+5. Set disk-full-threshold of DJ1 to be reached (X+2 gb) 
+
+./DJ1/opendj/bin/dsconfig -h openam.example.com -p 4444 -D "cn=myself" -w password -X set-replication-server-prop --provider-name "Multimaster Synchronization" --set disk-full-threshold:"241 gb" -n
+
+
+
+6. Check for warning about disk-full-threshold being reached on DJ1 (30 seconds)
+7. Add an entry (DJ2), check it doesn't appear in changelog
+
+./DJ2/opendj/bin/ldapmodify -h openam.example.com -p 1390 -D "cn=myself" -w password
+	dn: uid=user.101,ou=people,dc=example,dc=com
+changetype: add
+objectclass: inetorgperson
+cn: User Additional
+sn: Additional
+uid: user.101
+
+
+8. Reset thresholds
+9. Check replication server has been restarted and both changelogs are in sync
+
+Current behavior:
+Once we set the disk-full-threshold 5. we hit the above error in few seconds (4s).

@@ -1,0 +1,97 @@
+If client connected to cluster with 2 nodes, and owner node shutdowns, if other node set some attribute (for example setBooleanAttribute), client will never receive this information.
+
+Scenario:
+1. client connects to cluster with 2 nodes, node_1 and node_2
+2. node_1 is owner member for client
+3. node_1 shutdowns
+4. client changes status to CLIENT_DISCONNECTED
+5. node_2 calls getCluster().getLocalMember().setBooleanAttribute
+6. client changes status to CLIENT_CONNECTED with owner member node_2
+7. client knows nothing about setBooleanAttribute
+
+Is this behavior correct? If yes, how can i reinitialize member attributes on client after reconnect?
+
+Test case:
+```java
+import com.hazelcast.client.HazelcastClient;
+import com.hazelcast.client.config.ClientConfig;
+import com.hazelcast.config.Config;
+import com.hazelcast.core.Hazelcast;
+import com.hazelcast.core.HazelcastInstance;
+import org.junit.Test;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.util.stream.Collectors;
+
+public class HazelcastMemberAttributeTest {
+
+	private static final Logger LOGGER = LoggerFactory.getLogger(
+			HazelcastMemberAttributeTest.class);
+
+	@Test(timeout = 40000)
+	public void testMemberAttribute() {
+		final Config config = new Config();
+		config.getGroupConfig().setName("dev");
+		config.getNetworkConfig().setPort(12703);
+		config.getNetworkConfig().getJoin().getMulticastConfig().setEnabled(false);
+		config.getNetworkConfig().getJoin().getTcpIpConfig()
+				.setEnabled(true)
+				.addMember("127.0.0.1:12703")
+				.addMember("127.0.0.1:12704");
+
+		final HazelcastInstance server1 = Hazelcast.newHazelcastInstance(config);
+		server1.getCluster().getLocalMember().setBooleanAttribute("READY", false);
+
+		config.getNetworkConfig().setPort(12704);
+		final HazelcastInstance server2 = Hazelcast.newHazelcastInstance(config);
+		server2.getCluster().getLocalMember().setBooleanAttribute("READY", false);
+
+		final ClientConfig clientConfig = new ClientConfig();
+		clientConfig.getProperties().setProperty("hazelcast.logging.type", "slf4j");
+
+		// '127.0.0.1:12703' is always owner member
+		clientConfig.getProperties().setProperty("hazelcast.client.shuffle.member.list", "false");
+
+		clientConfig.getNetworkConfig().addAddress("127.0.0.1:12703", "127.0.0.1:12704");
+		final HazelcastInstance client = HazelcastClient.newHazelcastClient(clientConfig);
+
+		LOGGER.info("member ready: {}", client.getCluster().getMembers().stream()
+				.map(m -> m.getAddress().toString() + "=" + m.getBooleanAttribute("READY"))
+				.collect(Collectors.joining(", ")));
+
+		server1.getCluster().getLocalMember().setBooleanAttribute("READY", true);
+
+		while (true) {
+			if (client.getCluster().getMembers().stream().anyMatch(m -> m.getBooleanAttribute("READY"))) {
+				break;
+			}
+		}
+
+		LOGGER.info("member ready: {}", client.getCluster().getMembers().stream()
+				.map(m -> m.getAddress().toString() + "=" + m.getBooleanAttribute("READY"))
+				.collect(Collectors.joining(", ")));
+
+		server1.getCluster().getLocalMember().setBooleanAttribute("READY", false);
+		server1.shutdown();
+
+		// Client will never receive this attribute
+		server2.getCluster().getLocalMember().setBooleanAttribute("READY", true);
+
+		while (true) {
+			if (client.getCluster().getMembers().stream().anyMatch(m -> m.getBooleanAttribute("READY"))) {
+				break;
+			}
+		}
+
+		LOGGER.info("member ready: {}", client.getCluster().getMembers().stream()
+				.map(m -> m.getAddress().toString() + "=" + m.getBooleanAttribute("READY"))
+				.collect(Collectors.joining(", ")));
+
+		server2.shutdown();
+	}
+
+}
+```
+
+Hazelcast: 3.12.1 (same behavior in 3.12.2, and in older versions, like 3.8, 3.9, 3.10)

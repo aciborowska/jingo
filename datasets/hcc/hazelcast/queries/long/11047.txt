@@ -1,0 +1,66 @@
+Guys,
+i'm currently getting:
+```
+java.lang.NullPointerException
+at com.hazelcast.scheduledexecutor.impl.ScheduledTaskDescriptor.stopForMigration(ScheduledTaskDescriptor.java:146) ~[hazelcast-all-3.8.3.jar:3.8.3]
+```
+
+When trying to schedule the Task:
+```
+IScheduledExecutorService service = hazelcastInstance.getScheduledExecutorService(executorName);
+service.scheduleAtFixedRate(new HzcastTimerExchangeSender(this.getEndpoint().getEndpointUri(), executorName), endpoint.getDelay(), endpoint.getPeriod(), TimeUnit.MILLISECONDS);
+```
+
+I have looked to the fix you have here (https://github.com/hazelcast/hazelcast/pull/10604) and it doesn't look safe and could cause issue i have.
+
+You had:
+```
+try {
+ descriptor.cancel(true);
+ descriptor.setScheduledFuture(null);
+ descriptor.setTaskOwner(false); 
+} catch (Exception ex) {
+ throw rethrow(ex); 
+}
+```
+And now:
+```
+try {
+ descriptor.stopForMigration();
+ } catch (Exception ex) {
+ throw rethrow(ex); 
+}
+```
+
+Where descriptor.stopForMigration() has:
+
+```
+void stopForMigration() {
+
+   // Result is not set, allowing task to get re-scheduled, if/when needed.
+   this.isTaskOwner = false;
+   this.future.cancel(true); //Nullpointer here
+   this.future = null;
+}
+```
+And in old code :
+```
+descriptor.cancel(true);
+```
+Which has:
+
+```
+boolean cancel(boolean mayInterrupt)
+throws ExecutionException, InterruptedException {
+if (!resultRef.compareAndSet(null, new ScheduledTaskResult(true)) || future == null) {
+return false;
+}
+
+    return future.cancel(mayInterrupt);
+}
+
+```
+
+This look way safer.
+
+Nullpointer i have on 2 machines which have code you can see above.

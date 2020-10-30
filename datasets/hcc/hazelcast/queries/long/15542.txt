@@ -1,0 +1,132 @@
+Hello,
+
+In our project we encountered a problem with Hazelcast transactions.
+
+We have a Map with configured Interceptor which does some validations. When validation fails the put to the map is rejected and exception is thrown.
+
+Then we want to put atomically three objects to the map. One of them will not pass the validation. We expected that transaction will be rolled back but it's not. Failure does not occure during transaction itself but during commit. Map stays in inconsistent state because some of objects were put into map anyway.
+
+We've created a small examle which helps with problem reproduction. Created very simple hazelcast configuration with one map for objects of `Entity` type. Entity has just two fields `key` and `text`, both strings. Created also Interceptor which just checks if `Entity#text` is equal to "abc".
+
+Then we create three entities and the second one has wrong `text` value so validation will fail.
+All three objects are put to the map within transaction. At the end we check if map is still empty.
+
+Please take a look on code below.
+
+Main:
+
+```java
+    public static void main(String[] args) {
+        HazelcastInstance hz = createHazelcastInstance();
+        IMap<String, Entity> map = hz.getMap(MAP_NAME);
+        map.addInterceptor(new AbcChecker());
+
+        Entity correctEntity1 = new Entity("correct1").setText("abc");
+        Entity mistakenEntity = new Entity("mistaken").setText("xyz");
+        Entity correctEntity2 = new Entity("correct2").setText("abc");
+        
+        TransactionContext txContext = hz.newTransactionContext(txOptions());
+        txContext.beginTransaction();
+        try {
+            TransactionalMap<String, Entity> txMap = txContext.getMap(MAP_NAME);
+            txMap.put(correctEntity1.getKey(), correctEntity1);
+            txMap.put(mistakenEntity.getKey(), mistakenEntity);
+            txMap.put(correctEntity2.getKey(), correctEntity2);
+            txContext.commitTransaction();
+        } catch (Exception ex) {
+            txContext.rollbackTransaction();
+        }
+
+        if (map.isEmpty()) {
+            log.info("transaction rolled back correctly");
+        } else {
+            log.error("map contains {} elements {} but should be empty", map.size(), map.values());
+        }
+    }
+```
+
+Hazelcast config:
+
+```java
+private static HazelcastInstance createHazelcastInstance() {
+        HazelcastInstance hazelcastInstance = Hazelcast.newHazelcastInstance(configuration());
+        log.info("Started Hazelcast");
+        return hazelcastInstance;
+    }
+
+    private static Config configuration() {
+        return new Config()
+                .setProperty("hazelcast.logging.type", "slf4j")
+                .addMapConfig(new MapConfig(MAP_NAME));
+    }
+
+    private static TransactionOptions txOptions() {
+        return new TransactionOptions()
+                .setDurability(1)
+                .setTimeout(1, MINUTES)
+                .setTransactionType(TWO_PHASE);
+    }
+```
+
+Entity:
+
+```java
+@RequiredArgsConstructor
+@Getter
+@Setter
+@ToString
+class Entity implements Serializable {
+
+    @NonNull
+    private String key;
+
+    @Accessors(chain = true)
+    private String text;
+}
+```
+
+Interceptor:
+
+```java
+class AbcChecker implements MapInterceptor {
+    @Override
+    public Object interceptGet(Object o) {
+        return o;
+    }
+
+    @Override
+    public void afterGet(Object o) {
+        // nop
+    }
+
+    @Override
+    public Object interceptPut(Object oldValue, Object newValue) {
+        Entity entity = (Entity) newValue;
+        checkState(entity.getText().equals("abc"), "%s did not pass abc check", entity);
+        return newValue;
+    }
+
+    @Override
+    public void afterPut(Object o) {
+        // nop
+    }
+
+    @Override
+    public Object interceptRemove(Object o) {
+        return o;
+    }
+
+    @Override
+    public void afterRemove(Object o) {
+        // nop
+    }
+}
+```
+
+Unfortunately the result is different than expected. Transaction wasn't rolled back and map is not empty. 
+
+There is no information that interceptors can break transaction commit so I suppose this is a bug.
+Am I right or we did something wrong?
+
+Regards,
+Maciek

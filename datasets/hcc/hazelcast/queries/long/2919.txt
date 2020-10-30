@@ -1,0 +1,27 @@
+While playing with Stabilizer/Project-X/JFS test I ran into a connection error.
+
+When on the 'client' side a connection is established, then on the serverside we react on the accept and then on the client side we listen for the connect event to finalize the connection. The problem happens when then connection is established 'synchronously' (so very quickly) so that no connect event needs to be send to the client and therefor the connection not established.
+
+The issue is in the SocketConnector:
+
+```
+   private void connectSocketChannel(InetSocketAddress socketAddress, int timeout, SocketChannel socketChannel)
+            throws IOException {
+        try {
+            if (timeout > 0) {
+                socketChannel.socket().connect(socketAddress, timeout);
+            } else {
+                socketChannel.connect(socketAddress);
+            }
+        } catch (SocketException ex) {
+            //we want to include the socketAddress in the exception.
+            SocketException newEx = new SocketException(ex.getMessage() + " to address " + socketAddress);
+            newEx.setStackTrace(ex.getStackTrace());
+            throw newEx;
+        }
+    }
+```
+
+the connect method returns a boolean. If it returns false, we'll register ourselves for the OP_CONNECT and eventually the selection key will inform us. But if it returns true, the connection is established and therefor we also need to finalize the connection. If you don't do that, the connection remains 'pending' and can't be used. So we need to deal with the 'true' value of the connect method correctly.
+
+I talked this through with the guys from JFS and found the bug in project-X and I checked if HZ has the same bug.. and yes.. it has.. 

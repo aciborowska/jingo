@@ -1,0 +1,33 @@
+If we have a configuration which results in setting shuffle memory size to its min or max, not fraction during TM startup then starting TM parses generated dynamic properties and while doing the sanity check (TaskExecutorResourceUtils#sanityCheckShuffleMemory) it fails because it checks the exact fraction for min/max value.
+
+Example, start TM with the following Flink config:
+
+
+taskmanager.memory.total-flink.size: 350m
+taskmanager.memory.framework.heap.size: 16m
+taskmanager.memory.shuffle.fraction: 0.1
+
+The calculation will happen for total Flink memory and will result in the following extra program args:
+
+
+taskmanager.memory.shuffle.max: 67108864b
+taskmanager.memory.framework.off-heap.size: 134217728b
+taskmanager.memory.managed.size: 146800642b
+taskmanager.cpu.cores: 1.0
+taskmanager.memory.task.heap.size: 2097150b
+taskmanager.memory.task.off-heap.size: 0b
+taskmanager.memory.shuffle.min: 67108864b
+
+where the derived fraction is less than shuffle memory min size (64mb), so it was set to the min value: 64mb.
+
+While TM starts, the calculation happens now for the explicit task heap and managed memory but also with the explicit total Flink memory and TaskExecutorResourceUtils#sanityCheckShuffleMemory throws the following exception:
+
+
+org.apache.flink.configuration.IllegalConfigurationException:
+Derived Shuffle Memory size(64 Mb (67108864 bytes)) does not match configured Shuffle Memory fraction (0.10000000149011612).
+at org.apache.flink.runtime.clusterframework.TaskExecutorResourceUtils.sanityCheckShuffleMemory(TaskExecutorResourceUtils.java:552)
+at org.apache.flink.runtime.clusterframework.TaskExecutorResourceUtils.deriveResourceSpecWithExplicitTaskAndManagedMemory(TaskExecutorResourceUtils.java:183)
+at org.apache.flink.runtime.clusterframework.TaskExecutorResourceUtils.resourceSpecFromConfig(TaskExecutorResourceUtils.java:135)
+
+
+This can be fixed by checking whether the fraction to assert is within the min/max range.

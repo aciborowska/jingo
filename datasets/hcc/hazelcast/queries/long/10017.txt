@@ -1,0 +1,81 @@
+When using Projection with PagingPredicate instead of returning Object[] for each field in my projection, it returns the object saved in the map. If the PagingPredicate is wrapped into another predicate (Predicates.and(pagingPredicate, new SqlPredicate("age > 0"))) it works.
+I am using Hazelcast 3.8.
+
+Here is a test that reproduces the situation (I commented out the line that causes the error):
+
+```java
+public class TestHazelcastService {
+  @Test
+  public void projectionNotWorkingWithPagingPredicate() throws Exception {
+    final String mapName = "testMap";
+
+    Config config = new Config();
+    MapConfig testMapConfig = config.getMapConfig(mapName);
+    testMapConfig.setInMemoryFormat(InMemoryFormat.OBJECT);
+    testMapConfig.getMapIndexConfigs().add(new MapIndexConfig("age", true));
+    HazelcastInstance instance = Hazelcast.newHazelcastInstance(config);
+
+    try {
+      IMap<Object, Object> testMap = instance.getMap(mapName);
+      testMap.set(1L, new CustomerData("name1", "last1", 30));
+      testMap.set(2L, new CustomerData("name2", "last2", 10));
+      testMap.set(3L, new CustomerData("name3", "last3", 20));
+
+      Collection<Object[]> customers = testMap.project(Projections.multiAttribute("firstName", "age"));
+      Assert.assertEquals(3, customers.size());
+
+      Predicate agePredicate = Predicates.between("age", 15, 30);
+
+      PagingPredicate pagingPredicate = new PagingPredicate<>(agePredicate, new AgeComparator(), 10);
+      customers = testMap.project(Projections.multiAttribute("firstName", "age"), pagingPredicate);
+      Assert.assertEquals(2, customers.size());
+      // java.lang.ClassCastException: net.activia.cm.engine.monitoring.service.CustomerData cannot be cast to [Ljava.lang.Object;
+//      Assert.assertEquals("name3", customers.iterator().next()[0]);
+
+      Predicate newPredicate = Predicates.and(pagingPredicate, new SqlPredicate("age > 0"));
+      customers = testMap.project(Projections.multiAttribute("firstName", "age"), newPredicate);
+      Assert.assertEquals(2, customers.size());
+      Assert.assertEquals("name3", customers.iterator().next()[0]);
+    } finally {
+      instance.shutdown();
+    }
+  }
+}
+
+class AgeComparator implements Comparator<Map.Entry<Long, CustomerData>>, Serializable {
+
+  @Override
+  public int compare(Map.Entry<Long, CustomerData> entry1, Map.Entry<Long, CustomerData> entry2) {
+    long age1 = entry1.getValue().getAge();
+    long age2 = entry2.getValue().getAge();
+    return Long.compare(age1, age2);
+  }
+}
+
+class CustomerData implements Serializable {
+  private String firstName;
+  private String lastName;
+  private long age;
+
+  public CustomerData() {
+  }
+
+  public CustomerData(String firstName, String lastName, long age) {
+    this.firstName = firstName;
+    this.lastName = lastName;
+    this.age = age;
+  }
+
+  public String getFirstName() {
+    return firstName;
+  }
+
+  public String getLastName() {
+    return lastName;
+  }
+
+  public long getAge() {
+    return age;
+  }
+}
+```

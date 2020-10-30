@@ -1,0 +1,59 @@
+If the join key is not a POJO, and does not override hashCode, then the join silently fails (produces empty output). I don't see this documented anywhere.
+
+The Gelly documentation should also have this info separately, because it does joins internally on the vertex IDs, but the user might not know this, or might not look at the join documentation when using Gelly.
+
+Here is an example code:
+
+
+public static class ID implements Comparable<ID> {
+	public long foo;
+
+	//no default ctor --> not a POJO
+
+	public ID(long foo) {
+		this.foo = foo;
+	}
+
+	@Override
+	public int compareTo(ID o) {
+		return ((Long)foo).compareTo(o.foo);
+	}
+
+	@Override
+	public boolean equals(Object o0) {
+		if(o0 instanceof ID) {
+			ID o = (ID)o0;
+			return foo == o.foo;
+		} else {
+			return false;
+		}
+	}
+
+	@Override
+	public int hashCode() {
+		return 42;
+	}
+}
+
+
+public static void main(String[] args) throws Exception {
+	ExecutionEnvironment env = ExecutionEnvironment.getExecutionEnvironment();
+
+	DataSet<Tuple2<ID, Long>> inDegrees = env.fromElements(Tuple2.of(new ID(123l), 4l));
+	DataSet<Tuple2<ID, Long>> outDegrees = env.fromElements(Tuple2.of(new ID(123l), 5l));
+
+	DataSet<Tuple3<ID, Long, Long>> degrees = inDegrees.join(outDegrees, JoinOperatorBase.JoinHint.REPARTITION_HASH_FIRST).where(0).equalTo(0)
+			.with(new FlatJoinFunction<Tuple2<ID, Long>, Tuple2<ID, Long>, Tuple3<ID, Long, Long>>() {
+				@Override
+				public void join(Tuple2<ID, Long> first, Tuple2<ID, Long> second, Collector<Tuple3<ID, Long, Long>> out) {
+					out.collect(new Tuple3<ID, Long, Long>(first.f0, first.f1, second.f1));
+				}
+			}).withForwardedFieldsFirst("f0;f1").withForwardedFieldsSecond("f1");
+
+	System.out.println("degrees count: " + degrees.count());
+}
+
+
+
+
+This prints 1, but if I comment out the hashCode, it prints 0.

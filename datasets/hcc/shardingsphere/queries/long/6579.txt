@@ -1,0 +1,140 @@
+## Bug Report
+
+How to solve this problem,It seems to be a matter of time resolution,Because it's normal when there's no time。
+
+```
+Cannot find PostgreSQL type 'POSTGRESQL_TYPE_UNSPECIFIED' in column type when process binary protocol value
+```
+### Which version of ShardingSphere did you use?
+
+sharding-proxy-4.1.1
+
+### Which project did you use? ShardingSphere-JDBC or ShardingSphere-Proxy?
+
+ShardingSphere-Proxy
+
+### Expected behavior
+
+insert a record with time
+
+### Actual behavior
+
+An error occured in sharding-proxy when i insert a record with time
+
+```
+[ERROR] 10:56:43.120 [pool-1-thread-1] o.a.s.s.f.c.CommandExecutorTask - Exception occur: 
+java.lang.IllegalArgumentException: Cannot find PostgreSQL type 'POSTGRESQL_TYPE_UNSPECIFIED' in column type when process binary protocol value
+	at com.google.common.base.Preconditions.checkArgument(Preconditions.java:145)
+	at org.apache.shardingsphere.database.protocol.postgresql.packet.command.query.binary.bind.protocol.PostgreSQLBinaryProtocolValueFactory.getBinaryProtocolValue(PostgreSQLBinaryProtocolValueFactory.java:94)
+	at org.apache.shardingsphere.database.protocol.postgresql.packet.command.query.binary.bind.PostgreSQLComBindPacket.getParameters(PostgreSQLComBindPacket.java:74)
+	at org.apache.shardingsphere.database.protocol.postgresql.packet.command.query.binary.bind.PostgreSQLComBindPacket.<init>(PostgreSQLComBindPacket.java:61)
+	at org.apache.shardingsphere.database.protocol.postgresql.packet.command.PostgreSQLCommandPacketFactory.newInstance(PostgreSQLCommandPacketFactory.java:57)
+	at org.apache.shardingsphere.shardingproxy.frontend.postgresql.command.PostgreSQLCommandExecuteEngine.getCommandPacket(PostgreSQLCommandExecuteEngine.java:55)
+	at org.apache.shardingsphere.shardingproxy.frontend.postgresql.command.PostgreSQLCommandExecuteEngine.getCommandPacket(PostgreSQLCommandExecuteEngine.java:46)
+	at org.apache.shardingsphere.shardingproxy.frontend.command.CommandExecutorTask.executeCommand(CommandExecutorTask.java:91)
+	at org.apache.shardingsphere.shardingproxy.frontend.command.CommandExecutorTask.run(CommandExecutorTask.java:71)
+	at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1142)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:617)
+	at java.lang.Thread.run(Thread.java:748)
+```
+
+### Reason analyze (If you can)
+
+time parse, it`s ok when i insert a record without time
+
+### Steps to reproduce the behavior, such as: SQL to execute, sharding rule configuration, when exception occur etc.
+
+* sharding-proxy-4.1.1(4.1.0、4.0.1 have same error)
+* jdbc: postgresql-42.2.5
+* jdk 1.8
+
+table
+```sql
+CREATE TABLE "public"."book"
+(
+    "id"          int8                           NOT NULL,
+    "name"        varchar(255) COLLATE "default" NOT NULL,
+    "tenant_no"   int4                           NOT NULL,
+    "create_time" timestamp(6)                   NOT NULL,
+    CONSTRAINT "book_pkey" PRIMARY KEY ("id")
+)
+    WITH (OIDS= FALSE)
+;
+```
+
+server.yaml
+```yaml
+authentication:
+  users:
+    root:
+      password: root
+    sharding:
+      password: sharding
+      authorizedSchemas: sharding-demo
+
+props:
+  proxy.hint.enabled: true
+```
+
+config-demo
+```yaml
+schemaName: sharding-demo
+
+dataSources:
+  ds-1:
+    url: jdbc:postgresql://192.168.159.128:5432/sharding-proxy-1?serverTimezone=UTC&characterEncoding=utf8&useSSL=false
+    username: postgres
+    password: postgres
+    connectionTimeoutMilliseconds: 30000
+    idleTimeoutMilliseconds: 60000
+    maxLifetimeMilliseconds: 1800000
+    maxPoolSize: 10
+  ds-2:
+    url: jdbc:postgresql://192.168.159.128:5432/sharding-proxy-2?serverTimezone=UTC&characterEncoding=utf8&useSSL=false
+    username: postgres
+    password: postgres
+    connectionTimeoutMilliseconds: 30000
+    idleTimeoutMilliseconds: 60000
+    maxLifetimeMilliseconds: 1800000
+    maxPoolSize: 10
+
+shardingRule:
+  defaultDatabaseStrategy:
+    standard:
+      shardingColumn: tenant_no
+      preciseAlgorithmClassName: demo.CustomPreciseShardingAlgorithm
+  defaultDataSourceName: ds-1
+  tables:
+    book:
+      actualDataNodes: ds-$->{1..2}.book
+      keyGenerator:
+        column: id
+        type: SNOWFLAKE
+      logicTable: book
+```
+
+CustomPreciseShardingAlgorithm.java
+```java
+public String doSharding(Collection<String> availableTargetNames, PreciseShardingValue<Integer> shardingValue) {
+    String result = null;
+    for (String dbName : availableTargetNames) {
+        if (("ds-" + shardingValue.getValue()).equals(dbName)) {
+            result = dbName;
+            break;
+        }
+    }
+    return result;
+}
+```
+
+jdbc
+```java
+String sql = "INSERT INTO book (id,name,tenant_no,create_time) VALUES (?,?,?,?)";
+PreparedStatement preparedStatement = conn.prepareStatement(sql);
+preparedStatement.setLong(1,1);
+preparedStatement.setString(2,"test_book");
+preparedStatement.setInt(3,1);
+preparedStatement.setTimestamp(4, new Timestamp(System.currentTimeMillis()));
+```
+
+### Example codes for reproduce this issue (such as a github link).

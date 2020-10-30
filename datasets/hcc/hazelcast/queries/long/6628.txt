@@ -1,0 +1,165 @@
+Hi,
+
+I wrote another test case to reproduce the issue described in #5388 and #5444 . Since one of the existing issues was set to CLOSE and the other has been moved to the Backlog, I found it important to raise the awareness to this problem once more...
+
+``` java
+package com.nm.test.hazelcast.map;
+
+import com.hazelcast.config.Config;
+import com.hazelcast.config.XmlConfigBuilder;
+import com.hazelcast.core.Hazelcast;
+import com.hazelcast.core.HazelcastInstance;
+import com.hazelcast.core.IMap;
+import com.nm.test.hazelcast.TestHazelcast;
+import com.nm.test.hazelcast.utils.Sleep;
+import org.apache.log4j.BasicConfigurator;
+import org.apache.log4j.Logger;
+import java.util.concurrent.atomic.AtomicInteger;
+import junit.framework.TestCase;
+
+/**
+ * Test to prevent data loss during re-partitioning.
+ */
+public class TestMap4 extends TestCase {
+
+    private static final Logger logger = Logger.getLogger(TestMap4.class);
+
+    private static final String mapName = "testMap" + TestMap4.class.getSimpleName();
+
+    private static final int MAP_SIZE = 100000;
+
+    @Override
+    protected void setUp() throws Exception {
+
+        // configure logging
+        if (!TestHazelcast.loggingInitialized) {
+            TestHazelcast.loggingInitialized = true;
+            BasicConfigurator.configure();
+        }
+    }
+
+    public void testDataLoss() throws Exception {
+
+        // create shared hazelcast config
+        final Config config = new XmlConfigBuilder().build();
+        config.setProperty("hazelcast.logging.type", "log4j");
+        config.setProperty("hazelcast.jmx", "false");
+        config.setProperty("hazelcast.version.check.enabled", "false");
+
+        // note: keep multicast enabled such that the two nodes find each other
+
+        // note: use default map config
+
+        final AtomicInteger mapSize = new AtomicInteger();
+
+        // thread 1: start a first node
+        Thread thread1 = new Thread(new Runnable() {
+
+            @Override
+            public void run() {
+
+                HazelcastInstance hcInstance = Hazelcast.newHazelcastInstance(config);
+
+                // ------------------------------------------------------ {12s}
+
+                // try-finally to stop hazelcast instance
+                try {
+
+                    // log started
+                    logger.info(Thread.currentThread().getName() + " started.");
+
+                    // create map
+                    IMap<String, String> map = hcInstance.getMap(mapName);
+                    logger.info(Thread.currentThread().getName() + " map created.");
+
+                    // populate map
+                    for (int i = 0; i < MAP_SIZE; i++) {
+                        map.put(String.valueOf(i), "value" + i);
+                    }
+                    logger.info(Thread.currentThread().getName() + " map populated.");
+
+                    // print size
+                    int size = map.size();
+                    mapSize.set(size);
+                    logger.info("Map size = " + size);
+
+                    // -------------------------------------------------- {16s}
+
+                    // wait
+                    Sleep.sleep(20000, true);
+
+                    // print size
+                    size = map.size();
+                    mapSize.set(size);
+                    logger.info("Map size = " + size);
+
+                    // -------------------------------------------------- {36s}
+
+                } finally {
+                    hcInstance.getLifecycleService().shutdown();
+                }
+                logger.info(Thread.currentThread().getName() + " done.");
+            }
+        }, "Thread 1");
+        thread1.start();
+
+        // wait 20s after starting first thread
+        Sleep.sleep(20000, true);
+
+        // thread 2: start a second node
+        Thread thread2 = new Thread(new Runnable() {
+
+            @Override
+            public void run() {
+
+                HazelcastInstance hcInstance = Hazelcast.newHazelcastInstance(config);
+
+                // ------------------------------------------------------ {28s}
+
+                // log joined
+                logger.info(Thread.currentThread().getName() + " hazelcast instance joined.");
+
+                // try-finally to kill hazelcast instance
+                try {
+
+                    // get map
+                    IMap<String, String> map = hcInstance.getMap(mapName);
+
+                    // print size
+                    int size = map.size();
+                    mapSize.set(size);
+                    logger.info("Map size = " + size);
+
+                    // -------------------------------------------------- {29s}
+
+                    // wait before kill
+                    // in 3.5.3-dev: fails for 1-5 (or more)
+                    Sleep.sleep(3000, true);
+
+                    // -------------------------------------------------- {30s}
+
+                } finally {
+
+                    // use terminate here to stop before partition migrations are done
+                    hcInstance.getLifecycleService().terminate();
+                }
+                logger.info(Thread.currentThread().getName() + " done.");
+            }
+        }, "Thread 2");
+        thread2.start();
+
+        // join threads
+        thread1.join();
+        thread2.join();
+
+        // ensure valid execution
+        if (mapSize.get() != MAP_SIZE) {
+            fail("Data loss!");
+        }
+    }
+
+}
+```
+
+Thanks for looking into this,
+Lukas

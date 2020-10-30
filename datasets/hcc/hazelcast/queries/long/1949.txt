@@ -1,0 +1,94 @@
+I am working with version 3.2-RC1 of Hazelcast, but the behavior is the same in version 3.1.6. Basically, I am trying to execute a distributed task that takes longer to execute than the configured call timeout ("hazelcast.operation.call.timeout.millis" property). When I call get on the future of a remote node after submitting the task, I get an OperationTimeoutException. The console output is the following (note that I configured the call timeout to be 5 seconds):
+
+```
+Mar 7, 2014 3:55:37 PM com.hazelcast.spi.impl.BasicInvocation
+WARNING: [10.0.1.187]:5701 [dev] [3.2-RC1] No response for 10001 ms. InvocationFuture{invocation=BasicInvocation{ serviceName='hz:impl:executorService', op=com.hazelcast.executor.MemberCallableTaskOperation@32b3a5a0, partitionId=-1, replicaIndex=0, tryCount=250, tryPauseMillis=500, invokeCount=1, callTimeout=5000, target=Address[10.0.1.187]:5702}, done=false}
+Mar 7, 2014 3:55:37 PM com.hazelcast.spi.impl.BasicInvocation
+WARNING: [10.0.1.187]:5701 [dev] [3.2-RC1] Asking if operation execution has been started: InvocationFuture{invocation=BasicInvocation{ serviceName='hz:impl:executorService', op=com.hazelcast.executor.MemberCallableTaskOperation@32b3a5a0, partitionId=-1, replicaIndex=0, tryCount=250, tryPauseMillis=500, invokeCount=1, callTimeout=5000, target=Address[10.0.1.187]:5702}, done=false}
+Mar 7, 2014 3:55:37 PM com.hazelcast.spi.impl.BasicInvocation
+WARNING: [10.0.1.187]:5701 [dev] [3.2-RC1] 'is-executing': false -> InvocationFuture{invocation=BasicInvocation{ serviceName='hz:impl:executorService', op=com.hazelcast.executor.MemberCallableTaskOperation@32b3a5a0, partitionId=-1, replicaIndex=0, tryCount=250, tryPauseMillis=500, invokeCount=1, callTimeout=5000, target=Address[10.0.1.187]:5702}, done=false}
+Exception in thread "main" java.util.concurrent.ExecutionException: com.hazelcast.core.OperationTimeoutException: No response for 10000 ms. Aborting invocation! InvocationFuture{invocation=BasicInvocation{ serviceName='hz:impl:executorService', op=com.hazelcast.executor.MemberCallableTaskOperation@32b3a5a0, partitionId=-1, replicaIndex=0, tryCount=250, tryPauseMillis=500, invokeCount=1, callTimeout=5000, target=Address[10.0.1.187]:5702}, done=false}
+    at com.hazelcast.spi.impl.BasicInvocation$InvocationFuture.resolveResponse(BasicInvocation.java:707)
+    at com.hazelcast.spi.impl.BasicInvocation$InvocationFuture.get(BasicInvocation.java:618)
+    at com.hazelcast.util.executor.DelegatingFuture.get(DelegatingFuture.java:68)
+    at com.nm.test.hazelcast.TestLongRunningTask.testGetOnLongRunningTask(TestLongRunningTask.java:42)
+    at com.nm.test.hazelcast.TestLongRunningTask.main(TestLongRunningTask.java:20)
+Caused by: com.hazelcast.core.OperationTimeoutException: No response for 10000 ms. Aborting invocation! InvocationFuture{invocation=BasicInvocation{ serviceName='hz:impl:executorService', op=com.hazelcast.executor.MemberCallableTaskOperation@32b3a5a0, partitionId=-1, replicaIndex=0, tryCount=250, tryPauseMillis=500, invokeCount=1, callTimeout=5000, target=Address[10.0.1.187]:5702}, done=false}
+    at com.hazelcast.spi.impl.BasicInvocation$InvocationFuture.waitForResponse(BasicInvocation.java:681)
+    at com.hazelcast.spi.impl.BasicInvocation$InvocationFuture.get(BasicInvocation.java:618)
+    at com.hazelcast.util.executor.DelegatingFuture.get(DelegatingFuture.java:68)
+    at com.nm.test.hazelcast.TestLongRunningTask.testGetOnLongRunningTask(TestLongRunningTask.java:42)
+    at com.nm.test.hazelcast.TestLongRunningTask.main(TestLongRunningTask.java:20)
+    at ------ End remote and begin local stack-trace ------.(Unknown Source)
+    at com.hazelcast.spi.impl.BasicInvocation$InvocationFuture.resolveResponse(BasicInvocation.java:692)
+    ... 4 more
+```
+
+The InvocationFuture#waitForResponse(long, TimeUnit) method (the method where the exception is created) seems to try to deal with get timeouts that are larger than the configured call timeout by using some kind of repeated long-polling. However, if the result is not there after the first long-polling timeout, the OperationTimeoutException is returned. There is a check if the operation is still executing on the target member before that. If this would be true, another iteration of the polling loop would be performed. However, in my tests, this is always false.
+
+The following test case can be used to reproduce the problem:
+
+``` java
+import com.hazelcast.config.Config;
+import com.hazelcast.config.XmlConfigBuilder;
+import com.hazelcast.core.Hazelcast;
+import com.hazelcast.core.HazelcastInstance;
+import com.hazelcast.core.IExecutorService;
+import com.hazelcast.core.Member;
+import java.io.Serializable;
+import java.util.Map;
+import java.util.concurrent.Callable;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import junit.framework.TestCase;
+
+public class TestLongRunningTask extends TestCase {
+
+    public static void main(String[] args) throws Exception {
+        TestLongRunningTask test = new TestLongRunningTask();
+        test.testGetOnLongRunningTask();
+    }
+
+    public void testGetOnLongRunningTask() throws Exception {
+
+        // Configure
+        Config config = new XmlConfigBuilder().build();
+        // Set call timeout to 5 seconds to make the problem appear quicker
+        config.setProperty("hazelcast.operation.call.timeout.millis", "5000");
+
+        // Create two Hazelcast instances
+        HazelcastInstance hcInstance1 = Hazelcast.newHazelcastInstance(config);
+        HazelcastInstance hcInstance2 = Hazelcast.newHazelcastInstance(config);
+
+        // Submit the long-running task on instance 1
+        IExecutorService executorService = hcInstance1.getExecutorService("default");
+        Map<Member, Future<Object>> futures = executorService.submitToAllMembers(new SleepingTask());
+
+        // Call get on the "remote" member to make the bug appear
+        Member remoteMember = hcInstance2.getCluster().getLocalMember();
+        // Wait for 25 seconds, the task takes 20 seconds to execute, so we should get the result without any problems
+        // What happens at the moment is that we get an ExecutionException caused by an OperationTimeoutException
+        futures.get(remoteMember).get(25, TimeUnit.SECONDS);
+
+        // Shutdown Hazelcast instances
+        hcInstance1.getLifecycleService().shutdown();
+        hcInstance2.getLifecycleService().shutdown();
+
+    }
+
+    private static class SleepingTask implements Callable<Object>, Serializable {
+
+        private static final long serialVersionUID = 1L;
+
+        @Override
+        public Object call() throws Exception {
+            System.out.println("Task: Started. Sleep for 20 seconds");
+            Thread.sleep(20000);
+            System.out.println("Task: Finished");
+            return "Success";
+        }
+
+    }
+
+}
+```

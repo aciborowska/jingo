@@ -1,0 +1,27 @@
+Hi - we recently upgraded from Hazelcast 1.9.4 to 2.0.3 and have noticed some new errors in the log file.  About every 5 minutes, an entry similar to below appears in the log:
+
+WARNING: /127.0.0.1:5701 [dev] Removing connection to endpoint Address[127.0.0.1:5703] Cause => java.net.ConnectException {Connection refused}, Error-Count: 3
+2012-05-01 11:26:18,997 ERROR [STDERR] May 1, 2012 11:26:18 AM com.hazelcast.cluster.ClusterManager
+INFO: /127.0.0.1:5701 [dev] Removing Address Address[127.0.0.1:5703]
+
+2012-05-01 11:29:42,208 ERROR [STDERR] May 1, 2012 11:29:42 AM com.hazelcast.nio.ConnectionMonitor
+WARNING: /127.0.0.1:5701 [dev] Removing connection to endpoint Address[127.0.0.1:5702] Cause => java.net.ConnectException {Connection refused}, Error-Count: 3
+2012-05-01 11:29:42,208 ERROR [STDERR] May 1, 2012 11:29:42 AM com.hazelcast.cluster.ClusterManager
+INFO: /127.0.0.1:5701 [dev] Removing Address Address[127.0.0.1:5702]
+
+The errors appear harmless, but fill the log pretty quickly.
+
+I have attempted to debug the problem & here is what I've found so far.
+
+In Hazelcast 1.9.4, there was a class called OutSelector.java.  In the run() method of that class is a call to SocketChannel.connect():
+
+boolean connected = socketChannel.connect(new InetSocketAddress(address.getInetAddress(),
+                        address.getPort()));
+
+About every 5 minutes, this statement is executed twice - once for IP 127.0.0.1:5702 & once again for 127.0.0.1:5703.  Both calls return false & the code continues without any problems (no errors are logged).
+
+In Hazelcast 2.0.3 (or earlier), the OutSelector.java class was replaced by SocketConnector.java.  Like OutSelector.java, it has a run() method with the same call to connect() as 1.9.4.  The connect() is called twice for the same IP's as above, but instead of returning false a "java.net.ConnectException: Connection refused" is thrown for each call.  Each exception is caught in the run() method which in turn calls ConnectionManager.failedConnection().  Ultimately, the onError() method of ConnectionMonitor.java is called which in turn logs the above errors.
+
+I'm not sure if this is a new bug or if perhaps the new code is doing more logging than previous versions.  If the latter, I assume it is a configuration issue & if so, could you point me in the right direction to resolving it?
+
+Thanks. 

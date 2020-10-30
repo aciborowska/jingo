@@ -1,0 +1,49 @@
+I'm playing with Hazelcast 3.12 Cache implementation, and trying to configure the Eviction policy. However, I noticed that none of my cache entry listeners are being triggered when a cache eviction occurs.
+
+My cache is defined as:
+```
+        CacheSimpleConfig cacheSimpleConfig = new CacheSimpleConfig()
+                .setName(CACHE_NAME)
+                .setKeyType(String.class.getName())
+                .setValueType((new String[0]).getClass().getName())
+                .setStatisticsEnabled(true)
+                .setReadThrough(true)
+                .setWriteThrough(true)
+                .setInMemoryFormat(InMemoryFormat.OBJECT)
+                .setEvictionConfig(new EvictionConfig()
+                        .setEvictionPolicy(EvictionPolicy.LRU)
+                        .setSize(1000)
+                        .setMaximumSizePolicy(EvictionConfig.MaxSizePolicy.ENTRY_COUNT))
+                .setExpiryPolicyFactoryConfig(
+                        new ExpiryPolicyFactoryConfig(
+                                new TimedExpiryPolicyFactoryConfig(ACCESSED,
+                                        new DurationConfig(
+                                                ssoSessionTimeoutInSeconds,
+                                                TimeUnit.SECONDS))));
+        hazelcastInstance.getConfig().addCacheConfig(cacheSimpleConfig);
+
+        ICache<String, String[]> cache = hazelcastInstance.getCacheManager().getCache(CACHE_NAME);
+        cache.registerCacheEntryListener(new MutableCacheEntryListenerConfiguration<>(entryListenerFactory, null, true, false));
+
+```
+
+
+My listener implements the 4 CacheEntry*Listener interfaces:
+```
+public class UserRolesCacheEntryListener implements CacheEntryExpiredListener<String, String[]>, CacheEntryRemovedListener<String, String[]>, CacheEntryCreatedListener<String, String[]>, CacheEntryUpdatedListener<String, String[]>, HazelcastInstanceAware {
+// all 4 on*() methods delegate to: private void logEvent(CacheEntryEvent cacheEntryEvent) { String[] value = cacheEntryEvent.getValue() != null ? cacheEntryEvent.getValue() : cacheEntryEvent.getOldValue(); LOG.info("Event[{}:{}] {} => {}", cacheEntryEvent.getEventType().toString(), cacheEntryEvent.getSource().getName(), cacheEntryEvent.getKey(), value);
+
+    ICache cache = (ICache)cacheEntryEvent.getSource().unwrap(ICache.class);
+    LOG.debug("Cache Evictions: {} ", cache.getLocalCacheStatistics().getCacheEvictions());
+
+}
+```
+However, I never get any of my on*() methods called when an entry is evicted. On creation of an entry, however, I do see the following entry in my log:
+```
+2019-08-13 12:27:14 INFO  [hz.Hazelcast.event-1] UserRolesCacheEntryListener:70 - Event[CREATED:UserRoles] 950 => [99cedd4c-ee5b-480b-b374-eea2b919a58a, Tue Aug 13 12:27:14 EDT 2019]
+2019-08-13 12:27:14 DEBUG [hz.Hazelcast.event-1] UserRolesCacheEntryListener:79 - Cache Evictions: 1 
+```
+
+Which indicates to me that values are getting evicted from the cache, but no listener is being triggered.
+
+According to my understanding of the JSR107 specs, it is left to the  cache implementation to determine  how  to fire an eviction listener.   The Caffeine implementation does it by  firing  a removal listener, i believe.  Hazelcast should also be firing an event such that the consumer can be made aware that some values have been removed from the cache and take appropriate action.

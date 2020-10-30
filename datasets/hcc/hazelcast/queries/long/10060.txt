@@ -1,0 +1,144 @@
+Following [this](http://stackoverflow.com/questions/42582417/hazelcast-unique-scheduledexecutorservice-on-replicated-map-gets-lost-on-node-sh) stackoverflow post: I am running a unique scheduled task on a cluster with replicated map on several nodes. When one node goes down the scheduled service is occasionally lost.
+
+Hazelcast version: 3.8 (via maven dependency)
+Ubuntu 15.10
+Apache Maven 3.3.3
+Java version: 1.8.0_65, vendor: Oracle Corporation
+Linux i001933 4.2.0-42-generic #49-Ubuntu SMP Tue Jun 28 21:26:26 UTC 2016 x86_64 x86_64 x86_64 GNU/Linux
+I tried with 4 nodes.
+
+TestCase:
+
+    public class HazelTest {
+
+      private ReplicatedMap<Long, Bean> hzMap;
+      private HazelcastInstance instance;
+
+      public HazelTest() {
+        Config cfg = new Config() ;
+        cfg.setProperty("hazelcast.logging.type", "log4j");
+        instance = Hazelcast.newHazelcastInstance(cfg);
+
+        hzMap = instance.getReplicatedMap("UniqueName");
+        IScheduledExecutorService scheduler = instance.getScheduledExecutorService("ExecutorService");
+        try {
+          scheduler.scheduleAtFixedRate(new BeanReloader(), 5, 10, TimeUnit.SECONDS);
+        } catch (DuplicateTaskException ex) {
+          System.out.println("service already running");
+        }
+      }
+
+      public static void main(String[] args) throws Exception {
+        Random random = new Random(System.currentTimeMillis());
+
+        HazelTest test = new HazelTest();
+        System.out.println("Start ...");
+        long i = 0;
+        try {
+          while (true) {
+            i++;
+            Bean bean = test.hzMap.get((long) random.nextInt(1000));
+            if (bean != null) {
+              if (i % 10000000 == 0) {
+                System.out.println("Time: " + LocalTime.now());
+              }
+              bean.setName("NewName");
+            }
+          }
+        } finally {
+          test.close();
+          System.out.println("End.");
+        }
+      }
+
+      public void close() {
+        instance.getPartitionService().forceLocalMemberToBeSafe(5, TimeUnit.SECONDS);
+
+        if (instance.getPartitionService().isLocalMemberSafe()) {
+          instance.shutdown();
+        } else {
+          System.out.println("Error!!!!!");
+        }
+      }
+    }
+
+
+Reload Task:
+
+    public class BeanReloader implements NamedTask, Runnable, HazelcastInstanceAware, Serializable {
+
+      private transient HazelcastInstance hazelcastInstance;
+
+      @Override
+      public void run() {
+        System.out.println("Service start: " + LocalTime.now());
+        for (long i = 0; i < 1000; i++) {
+          Bean bean = new Bean(i, "Bean " + i);
+          ReplicatedMap<Object, Object> map = hazelcastInstance.getReplicatedMap("UniqueName");
+          map.put(i, bean);
+        }
+        System.out.println("Service end: " + LocalTime.now());
+      }
+
+      @Override
+      public void setHazelcastInstance(HazelcastInstance hazelcastInstance) {
+        this.hazelcastInstance = hazelcastInstance;
+      }
+
+      @Override
+      public String getName() {
+        return "BeanReloader";
+      }
+
+    }
+
+
+Bean:
+
+    public class Bean implements Serializable {
+
+      private long id;
+      private String name;
+
+      public Bean(long id, String name) {
+        this.id = id;
+        this.name = name;
+      }
+
+      public String getName() {
+        return name;
+      }
+
+      public void setName(String name) {
+        this.name = name;
+      }
+
+      public long getId() {
+        return id;
+      }
+
+      public void setId(long id) {
+        this.id = id;
+      }
+
+      @Override
+      public String toString() {
+        return "Bean{" +
+          "id=" + id +
+          ", name='" + name + '\'' +
+          '}';
+      }
+    }
+
+Starting this with maven like this `mvn exec:java -Dexec.mainClass="de.tle.products.HazelTest"`
+
+
+Debug Logs of the nodes:
+[Node1](http://pastebin.com/ECfrFEmH)
+[Node2](http://pastebin.com/q3chip46)
+[Node3](http://pastebin.com/YV3TzHHQ)
+[Node4](http://pastebin.com/t1XAR6PG)
+
+Screenshot for proof :) You can see the service is running on 09:58:42 and should run about every 10s - but does not a full 2mins afterwards.
+![arbeitsflache 1_006](https://cloud.githubusercontent.com/assets/932246/23789325/bb07348c-057a-11e7-9c17-ed713d947807.png)
+

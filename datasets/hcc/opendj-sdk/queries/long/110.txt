@@ -1,0 +1,54 @@
+From a clean install with replication enabled against a backend of 10 example entries perform a modify operation containing multiple modifications to the same attribute:
+
+./bin/ldapmodify -h localhost -p 1389 -D cn=directory\ manager -w password
+dn: uid=user.0,ou=people,dc=example,dc=com
+changetype: modify
+delete: description
+description: This is the description for Aaccf Amar.
+-
+add: description
+description: Hello world
+-
+delete: description
+description: Hello world
+-
+add: description
+description: Hello world
+-
+
+
+Then perform a search on dc=replicationchanges:
+
+./bin/ldapsearch -h localhost -p 1389 -D cn=directory\ manager -w password -b dc=replicationchanges -s sub '(objectClass=*)'
+
+
+The ReplicationBackend attempts to encode the above change record as a single entry having the following LDIF-like attributes (basically the above LDIF with the hyphen separators stripped out):
+
+dn: uid=user.0,ou=people,dc=example,dc=com
+changetype: modify
+delete: description
+description: This is the description for Aaccf Amar.
+add: description
+description: Hello world
+delete: description
+description: Hello world
+add: description
+description: Hello world
+
+This is clearly sub-optimal  and it fails when an attempt is made to convert the above content into an LDAP entry because it contains duplicate values for the same "attribute". For example the "delete" attribute has duplicate values of "description".
+
+Access to this backend is only provided for debugging purposes as far as I know. However searches on it can lead to very many ugly messages in the error logs if the above situation occurs. For example:
+
+[05/Apr/2011:16:59:18 +0200] category=SYNC severity=SEVERE_ERROR msgID=14942301 msg=An error occurred when searching for uuid=ad55a34a-763f-358f-93f9-da86f9ecd9e4,replicationchangenumber=0000012f2627c50d418300000001,uid=user.0,ou=people,dc=example,dc=com,dc=replicationchanges : Entry uuid=ad55a34a-763f-358f-93f9-da86f9ecd9e4,replicationChangeNumber=0000012f2627c50d418300000001,uid=user.0,ou=people,dc=example,dc=com,dc=replicationchanges read from LDIF starting at line 1 includes a duplicate attribute delete with value description. The second occurrence of that attribute value has been skipped
+
+We should consider cleaning up the representation. One approach is to use the approach taken in cn=changelog: put all the changes in a single LDIF encoded attribute. However, this is not very readable and for consistency we would need to do it for all change types.
+
+Another option might be to use attribute options, such that the above change is converted to an entry like this:
+
+changetype: modify
+description;1-delete: This is the description for Aaccf Amar.
+description;2-add: Hello world
+description;3-delete: Hello world
+description;4-add: Hello world
+
+It's not pretty but it would work and is still quite readable for debugging purposes (not sure if leading digits are permitted in options).

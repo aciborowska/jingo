@@ -1,0 +1,52 @@
+If I have a subclass of TupleN, then objects of this type will turn into TupleNs when I try to use them in a DataSet<TupleN>.
+
+For example, if I have a class like this:
+
+public static class Foo extends Tuple1<Integer> {
+	public short a;
+
+	public Foo() {}
+
+	public Foo(int f0, int a) {
+		this.f0 = f0;
+		this.a = (short)a;
+	}
+
+	@Override
+	public String toString() {
+		return "(" + f0 + ", " + a + ")";
+	}
+}
+
+
+And then I do this:
+
+env.fromElements(0,0,0).map(new MapFunction<Integer, Tuple1<Integer>>() {
+	@Override
+	public Tuple1<Integer> map(Integer value) throws Exception {
+		return new Foo(5, 6);
+	}
+}).print();
+
+
+Then I don't have Foos in the output, but only Tuples:
+
+(5)
+(5)
+(5)
+
+
+
+The problem is caused by the TupleSerializer not caring about subclasses at all. I guess the reason for this is performance: we don't want to deal with writing and reading subclass tags when we have Tuples.
+
+I see three options for solving this:
+1. Add subclass tags to the TupleSerializer: This is not really an option, because we don't want to loose performance.
+2. Document this behavior in the javadoc of the Tuple classes.
+3. Make the Tuple types final: this would be the clean solution, but it is API breaking, and the first victim would be Gelly: the Vertex and Edge types extend from tuples. (Note that the issue doesn't appear there, because the DataSets there always have the type of the descendant class.)
+
+When deciding between 2. and 3., an important point to note is that if you have your class extend from a Tuple type instead of just adding the f0, f1, ... fields manually in the hopes of getting the performance boost associated with Tuples, then you are out of luck: the PojoSerializer will kick in anyway when the declared types of your DataSets are the descendant type.
+
+If someone knows about a good reason to extend from a Tuple class, then please comment.
+
+For 2., this is a suggested wording for the javadoc of the Tuple classes:
+Warning: Please don't subclass Tuple classes, but if you do, then be sure to always declare the element type of your DataSets to your descendant type. (That is, if you have a "class A extends Tuple2", then don't use instances of A in a DataSet<Tuple2>, but use DataSet<A>.)

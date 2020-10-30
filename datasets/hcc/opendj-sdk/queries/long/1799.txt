@@ -1,0 +1,78 @@
+Tested with 2x OpenDJ 2.6.2 and the following settings:
+
+ds-cfg-check-schema: true
+ds-cfg-invalid-attribute-syntax-behavior: reject
+ds-cfg-single-structural-objectclass-behavior: accept
+
+If an objectclass that would otherwise be present in an entry, but with an extra space on the end is used when creating the entry, and this objectclass is accepted (see OPENDJ-1797 for one reason why this might occur) it can cause processing problems later on when it is treated differently and the whitespace is lost.
+
+For example, DJ will accept 'top ' and 'top' objectclasses and write them to the local entry. Technically the 'top ' objectclass is just an invalid objectclass that does nothing. When this object is passed to another server to be replicated, the space seems to get lost and the remote server sees two values of 'top' for objectclass attribute. This causes a duplicate value error:
+
+
+
+[30/Nov/2014:18:34:06 +0000] category=SYNC severity=MILD_ERROR msgID=14876739 msg=Could not replay operation AddOperation(connID=-1, opID=143, dn=cn=test8,dc=example,dc=com) with ChangeNumber 0000014a01fb2fc505c10000005c error Attribute or Value Exists The provided LDAP attribute objectClass contains duplicate values
+
+
+
+There may be other situations where things go wrong for similar reasons.
+
+To demonstrate this problem more clearly. Setup an environment with 2 servers and the above ds-cfg parameters. Then run the following LDIF.
+
+The LDAP modify operations used below need to be sent with a client that doesn't pre-process/clean them up (DJ ldapmodify does this). I'm using Apache Directory Studio.
+
+
+
+#!RESULT OK
+#!CONNECTION ldap://192.168.56.4:1389
+#!DATE 2015-02-10T16:40:50.459
+dn: cn=test8,dc=example,dc=com
+changetype: add
+objectclass:: dG9wIA==
+description: Superior objectclass with space, no structural
+cn: test8
+
+
+
+On the first server this creates:
+
+
+
+$ ./ldapsearch -b "dc=example,dc=com" "(cn=test8)" "*"
+dn: cn=test8,dc=example,dc=com
+objectClass:: dG9wIA==
+objectClass: top
+description: Superior objectclass with space, no structural
+cn: test8
+
+
+
+On the second server no entry is created because it has errored with:
+
+
+
+[30/Nov/2014:18:34:06 +0000] category=SYNC severity=MILD_ERROR msgID=14876739 msg=Could not replay operation AddOperation(connID=-1, opID=143, dn=cn=test8,dc=example,dc=com) with ChangeNumber 0000014a01fb2fc505c10000005c error Attribute or Value Exists The provided LDAP attribute objectClass contains duplicate values
+
+
+
+In this example the extra 'top' got added probably as part of addSuperiorObjectClasses() or some other automatic mechanism. Interestingly the concept doesn't seem to work if you try and manually put both 'top ' and 'top' in the original ADD, because you hit this:
+
+
+
+#!RESULT ERROR
+#!CONNECTION ldap://192.168.56.4:1389
+#!DATE 2015-02-10T16:53:13.430
+#!ERROR [LDAP: error code 20 - The provided LDAP attribute objectclass contains duplicate values]
+dn: cn=test9,dc=example,dc=com
+changetype: add
+objectclass:: dG9wIA==
+objectclass: top
+description: Superior objectclass with space, no structural
+cn: test9
+
+
+
+So for this to work you need 
+
+1) Be able to add invalid objectclasses (see OPENDJ-1797 or if you had schema checking off)
+2) Have DJ automatically populate at least one of the entries that will 'duplicate' the whitespace one.
+3) Use a client that doesn't trim/preprocess the objectclasses before sending them

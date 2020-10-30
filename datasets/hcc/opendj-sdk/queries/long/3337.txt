@@ -1,0 +1,412 @@
+Checking dsreplication status on a DS only instance after a DS+RS has been disabled/enabled for replication shows the disabled/enabled DS+RS is missing from the list.  Checking replication status from a DS+RS shows the DS+RS in the list.
+
+Additional information.
+
+
+	The issue can be sporadic.  Out of four tests, one did not reproduce the issue.
+	The missing instance in the DS' replication status is only and always the DS+RS who's replication was disabled/enabled.
+	A restart of all servers is enough to clear up the issue and the disabled/enabled DS+RS can be seen in the RS's replication status.
+	cn=monitor data shows the DS that is missing the disabled/enabled DS+RS could be connected to either DS+RS before it was disabled.
+	cn=monitor data also shows the DS that is missing the disabled/enabled DS+RS, reconnected to this same DS+RS once it was re-enabled.
+	After a restart, cn=monitor data shows the DS that was missing the disabled/enabled DS+RS, had connected to the other DS+RS; the DS+RS that had not been disabled.
+	Applying a write load on Master 1 shows replication does flow to the DS only instances.
+	Once Master 2 is re-enabled, all changes it missed out on are replicated.
+
+
+
+
+
+Version:
+[OpenDJ Server 4.0.0-SNAPSHOT
+Build 20160928011724
+
+
+
+Setup and reproduction is simple.
+
+1. Setup the first instance that will become a DS+RS (Master 1)
+2. Setup the second instance that will become a DS+RS (Master 2)
+3. Enable MMR replication for the two DS+RS'
+4. Initialize Master 2 from Master 1.
+5.Setup the first instance that will become a DS only (Directory 1)
+6. Enable replication to this DS only instance (Master 1 is the source)
+7. Initialize Directory 1 from Master 1.
+8.Setup the second instance that will become a DS only  (Directory 2)
+9. Enable replication to this DS only instance (Master 1 is the source)
+10. Initialize Directory 2 from Master 1.
+
+11. Check replication status on all 4 instances.
+12. On a DS+RS (Master 2) run dsreplication disable --disableAll
+13. On the same DS+RS (Master 2) run dsreplication enable (Master 1 is the source)
+14. Check replication status on all 4 instances.
+
+Setup commands:
+
+There is nothing special in the parameters and each uses the same ./setup parameters.
+
+
+
+./setup \
+ --cli \
+ --baseDN ${baseDN} \
+ --${entryBase} \
+ --ldapPort ${ldapport} \
+ --adminConnectorPort ${adminport} \
+ --rootUserDN "${rootdn}" \
+ --rootUserPassword ${rootpw} \
+ --enableStartTLS \
+ --ldapsPort ${ldapsport} \
+ --generateSelfSignedCertificate \
+ --hostName ${hostname} \
+ --no-prompt \
+ --noPropertiesFile \
+ --acceptLicense
+
+
+
+Enable replication for DS+RS commands
+
+
+
+bin/dsreplication enable \
+ --host1 ${masterhostname} \
+ --port1 ${adminport} \
+ --bindDN1 "${rootdn}" \
+ --bindPassword1 ${rootpw} \
+ --secureReplication1 \
+ --host2 ${hostname} \
+ --port2 ${myadminport} \
+ --bindDN2 "${rootdn}" \
+ --bindPassword2 ${rootpw} \
+ --replicationPort2 ${myreplport} \
+ --secureReplication2 \
+ --baseDN ${baseDN} \
+ --adminUID ${adminid} \
+ --adminPassword ${adminpw} \
+ --no-prompt \
+ --noPropertiesFile \
+ --trustAll
+
+
+
+Enable replication for DS only commands:
+
+Note, the only special parameter here is the  --noReplicationServer2.
+
+
+
+bin/dsreplication enable \
+ --host1 opendj.forgerock.com \
+ --port1 ${adminport} \
+ --bindDN1 "${rootdn}" \
+ --bindPassword1 ${rootpw} \
+ --secureReplication1 \
+ --host2 ${hostname} \
+ --port2 ${myadminport} \
+ --bindDN2 "${rootdn}" \
+ --bindPassword2 ${rootpw} \
+ --secureReplication2 \
+ --noReplicationServer2 \
+ --baseDN ${baseDN} \
+ --adminUID ${adminid} \
+ --adminPassword ${adminpw} \
+ --no-prompt \
+ --noPropertiesFile \
+ --trustAll
+
+
+
+Replication Disable / Enable commands:
+
+
+
+./dsreplication
+ disable
+ --disableAll
+ --port ADMINPORT
+ --hostname opendj.forgerock.com
+ --adminUID admin
+ --adminPassword password
+ --trustAll
+ --no-prompt
+
+./dsreplication
+ enable
+ --adminUID admin
+ --adminPassword password
+ --baseDN dc=example,dc=com
+ --host1 opendj.example.com
+ --port1 4444
+ --bindDN1 "cn=Directory Manager"
+ --bindPassword1 password
+ --replicationPort1 8989
+ --host2 opendj.forgerock.com
+ --port2 5444
+ --bindDN2 "cn=Directory Manager"
+ --bindPassword2 password
+ --replicationPort2 9989
+ --trustAll
+ --no-prompt
+
+
+
+
+
+Replication status after setup: Good
+
+We can see below that Master 2 (opendj.forgerock.com:5444) is seen in all dsreplication status'
+
+Master 1
+
+
+
+opendj; bin/$ date; ./dsreplication status --adminUID admin --adminPasswordFile pass --hostname opendj.forgerock.com --port 4444 --trustAll
+Wed Sep 28 10:58:06 MDT 2016
+Suffix DN         : Server                    : Entries : Replication enabled : DS ID : RS ID : RS Port (1) : M.C. (2) : A.O.M.C. (3) : Security (4)
+------------------:---------------------------:---------:---------------------:-------:-------:-------------:----------:--------------:-------------
+dc=example,dc=com : opendj.forgerock.com:4444 : 2000    : true                : 9822  : 28678 : 8989        : 0        :              : true
+dc=example,dc=com : opendj.forgerock.com:5444 : 2000    : true                : 7105  : 12382 : 9989        : 0        :              : true
+dc=example,dc=com : opendj.forgerock.com:6444 : 2000    : true                : 30580 : (5)   :             : 0        :              : 
+dc=example,dc=com : opendj.forgerock.com:7444 : 2000    : true                : 32684 : (5)   :             : 0        :              : 
+
+
+
+
+Master 2
+
+
+
+opendj; bin/$ date; ./dsreplication status --adminUID admin --adminPasswordFile pass --hostname opendj.forgerock.com --port 5444 --trustAll
+Wed Sep 28 10:58:03 MDT 2016
+Suffix DN         : Server                    : Entries : Replication enabled : DS ID : RS ID : RS Port (1) : M.C. (2) : A.O.M.C. (3) : Security (4)
+------------------:---------------------------:---------:---------------------:-------:-------:-------------:----------:--------------:-------------
+dc=example,dc=com : opendj.forgerock.com:4444 : 2000    : true                : 9822  : 28678 : 8989        : 0        :              : true
+dc=example,dc=com : opendj.forgerock.com:5444 : 2000    : true                : 7105  : 12382 : 9989        : 0        :              : true
+dc=example,dc=com : opendj.forgerock.com:6444 : 2000    : true                : 30580 : (5)   :             : 0        :              : 
+dc=example,dc=com : opendj.forgerock.com:7444 : 2000    : true                : 32684 : (5)   :             : 0        :              : 
+
+
+
+Directory 1
+
+
+
+opendj; bin/$ date; ./dsreplication status --adminUID admin --adminPasswordFile pass --hostname opendj.forgerock.com --port 7444 --trustAll
+Wed Sep 28 10:58:00 MDT 2016
+Suffix DN         : Server                    : Entries : Replication enabled : DS ID : RS ID : RS Port (1) : M.C. (2) : A.O.M.C. (3) : Security (4)
+------------------:---------------------------:---------:---------------------:-------:-------:-------------:----------:--------------:-------------
+dc=example,dc=com : opendj.forgerock.com:4444 : 2000    : true                : 9822  : 28678 : 8989        : 0        :              : true
+dc=example,dc=com : opendj.forgerock.com:5444 : 2000    : true                : 7105  : 12382 : 9989        : 0        :              : true
+dc=example,dc=com : opendj.forgerock.com:6444 : 2000    : true                : 30580 : (5)   :             : 0        :              : 
+dc=example,dc=com : opendj.forgerock.com:7444 : 2000    : true                : 32684 : (5)   :             : 0        :              : 
+
+
+
+Directory 2
+
+
+
+opendj; bin/$ date; ./dsreplication status --adminUID admin --adminPasswordFile pass --hostname opendj.forgerock.com --port 6444 --trustAll
+Wed Sep 28 10:57:56 MDT 2016
+Suffix DN         : Server                    : Entries : Replication enabled : DS ID : RS ID : RS Port (1) : M.C. (2) : A.O.M.C. (3) : Security (4)
+------------------:---------------------------:---------:---------------------:-------:-------:-------------:----------:--------------:-------------
+dc=example,dc=com : opendj.forgerock.com:4444 : 2000    : true                : 9822  : 28678 : 8989        : 0        :              : true
+dc=example,dc=com : opendj.forgerock.com:5444 : 2000    : true                : 7105  : 12382 : 9989        : 0        :              : true
+dc=example,dc=com : opendj.forgerock.com:6444 : 2000    : true                : 30580 : (5)   :             : 0        :              : 
+dc=example,dc=com : opendj.forgerock.com:7444 : 2000    : true                : 32684 : (5)   :             : 0        :              : 
+
+
+
+DisableAll / Enable on Master 2
+
+
+
+Wed Sep 28 10:58:20 MDT 2016
+./dsreplication disable --disableAll --port 5444 --hostname opendj.forgerock.com --adminUID admin --adminPassword password --trustAll --no-prompt
+
+Establishing connections ..... Done.
+You have decided to disable the replication server (replication changelog).
+After disabling the replication server only one replication server will be
+configured for the following suffixes:
+dc=example,dc=com
+To avoid a single point of failure at least two replication servers must be
+configured.
+Disabling replication on base DN cn=admin data of server
+opendj.forgerock.com:5444 .....Done.
+Disabling replication on base DN dc=example,dc=com of server
+opendj.forgerock.com:5444 .....Done.
+Disabling replication on base DN cn=schema of server opendj.forgerock.com:5444
+.....Done.
+Removing references on base DN cn=admin data of server
+opendj.forgerock.com:6444 .....Done.
+Removing references on base DN cn=schema of server opendj.forgerock.com:6444
+.....Done.
+Removing references on base DN dc=example,dc=com of server
+opendj.forgerock.com:6444 .....Done.
+Removing references on base DN cn=admin data of server
+opendj.forgerock.com:4444 .....Done.
+Removing references on base DN cn=schema of server opendj.forgerock.com:4444
+.....Done.
+Removing references on base DN dc=example,dc=com of server
+opendj.forgerock.com:4444 .....Done.
+Removing references on base DN cn=admin data of server
+opendj.forgerock.com:7444 .....Done.
+Removing references on base DN cn=schema of server opendj.forgerock.com:7444
+.....Done.
+Removing references on base DN dc=example,dc=com of server
+opendj.forgerock.com:7444 .....Done.
+Disabling replication port 9989 of server opendj.forgerock.com:5444 ..... Done.
+Removing registration information ..... Done.
+
+See
+/var/folders/32/hqbp0t2n5k73f9ssp3ssc9740000gn/T/opendj-replication-3174714620534707875.log
+for a detailed log of this operation.
+
+
+
+
+
+Wed Sep 28 10:59:03 MDT 2016
+./dsreplication enable --adminUID admin --adminPassword password --baseDN dc=example,dc=com --host1 opendj.forgerock.com --port1 4444 --bindDN1 "cn=Directory Manager" --bindPassword1 password --replicationPort1 8989 --host2 opendj.forgerock.com --port2 5444 --bindDN2 "cn=Directory Manager" --bindPassword2 password --replicationPort2 9989 --trustAll --no-prompt
+
+Establishing connections ..... Done.
+Checking registration information ..... Done.
+Updating remote references on server opendj.forgerock.com:4444 ..... Done.
+Configuring Replication port on server opendj.forgerock.com:5444 ..... Done.
+Updating replication configuration for baseDN dc=example,dc=com on server
+opendj.forgerock.com:4444 .....Done.
+Updating replication configuration for baseDN dc=example,dc=com on server
+opendj.forgerock.com:6444 .....Done.
+Updating replication configuration for baseDN dc=example,dc=com on server
+opendj.forgerock.com:7444 .....Done.
+Updating replication configuration for baseDN dc=example,dc=com on server
+opendj.forgerock.com:5444 .....Done.
+Updating registration configuration on server opendj.forgerock.com:4444 ..... Done.
+Updating registration configuration on server opendj.forgerock.com:6444 ..... Done.
+Updating registration configuration on server opendj.forgerock.com:7444 ..... Done.
+Updating registration configuration on server opendj.forgerock.com:5444 ..... Done.
+Updating replication configuration for baseDN cn=schema on server
+opendj.forgerock.com:4444 .....Done.
+Updating replication configuration for baseDN cn=schema on server
+opendj.forgerock.com:6444 .....Done.
+Updating replication configuration for baseDN cn=schema on server
+opendj.forgerock.com:7444 .....Done.
+Updating replication configuration for baseDN cn=schema on server
+opendj.forgerock.com:5444 .....Done.
+Initializing registration information on server opendj.forgerock.com:5444 with
+the contents of server opendj.forgerock.com:4444 .....Done.
+
+Replication has been successfully enabled.  Note that for replication to work
+you must initialize the contents of the base DNs that are being replicated
+(use dsreplication initialize to do so).
+
+
+See
+/var/folders/32/hqbp0t2n5k73f9ssp3ssc9740000gn/T/opendj-replication-7863579783341400393.log
+for a detailed log of this operation.
+
+
+
+Replication status after disabling/enabling the DS+RS (Master 2): Bad
+
+Master 1
+
+
+
+opendj; bin/$ date; ./dsreplication status --adminUID admin --adminPasswordFile pass --hostname opendj.forgerock.com --port 4444 --trustAll
+Wed Sep 28 10:59:32 MDT 2016
+Suffix DN         : Server                    : Entries : Replication enabled : DS ID : RS ID : RS Port (1) : M.C. (2) : A.O.M.C. (3) : Security (4)
+------------------:---------------------------:---------:---------------------:-------:-------:-------------:----------:--------------:-------------
+dc=example,dc=com : opendj.forgerock.com:4444 : 2000    : true                : 9822  : 28678 : 8989        : 0        :              : true
+dc=example,dc=com : opendj.forgerock.com:5444 : 2000    : true                : 21609 : 5873  : 9989        : 0        :              : false
+dc=example,dc=com : opendj.forgerock.com:6444 : 2000    : true                : 30580 : (5)   :             : 0        :              : 
+dc=example,dc=com : opendj.forgerock.com:7444 : 2000    : true                : 32684 : (5)   :             : 0        :              : 
+
+
+
+Master 2
+
+
+
+opendj; bin/$ date; ./dsreplication status --adminUID admin --adminPasswordFile pass --hostname opendj.forgerock.com --port 5444 --trustAll
+Wed Sep 28 10:59:26 MDT 2016
+Suffix DN         : Server                    : Entries : Replication enabled : DS ID : RS ID : RS Port (1) : M.C. (2) : A.O.M.C. (3) : Security (4)
+------------------:---------------------------:---------:---------------------:-------:-------:-------------:----------:--------------:-------------
+dc=example,dc=com : opendj.forgerock.com:4444 : 2000    : true                : 9822  : 28678 : 8989        : 0        :              : true
+dc=example,dc=com : opendj.forgerock.com:5444 : 2000    : true                : 21609 : 5873  : 9989        : 0        :              : false
+dc=example,dc=com : opendj.forgerock.com:6444 : 2000    : true                : 30580 : (5)   :             : 0        :              : 
+dc=example,dc=com : opendj.forgerock.com:7444 : 2000    : true                : 32684 : (5)   :             : 0        :              : 
+
+
+
+Directory 1
+
+
+
+opendj; bin/$ date; ./dsreplication status --adminUID admin --adminPasswordFile pass --hostname opendj.forgerock.com --port 7444 --trustAll
+Wed Sep 28 10:59:21 MDT 2016
+Suffix DN         : Server                    : Entries : Replication enabled : DS ID : RS ID : RS Port (1) : M.C. (2) : A.O.M.C. (3) : Security (4)
+------------------:---------------------------:---------:---------------------:-------:-------:-------------:----------:--------------:-------------
+dc=example,dc=com : opendj.forgerock.com:4444 : 2000    : true                : 9822  : 28678 : 8989        : 0        :              : true
+dc=example,dc=com : opendj.forgerock.com:6444 : 2000    : true                : 30580 : (5)   :             : 0        :              : 
+dc=example,dc=com : opendj.forgerock.com:7444 : 2000    : true                : 32684 : (5)   :             : 0        :              : 
+
+
+
+Directory 2
+
+
+
+opendj; bin/$ date; ./dsreplication status --adminUID admin --adminPasswordFile pass --hostname opendj.forgerock.com --port 6444 --trustAll
+Wed Sep 28 10:59:14 MDT 2016
+Suffix DN         : Server                    : Entries : Replication enabled : DS ID : RS ID : RS Port (1) : M.C. (2) : A.O.M.C. (3) : Security (4)
+------------------:---------------------------:---------:---------------------:-------:-------:-------------:----------:--------------:-------------
+dc=example,dc=com : opendj.forgerock.com:4444 : 2000    : true                : 9822  : 28678 : 8989        : 0        :              : true
+dc=example,dc=com : opendj.forgerock.com:6444 : 2000    : true                : 30580 : (5)   :             : 0        :              : 
+dc=example,dc=com : opendj.forgerock.com:7444 : 2000    : true                : 32684 : (5)   :             : 0        :              : 
+
+
+
+Replication status after restarting all servers: Good
+
+Once the servers are restarted, Master 2 shows up in the DS only servers replication status.
+
+Directory 1
+
+
+
+opendj; bin/$ date; ./dsreplication status --adminUID admin --adminPasswordFile pass --hostname opendj.forgerock.com --port 6444 --trustAll
+Wed Sep 28 11:25:17 MDT 2016
+Suffix DN         : Server                    : Entries : Replication enabled : DS ID : RS ID : RS Port (1) : M.C. (2) : A.O.M.C. (3) : Security (4)
+------------------:---------------------------:---------:---------------------:-------:-------:-------------:----------:--------------:-------------
+dc=example,dc=com : opendj.forgerock.com:4444 : 2000    : true                : 9822  : 28678 : 8989        : 0        :              : true
+dc=example,dc=com : opendj.forgerock.com:5444 : 2000    : true                : 21609 : 5873  : 9989        : 0        :              : false
+dc=example,dc=com : opendj.forgerock.com:6444 : 2000    : true                : 30580 : (5)   :             : 0        :              : 
+dc=example,dc=com : opendj.forgerock.com:7444 : 2000    : true                : 32684 : (5)   :             : 0        :              : 
+
+
+
+Directory 2
+
+
+
+opendj; bin/$ date; ./dsreplication status --adminUID admin --adminPasswordFile pass --hostname opendj.forgerock.com --port 7444 --trustAll
+Wed Sep 28 11:25:24 MDT 2016
+Suffix DN         : Server                    : Entries : Replication enabled : DS ID : RS ID : RS Port (1) : M.C. (2) : A.O.M.C. (3) : Security (4)
+------------------:---------------------------:---------:---------------------:-------:-------:-------------:----------:--------------:-------------
+dc=example,dc=com : opendj.forgerock.com:4444 : 2000    : true                : 9822  : 28678 : 8989        : 0        :              : true
+dc=example,dc=com : opendj.forgerock.com:5444 : 2000    : true                : 21609 : 5873  : 9989        : 0        :              : false
+dc=example,dc=com : opendj.forgerock.com:6444 : 2000    : true                : 30580 : (5)   :             : 0        :              : 
+dc=example,dc=com : opendj.forgerock.com:7444 : 2000    : true                : 32684 : (5)   :             : 0        :              : 
+
+
+
+—
+
+Data provided
+
+
+	Three cn=monitors from each instance.  After setup, after disable/enable and after instance restart. <instance>monitor.01, <instance>monitor.02, and <instance>-afterrestart-monitor.03 respectively.
+	Access/Errors/Replication logs from each instance.
+	config.ldif and admin-backend.ldif from each instance.
+

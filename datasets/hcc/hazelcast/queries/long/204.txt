@@ -1,0 +1,121 @@
+When I added the WebFilter to my web.xml, we immediately ran into a problem with a constant stream of "Session already invalided" exceptions. Even when trying to refresh the page (which should be generating a fresh session once the original had been invalidated) causes the exception to happen again, leaving no way other than clearing all cookies to get past this exception within the webapp. 
+
+We tried removing all calls to "session.invalidate()" within our code, and simply remove all attributes from the session, but the exception still persists. It appears to even happen when no programatic invalidation should have even occurred. The exception is occurring before it even hits our code as this stacktrace shows. 
+
+We're using Hazelcast 2.1.2 Community Edition. Also, as shown in the snippet of our web.xml, we are using the Servlet 3.0 "max-age" cookie-config attribute to allow session cookies to persist across browser restarts.
+
+``` java
+java.lang.IllegalStateException: getAttributeNames: Session already invalidated
+    at org.apache.catalina.session.StandardSession.getAttributeNames(StandardSession.java:1186)
+    at org.apache.catalina.session.StandardSessionFacade.getAttributeNames(StandardSessionFacade.java:139)
+    at com.hazelcast.web.WebFilter$HazelcastHttpSession.getAttributeNames(WebFilter.java:367)
+    at com.hazelcast.web.WebFilter.doFilter(WebFilter.java:549)
+    at org.apache.catalina.core.ApplicationFilterChain.internalDoFilter(ApplicationFilterChain.java:243)
+    at org.apache.catalina.core.ApplicationFilterChain.doFilter(ApplicationFilterChain.java:210)
+    at org.apache.catalina.core.StandardWrapperValve.invoke(StandardWrapperValve.java:225)
+    at org.apache.catalina.core.StandardContextValve.invoke(StandardContextValve.java:169)
+    at org.apache.catalina.authenticator.AuthenticatorBase.invoke(AuthenticatorBase.java:581)
+    at org.apache.catalina.core.StandardHostValve.invoke(StandardHostValve.java:168)
+    at org.apache.catalina.valves.ErrorReportValve.invoke(ErrorReportValve.java:98)
+    at org.apache.catalina.valves.AccessLogValve.invoke(AccessLogValve.java:927)
+    at org.apache.catalina.core.StandardEngineValve.invoke(StandardEngineValve.java:118)
+    at org.apache.catalina.connector.CoyoteAdapter.service(CoyoteAdapter.java:407)
+    at org.apache.coyote.http11.AbstractHttp11Processor.process(AbstractHttp11Processor.java:999)
+    at org.apache.coyote.AbstractProtocol$AbstractConnectionHandler.process(AbstractProtocol.java:565)
+    at org.apache.tomcat.util.net.AprEndpoint$SocketProcessor.run(AprEndpoint.java:1812)
+    at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1110)
+    at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:603)
+    at java.lang.Thread.run(Thread.java:722)
+```
+
+And our web.xml
+
+```
+
+  <session-config>
+    <session-timeout>60</session-timeout>
+    <cookie-config>
+        <max-age>86400</max-age>
+    </cookie-config>
+  </session-config>
+
+<filter>
+<filter-name>hazelcast-filter</filter-name> 
+    <filter-class>com.hazelcast.web.WebFilter</filter-class> 
+    <!--
+        Name of the distributed map storing
+        your web session objects
+    -->
+    <init-param>
+        <param-name>map-name</param-name>
+        <param-value>my-sessions</param-value>
+    </init-param>
+    <!--
+        How is your load-balancer configured?
+        stick-session means all requests of a session
+        is routed to the node where the session is first created.
+        This is excellent for performance.
+        If sticky-session is set to false, when a session is updated
+        on a node, entry for this session on all other nodes is invalidated.
+        You have to know how your load-balancer is configured before
+        setting this parameter. Default is true.
+    -->
+    <init-param>
+        <param-name>sticky-session</param-name>
+        <param-value>true</param-value>
+    </init-param>
+    <!--
+        Name of session id cookie
+    -->
+    <init-param>
+        <param-name>cookie-name</param-name>
+        <param-value>hazelcast.sessionId</param-value>
+    </init-param>
+    <!--
+        Are you debugging? Default is false.
+    -->
+    <init-param>
+        <param-name>debug</param-name>
+        <param-value>false</param-value>
+    </init-param>
+    <!--
+        Configuration xml location;
+            * as servlet resource OR
+            * as classpath resource OR
+            * as URL
+        Default is one of hazelcast-default.xml
+        or hazelcast.xml in classpath.
+    -->
+    <init-param>
+        <param-name>config-location</param-name>
+        <param-value>/WEB-INF/classes/hazelcast.xml</param-value>
+    </init-param>
+    <!--
+        Do you want to use an existing HazelcastInstance?
+        Default is null.
+    -->
+    <init-param>
+        <param-name>instance-name</param-name>
+        <param-value>default</param-value>
+    </init-param>
+    <!--
+        Do you want to shutdown HazelcastInstance during
+        web application undeploy process?
+        Default is true.
+    -->
+    <init-param>
+        <param-name>shutdown-on-destroy</param-name>
+        <param-value>true</param-value>
+    </init-param>
+</filter>
+<filter-mapping>
+    <filter-name>hazelcast-filter</filter-name>
+    <url-pattern>/*</url-pattern>
+    <dispatcher>FORWARD</dispatcher>
+    <dispatcher>INCLUDE</dispatcher>
+    <dispatcher>REQUEST</dispatcher>
+</filter-mapping>
+<listener>
+    <listener-class>com.hazelcast.web.SessionListener</listener-class>
+</listener>
+```

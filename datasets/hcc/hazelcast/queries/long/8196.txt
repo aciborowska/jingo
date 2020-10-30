@@ -1,0 +1,45 @@
+(Cross posting from [Stack Overflow](http://stackoverflow.com/questions/37260253/using-mapstoreconfig-in-a-cluster-raises-transition-not-allowed-from-state-not-l))
+
+Note this relates to version 3.6.2
+
+I am attempting to use persistence for a distributed HazelCast Map. When I query the map on one node in a cluster, the other nodes report (many) instances of the following exception:
+
+```
+May 16, 2016 5:43:45 PM com.hazelcast.map.impl.operation.LoadStatusOperation
+SEVERE: [172.17.0.2]:5701 [dev_docker] [3.6.2] Transition not allowed from state NOT_LOADED to LOADED
+java.lang.IllegalStateException: Transition not allowed from state NOT_LOADED to LOADED
+    at com.hazelcast.util.Preconditions.checkState(Preconditions.java:313)
+    at com.hazelcast.util.StateMachine.next(StateMachine.java:60)
+    at com.hazelcast.util.StateMachine.nextOrStay(StateMachine.java:70)
+    at com.hazelcast.map.impl.MapKeyLoader.trackLoading(MapKeyLoader.java:228)
+    at com.hazelcast.map.impl.recordstore.DefaultRecordStore.updateLoadStatus(DefaultRecordStore.java:115)
+    at com.hazelcast.map.impl.operation.LoadStatusOperation.run(LoadStatusOperation.java:48)
+    at com.hazelcast.spi.impl.operationservice.impl.OperationRunnerImpl.run(OperationRunnerImpl.java:172)
+    at com.hazelcast.spi.impl.operationservice.impl.OperationRunnerImpl.run(OperationRunnerImpl.java:393)
+    at com.hazelcast.spi.impl.operationexecutor.classic.OperationThread.processPacket(OperationThread.java:184)
+    at com.hazelcast.spi.impl.operationexecutor.classic.OperationThread.process(OperationThread.java:137)
+    at com.hazelcast.spi.impl.operationexecutor.classic.OperationThread.doRun(OperationThread.java:124)
+    at com.hazelcast.spi.impl.operationexecutor.classic.OperationThread.run(OperationThread.java:99)
+```
+
+The Map is being created in each node, on request, as follows:
+
+```
+    MapConfig config = hazelcastInstance.getConfig().getMapConfig("someName");
+    MapStoreConfig msConfig = config.getMapStoreConfig();
+    msConfig.setEnabled(true)
+        .setInitialLoadMode(MapStoreConfig.InitialLoadMode.LAZY)
+        .setWriteDelaySeconds(WRITE_DELAY_SECONDS)
+        .setWriteBatchSize(WRITE_BATCH_SIZE)
+        .setImplementation(new RegistrationCacheStore(queueRepository));
+    IMap<String, RegistrationWrapper> regMap = hazelcastInstance.getMap("someName");
+    regMap.addEntryListener(new RegistrationCacheListener(queueManager, hazelcastInstance), true);
+```
+
+where `RegistrationCacheStore` is just a bridge across to the actual persistence layer.
+
+When I invoke `values()` against the map in one node, it appears to silently work as desired (at least no exceptions are thrown in that node), but the other nodes go nuts with the exception above. Note that the underlying datastore for the map is empty at the time this is invoked, however the same behaviour pertains if there is data in the underlying table.
+
+All the code in question works fine if there is only a single node in the cluster, which suggests I am getting something wrong with the way I'm trying to use persistence. In my case I want a distributed Map which persists through the failure/shutdown of one or all nodes in the cluster.
+
+I have placed debugging traces into my persistence layer, and can see that the  `MapStore.loadAllKeys()` is invoked and successfully returns  on the node that I am invoking `values()` against, while the other nodes do not attempt to invoke the `MapStore` at all

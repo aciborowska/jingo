@@ -1,0 +1,70 @@
+I see "Connection reset by peer exceptions" in the (active) member log after one of Hazelcast members shuts down in my  Docker environment.
+
+### Environment
+Docker host runs 2 containers with Hazelcast members. Both have configured TCP discovery and hosts public address. The Hazelcast port is exposed to the Docker host.
+
+#### hazelcast.xml
+```xml
+<port auto-increment="false" port-count="100">5701</port>
+<public-address>${hazelcast.public.ip}:${hazelcast.port}</public-address>
+<join>
+    <multicast enabled="false">
+    </multicast>
+    <tcp-ip enabled="true">
+        <member>${hazelcast.public.ip}:5555</member>
+        <member>${hazelcast.public.ip}:5556</member>
+    </tcp-ip>
+   ...
+</join>
+```
+
+#### Start Docker containers
+```bash
+docker run -it --rm -p 5555:5701 hazelcast-tcp
+docker run -it --rm -p 5556:5701 hazelcast-tcp
+```
+
+#### Start Hazelcast in the containers
+Provide system properties used in `hazelcast.xml` (public Docker host IP address and the port - 5555 and 5556):
+```
+System.setProperty("hazelcast.public.ip", "192.168.1.105");  // replace the IP value with your own IP
+System.setProperty("hazelcast.port", "5555");  // for the second container use 5556
+hz = Hazelcast.newHazelcastInstance();
+```
+
+#### Shut down one of the containers
+```java
+hz.shutdown();
+```
+
+#### Check the log in the running container
+The remaining cluster member try to connect to the stopped one and log contains bunch of entries similar to:
+```
+Oct 31, 2017 12:14:55 PM com.hazelcast.nio.tcp.TcpIpConnector
+INFO: [192.168.1.105]:5555 [dev] [3.9] Connecting to /192.168.1.105:5556, timeout: 0, bind-any: true
+Oct 31, 2017 12:14:55 PM com.hazelcast.nio.tcp.TcpIpConnectionManager
+INFO: [192.168.1.105]:5555 [dev] [3.9] Established socket connection between /172.17.0.3:56203 and /192.168.1.105:5556
+Oct 31, 2017 12:14:55 PM com.hazelcast.nio.tcp.TcpIpConnection
+INFO: [192.168.1.105]:5555 [dev] [3.9] Connection[id=24, /172.17.0.3:56203->/192.168.1.105:5556, endpoint=[192.168.1.105]:5556, alive=false, type=NONE] closed. Reason: Connection closed by the other side
+Oct 31, 2017 12:14:55 PM com.hazelcast.nio.tcp.TcpIpConnector
+INFO: [192.168.1.105]:5555 [dev] [3.9] Connecting to /192.168.1.105:5556, timeout: 0, bind-any: true
+Oct 31, 2017 12:14:55 PM com.hazelcast.nio.tcp.TcpIpConnectionManager
+INFO: [192.168.1.105]:5555 [dev] [3.9] Established socket connection between /172.17.0.3:53561 and /192.168.1.105:5556
+Oct 31, 2017 12:14:55 PM com.hazelcast.nio.tcp.TcpIpConnection
+WARNING: [192.168.1.105]:5555 [dev] [3.9] Connection[id=25, /172.17.0.3:53561->/192.168.1.105:5556, endpoint=[192.168.1.105]:5556, alive=false, type=NONE] closed. Reason: Exception in Connection[id=25, /172.17.0.3:53561->/192.168.1.105:5556, endpoint=[192.168.1.105]:5556, alive=true, type=NONE], thread=hz._hzInstance_1_dev.IO.thread-in-0
+java.io.IOException: Connection reset by peer
+	at sun.nio.ch.FileDispatcherImpl.read0(Native Method)
+	at sun.nio.ch.SocketDispatcher.read(SocketDispatcher.java:39)
+	at sun.nio.ch.IOUtil.readIntoNativeBuffer(IOUtil.java:223)
+	at sun.nio.ch.IOUtil.read(IOUtil.java:197)
+	at sun.nio.ch.SocketChannelImpl.read(SocketChannelImpl.java:380)
+	at com.hazelcast.internal.networking.AbstractChannel.read(AbstractChannel.java:94)
+	at com.hazelcast.nio.tcp.MemberChannelInitializer.inboundProtocol(MemberChannelInitializer.java:101)
+	at com.hazelcast.nio.tcp.MemberChannelInitializer.initInbound(MemberChannelInitializer.java:73)
+	at com.hazelcast.internal.networking.nio.NioChannelReader.init(NioChannelReader.java:143)
+	at com.hazelcast.internal.networking.nio.NioChannelReader.handle(NioChannelReader.java:123)
+	at com.hazelcast.internal.networking.nio.NioThread.handleSelectionKey(NioThread.java:401)
+	at com.hazelcast.internal.networking.nio.NioThread.handleSelectionKeys(NioThread.java:386)
+	at com.hazelcast.internal.networking.nio.NioThread.selectLoop(NioThread.java:293)
+	at com.hazelcast.internal.networking.nio.NioThread.run(NioThread.java:248)
+```

@@ -1,0 +1,189 @@
+Hi,
+
+I found regression bug from 3.9.3 on the latest 3.10-SNAPSHOT - hazelcast-3.10-20180328.095534-702
+
+Consider following example:
+
+My model class:
+```java
+public class Rule {
+    private Long key;
+    private String code;
+}
+```
+Reproduction code:
+```java
+public class Test {
+    private static final Logger log = LoggerFactory.getLogger(Test.class);
+    private static final String MAP_NAME_PREFIX = "Rule";
+
+    private static HazelcastInstance createHazelcastInstance() {
+        HazelcastInstance hazelcastInstance = Hazelcast.newHazelcastInstance(configuration());
+        prepareCaches(hazelcastInstance);
+        log.info("Started Hazelcast Node");
+        return hazelcastInstance;
+    }
+
+    private static Config configuration() {
+        Config conf = new Config();
+        conf.setProperty("hazelcast.logging.type", "slf4j");
+        conf.setProperty("hazelcast.partition.count", "971");
+        conf.setProperty("hazelcast.operation.thread.count", "4");
+        conf.setProperty("hazelcast.operation.generic.thread.count", "4");
+        conf.setNetworkConfig(networkConf());
+        conf.setSerializationConfig(kryoSerializationConfiguration());
+        getMapNames().forEach(name -> conf.addMapConfig(mapConfig(name)));
+        return conf;
+    }
+
+    private static MapConfig mapConfig(String mapName) {
+        return new MapConfig(mapName)
+                .setInMemoryFormat(InMemoryFormat.BINARY)
+                .setReadBackupData(true)
+                .setBackupCount(1)
+                .addQueryCacheConfig(new QueryCacheConfig()
+                        .setName(mapName)
+                        .setPredicateConfig(new PredicateConfig(TruePredicate.INSTANCE))
+                        .setIncludeValue(true)
+                        .setPopulate(true)
+                        .setDelaySeconds(0)
+                        .setBufferSize(1_000)
+                );
+    }
+
+    private static NetworkConfig networkConf() {
+        String resolvedClusterHost;
+        try {
+            resolvedClusterHost = getLocalHost().getHostAddress();
+        } catch (UnknownHostException e) {
+            throw new RuntimeException(e);
+        }
+
+        return new NetworkConfig()
+                .setJoin(new JoinConfig()
+                        .setMulticastConfig(new MulticastConfig()
+                                .setMulticastGroup("224.2.2.3")
+                                .setMulticastPort(7777)
+                                .setMulticastTimeToLive(1)
+                                .setEnabled(true)
+                        )
+                )
+                .setPublicAddress(resolvedClusterHost)
+                .setInterfaces(new InterfacesConfig()
+                        .addInterface(resolvedClusterHost)
+                        .setEnabled(true)
+                );
+    }
+
+    private static SerializationConfig kryoSerializationConfiguration() {
+        return new SerializationConfig()
+                .setGlobalSerializerConfig(new GlobalSerializerConfig()
+                        .setClassName(Serializer.class.getName())
+                        .setOverrideJavaSerialization(true)
+                );
+    }
+
+    private static void prepareCaches(HazelcastInstance hazelcastInstance) {
+        hazelcastInstance.getMap(MAP_NAME_PREFIX);
+    }
+
+    public static void main(String[] args) throws ParseException {
+        Options options = new Options();
+        options.addOption("clear", false, "");
+        CommandLine cmd = new DefaultParser().parse(options, args);
+        final boolean clear = cmd.hasOption("clear");
+
+        HazelcastInstance hazelcast = createHazelcastInstance();
+        List<IMap> maps = getMaps(hazelcast);
+        maps.forEach(Test::addListenersToQueryCache);
+
+        if (clear) {
+            while(true) {
+
+                Stopwatch timer = Stopwatch.createStarted();
+                while (timer.elapsed(SECONDS) < 20) {
+                    maps.forEach(IMap::clear);
+                }
+
+                for (int i = 0; i < 10_000; i++) {
+                    for (IMap map : maps) {
+                        map.put(i, i);
+                    }
+                }
+            }
+        } else {
+            sleepSeconds(HOURS.toSeconds(1));
+        }
+        System.exit(0);
+    }
+
+    private static List<IMap> getMaps(HazelcastInstance hazelcast) {
+        return getMapNames()
+                .stream()
+                .map(hazelcast::getMap)
+                .collect(toList());
+    }
+
+    private static List<String> getMapNames() {
+        return IntStream.rangeClosed(0, 5)
+                .boxed()
+                .map(i -> MAP_NAME_PREFIX + i)
+                .collect(toList());
+    }
+
+    private static void addListenersToQueryCache(IMap<Long, Rule> map) {
+        QueryCache<Long, Rule> queryCache = map.getQueryCache(map.getName());
+        queryCache.addEntryListener(eventLostListenerFor(queryCache), false);
+    }
+
+    private static void sleepSeconds(long seconds) {
+        try {
+            sleep(seconds * 1000);
+        } catch (InterruptedException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    private static EventLostListener eventLostListenerFor(final QueryCache queryCache) {
+        return event -> {
+            String description = String.format(
+                    "%s of type %s from member %s partition %s",
+                    event.getName(), event.getEventType(), event.getMember(), event.getPartitionId()
+            );
+            log.warn("lost event {}, trying to recover {}", description, queryCache.getName());
+            boolean recoveryFailed = !queryCache.tryRecover();
+            if (recoveryFailed) {
+                log.error("unable to recover lost event {}", description);
+            }
+        };
+    }
+}
+
+
+```
+
+Run one node without `-clear` option and after few seconds second node with option -clear.
+
+On 3.9.3 this program keeps printing:
+
+> WARNING: Event lost detected for partitionId=201, expectedSequence=1 but foundSequence=162, cacheSize=29
+> mar 28, 2018 2:45:35 PM com.hazelcast.map.impl.querycache.subscriber.SubscriberAccumulator
+> WARNING: Event lost detected for partitionId=199, expectedSequence=1 but foundSequence=139, cacheSize=51
+> mar 28, 2018 2:45:35 PM com.hazelcast.map.impl.querycache.subscriber.SubscriberAccumulator
+> WARNING: Event lost detected for partitionId=190, expectedSequence=1 but foundSequence=307, cacheSize=29
+> mar 28, 2018 2:45:35 PM com.hazelcast.map.impl.querycache.subscriber.SubscriberAccumulator
+> WARNING: Event lost detected for partitionId=183, expectedSequence=1 but foundSequence=147, cacheSize=51
+> mar 28, 2018 2:45:35 PM com.hazelcast.map.impl.querycache.subscriber.SubscriberAccumulator
+> WARNING: Event lost detected for partitionId=201, expectedSequence=1 but foundSequence=163, cacheSize=29
+> mar 28, 2018 2:45:36 PM com.hazelcast.map.impl.querycache.subscriber.SubscriberAccumulator
+
+On 3.10-SNAPSHOT after approx. minute I have:
+
+
+> 14:56:06,497  INFO HealthMonitor:65 - [192.168.1.14]:5702 [dev] [3.10-SNAPSHOT] processors=4, physical.memory.total=15,9G, physical.memory.free=5,6G, swap.space.total=31,9G, swap.space.free=15,6G, heap.memory.used=198,0M, heap.memory.free=13,0M, heap.memory.total=211,0M, heap.memory.max=222,5M, heap.memory.used/total=93,81%, heap.memory.used/max=88,96%, minor.gc.count=85, minor.gc.time=987ms, major.gc.count=151, major.gc.time=29104ms, load.process=66,05%, load.system=84,33%, load.systemAverage=n/a thread.count=54, thread.peakCount=55, cluster.timeDiff=-125, event.q.size=1, executor.q.async.size=0, executor.q.client.size=0, executor.q.query.size=0, executor.q.scheduled.size=0, executor.q.io.size=0, executor.q.system.size=0, executor.q.operations.size=0, executor.q.priorityOperation.size=0, operations.completed.count=2027519, executor.q.mapLoad.size=0, executor.q.mapLoadAllKeys.size=0, executor.q.cluster.size=0, executor.q.response.size=0, operations.running.count=0, operations.pending.invocations.percentage=0,00%, operations.pending.invocations.count=1, proxy.count=0, clientEndpoint.count=0, connection.active.count=1, client.connection.count=0, connection.count=1
+> 14:57:05,431  INFO InvocationMonitor:65 - [192.168.1.14]:5702 [dev] [3.10-SNAPSHOT] Invocations:1 timeouts:0 backup-timeouts:1
+> Exception in thread "hz._hzInstance_1_dev.SlowOperationDetectorThread" 14:57:16,878  INFO HealthMonitor:65 - [192.168.1.14]:5702 [dev] [3.10-SNAPSHOT] processors=4, physical.memory.total=15,9G, physical.memory.free=5,7G, swap.space.total=31,9G, swap.space.free=15,7G, heap.memory.used=198,8M, heap.memory.free=12,2M, heap.memory.total=211,0M, heap.memory.max=222,5M, heap.memory.used/total=94,21%, heap.memory.used/max=89,34%, minor.gc.count=85, minor.gc.time=987ms, major.gc.count=370, major.gc.time=70343ms, load.process=77,85%, load.system=93,51%, load.systemAverage=n/a thread.count=55, thread.peakCount=55, cluster.timeDiff=-16807, event.q.size=0, executor.q.async.size=0, executor.q.client.size=0, executor.q.query.size=0, executor.q.scheduled.size=0, executor.q.io.size=0, executor.q.system.size=0, executor.q.operations.size=946, executor.q.priorityOperation.size=476, operations.completed.count=2029372, executor.q.mapLoad.size=0, executor.q.mapLoadAllKeys.size=0, executor.q.cluster.size=0, executor.q.response.size=0, operations.running.count=0, operations.pending.invocations.percentage=0,00%, operations.pending.invocations.count=1, proxy.count=0, clientEndpoint.count=0, connection.active.count=1, client.connection.count=0, connection.count=1
+> java.lang.OutOfMemoryError: Java heap space
+> Exception in thread "RMI TCP Connection(idle)" java.lang.OutOfMemoryError: Java heap space
+
+From Eclise Memory Analysis Tool I can see, that most of the memory is from ConcurrentHashMap with PublisherRegistry inside: https://imgur.com/a/Yf94x 

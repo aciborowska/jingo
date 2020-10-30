@@ -1,0 +1,13 @@
+Currently a pending request can only be fulfilled when a physical slot(AllocatedSlot) becomes available in SlotPool.
+A shared slot however, cannot be used to fulfill pending requests even if it becomes qualified. This may lead to resource deadlocks in certain cases.
+
+For example, running job A(parallelism=2) -(pipelined)-> B(parallelism=2) with 1 slot only, all vertices are in the same slot sharing group, here's what may happen:
+1. Schedule A1 and A2. A1 acquires the only slot, A2's slot request is pending because a slot cannot host 2 instances of the same JobVertex at the same time. Shared slot status: {A1}
+2. A1 produces data and triggers the scheduling of B1. Shared slot status: {A1, B1}
+3. A1 finishes. Shared slot status: {B1}
+4. B1 cannot finish since A2 has not finished, while A2 cannot get launched due to no physical slot becomes available, even though the shred slot is qualified to host it now. A resource deadlock happens.
+
+Maybe we should improve SlotSharingManager. One a task slot is released, its root MultiTaskSlot should be used to try fulfilling existing pending task slots from other pending root slots(unresolvedRootSlots) in this SlotSharingManager(means in the same slot sharing group).
+We need to be careful to not cause any failures, and do not violate colocation constraints.
+
+cc Till Rohrmann

@@ -1,0 +1,29 @@
+**Describe the bug**
+When trying to start a new hazelcast node with the existing cluster node(s) being unresponsive (e.g. sending absolutely no responses whatsoever), the new node will fail to start, instead of claiming mastership and starting.
+
+**Expected behavior**
+The new node to succeed in claiming mastership and starting.
+
+**To Reproduce**
+
+Steps to reproduce the behavior:
+1. Initiate a simulation of an unresponsive cluster. 
+simplest way possible is having something listen on hazelcast's port without responding, such as
+ `nc -l 0.0.0.0 5701` (thank you @vbekiaris !!!)
+2. Try to start a new hazelcast instance using only tcp/ip join config, including the unresponsive member as possible member. Very simple programmatic config to achieve this:
+```java
+Config config = new Config();
+config.setClusterName("test");
+config.getNetworkConfig().getInterfaces().setEnabled(false).clear();
+var jc = config.getNetworkConfig().getJoin();
+jc.getMulticastConfig().setEnabled(false);
+jc.getTcpIpConfig().setEnabled(true).setMembers(Lists.newArrayList("127.0.0.1")).setConnectionTimeoutSeconds(1);
+```
+3. The new node will eventually print out that it failed to start.
+
+**Additional context**
+This is reproducible with both 4.0.1 and 3.12.7
+I tried to get to the bottom of this, but I'm missing some parts.
+The most I managed to find out is that in class TcpIpJoiner (line 209), inside method
+`claimMastership(Collection<Address> possibleAddresses)` this operation fails due to `TcpIpEndpointManager` always returning a null `TcpIpConnection` from the `public TcpIpConnection getOrConnect(final Address address, final boolean silent)` method (line 193) since the connection will eternally be considered as _in-progress_ (it will exist inside its `connectionsInProgress` set).
+Also, the new node will not declare itself as the new master through TcpIpJoiner's (line 151 `clusterJoinManager.setThisMemberAsMaster();` because it will never blacklist the misbehaving node, since this is only done in case the socket is not connected.

@@ -1,0 +1,140 @@
+I'm trying to add some data to table.
+
+Dependencies:
+
+
+<properties>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <flink.version>1.8.1</flink.version>
+    <java.version>1.8</java.version>
+    <scala.binary.version>2.11</scala.binary.version>
+    <maven.compiler.source>${java.version}</maven.compiler.source>
+    <maven.compiler.target>${java.version}</maven.compiler.target>
+</properties>
+
+<dependencies>
+    <!-- Apache Flink dependencies -->
+    <!-- These dependencies are provided, because they should not be packaged into the JAR file. -->
+    <dependency>
+        <groupId>org.apache.flink</groupId>
+        <artifactId>flink-java</artifactId>
+        <version>${flink.version}</version>
+        <scope>provided</scope>
+    </dependency>
+    <dependency>
+        <groupId>org.apache.flink</groupId>
+        <artifactId>flink-streaming-java_${scala.binary.version}</artifactId>
+        <version>${flink.version}</version>
+        <scope>provided</scope>
+    </dependency>
+    <dependency>
+        <groupId>org.apache.flink</groupId>
+        <artifactId>flink-connector-kafka_${scala.binary.version}</artifactId>
+        <version>${flink.version}</version>
+    </dependency>
+    <dependency>
+        <groupId>org.apache.flink</groupId>
+        <artifactId>flink-table-planner_${scala.binary.version}</artifactId>
+        <version>${flink.version}</version>
+    </dependency>
+    <dependency>
+        <groupId>org.apache.flink</groupId>
+        <artifactId>flink-table-api-java-bridge_${scala.binary.version}</artifactId>
+        <version>${flink.version}</version>
+    </dependency>
+    <dependency>
+        <groupId>org.apache.flink</groupId>
+        <artifactId>flink-streaming-scala_${scala.binary.version}</artifactId>
+        <version>${flink.version}</version>
+    </dependency>
+</dependencies>
+
+
+Code:
+
+
+import org.apache.flink.api.common.serialization.SimpleStringSchema;
+import org.apache.flink.streaming.api.datastream.DataStream;
+import org.apache.flink.streaming.api.datastream.SingleOutputStreamOperator;
+import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
+import org.apache.flink.streaming.connectors.kafka.FlinkKafkaConsumer;
+import org.apache.flink.table.api.Table;
+import org.apache.flink.table.api.java.StreamTableEnvironment;
+
+import java.util.Properties;
+
+public class Test {
+
+   public static void main(String[] args) throws Exception {
+      StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+      StreamTableEnvironment tEnv = StreamTableEnvironment.create(env);
+
+      Properties properties = new Properties();
+      properties.setProperty("bootstrap.servers", "ran-kafka:9092");
+      properties.setProperty("group.id", "test");
+      DataStream<String> stream = env
+            .addSource(new FlinkKafkaConsumer<>("testtopic", new SimpleStringSchema(), properties));
+
+      SingleOutputStreamOperator<LD> lds = stream
+            .map(x -> {
+               LD ld = new LD();
+               ld.setName(x);
+               ld.setCount(0);
+               return ld;
+            });
+
+      tEnv.registerDataStream("LeDa", lds, "name, count");
+
+      Table table = tEnv.sqlQuery("select * from LeDa");
+      System.out.println(table);
+
+      env.execute("");
+   }
+
+
+ 
+
+But when I'm submitting the jar (using Flink Dashboard) I'm getting the error
+
+
+org.apache.flink.client.program.ProgramInvocationException: The program caused an error:
+    at org.apache.flink.client.program.OptimizerPlanEnvironment.getOptimizedPlan(OptimizerPlanEnvironment.java:93)
+    at org.apache.flink.client.program.PackagedProgramUtils.createJobGraph(PackagedProgramUtils.java:80)
+    at org.apache.flink.runtime.webmonitor.handlers.utils.JarHandlerUtils$JarHandlerContext.toJobGraph(JarHandlerUtils.java:126)
+    at org.apache.flink.runtime.webmonitor.handlers.JarRunHandler.lambda$getJobGraphAsync$6(JarRunHandler.java:142)
+    at java.util.concurrent.CompletableFuture$AsyncSupply.run(CompletableFuture.java:1590)
+    at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1149)
+    at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:624)
+    at java.lang.Thread.run(Thread.java:748)
+Caused by: java.lang.NoSuchMethodError: scala.Predef$.refArrayOps([Ljava/lang/Object;)Lscala/collection/mutable/ArrayOps;
+    at org.apache.flink.table.api.TableEnvironment.getFieldInfo(TableEnvironment.scala:1099)
+    at org.apache.flink.table.api.StreamTableEnvironment.registerDataStreamInternal(StreamTableEnvironment.scala:546)
+    at org.apache.flink.table.api.java.StreamTableEnvironment.registerDataStream(StreamTableEnvironment.scala:136)
+    at com.test.Test.main(Test.java:33)
+    at sun.reflect.NativeMethodAccessorImpl.invoke0(Native Method)
+    at sun.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:62)
+    at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)
+    at java.lang.reflect.Method.invoke(Method.java:498)
+    at org.apache.flink.client.program.PackagedProgram.callMainMethod(PackagedProgram.java:529)
+    at org.apache.flink.client.program.PackagedProgram.invokeInteractiveModeForExecution(PackagedProgram.java:421)
+    at org.apache.flink.client.program.OptimizerPlanEnvironment.getOptimizedPlan(OptimizerPlanEnvironment.java:83)
+    ... 7 more
+
+Line 33 is
+
+
+tEnv.registerDataStream("LeDa", lds, "name, count");
+
+
+LD class is a very simple POJO
+
+ 
+
+I've also tried
+
+
+tEnv.fromDataStream(lds);
+tEnv.registerDataStream("LeDa", lds, "name, count");
+
+
+but the same result

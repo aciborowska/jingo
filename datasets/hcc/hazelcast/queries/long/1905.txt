@@ -1,0 +1,155 @@
+Hi,
+
+I was looking at the RC1 release of version 3.2 and was delighted to see the new option in the NearCache to cache local entries. I like this a lot, because it allows one to use the NearCache for locality, not only for distribution, but also for deserialization - if you want kind of a near cache in space and time (I'm sure Einstein would love this:-)
+
+Anyway, I'm reporting an issue here...
+
+This local caching of entries currently exposes the asynchronous nature of the near cache invalidation quite strongly. Run the following test and you will see:
+
+```
+package com.nm.test.hazelcast;
+
+import com.hazelcast.config.*;
+import com.hazelcast.core.Hazelcast;
+import com.hazelcast.core.HazelcastInstance;
+import com.hazelcast.core.IMap;
+import org.apache.log4j.BasicConfigurator;
+import org.apache.log4j.Logger;
+import junit.framework.TestCase;
+
+public class TestLocalNearCache extends TestCase {
+
+    private static final Logger logger = Logger.getLogger(TestLocalNearCache.class);
+
+    public static void main(String[] args) throws Exception {
+
+        // configure logging
+        BasicConfigurator.configure();
+
+        // setup test
+        TestLocalNearCache test = new TestLocalNearCache();
+        test.setUp();
+
+        // try-finally to stop Hazelcast
+        try {
+            test.testRemove(); // TODO comment this to test put
+            test.testPut();
+        } finally {
+
+            // tear down test
+            test.tearDown();
+        }
+    }
+
+    private HazelcastInstance hcInstance;
+
+    @Override
+    protected void setUp() throws Exception {
+
+        // create config
+        Config config = new XmlConfigBuilder().build();
+        config.setProperty("hazelcast.logging.type", "log4j");
+
+        // configure near cache
+        MapConfig mapConfig = config.getMapConfig("testMap");
+        NearCacheConfig nearCacheConfig = new NearCacheConfig();
+        nearCacheConfig.setEvictionPolicy("NONE");
+        nearCacheConfig.setInMemoryFormat(InMemoryFormat.OBJECT);
+        nearCacheConfig.setCacheLocalEntries(true); // this enables the local caching
+        mapConfig.setNearCacheConfig(nearCacheConfig);
+
+        // create Hazelcast instance
+        hcInstance = Hazelcast.newHazelcastInstance(config);
+    }
+
+    @Override
+    protected void tearDown() throws Exception {
+        hcInstance.getLifecycleService().shutdown();
+    }
+
+    public void testRemove() {
+
+        // get test map
+        final IMap<String, String> map = hcInstance.getMap("testMap");
+
+        // loop over keys
+        for (int k = 0; k < 5000; k++) {
+            String key = String.valueOf(k);
+            String value = "merhaba-remove_" + key;
+
+            String value0 = map.put(key, value);
+            String value1 = map.get(key); // this brings the value into the NearCache
+            String value2 = map.remove(key);
+            String value3 = map.get(key); // here we _might_ still see the value
+
+            if (value0 != null) {
+                fail("Wrong value0: There should be no such value in the map: " + key + "=" + value0);
+            }
+            if (value1 == null || !value1.equals(value)) {
+                fail("Wrong value1: " + key + "=" + value1);
+            }
+            if (value2 == null || !value2.equals(value)) {
+                fail("Wrong value2: " + key + "=" + value2);
+            }
+            if (value3 != null) {
+                fail("Wrong value3: " + key + "=" + value3);
+            }
+        }
+        logger.info("Test remove done.");
+    }
+
+    public void testPut() {
+
+        // get test map
+        final IMap<String, String> map = hcInstance.getMap("testMap");
+
+        // loop over keys
+        for (int k = 0; k < 5000; k++) {
+            String key = String.valueOf(k);
+            String value = "merhaba-put_" + key;
+
+            String value0 = map.get(key); // this brings the value into the NearCache
+            String value1 = map.put(key, value);
+            String value2 = map.get(key); // here we _might_ still see the NULL_OBJECT
+
+            if (value0 != null) {
+                fail("Wrong value0: There should be no such value in the map: " + key + "=" + value0);
+            }
+            if (value1 != null) {
+                fail("Wrong value1: There should be no such value in the map: " + key + "=" + value1);
+            }
+            if (value2 == null || !value2.equals(value)) {
+                fail("Wrong value2: " + key + "=" + value2);
+            }
+        }
+        logger.info("Test put done.");
+    }
+
+}
+```
+
+To fix this, instead of implementing invalidation in a synchronous fashion, you could simply locally invalidate the near cache before you return from the remove() or put() operations.
+
+For example, do something similar to the MapProxySupport.getInternal() implementation:
+
+```
+RemoveOperation operation = new RemoveOperation(name, key);
+Data previousValue = (Data) invokeOperation(key, operation);
+
+// invalidate local near cache to ensure this thread does not see old state
+final boolean nearCacheEnabled = mapConfig.isNearCacheEnabled();
+if (nearCacheEnabled) {
+  if(mapConfig.getNearCacheConfig().isCacheLocalEntries()) {
+    mapService.invalidateNearCache(name, key);
+  }
+}
+
+return previousValue;
+```
+
+Note also, I guess that not only the remove() and put() operations are affected, but probably most/all operations which trigger near cache invalidation.
+
+In theory, the above approach might still not be perfect - there could be another thread calling get at the same time and refilling the local near cache right after we invalidate it locally. However, I think the chances of this happening are extremly small.
+
+Best,
+Lukas

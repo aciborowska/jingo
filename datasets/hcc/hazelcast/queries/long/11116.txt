@@ -1,0 +1,87 @@
+Version: 3.8.4
+Cluster Size: 2
+Clients: 1
+Java 8
+
+Hi,
+
+I've come across an issue(s) testing failover over the client. I have a very simple 2 member cluster running on docker/mesosphere. The cluster itself uses a discovery strategy to discover it's cluster peers (via marathon). This works very well. 
+
+I also use a discovery strategy in the hazlecast client by setting a discovery strategy that just calls a restful service returning the address/port of the cluster members.
+
+My client configuration looks like:
+
+```java
+ClientConfig config = new ClientConfig();		
+DiscoveryConfig discoveryConfig = new DiscoveryConfig();
+		discoveryConfig.addDiscoveryStrategyConfig(
+				new DiscoveryStrategyConfig(new ClusterDiscoveryStrategyFactory(URI.create(hazelcastClusterDiscoveryUri))));
+		ClientNetworkConfig networkConfig = new ClientNetworkConfig();
+		networkConfig.setDiscoveryConfig(discoveryConfig);
+		config.setNetworkConfig(networkConfig);		
+		config.setProperty("hazelcast.discovery.enabled", "true");
+        config.setProperty("hazelcast.logging.type", "slf4j");
+		config.setSerializationConfig(new SerializationConfig()
+				.setGlobalSerializerConfig(new GlobalSerializerConfig()
+						.setImplementation(new HazelcastKryoSerializer<>(new KryoSerializer(false)))));
+        return HazelcastClient.newHazelcastClient(config);
+```
+
+My first issue is that even though I set the discovery strategy and don't explicitly set the addresses for the client to connect to, Hazelcast adds a DefaultAddressProvider that adds localhost. Is this by design or a configuration issue on my side? I am providing a discovery strategy to return the cluster members to connect to. I don't want hazelcast to attempt to bind to 5701/2/3 on localhost.
+
+My second issue is that, in my tests, when I stop the cluster member that the client is connected to, I expect the client to seamlessly failover to the remaining member in the cluster. What I am seeing is that, on startup, the client is establishing a connection with both cluster members. The first one is the owner member
+
+```log
+2017-08-16 16:43:53,676 INFO [hz.client_0.internal-2] c.h.c.c.ClientConnectionManager [?:?] hz.client_0 [dev] [3.8.4] Setting ClientConnection{alive=true, connectionId=1, socketChannel=DefaultSocketChannelWrapper{socketChannel=java.nio.channels.SocketChannel[connected local=/10.64.0.29:64800 remote=/89.21.121.14:31765]}, remoteEndpoint=[lx-mesos-d02.unix.dnsbego.de]:31765, lastReadTime=2017-08-16 16:43:53.648, lastWriteTime=2017-08-16 16:43:53.613, closedTime=never, lastHeartbeatRequested=never, lastHeartbeatReceived=never, connected server version=3.8.3} as owner  with principal ClientPrincipal{uuid='56c4d015-4ad3-4bf4-82ef-57a23c5b2b64', ownerUuid='69713e18-22d1-4bca-bf83-019d1411a66c'}
+2017-08-16 16:43:53,677 TRACE [hz.client_0.internal-2] c.h.c.c.ClientConnectionManager [?:?] hz.client_0 [dev] [3.8.4] Authentication succeeded for ClientConnection{alive=true, connectionId=1, socketChannel=DefaultSocketChannelWrapper{socketChannel=java.nio.channels.SocketChannel[connected local=/10.64.0.29:64800 remote=/89.21.121.14:31765]}, remoteEndpoint=[lx-mesos-d02.unix.dnsbego.de]:31765, lastReadTime=2017-08-16 16:43:53.648, lastWriteTime=2017-08-16 16:43:53.613, closedTime=never, lastHeartbeatRequested=never, lastHeartbeatReceived=never, connected server version=3.8.3} and there was no old connection to this end-point
+2017-08-16 16:43:53,677 INFO [hz.client_0.internal-2] c.h.c.c.ClientConnectionManager [?:?] hz.client_0 [dev] [3.8.4] Authenticated with server [lx-mesos-d02.unix.dnsbego.de]:31765, server version:3.8.3 Local address: /10.64.0.29:64800
+2017-08-16 16:43:53,691 INFO [hz.client_0.event-2] c.h.c.s.i.ClientMembershipListener [?:?] hz.client_0 [dev] [3.8.4] 
+
+Members [2] {
+	Member [lx-mesos-d13.unix.dnsbego.de]:31744 - bbe23fd9-a5ef-424b-8fdb-48b7446da79a
+	Member [lx-mesos-d02.unix.dnsbego.de]:31765 - 69713e18-22d1-4bca-bf83-019d1411a66c
+}
+
+2017-08-16 16:43:53,692 INFO [main] c.h.c.LifecycleService [?:?] hz.client_0 [dev] [3.8.4] HazelcastClient 3.8.4 (20170809 - 297a77e) is CLIENT_CONNECTED
+2017-08-16 16:43:53,810 TRACE [hz.client_0.internal-2] c.h.c.c.ClientConnectionManager [?:?] hz.client_0 [dev] [3.8.4] Authentication succeeded for ClientConnection{alive=true, connectionId=2, socketChannel=DefaultSocketChannelWrapper{socketChannel=java.nio.channels.SocketChannel[connected local=/10.64.0.29:64801 remote=lx-mesos-d13.unix.dnsbego.de/89.21.122.52:31744]}, remoteEndpoint=[lx-mesos-d13.unix.dnsbego.de]:31744, lastReadTime=2017-08-16 16:43:53.809, lastWriteTime=2017-08-16 16:43:53.780, closedTime=never, lastHeartbeatRequested=never, lastHeartbeatReceived=never, connected server version=3.8.3} and there was no old connection to this end-point
+2017-08-16 16:43:53,811 INFO [hz.client_0.internal-2] c.h.c.c.ClientConnectionManager [?:?] hz.client_0 [dev] [3.8.4] Authenticated with server [lx-mesos-d13.unix.dnsbego.de]:31744, server version:3.8.3 Local address: /10.64.0.29:64801
+```
+From the logs above, it has connected to and authenticated against both members.
+Now, I kill the cluster member that the client is connected to:
+```log
+2017-08-16 16:43:55,199 WARN [hz.hz.client_0.IO.thread-in-0] c.h.c.c.n.ClientConnection [?:?] hz.client_0 [dev] [3.8.4] ClientConnection{alive=false, connectionId=1, socketChannel=DefaultSocketChannelWrapper{socketChannel=java.nio.channels.SocketChannel[connected local=/10.64.0.29:64800 remote=/89.21.121.14:31765]}, remoteEndpoint=[lx-mesos-d02.unix.dnsbego.de]:31765, lastReadTime=2017-08-16 16:43:55.196, lastWriteTime=2017-08-16 16:43:55.187, closedTime=2017-08-16 16:43:55.197, lastHeartbeatRequested=never, lastHeartbeatReceived=never, connected server version=3.8.3} lost. Reason: java.io.EOFException[Remote socket closed!]
+2017-08-16 16:43:55,200 INFO [hz.hz.client_0.IO.thread-in-0] c.h.c.c.ClientConnectionManager [?:?] hz.client_0 [dev] [3.8.4] Removed connection to endpoint: [lx-mesos-d02.unix.dnsbego.de]:31765, connection: ClientConnection{alive=false, connectionId=1, socketChannel=DefaultSocketChannelWrapper{socketChannel=java.nio.channels.SocketChannel[closed]}, remoteEndpoint=[lx-mesos-d02.unix.dnsbego.de]:31765, lastReadTime=2017-08-16 16:43:55.196, lastWriteTime=2017-08-16 16:43:55.199, closedTime=2017-08-16 16:43:55.197, lastHeartbeatRequested=never, lastHeartbeatReceived=never, connected server version=3.8.3}
+2017-08-16 16:43:55,200 INFO [hz.hz.client_0.IO.thread-in-0] c.h.c.LifecycleService [?:?] hz.client_0 [dev] [3.8.4] HazelcastClient 3.8.4 (20170809 - 297a77e) is CLIENT_DISCONNECTED
+```
+After this I would expect the existing connection made on startup to be promoted in the client. However, it initiates a new connection (with a new connection ID) and thus breaks the assertion in the code as below:
+```log
+2017-08-16 16:43:56,277 INFO [hz.client_0.cluster-] c.h.c.s.i.ClusterListenerSupport [?:?] hz.client_0 [dev] [3.8.4] Trying to connect to [89.21.122.52]:31744 as owner member
+2017-08-16 16:43:56,287 INFO [hz.client_0.internal-3] c.h.c.c.ClientConnectionManager [?:?] hz.client_0 [dev] [3.8.4] Setting ClientConnection{alive=true, connectionId=3, socketChannel=DefaultSocketChannelWrapper{socketChannel=java.nio.channels.SocketChannel[connected local=/10.64.0.29:64808 remote=/89.21.122.52:31744]}, remoteEndpoint=[lx-mesos-d13.unix.dnsbego.de]:31744, lastReadTime=2017-08-16 16:43:56.286, lastWriteTime=2017-08-16 16:43:56.281, closedTime=never, lastHeartbeatRequested=never, lastHeartbeatReceived=never, connected server version=3.8.3} as owner  with principal ClientPrincipal{uuid='56c4d015-4ad3-4bf4-82ef-57a23c5b2b64', ownerUuid='bbe23fd9-a5ef-424b-8fdb-48b7446da79a'}
+2017-08-16 16:43:56,287 TRACE [hz.client_0.internal-3] c.h.c.c.ClientConnectionManager [?:?] hz.client_0 [dev] [3.8.4] Re-authentication succeeded for ClientConnection{alive=true, connectionId=3, socketChannel=DefaultSocketChannelWrapper{socketChannel=java.nio.channels.SocketChannel[connected local=/10.64.0.29:64808 remote=/89.21.122.52:31744]}, remoteEndpoint=[lx-mesos-d13.unix.dnsbego.de]:31744, lastReadTime=2017-08-16 16:43:56.286, lastWriteTime=2017-08-16 16:43:56.281, closedTime=never, lastHeartbeatRequested=never, lastHeartbeatReceived=never, connected server version=3.8.3}
+2017-08-16 16:43:56,288 ERROR [hz.client_0.internal-3] c.h.c.s.ClientInvocationService [Slf4jFactory.java:68] hz.client_0 [dev] [3.8.4] Failed asynchronous execution of execution callback: com.hazelcast.client.spi.impl.ClientInvocationFuture$InternalDelegatingExecutionCallback@e612fa9for call ClientMessage{length=141, correlationId=14, messageType=2, partitionId=-1, isComplete=true, isRetryable=true, isEvent=false, writeOffset=0}
+java.lang.AssertionError: null
+	at com.hazelcast.client.connection.nio.ClientConnectionManagerImpl.onAuthenticated(ClientConnectionManagerImpl.java:669) ~[hazelcast-client-3.8.4.jar:3.8.4]
+	at com.hazelcast.client.connection.nio.ClientConnectionManagerImpl.access$900(ClientConnectionManagerImpl.java:91) ~[hazelcast-client-3.8.4.jar:3.8.4]
+	at com.hazelcast.client.connection.nio.ClientConnectionManagerImpl$2.onResponse(ClientConnectionManagerImpl.java:578) ~[hazelcast-client-3.8.4.jar:3.8.4]
+	at com.hazelcast.client.connection.nio.ClientConnectionManagerImpl$2.onResponse(ClientConnectionManagerImpl.java:550) ~[hazelcast-client-3.8.4.jar:3.8.4]
+	at com.hazelcast.client.spi.impl.ClientInvocationFuture$InternalDelegatingExecutionCallback.onResponse(ClientInvocationFuture.java:129) ~[hazelcast-client-3.8.4.jar:3.8.4]
+	at com.hazelcast.client.spi.impl.ClientInvocationFuture$InternalDelegatingExecutionCallback.onResponse(ClientInvocationFuture.java:117) ~[hazelcast-client-3.8.4.jar:3.8.4]
+	at com.hazelcast.client.spi.impl.ClientInvocationFuture$InternalDelegatingExecutionCallback.onResponse(ClientInvocationFuture.java:129) ~[hazelcast-client-3.8.4.jar:3.8.4]
+	at com.hazelcast.client.spi.impl.ClientInvocationFuture$InternalDelegatingExecutionCallback.onResponse(ClientInvocationFuture.java:117) ~[hazelcast-client-3.8.4.jar:3.8.4]
+	at com.hazelcast.spi.impl.AbstractInvocationFuture$1.run(AbstractInvocationFuture.java:248) ~[hazelcast-3.8.4.jar:3.8.4]
+	at java.util.concurrent.Executors$RunnableAdapter.call(Executors.java:511) [na:1.8.0_05]
+	at java.util.concurrent.FutureTask.run(FutureTask.java:266) [na:1.8.0_05]
+	at java.util.concurrent.ScheduledThreadPoolExecutor$ScheduledFutureTask.access$201(ScheduledThreadPoolExecutor.java:180) [na:1.8.0_05]
+	at java.util.concurrent.ScheduledThreadPoolExecutor$ScheduledFutureTask.run(ScheduledThreadPoolExecutor.java:293) [na:1.8.0_05]
+	at com.hazelcast.util.executor.LoggingScheduledExecutor$LoggingDelegatingFuture.run(LoggingScheduledExecutor.java:138) [hazelcast-3.8.4.jar:3.8.4]
+	at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1142) [na:1.8.0_05]
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:617) [na:1.8.0_05]
+	at java.lang.Thread.run(Thread.java:745) [na:1.8.0_05]
+	at com.hazelcast.util.executor.HazelcastManagedThread.executeRun(HazelcastManagedThread.java:64) [hazelcast-3.8.4.jar:3.8.4]
+	at com.hazelcast.util.executor.HazelcastManagedThread.run(HazelcastManagedThread.java:80) [hazelcast-3.8.4.jar:3.8.4]
+```
+As I read the implementation, the issue seems to be, if the owning member fails, it is establishing a new connection to an address where there is already an active connection
+
+Any hints on how to resolve would be much appreciated
+
+Thanks

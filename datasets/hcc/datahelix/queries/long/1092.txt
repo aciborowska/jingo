@@ -1,0 +1,42 @@
+## Bug Report
+### The Problem:
+A stream of possible values is created and passed into the reductive walker. For each value, it finds the first value that is valid for a field, and this is a value that will be put into the output file/stream for the user. The stream of values can be infinite, but only the first valid value is used.
+
+This works, except in the case where no data can ever be generated, due to a hard contradiction. Normally, the pruner removes any contradictions from the tree before the reductive walker tries to fix the field with a value. But if the pruner does not catch a certain case, e.g. #1090, then the walker can get stuck in an infinite loop, e.g. in #1087.
+
+Ideally, the walker should not rely on the assumption that at least one value on the stream will produce data. However, it may be acceptable to just fix #1090, or to fix it in another way.
+
+### A Short Term Fix:
+It is possible to limit the inputted stream of values by changing the `createValuesFromSources` function in the `FieldSpecValueGenerator` from
+```
+private Stream<DataBagValue> createValuesFromSources(FieldSpec spec, List<FieldValueSource> fieldValueSources) {
+    FieldValueSource combinedFieldValueSource = new CombiningFieldValueSource(fieldValueSources);
+
+    Iterable<Object> iterable =  getDataValues(combinedFieldValueSource);
+
+    return StreamSupport.stream(iterable.spliterator(), false)
+        .map(value -> new DataBagValue(value, spec.getFormatting()));
+}
+```
+(correct at 36534c30a5ae2fca78dfc5da75f52255884fac9c) to
+```
+private Stream<DataBagValue> createValuesFromSources(FieldSpec spec, List<FieldValueSource> fieldValueSources) {
+    FieldValueSource combinedFieldValueSource = new CombiningFieldValueSource(fieldValueSources);
+
+    Iterable<Object> iterable =  getDataValues(combinedFieldValueSource);
+
+    Stream<DataBagValue> valueStream = StreamSupport.stream(iterable.spliterator(), false)
+        .map(value -> new DataBagValue(value, spec.getFormatting()));
+
+    if (!dataType.equals(RANDOM)){
+        return valueStream;
+    }
+    // Increasing the value in here increases the likelihood of a profile, especially one with a hard contradiction,
+    // being dealt with correctly in the Reductive Walker, but could cause the walker to run more slowly in other cases.
+    // With the limit, the system can never guarantee to be able to generate data for a valid profile.
+    return valueStream.limit(2);
+}
+```
+### Additional Context:
+Blocks: #1087 
+Related: #1090

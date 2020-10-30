@@ -1,0 +1,59 @@
+Using hazelcast 3.5.2.
+
+Hi, 
+problem is, that if i execute method **setBooleanAttribute** of class **Member**, than NullPointerException occured on STDOUT. I have debugged it and the problem is in class **ClusterServiceImpl** in method **sendMemberAttributeEvent**.
+There is created event for service **QuorumServiceImpl**:
+
+``` java
+final MemberAttributeServiceEvent event = new MemberAttributeServiceEvent(getClusterProxy(), member, operationType, key, value);
+```
+
+This event inherit from **MembershipEvent**, and variable members is setted to null.
+
+``` java
+ public MemberAttributeEvent(Cluster cluster, Member member, MemberAttributeOperationType operationType,
+                                String key, Object value) {
+        super(cluster, member, MEMBER_ATTRIBUTE_CHANGED, null);
+        this.member = member;
+        this.operationType = operationType;
+        this.key = key;
+        this.value = value;
+    }
+```
+
+Problem is, that this event is later in this method executed here:
+
+``` java
+ nodeEngine.getExecutionService().execute(ExecutionService.SYSTEM_EXECUTOR, new Runnable() {
+      public void run() {
+           service.memberAttributeChanged(event);
+      }
+});
+```
+
+with  service of instance **QuorumServiceImpl** and on the end by **QuorumImpl**, where exception is occurred in 
+
+``` java
+private class MemberCountQuorumFunction implements QuorumFunction {
+        @Override
+        public boolean apply(Collection<Member> members) {
+            return members.size() >= size;
+        }
+    }
+```
+
+because members variable is null.
+
+Stacktrace:
+`Exception in thread "cached4" java.lang.NullPointerException
+    at com.hazelcast.quorum.impl.QuorumImpl$MemberCountQuorumFunction.apply(QuorumImpl.java:179)
+    at com.hazelcast.quorum.impl.QuorumImpl.update(QuorumImpl.java:63)
+    at com.hazelcast.quorum.impl.QuorumServiceImpl.updateQuorums(QuorumServiceImpl.java:166)
+    at com.hazelcast.quorum.impl.QuorumServiceImpl.memberAttributeChanged(QuorumServiceImpl.java:160)
+    at com.hazelcast.cluster.impl.ClusterServiceImpl$8.run(ClusterServiceImpl.java:1295)
+    at com.hazelcast.util.executor.CachedExecutorServiceDelegate$Worker.run(CachedExecutorServiceDelegate.java:209)
+    at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1145)
+    at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:615)
+    at java.lang.Thread.run(Thread.java:724)
+    at com.hazelcast.util.executor.HazelcastManagedThread.executeRun(HazelcastManagedThread.java:76)
+    at com.hazelcast.util.executor.HazelcastManagedThread.run(HazelcastManagedThread.java:92)`

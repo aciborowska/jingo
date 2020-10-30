@@ -1,0 +1,33 @@
+Tests KafkaXXXProducerITCase are failing on my laptop in airplane mode. It seemed to have something to do with some service listening on wrong interface, when client tries to connect to different host. Strangely tests for Kafka010 and Kafka011 fails with different error, but there is the same fix for them (maybe in Kafka010 original exception is masked by some other error). Kafka 0.11 tests fails like this:
+
+
+35309 [flink-akka.actor.default-dispatcher-3] INFO  Remoting  - Starting remoting
+42445 [flink-akka.actor.default-dispatcher-3] INFO  Remoting  - Remoting started; listening on addresses :[akka.tcp://flink@fe80:0:0:0:165d:140b:f597:e019%13:54398]
+42445 [main] INFO  org.apache.flink.runtime.client.JobClient  - Started JobClient actor system at [fe80::165d:140b:f597:e019]:54398
+42450 [flink-akka.actor.default-dispatcher-5] INFO  org.apache.flink.runtime.client.JobSubmissionClientActor  - Disconnect from JobManager null.
+42461 [flink-akka.actor.default-dispatcher-5] INFO  org.apache.flink.runtime.client.JobSubmissionClientActor  - Received SubmitJobAndWait(JobGraph(jobId: 3b11234d116ab1ed3c1279dd73dfaab5)) but there is no connection to a JobManager yet.
+42462 [flink-akka.actor.default-dispatcher-5] INFO  org.apache.flink.runtime.client.JobSubmissionClientActor  - Received job Exactly once test (3b11234d116ab1ed3c1279dd73dfaab5).
+52473 [flink-akka.actor.default-dispatcher-5] INFO  org.apache.flink.runtime.client.JobSubmissionClientActor  - Terminate JobClientActor.
+52473 [flink-akka.actor.default-dispatcher-5] INFO  org.apache.flink.runtime.client.JobSubmissionClientActor  - Disconnect from JobManager null.
+org.apache.flink.runtime.client.JobExecutionException: Couldn't retrieve the JobExecutionResult from the JobManager.
+	at org.apache.flink.runtime.client.JobClient.awaitJobResult(JobClient.java:309)
+...
+Caused by: org.apache.flink.runtime.client.JobClientActorConnectionTimeoutException: Lost connection to the JobManager.
+	at org.apache.flink.runtime.client.JobClientActor.handleMessage(JobClientActor.java:219)
+...
+
+
+
+I think the issue is that there is someone listening on fe80:0:0:0:165d:140b:f597:e019 (note that this is ipv6 address from some virtual utun0 interface on my machine), while JobClient tries to connect to "localhost" - which fails. When I enable wifi and connect to any network and log looks like this:
+
+
+32981 [flink-akka.actor.default-dispatcher-2] INFO  Remoting  - Starting remoting
+32995 [flink-akka.actor.default-dispatcher-3] INFO  Remoting  - Remoting started; listening on addresses :[akka.tcp://flink@192.168.178.125:55576]
+address = akka.tcp://flink@192.168.178.125:55576
+33000 [main] INFO  org.apache.flink.runtime.client.JobClient  - Started JobClient actor system at 192.168.178.125:55576
+33005 [flink-akka.actor.default-dispatcher-2] INFO  org.apache.flink.runtime.client.JobSubmissionClientActor  - Disconnect from JobManager null.
+submitJobAndWait config = {restart-strategy.fixed-delay.delay=0 s, local.number-taskmanager=1, taskmanager.network.netty.client.numThreads=1, metrics.reporter.my_reporter.class=org.apache.flink.metrics.jmx.JMXReporter, jobmanager.rpc.address=localhost, taskmanager.numberOfTaskSlots=8, taskmanager.memory.size=16, metrics.reporters=my_reporter, taskmanager.network.netty.server.numThreads=2, jobmanager.rpc.port=55566, query.server.enable=false}
+33013 [flink-akka.actor.default-dispatcher-2] INFO  org.apache.flink.runtime.client.JobSubmissionClientActor  - Received SubmitJobAndWait(JobGraph(jobId: ac67638ac85a2179a37486d507a1a008)) but there is no connection to a JobManager yet.
+33014 [flink-akka.actor.default-dispatcher-2] INFO  org.apache.flink.runtime.client.JobSubmissionClientActor  - Received job Exactly once test (ac67638ac85a2179a37486d507a1a008).
+33024 [flink-akka.actor.default-dispatcher-2] INFO  org.apache.flink.runtime.client.JobSubmissionClientActor  - Connect to JobManager Actor[akka.tcp://flink@localhost:55566/user/jobmanager#-1394172571].
+

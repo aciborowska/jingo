@@ -1,0 +1,103 @@
+I am writing some test cases using Hazalcast 2.0.2(1 backup IMap), the scenario is a 
+bit of like this case: 
+http://groups.google.com/group/hazelcast/browse_thread/thread/99f2b85... 
+1) I starts two Workers almost at the same time
+2) some time passes, I get the results like this: 
+ Work 1: 
+...
+Start emit msgs... 
+emit msgs num: 0 
+emit msgs num: 10000 
+emit msgs num: 20000 
+emit msgs num: 30000 
+emit msgs num: 40000 
+done. 
+map size:0, process msgs:33896 
+map size:1, process msgs:35734 
+map size:0, process msgs:38041 
+map size:0, process msgs:40030 
+map size:1, process msgs:42468 
+map size:0, process msgs:44725 
+map size:3, process msgs:46912 
+map size:1, process msgs:49138 
+map size:0, process msgs:50146 
+map size:0, process msgs:50146 
+...
+
+Work 2: 
+...
+Start emit msgs... 
+emit msgs num: 0 
+emit msgs num: 10000 
+emit msgs num: 20000 
+emit msgs num: 30000 
+emit msgs num: 40000 
+done. 
+map size:0, process msgs:49854 
+...
+
+well, 50146 + 49854 == 100000, very good, all msgs were processed and 
+removed from the IMap, and the map size is zero. 
+
+3) some time passes( tens of seconds) 
+4) I shut down one of the Workers ( Worker 1), problem comes up: the map size showed by the working Worker goes up , from 0 to 10259 : map size:10259, process msgs:49854 
+Why? I am curious about this. 
+
+BTW, when I use 'evict' method instead of 'remove', I get the same 
+result. 
+thanks 
+Liao 
+
+my test code like this: 
+
+import java.util.concurrent.CountDownLatch; 
+import java.util.concurrent.atomic.AtomicReference; 
+import com.hazelcast.core.*; 
+
+public class Worker { 
+  public static void main(String[] args) { 
+    HazelcastInstance hz = Hazelcast.getDefaultInstance(); 
+    final IMap map = hz.getMap("default"); 
+    final CountDownLatch latchRemoved = new CountDownLatch(1000000); 
+    map.addLocalEntryListener(new EntryListener() { 
+      AtomicReference<Long> count = new AtomicReference<Long>(); 
+      public void entryAdded(EntryEvent event) { 
+//        if(map.evict(event.getKey())) { 
+//          latchRemoved.countDown(); 
+//        } 
+        if(map.remove(event.getKey()) != null) { 
+          latchRemoved.countDown(); 
+        } 
+      } 
+      public void entryRemoved(EntryEvent event) { 
+      } 
+      public void entryUpdated(EntryEvent event) { 
+      } 
+      public void entryEvicted(EntryEvent event) { 
+      } 
+    }); 
+    try { 
+      Thread.sleep(30000); 
+    } catch (InterruptedException e) { 
+      // TODO Auto-generated catch block 
+      e.printStackTrace(); 
+    } 
+    System.out.println("Start emit msgs..."); 
+    IdGenerator idGenerator = Hazelcast.getIdGenerator("default"); 
+    for(int i=0; i<50000; ++i) { 
+      long id = idGenerator.newId(); 
+      map.put(id, id); 
+      if(i % 10000 == 0) System.out.println("emit msgs num: " + i); 
+    } 
+    System.out.println("done."); 
+    while(true) { 
+      System.out.println("map size:" + map.size() 
+          + ", process msgs:" + (1000000 - latchRemoved.getCount())); 
+      try { 
+        Thread.sleep(2000); 
+      } catch (InterruptedException e) { 
+        // TODO Auto-generated catch block 
+        e.printStackTrace(); 
+      } 
+    } 
+  } 

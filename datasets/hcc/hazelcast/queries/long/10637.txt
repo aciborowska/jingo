@@ -1,0 +1,72 @@
+I am using hazelcast 3.8.1. 
+java version "1.8.0_131"
+
+In case the master node is terminated in the middle of a two_phase transaction, the rollback for that transacion is not made resulting in data loss.
+What I see is that the transaction rollback is attempted but a race condition arises as the new partition table has not been fetched in the new master node. This is resulting in a WrongTargetException as the node has already been removed.
+
+To reproduce the issue consider this two nodes. One implements this logic:
+
+            final Config hazelcastConfig = new Config().addQueueConfig(new QueueConfig("queue").setStatisticsEnabled(true).setBackupCount(1));
+            final HazelcastInstance instance1 = Hazelcast.newHazelcastInstance(hazelcastConfig);
+            
+            
+            IQueue<Integer> queue = instance1.getQueue("queue");
+            
+            queue.offer(1);
+
+            try
+            {
+                Thread.sleep(10000);
+            }
+            catch (InterruptedException e)
+            {
+                // TODO Auto-generated catch block
+                e.printStackTrace();
+            }
+            TransactionOptions options = new TransactionOptions()
+                    .setTransactionType( TransactionType.TWO_PHASE );
+
+
+            TransactionContext context = instance1.newTransactionContext( options );
+            context.beginTransaction();
+            TransactionalQueue queue1 = context.getQueue("queue"); 
+            queue1.poll();
+            queue1.offer(2);
+            queue1.offer(3);
+            
+            while(true);
+
+This will be the master node. A second node which should be initiated and added to the cluser before the transaction is created is the following:
+
+        final Config hazelcastConfig = new Config().addQueueConfig(new QueueConfig("queue").setStatisticsEnabled(true).setBackupCount(1));
+        final HazelcastInstance instance1 = Hazelcast.newHazelcastInstance(hazelcastConfig);
+
+
+        TransactionOptions options = new TransactionOptions()
+                .setTransactionType( TransactionType.TWO_PHASE );
+
+        TransactionContext context = instance1.newTransactionContext( options );
+        context.beginTransaction();
+        TransactionalQueue queue1 = context.getQueue("queue"); 
+
+
+        while (true)
+        {
+            System.out.println("queue size: " + queue1.size());
+        }
+
+If I kill the master node while the transaction is opened (during the infinite while), when the open transaction of the killed node are finalized in TransactionManagerServiceImpl.finalizeTransactionsOf a wrongtargetException is raised (when the QueueTransactionRollbackOperation is performed)
+
+What results in the exception is the following. After killing the master node:
+
+1) in ClusterServiceImpl: removeMember is invoked, onMemberRemoved is invoked.
+2) InternalPartitionServiceImpl memberRemoved is invoked.
+3) as the node is the new master shouldFetchPartitionTables is set to true.
+4) FetchMostRecentPartitionTableTask is scheduled (another thread)
+5) original thread invokes  sendMembershipEventNotifications, this results in another thread attempting to perform the rollback of the terminated node's transactions through TransactionManagerServiceImpl.finalizeTransactionsOf.
+
+If the operation resulting in 5 is attempted before 4 is finished, the exception arises. Otherwise, it rollbacks the terminated node's transaction successfully. As a consequence of the exception, the object which was polled from the queue is not requeued.
+
+Notice that if the node killed is not the master node, the transactions are rollbacked successfully as there is no need to fetch the most recent partition table.
+
+

@@ -1,0 +1,31 @@
+Hazelcast version: 3.4
+Node type: in-cluster
+Configuration: a basic unit-test setup
+
+The problem is probably best described by the following JUnit example:
+
+```
+@Test
+public void transactionalMapCanHaveNegativeSize() throws Exception {
+
+    final TransactionContext transactionContext =
+        hazelcastInstance.newTransactionContext(new TransactionOptions().setTransactionType(TransactionOptions.TransactionType.LOCAL));
+
+    transactionContext.beginTransaction();
+
+    final TransactionalMap<String, String> map = transactionContext.getMap("test-map");
+
+    map.put("k", "v");
+    map.remove("k");
+
+    assertEquals(0, map.size()); // failure: expected 0 got -1
+}
+```
+
+I think the problem is in `TransactionalMap#remove(Object)`, where it overwrites the "insert" operation in its internal transaction map with a "remove" - so you end up with a remove for an object that never existed. Then when it comes to decide size, it counts the removal with negative size.
+
+I think the right thing to do here is to remove the insertion `TxValueWrapper` from `txMap`.
+
+I'm happy to write up a PR if the above is agreed - the reason I haven't already is that I'm surprised this hasn't been stumbled on before, so I'm wondering if there's some reason it would be intentional.
+
+The work-around we're using is to get the size of the keyset (which returns the expected result).

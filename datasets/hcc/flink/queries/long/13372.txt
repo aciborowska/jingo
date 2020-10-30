@@ -1,0 +1,10 @@
+Currently, in the non-blink table/SQL runtime, Flink used SqlFunctions.internalToTimestamp(long v) from Calcite to convert event time (in long) to java.sql.Timestamp.
+
+
+ public static Timestamp internalToTimestamp(long v) { return new Timestamp(v - (long)LOCAL_TZ.getOffset(v)); } 
+
+However, as discussed in the recent Calcite mailing list, SqlFunctions.internalToTimestamp() assumes the input timestamp value is in the current JVM’s default timezone (which is unusual), NOT milliseconds since epoch. And SqlFunctions.internalToTimestamp() is used to convert timestamp value in the current JVM’s default timezone to milliseconds since epoch, which java.sql.Timestamp constructor takes. Therefore, the results will not only be wrong, but change if the job runs in machines on different timezones as well.(The only exception is that all your production machines uses UTC timezone.)
+
+Here is an example, if the user input value is 0 (00:00:00 UTC on 1 January 1970), and the table/SQL runtime runs in a machine in PST (UTC-8), the output sql.Timestamp after SqlFunctions.internalToTimestamp() will become 28800000 millisec since epoch (08:00:00 UTC on 1 January 1970); And with the same input, if the table/SQL runtime runs again in a different machine in EST (UTC-5), the output sql.Timestamp after SqlFunctions.internalToTimestamp() will become 18000000 millisec since epoch (05:00:00 UTC on 1 January 1970).
+
+Currently, there are unittests to test the table/SQL API event time input/output (e.g., GroupWindowITCase.testEventTimeTumblingWindow() and SqlITCase.testDistinctAggWithMergeOnEventTimeSessionGroupWindow()). They now all passed because we are comparing the string format of the time which ignores timezone. If you step into the code, the actual java.sql.Timestamp value is wrong and change as the tests run in different timezone (e.g., one can use -Duser.timezone=PST to change the current JVM’s default timezone)

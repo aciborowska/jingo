@@ -1,0 +1,147 @@
+Hi,
+we use Hazelcast to track user sessions in a Map. Every entry has a TTL (max 60-70 secs) and gets refreshed before that TTL in a regular user session.
+The problem is that Hazelcast is still evicting the entries according to the TTL of the first put, even after several updates.
+This is happening only starting from 3.3 version. 3.2.6 is good.
+
+This is a little test that inserts data with 5 secs TTL and updates them every 2 secs.
+You can try this:
+
+```
+public class Tester {
+
+public static void main(String[] args) throws Exception {
+    HazelcastInstance instance;
+    IMap<String, String> sessions;
+    String keyName = "myKey";
+    XmlConfigBuilder hcBuilder = new XmlConfigBuilder("hazelcast-config.xml");
+
+    instance = Hazelcast.newHazelcastInstance(hcBuilder.build());
+    sessions = instance.getMap("sessions");
+
+    System.out.println("Sleeping 2 seconds before starting...");
+
+    Thread.sleep(2000);
+
+    for (int i=0; i<5; i++) {
+        System.out.println("Iteration "+i);
+        System.out.println("Value is still there = "+(sessions.get(keyName)!=null));
+        System.out.println("Putting data with TTL 5 seconds");
+        sessions.set(keyName, keyName, 5, TimeUnit.SECONDS);
+        System.out.println("Current Time = "+System.currentTimeMillis());
+        System.out.println("Current Expiration Time = "+sessions.getEntryView(keyName).getExpirationTime());
+        System.out.println("Current TTL = "+sessions.getEntryView(keyName).getTtl());
+        System.out.println("Sleeping 2 seconds before next iteration...");
+        Thread.sleep(2000);
+        System.out.println();
+    }
+
+    System.out.println("Shutting down instance...");
+    instance.shutdown();
+}
+```
+
+}
+
+And this is the configuration I am using:
+
+```
+<map name="sessions">
+    <in-memory-format>BINARY</in-memory-format>
+    <backup-count>1</backup-count>
+    <async-backup-count>0</async-backup-count>
+    <time-to-live-seconds>0</time-to-live-seconds>
+    <max-idle-seconds>0</max-idle-seconds>
+    <eviction-policy>NONE</eviction-policy>
+    <max-size policy="PER_NODE">0</max-size>
+    <eviction-percentage>25</eviction-percentage>
+    <merge-policy>com.hazelcast.map.merge.PassThroughMergePolicy</merge-policy>
+</map>
+
+<properties>
+    <property name="hazelcast.operation.call.timeout.millis">2500</property>
+    <property name="hazelcast.logging.type">jdk</property>
+</properties>
+```
+
+This is the output from 3.3.2 release:
+
+```
+Iteration 0
+Value is still there = false
+Putting data with TTL 5 seconds
+Current Time = 1414147553182
+Current Expiration Time = 1414147558182 <----------- EXPT1
+Current TTL = 5000
+Sleeping 2 seconds before next iteration...
+
+Iteration 1
+Value is still there = true
+Putting data with TTL 5 seconds
+Current Time = 1414147555189
+Current Expiration Time = 1414147560189 <----------- EXPT is getting updated
+Current TTL = 5000
+Sleeping 2 seconds before next iteration...
+
+Iteration 2
+Value is still there = true
+Putting data with TTL 5 seconds
+Current Time = 1414147557198
+Current Expiration Time = 1414147562198 <----------- EXPT2
+Current TTL = 5000
+Sleeping 2 seconds before next iteration...
+
+Iteration 3
+Value is still there = false <----------- Key has been evicted !!!
+Putting data with TTL 5 seconds
+Current Time = 1414147559200 <----------- this < EXPT2 BUT this > EXPT1
+Current Expiration Time = 1414147564200
+Current TTL = 5000
+Sleeping 2 seconds before next iteration...
+
+Iteration 4
+Value is still there = true
+Putting data with TTL 5 seconds
+Current Time = 1414147561207
+Current Expiration Time = 1414147566207
+Current TTL = 5000
+Sleeping 2 seconds before next iteration...
+```
+
+This is the correct output from 3.2.6
+
+```
+Iteration 0
+Value is still there = false
+Putting data with TTL 5 seconds
+Current Time = 1414148413319
+Current Expiration Time = 1414148418319
+Sleeping 2 seconds before next iteration...
+
+Iteration 1
+Value is still there = true
+Putting data with TTL 5 seconds
+Current Time = 1414148415334
+Current Expiration Time = 1414148420334
+Sleeping 2 seconds before next iteration...
+
+Iteration 2
+Value is still there = true
+Putting data with TTL 5 seconds
+Current Time = 1414148417337
+Current Expiration Time = 1414148422337
+Sleeping 2 seconds before next iteration...
+
+Iteration 3
+Value is still there = true <----------- The entry is still there !
+Putting data with TTL 5 seconds
+Current Time = 1414148419343
+Current Expiration Time = 1414148424343
+Sleeping 2 seconds before next iteration...
+
+Iteration 4
+Value is still there = true
+Putting data with TTL 5 seconds
+Current Time = 1414148421350
+Current Expiration Time = 1414148426350
+Sleeping 2 seconds before next iteration...
+```

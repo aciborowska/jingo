@@ -1,0 +1,87 @@
+Guides point to the `NettyHttpServerConfiguration` class as a reference for Netty's configuration.
+Latest NETTY API recommends to use the WRITE_BUFFER_WATER_MARK `ChannelOption` to configure watermark thresholds. See https://netty.io/4.1/api/io/netty/channel/ChannelOption.html#WRITE_BUFFER_WATER_MARK
+
+### Steps to Reproduce
+Given the above, let's assume the following yaml config (based on the :
+```
+micronaut:
+  server:
+    netty:
+      childOptions:
+        write_buffer_water_mark: 
+          # 256 Kbytes
+          high: 262144
+          # 64 kBytes
+          low: 65536
+```
+
+Such options are processed in https://github.com/micronaut-projects/micronaut-core/blob/e9378a1adf1873bbb30889b74a5498c6cab89eca/http-server-netty/src/main/java/io/micronaut/http/server/netty/NettyHttpServer.java#L581
+
+### Expected Behaviour
+Netty's `serverBootstrap::childOption` is called for the argument.
+
+### Actual Behaviour
+It seems however, that the line `environment.convert(value, arg);` returns an empty optional, hence NETTY never receives the values.
+
+### Environment Information
+
+- **Operating System**: Manjaro Linux 5.5.7
+- **Micronaut Version:** 1.3.3
+- **JDK Version:** JDK11
+
+### Example Application
+```
+public class NettyConfigTest {
+
+    NettyHttpServerConfiguration config;
+    Environment environment;
+    long callCount = 0;
+
+    @BeforeMethod
+    public void init() {
+        Map<String, Object> params = Map.of(
+                "micronaut.server.netty.childOptions.write_buffer_water_mark.high", 262143,
+                "micronaut.server.netty.childOptions.write_buffer_water_mark.low", 65535
+        );
+
+        ApplicationContext ctx = ApplicationContext.run(params, (String) null);
+        config = ctx.createBean(NettyHttpServerConfiguration.class);
+        environment = ctx.getEnvironment();
+    }
+
+    @Test
+    void testNettyConfig() throws IOException {
+//        ServerBootstrap serverBootstrap = new ServerBootstrap();
+
+        Map<String, Object> configValue
+                = (Map<String, Object>) config.getChildOptions().get(ChannelOption.WRITE_BUFFER_WATER_MARK);
+        assertEquals(configValue.get("high"), 262143);
+        assertEquals(configValue.get("low"), 65535);
+
+        BiConsumer<ChannelOption, Object> biConsumer = mock(BiConsumer.class);
+        processOptions(config.getChildOptions(), biConsumer);
+        verify(biConsumer, times(2)).accept(any(), any());
+    }
+
+    private void processOptions(Map<ChannelOption, Object> options, BiConsumer<ChannelOption, Object> biConsumer) {
+        for (ChannelOption channelOption : options.keySet()) {
+            String name = channelOption.name();
+            Object value = options.get(channelOption);
+            Optional<Field> declaredField = ReflectionUtils.findDeclaredField(ChannelOption.class, name);
+            declaredField.ifPresent((field) -> {
+                Optional<Class> typeArg = GenericTypeUtils.resolveGenericTypeArgument(field);
+                typeArg.ifPresent((arg) -> {
+                    Optional converted = environment.convert(value, arg);
+                    converted.ifPresent((convertedValue) ->
+                        biConsumer.accept(channelOption, convertedValue)
+                    );
+                });
+
+            });
+            if (!declaredField.isPresent()) {
+                biConsumer.accept(channelOption, value);
+            }
+        }
+    }
+}
+```

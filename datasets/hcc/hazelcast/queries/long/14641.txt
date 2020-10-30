@@ -1,0 +1,46 @@
+If a member encounters a `com.hazelcast.memory.NativeOutOfMemoryError` as a result of exhausting the allocated metadata space of the High-Density Memory Store, the error is propagated to the client and traffic to other members that have not thrown this exception stops as well. This was originally reported by a user during a failure scenario where the metadata space was exhausted on one member of a 4 member cluster after another member was taken offline for maintenance. I have recreated the issue with the below configuration, which intentionally sets the MemorySize and MetadataSpacePercentage of one member to low values.
+
+Member 1:
+
+```
+MemorySize memorySize = new MemorySize(512, MemoryUnit.MEGABYTES);
+NativeMemoryConfig nativeMemoryConfig =
+        new NativeMemoryConfig()
+                .setAllocatorType(NativeMemoryConfig.MemoryAllocatorType.POOLED)
+                .setSize(memorySize)
+                .setMetadataSpacePercentage(2)
+                .setEnabled(true)
+                .setMinBlockSize(16)
+                .setPageSize(1 << 20);
+```
+
+Member 2 and 3:
+
+```
+MemorySize memorySize = new MemorySize(1024, MemoryUnit.MEGABYTES);
+NativeMemoryConfig nativeMemoryConfig =
+        new NativeMemoryConfig()
+                .setAllocatorType(NativeMemoryConfig.MemoryAllocatorType.POOLED)
+                .setSize(memorySize)
+                .setEnabled(true)
+                .setMinBlockSize(16)
+                .setPageSize(1 << 20);
+```
+
+A simple client app like below can trigger the exception on the one member:
+
+```
+ClientConfig clientConfig = new ClientConfig();
+clientConfig.getNetworkConfig().addAddress("127.0.0.1:5701", "127.0.0.1:5702", "127.0.0.1:5703");
+HazelcastInstance client = HazelcastClient.newHazelcastClient();
+
+IMap m = client.getMap("test");
+
+for(int i=1; i<=1000000; i++){
+    m.put(i, 0);
+}
+```
+
+The full stack trace encountered on the client can be found in this [gist](https://gist.github.com/jcaprice/b8f4c538953e6161d21f118cd1915052).
+
+

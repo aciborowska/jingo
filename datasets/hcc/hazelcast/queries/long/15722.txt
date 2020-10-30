@@ -1,0 +1,55 @@
+2 Hazelcast instances with different group name configurations are put in the same box. 
+
+When the member addresses are configured via IP address, they simply form separate clusters. 
+However, if the member addresses are configured via host names, second instances shuts down instead of forming a separate cluster. 
+
+Below is the explanation of the issue by Joseph: 
+
+The problem seems to be located in the way how we store connections in the `TcpIpEndpointManager`. It’s a `Map` where the key is an `Address` instance
+
+```
+    final ConcurrentHashMap<Address, TcpIpConnection> connectionsMap =
+            new ConcurrentHashMap<Address, TcpIpConnection>(100);
+```
+
+The bind request successfully finishes and the BindHandler registers the connection in the map. But it uses the address ‘aliases’ provided by the remote side (e.g. member1):
+
+* https://github.com/hazelcast/hazelcast/blob/v3.12.1/hazelcast/src/main/java/com/hazelcast/nio/tcp/BindHandler.java#L158-L159
+* https://github.com/hazelcast/hazelcast/blob/v3.12.1/hazelcast/src/main/java/com/hazelcast/nio/tcp/BindHandler.java#L194-L201
+
+Calling the method `getOrConnect` ([source](https://github.com/hazelcast/hazelcast/blob/v3.12.1/hazelcast/src/main/java/com/hazelcast/nio/tcp/TcpIpEndpointManager.java#L180-L188)) then tries to find the existing connection on the map, but the hostname is from the current view (e.g. `member2`)
+
+```
+    public TcpIpConnection getOrConnect(final Address address, final boolean silent) {
+        TcpIpConnection connection = connectionsMap.get(address);
+        if (connection == null && networkingService.isLive()) {
+            if (connectionsInProgress.add(address)) {
+                connector.asyncConnect(address, silent);
+            }
+        }
+        return connection;
+    }
+```
+
+Unfortunately, the `Address`’s `equals` and `hashCode` methods work with hostnames and not with its IP representation:
+
+```
+    public boolean equals(Object o) {
+        if (this == o) {
+            return true;
+        }
+        if (!(o instanceof Address)) {
+            return false;
+        }
+        final Address address = (Address) o;
+        return port == address.port && this.type == address.type && this.host.equals(address.host);
+    }
+```
+
+
+
+As a result the connection is not found by the `TcpIpEndpointManager` even the bind request was successful before and the connection is on the map. And the new connection is tried.
+
+**Workaround**: use the same hostname in both configurations
+
+**Possible fix**: use `InetSockAddress` instead host and port comparison in the Address.hashCode() and equals()

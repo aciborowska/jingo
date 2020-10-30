@@ -1,0 +1,41 @@
+`MigrationThread` can leak after shutting down or even forcefully terminating Hazelcast. It retains the entire `HazelcastInstance`.
+
+`InternalPartitionServiceImpl`:
+
+``` java
+    @Override
+    public void shutdown(boolean terminate) {
+        logger.finest("Shutting down the partition service");
+        migrationManager.stop();
+        reset();
+    }
+```
+
+`MigrationManager`:
+
+``` java
+void stop() {
+        migrationThread.stopNow();
+    }
+```
+
+`MigrationThread`:
+
+``` java
+    void stopNow() {
+        queue.clear();
+        interrupt();
+    }
+```
+
+Thread is interrupted, but not joined. In particular, the thread will block forever in some cases, one of which is the following:
+`RepairPartitionTableTask#commitPromotionsToDestination`:
+
+``` java
+                PromotionCommitOperation op = new PromotionCommitOperation(...);
+                Future<Boolean> future = nodeEngine.getOperationService()
+                        .createInvocationBuilder(SERVICE_NAME, op, destination)
+                        .setTryCount(Integer.MAX_VALUE)
+                        .setCallTimeout(Long.MAX_VALUE).invoke();
+                boolean result = future.get();
+```

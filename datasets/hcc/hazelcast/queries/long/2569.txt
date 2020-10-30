@@ -1,0 +1,41 @@
+From the JavaDoc of javax.transaction.xa.XAResource#setTransactionTimeout(), the following contract can be found:
+
+```
+Sets the current transaction timeout value for this XAResource instance. Once set, this 
+timeout value is effective until setTransactionTimeout is invoked again with a different 
+value. To reset the timeout value to the default value used by the resource manager, set 
+the value to zero. If the timeout operation is performed successfully, the method returns 
+true; otherwise false. If a resource manager does not support explicitly setting the 
+transaction timeout value, this method returns false.
+
+Parameters:
+seconds - The transaction timeout value in seconds. 
+Returns: true if the transaction timeout value is set successfully; otherwise false. 
+```
+
+However, the implementation of this method in com.hazelcast.jca.XAResourceWrapper always returns false, even though it does set the passed in transaction timeout value to a field, and eventually uses the value in the setInner() method to create a Hazelcast transaction:
+
+``` java
+...
+@Override
+public boolean setTransactionTimeout(int seconds) throws XAException {
+    this.transactionTimeoutSeconds=seconds;
+    return false;
+}
+...
+private void setInner() throws XAException {
+   final TransactionContext transactionContext =     HazelcastTransactionImpl.createTransaction(this.getTransactionTimeout(),  managedConnection.getHazelcastInstance());
+...
+```
+
+In our application server (Weblogic 12c) the first XA transaction succeeds, but at the start of a second XA transaction we get the following exception:
+
+```
+java.lang.IllegalArgumentException: Timeout must be positive!
+    at com.hazelcast.transaction.TransactionOptions.setTimeout(TransactionOptions.java:99)
+    at com.hazelcast.jca.HazelcastTransactionImpl.createTransaction(HazelcastTransactionImpl.java:123)
+```
+
+Presumably this is because Weblogic calls setTransactionTimeout, receives false as a result, and from then on abstains from setting the transaction timeout in consecutive calls. This results in the transactionTimeoutSeconds value remaining 0 (zero) for all consecutive transactions, which in turn triggers the above exception.
+
+Changing the return value of setTransactionTimeout(int seconds) to true resolves our issue. 

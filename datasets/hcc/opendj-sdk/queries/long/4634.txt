@@ -1,0 +1,81 @@
+Reported on OpenDJ 2.6.0, also reproduced on DS 5.5.0.
+
+Search on isMemberOf=... returns the entries, but without the entries' operational attributes (other than "isMemberOf"). 
+ This results in some searches having unexpected results (entries not found).
+
+ 
+
+TEST CASE:
+ ~~~~~~~~~~
+
+DS 5.5.0.
+
+1. Create a virtual static group with members (see attached LDIFs):
+
+	"base.ldif" contains 10,000 entries generated from template, entries are in "ou=people,dc=example,dc=com". (10,000 entries so that the default index-entry-limit of 4000 is exceeded).
+
+
+
+
+	"add-entries.ldif" contains the virtual static group and members (member entries are in "ou=sub,dc=example,dc=com").
+
+
+
+Concatenate the LDIFs, and import.
+
+ 
+
+2. This search returns entries as expected (search base "ou=sub,dc=example,dc=com, scope is indexed):
+
+
+# bin/ldapsearch -p 5393 -D "cn=directory manager" -w password -b "ou=sub,dc=example,dc=com" "(&(ismemberof=cn=vstatic1,ou=Groups,dc=example,dc=com)(objectclass=inetorgperson)(ds-pwp-account-disabled=false))" dn
+ dn: uid=test.3,ou=sub,dc=example,dc=com
+ dn: uid=test.2,ou=sub,dc=example,dc=com
+ dn: uid=test.1,ou=sub,dc=example,dc=com
+ #
+
+3. This search returns no entries, when it should return 3 entries (search base "dc=example,dc=com", scope is unindexed):
+
+
+# bin/ldapsearch -p 5393 -D "cn=directory manager" -w password -b "dc=example,dc=com" "(&(ismemberof=cn=vstatic1,ou=Groups,dc=example,dc=com)(objectclass=inetorgperson)(ds-pwp-account-disabled=false))" dn
+ #
+
+ 
+
+4. Searching on "dc=example,dc=com" without the "ds=pwp-account-disabled=..." filter component, but requesting for operational attributes, the only operational attributes returned are ismemberof:
+
+
+# bin/ldapsearch -p 5393 -D "cn=directory manager" -w password -b "dc=example,dc=com" "(&(ismemberof=cn=vstatic1,ou=Groups,dc=example,dc=com)(objectclass=inetorgperson))" +
+dn: uid=test.1,ou=sub,dc=example,dc=com
+ismemberof: cn=dyn_vstatic1,ou=Groups,dc=example,dc=com
+ismemberof: cn=vstatic1,ou=Groups,dc=example,dc=com
+
+dn: uid=test.2,ou=sub,dc=example,dc=com
+ismemberof: cn=dyn_vstatic1,ou=Groups,dc=example,dc=com
+ismemberof: cn=vstatic1,ou=Groups,dc=example,dc=com
+
+dn: uid=test.3,ou=sub,dc=example,dc=com
+ismemberof: cn=dyn_vstatic1,ou=Groups,dc=example,dc=com
+ismemberof: cn=vstatic1,ou=Groups,dc=example,dc=com
+
+
+ 
+
+5. Searching on "ou=sub,dc=example,dc=com", and requesting for operational attributes, returns the operational attributes as expected, e.g.
+
+
+# bin/ldapsearch -p 5393 -D "cn=directory manager" -w password -b "ou=sub,dc=example,dc=com" "(&(ismemberof=cn=vstatic1,ou=Groups,dc=example,dc=com)(objectclass=inetorgperson)(ds-pwp-account-disabled=false))" +
+dn: uid=test.3,ou=sub,dc=example,dc=com
+entryUUID: c5c1b349-920c-3e2a-953d-fbfab82dc5f9
+ds-pwp-account-disabled: false
+isMemberOf: cn=dyn_vstatic1,ou=Groups,dc=example,dc=com
+isMemberOf: cn=vstatic1,ou=Groups,dc=example,dc=com
+pwdPolicySubentry: cn=Default Password Policy,cn=Password Policies,cn=config
+subschemaSubentry: cn=schema
+hasSubordinates: false
+numSubordinates: 0
+etag: 000000005c1f5450
+structuralObjectClass: inetOrgPerson
+entryDN: uid=test.3,ou=sub,dc=example,dc=com
+
+ 

@@ -1,0 +1,64 @@
+I'm putting in <code>"repo"</code> map incremental value. After that I expect that value, that I have put into map can be obtained from get request. But if I enable <code>< cache-value> true < /cache-value></code> in hazelcast config, there is some really rare chance that in cached value will stuck wrong value.
+
+Here is simple code example that reproduces issue:
+https://github.com/Kamapcuc/HazelcastTest/tree/master/ru/combo_breaker
+
+If you run example after some time you will see that 
+<code>Process finished with exit code 111</code>. 
+You can uncomment output in WatchDog and also add output to
+
+<pre><code>package com.hazelcast.impl;
+..........................................................
+public class CMap {
+    public void put(Request req) {
+..........................................................
+            record.setValueData(newValue);
+            System.out.println("Updated " + toObject(oldValue) + " to " + toObject(newValue));</code></pre>
+
+After that, run example again and in output will be something like that:
+
+<pre><code>1754 == 1754
+Updated 1753 to 1754
+Updated 1754 to 1755
+1754 == 1754
+1755 == 1755
+Updated 1755 to 1756
+Updated 1756 to 1757
+1756 != 1757 -1
+1757 != 1756 1
+1757 != 1756 1
+1757 != 1756 1
+1757 != 1756 1
+1757 != 1756 1
+1757 != 1756 1
+Process finished with exit code 111</code></pre>
+
+So you can see that in map lies right value, but get queue still retrieves wrong one. I don't find any capability to unstuck it. It'lls newer unstuck until we don't perform one more put operation. The keystone of that bug lies here:
+
+<pre><code>package com.hazelcast.impl;
+..........................................................
+public final class DefaultRecord extends AbstractRecord {
+..........................................................
+    public Object getValue() {
+        if (cmap.isCacheValue()) {
+            final Object currentValue = valueObject;
+            if (currentValue != null) {
+                return currentValue;
+            }
+            synchronized (this) {
+                if (valueObject != null) {
+                    return valueObject;
+                }
+                final Object v = toObject(value);
+                valueObject = v;
+                return v;
+            }
+
+        } else {
+            return toObject(value);
+        }
+    }</code></pre>
+
+If I switch < cache-value> in config to false, example will work infinitely until integer overflow. But I really need cache-value in my project because I want it to run really fast. Also, I don't want to use locks for the same reason. So, can you fix that bug? 
+
+Thanks.

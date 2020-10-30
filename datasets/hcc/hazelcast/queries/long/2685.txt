@@ -1,0 +1,205 @@
+Hi,
+
+In version 3.3-EA, similarly to #2158, when you have a map store with write-behind, call delete on a key and immediately after that (before the delete is actually executed on the store) call putIfAbsent on the same key, the old value (that should have been deleted) is returned. It does no longer happen for get, but still for putIfAbsent.
+
+Here is a test to reproduce the issue:
+
+``` java
+import com.hazelcast.config.Config;
+import com.hazelcast.config.MapConfig;
+import com.hazelcast.config.MapStoreConfig;
+import com.hazelcast.config.XmlConfigBuilder;
+import com.hazelcast.core.Hazelcast;
+import com.hazelcast.core.HazelcastInstance;
+import com.hazelcast.core.IMap;
+import com.hazelcast.core.MapStore;
+import org.apache.log4j.BasicConfigurator;
+import org.apache.log4j.Logger;
+import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
+import junit.framework.TestCase;
+
+public class TestPutIfAbsent3 extends TestCase {
+
+    private static final Logger logger = Logger.getLogger(TestPutIfAbsent3.class);
+
+    public void testPutIfAbsent3() throws InterruptedException {
+
+        // create hazelcast config
+        Config config = new XmlConfigBuilder().build();
+        config.setProperty("hazelcast.logging.type", "log4j");
+
+        // configure min cluster size
+        config.setProperty("hazelcast.initial.min.cluster.size", "1");
+
+        MapConfig mapConfig = config.getMapConfig("testMap");
+
+        // configure map store
+        RecordingMapStore store = new RecordingMapStore(false, true);
+        MapStoreConfig mapStoreConfig = new MapStoreConfig();
+        mapStoreConfig.setEnabled(true);
+        mapStoreConfig.setWriteDelaySeconds(1);
+        mapStoreConfig.setClassName(null);
+        mapStoreConfig.setImplementation(store);
+        mapConfig.setMapStoreConfig(mapStoreConfig);
+
+        // start
+        HazelcastInstance hcInstance = Hazelcast.newHazelcastInstance(config);
+
+        // get map
+        final IMap<String, String> map = hcInstance.getMap("testMap");
+
+        String key = "key";
+
+        map.put(key, "first value");
+
+        // Commenting this makes it work
+        Thread.sleep(2000);
+
+        map.delete(key);
+
+        // Uncommenting this makes it work
+        //Thread.sleep(2000);
+
+        String get = map.get(key);
+        String old = map.putIfAbsent(key, "put if absent value");
+
+        assertNull("Value returned by get is not null after deletion", get);
+        assertNull("Old value returned by putIfAbsent is not null after deletion", old);
+
+        // stop hazelcast
+        hcInstance.getLifecycleService().shutdown();
+
+        logger.info("Test done.");
+
+    }
+
+    public static class RecordingMapStore implements MapStore<String, String> {
+
+        private static final Logger logger = Logger.getLogger(RecordingMapStore.class);
+
+        private final boolean warnOnUpdate;
+
+        private final boolean infoOnLoad;
+
+        private ConcurrentHashMap<String, String> store = new ConcurrentHashMap<String, String>();
+
+        /**
+         * Store counts per key.
+         * <p>
+         * A map from key to its store count.
+         */
+        private ConcurrentHashMap<String, AtomicInteger> storeCounts = new ConcurrentHashMap<String, AtomicInteger>();
+
+        public RecordingMapStore(boolean warnOnUpdate, boolean infoOnLoad) {
+            this.warnOnUpdate = warnOnUpdate;
+            this.infoOnLoad = infoOnLoad;
+        }
+
+        public ConcurrentHashMap<String, String> getStore() {
+            return store;
+        }
+
+        public ConcurrentHashMap<String, AtomicInteger> getStoreCounts() {
+            return storeCounts;
+        }
+
+        @Override
+        public String load(String key) {
+            if (infoOnLoad) {
+                logger.info("load(" + key + ") called.");
+            }
+            return store.get(key);
+        }
+
+        @Override
+        public Map<String, String> loadAll(Collection<String> keys) {
+            List<String> keysList = new ArrayList<String>(keys);
+            Collections.sort(keysList);
+            logger.info("loadAll(" + keysList + ") called.");
+            Map<String, String> result = new HashMap<String, String>();
+            for (String key : keys) {
+                String value = store.get(key);
+                if (value != null) {
+                    result.put(key, value);
+                }
+            }
+            return result;
+        }
+
+        @Override
+        public Set<String> loadAllKeys() {
+            logger.info("loadAllKeys() called.");
+            Set<String> result = new HashSet<String>(store.keySet());
+            logger.info("loadAllKeys result = " + result);
+            return result;
+        }
+
+        @Override
+        public void store(String key, String value) {
+            logger.info("store(" + key + ") called.");
+            String valuePrev = store.put(key, value);
+            if (warnOnUpdate && valuePrev != null) {
+                logger.warn("- Unexpected Update (operations reordered?): " + key);
+            }
+
+            // count store
+            incrementStoreCount(key);
+        }
+
+        @Override
+        public void storeAll(Map<String, String> map) {
+            TreeSet<String> setSorted = new TreeSet<String>(map.keySet());
+            logger.info("storeAll(" + setSorted + ") called.");
+            store.putAll(map);
+
+            // count store
+            for (String key : map.keySet()) {
+                incrementStoreCount(key);
+            }
+        }
+
+        @Override
+        public void delete(String key) {
+            logger.info("delete(" + key + ") called.");
+            String valuePrev = store.remove(key);
+            if (valuePrev == null) {
+                logger.warn("- Unnecessary delete (operations reordered?): " + key);
+            }
+        }
+
+        @Override
+        public void deleteAll(Collection<String> keys) {
+            List<String> keysList = new ArrayList<String>(keys);
+            Collections.sort(keysList);
+            logger.info("deleteAll(" + keysList + ") called.");
+            for (String key : keys) {
+                String valuePrev = store.remove(key);
+                if (valuePrev == null) {
+                    logger.warn("- Unnecessary delete (operations reordered?): " + key);
+                }
+            }
+        }
+
+        // -------------------------------------------------------- private methods
+
+        private void incrementStoreCount(String key) {
+            AtomicInteger count = storeCounts.get(key);
+            if (count == null) {
+                count = new AtomicInteger(0);
+                AtomicInteger prev = storeCounts.putIfAbsent(key, count);
+                if (prev != null) {
+                    count = prev;
+                }
+            }
+            count.incrementAndGet();
+        }
+
+    }
+
+}
+```
+
+Thanks for having a look and cheers,
+Andreas

@@ -1,0 +1,27 @@
+When running a batch job, I ran into an issue where task deserialization caused a deadlock. Specifically, if you have a static initialization dependency graph that looks like this (these are all classes):
+
+
+Task1 depends on A
+    A depends on B
+    B depends on C
+    C depends on B [cycle]
+Task2 depends on C
+
+What seems to happen is a deadlock. Specifically, threads are started on the task managers that simultaneously call BatchTask.instantiateUserCode on both Task1 and Task2. This starts deserializing the classes and initializing them. Here's the deadlock scenario, as a stack:
+
+
+Time---->
+T1: [deserialize] -> Task1<clinit> -> A<clinit> -> B<clinit> -> (wait for C<clinit>)
+T2: [deserialize] -> Task2<clinit>              -> C<clinit> -> (wait for B<clinit>)
+
+ 
+
+A similar scenario from the web: https://www.farside.org.uk/201510/deadlocks_in_java_class_initialisation .
+
+ 
+
+For my specific problem, I'm running into this within Clojure - clojure.lang.RT has a dep on clojure.lang.Util which has a dep with clojure.lang.Numbers which depends on clojure.lang.RT again. Deserializing different clojure functions calls one or the other first which deadlocks task managers.
+
+ 
+
+I built a version of flink-core that had org.apache.flink.util.InstantiationUtil.readObjectFromConfig synchronized, but I'm not sure that it's the proper fix. I'm happy to submit that as a patch, but I'm not familiar enough with the codebase to say that it's the correct solution - ideally all Java class loading is synchronized, but I'm not sure how to do that.

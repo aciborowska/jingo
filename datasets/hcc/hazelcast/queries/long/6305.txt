@@ -1,0 +1,298 @@
+Hi,
+
+I have a very annoying little race condition somewhere when loading maps that have a MapStore configured.
+
+The problem occurs when the maps get loaded for the first time. The exception that is thrown is either this
+
+``` java
+868 [hz._hzInstance_1_dev.partition-operation.thread-2] FATAL com.hazelcast.map.impl.operation.LoadStatusOperation  - [10.0.1.154]:5701 [dev] [3.5.3-dev-20150924] Transition not allowed from state LOADED to LOADED
+java.lang.IllegalStateException: Transition not allowed from state LOADED to LOADED
+    at com.hazelcast.util.ValidationUtil.checkState(ValidationUtil.java:179)
+    at com.hazelcast.util.StateMachine.next(StateMachine.java:60)
+    at com.hazelcast.util.StateMachine.nextOrStay(StateMachine.java:70)
+    at com.hazelcast.map.impl.MapKeyLoader.trackLoading(MapKeyLoader.java:197)
+    at com.hazelcast.map.impl.DefaultRecordStore.updateLoadStatus(DefaultRecordStore.java:111)
+    at com.hazelcast.map.impl.operation.LoadStatusOperation.run(LoadStatusOperation.java:48)
+    at com.hazelcast.spi.impl.operationservice.impl.OperationRunnerImpl.run(OperationRunnerImpl.java:137)
+    at com.hazelcast.spi.impl.operationexecutor.classic.OperationThread.processOperation(OperationThread.java:154)
+    at com.hazelcast.spi.impl.operationexecutor.classic.OperationThread.process(OperationThread.java:110)
+    at com.hazelcast.spi.impl.operationexecutor.classic.OperationThread.doRun(OperationThread.java:101)
+    at com.hazelcast.spi.impl.operationexecutor.classic.OperationThread.run(OperationThread.java:76)
+```
+
+or sometimes also this
+
+``` java
+1256 [hz._hzInstance_1_dev.async.thread-2] FATAL com.hazelcast.spi.impl.operationservice.impl.Invocation  - [10.0.1.154]:5701 [dev] [3.5.3-dev-20150924] Failed asynchronous execution of execution callback: com.hazelcast.map.impl.MapKeyLoader$4@546e3e5efor call Invocation{ serviceName='hz:impl:mapService', op=com.hazelcast.map.impl.operation.PartitionCheckIfLoadedOperation{serviceName='null', partitionId=184, callId=0, invocationTime=1443464913446, waitTimeout=-1, callTimeout=60000}, partitionId=184, replicaIndex=0, tryCount=250, tryPauseMillis=500, invokeCount=1, callTimeout=60000, target=Address[10.0.1.154]:5701, backupsExpected=0, backupsCompleted=0}
+java.lang.IllegalStateException: Transition not allowed from state LOADED to LOADED
+    at com.hazelcast.util.ValidationUtil.checkState(ValidationUtil.java:179)
+    at com.hazelcast.util.StateMachine.next(StateMachine.java:60)
+    at com.hazelcast.util.StateMachine.nextOrStay(StateMachine.java:70)
+    at com.hazelcast.map.impl.MapKeyLoader$4.onResponse(MapKeyLoader.java:325)
+    at com.hazelcast.map.impl.MapKeyLoader$4.onResponse(MapKeyLoader.java:321)
+    at com.hazelcast.spi.impl.operationservice.impl.InvocationFuture$1.run(InvocationFuture.java:135)
+    at java.util.concurrent.ThreadPoolExecutor$Worker.runTask(ThreadPoolExecutor.java:895)
+    at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:918)
+    at java.lang.Thread.run(Thread.java:662)
+    at com.hazelcast.util.executor.HazelcastManagedThread.executeRun(HazelcastManagedThread.java:76)
+    at com.hazelcast.util.executor.HazelcastManagedThread.run(HazelcastManagedThread.java:92)
+```
+
+I have tried to write a test which reproduces the issue, but I only managed to get a test which shows the problem once or twice every 10 executions. Also, I don't really know how to fail the test if the above  IllegalStateException happens.
+
+Here is the test. I would be glad for any help to make this test fail more consistently.
+
+``` java
+package com.nm.test.hazelcast.mapstore;
+
+import com.hazelcast.config.*;
+import com.hazelcast.config.MapStoreConfig.InitialLoadMode;
+import com.hazelcast.core.Hazelcast;
+import com.hazelcast.core.HazelcastInstance;
+import com.nm.test.hazelcast.TestHazelcast;
+import com.nm.test.hazelcast.utils.SlowMapStore;
+import org.apache.log4j.BasicConfigurator;
+import org.apache.log4j.Logger;
+import java.util.ArrayList;
+import java.util.List;
+import junit.framework.TestCase;
+
+/**
+ * A test to reproduce the LoadStatusOperation exception during startup.
+ */
+public class TestMapStore23 extends TestCase {
+
+    private static final Logger logger = Logger.getLogger(TestMapStore23.class);
+
+    private static final String mapName = "testMap" + TestMapStore23.class.getSimpleName();
+
+    @Override
+    protected void setUp() throws Exception {
+
+        // configure logging
+        if (!TestHazelcast.loggingInitialized) {
+            TestHazelcast.loggingInitialized = true;
+            BasicConfigurator.configure();
+        }
+    }
+
+    public void testLoad() throws Exception {
+
+        // create hazelcast config
+        Config config = new XmlConfigBuilder().build();
+        config.setProperty("hazelcast.logging.type", "log4j");
+
+        // config.setProperty("hazelcast.partition.count", "13");
+
+        // prepare maps
+        final int numMaps = 20;
+        for (int i = 0; i < numMaps; i++) {
+            String mapNameCur = mapName + i;
+
+            // create map store
+            SlowMapStore store = new SlowMapStore();
+            store.setSleepMsLoadAllKeys(40);
+            store.setSleepMsLoadAll(10);
+            store.setSleepMsLoadAllPerKey(1);
+            store.preload(3);
+
+            // configure map store
+            MapStoreConfig mapStoreConfig = new MapStoreConfig();
+            mapStoreConfig.setEnabled(true);
+            mapStoreConfig.setInitialLoadMode(InitialLoadMode.EAGER);
+            mapStoreConfig.setWriteDelaySeconds(5);
+            mapStoreConfig.setClassName(null);
+            mapStoreConfig.setImplementation(store);
+            MapConfig mapConfig = config.getMapConfig(mapNameCur);
+            mapConfig.setMapStoreConfig(mapStoreConfig);
+        }
+
+        // disable multicast for faster startup
+        config.getNetworkConfig().getJoin().getMulticastConfig().setEnabled(false);
+
+        // start hazelcast instance
+        HazelcastInstance hcInstance = Hazelcast.newHazelcastInstance(config);
+
+        // start threads which try to access the maps while they are being initialized
+        List<Thread> threads = new ArrayList<Thread>();
+        for (int i = 0; i < numMaps; i++) {
+            final String mapNameCur = mapName + i;
+            Thread thread = new Thread(new MapRunnable(hcInstance, mapNameCur, 20 + i * 20));
+            threads.add(thread);
+        }
+        for (Thread thread : threads) {
+            thread.start();
+        }
+
+        // wait for map accessor threads to finish
+        logger.info("Waiting for map accessor threads to finish...");
+        for (Thread thread : threads) {
+            thread.join();
+        }
+
+        // shutdown hazelcast instance
+        hcInstance.getLifecycleService().terminate();
+    }
+
+    private static final class MapRunnable implements Runnable {
+
+        private static final Logger logger = Logger.getLogger(MapRunnable.class);
+
+        private final HazelcastInstance hcInstance;
+
+        private final String mapName;
+
+        private final int sleepBefore;
+
+        public MapRunnable(HazelcastInstance hcInstance, String mapName, int sleepBefore) {
+            this.hcInstance = hcInstance;
+            this.mapName = mapName;
+            this.sleepBefore = sleepBefore;
+        }
+
+        public void run() {
+            try {
+                Thread.sleep(sleepBefore);
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            }
+            logger.info("accessing map '" + mapName + "'...");
+            hcInstance.getMap(mapName);
+            logger.info("accessing map '" + mapName + "' done.");
+        }
+    }
+
+}
+
+package com.nm.test.hazelcast.utils;
+
+import com.hazelcast.core.MapStore;
+import org.apache.log4j.Logger;
+import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+
+/**
+ * A map store implementation which allows to wait in operations if configured.
+ */
+public class SlowMapStore implements MapStore<String, String> {
+
+    private static final Logger logger = Logger.getLogger(SlowMapStore.class);
+
+    // ----------------------------------------------------------------- config
+
+    private int sleepMsLoad;
+
+    private int sleepMsLoadAll;
+
+    private int sleepMsLoadAllPerKey;
+
+    private int sleepMsLoadAllKeys;
+
+    // ------------------------------------------------------------------ state
+
+    private final ConcurrentHashMap<String, String> store = new ConcurrentHashMap<String, String>();
+
+    // ----------------------------------------------------------- construction
+
+    public SlowMapStore() {
+        this.sleepMsLoad = 20;
+        this.sleepMsLoadAll = 50;
+        this.sleepMsLoadAllPerKey = 10;
+        this.sleepMsLoadAllKeys = 8000;
+    }
+
+    public void preload(int size) {
+        for (int i = 0; i < size; i++) {
+            store.put("k" + i, "v" + i);
+        }
+    }
+
+    // ---------------------------------------------------------------- setters
+
+    public void setSleepMsLoad(int sleepMsLoad) {
+        this.sleepMsLoad = sleepMsLoad;
+    }
+
+    public void setSleepMsLoadAll(int sleepMsLoadAll) {
+        this.sleepMsLoadAll = sleepMsLoadAll;
+    }
+
+    public void setSleepMsLoadAllPerKey(int sleepMsLoadAllPerKey) {
+        this.sleepMsLoadAllPerKey = sleepMsLoadAllPerKey;
+    }
+
+    public void setSleepMsLoadAllKeys(int sleepMsLoadAllKeys) {
+        this.sleepMsLoadAllKeys = sleepMsLoadAllKeys;
+    }
+
+    // ----------------------------------------------------- MapStore interface
+
+    @Override
+    public String load(String key) {
+        logger.info("load(" + key + ") called.");
+        Sleep.sleep(sleepMsLoad, false);
+        return store.get(key);
+    }
+
+    @Override
+    public Map<String, String> loadAll(Collection<String> keys) {
+        List<String> keysList = new ArrayList<String>(keys);
+        Collections.sort(keysList);
+        logger.info("loadAll(" + keysList + ") called.");
+        Sleep.sleep(sleepMsLoadAll, false);
+        Map<String, String> result = new HashMap<String, String>();
+        for (String key : keys) {
+            Sleep.sleep(sleepMsLoadAllPerKey, false);
+            String value = store.get(key);
+            if (value != null) {
+                result.put(key, value);
+            }
+        }
+        return result;
+    }
+
+    @Override
+    public Set<String> loadAllKeys() {
+        logger.info("loadAllKeys() called.");
+        Sleep.sleep(sleepMsLoadAllKeys, true);
+        Set<String> result = new HashSet<String>(store.keySet());
+        List<String> resultList = new ArrayList<String>(result);
+        Collections.sort(resultList);
+        logger.info("loadAllKeys result: size = " + result.size() + ", keys = " + resultList + ".");
+        return result;
+    }
+
+    @Override
+    public void store(String key, String value) {
+        logger.info("store(" + key + ") called.");
+        store.put(key, value);
+    }
+
+    @Override
+    public void storeAll(Map<String, String> map) {
+        TreeSet<String> setSorted = new TreeSet<String>(map.keySet());
+        logger.info("storeAll(" + setSorted + ") called.");
+        store.putAll(map);
+    }
+
+    @Override
+    public void delete(String key) {
+        logger.info("delete(" + key + ") called.");
+        store.remove(key);
+    }
+
+    @Override
+    public void deleteAll(Collection<String> keys) {
+        List<String> keysList = new ArrayList<String>(keys);
+        Collections.sort(keysList);
+        logger.info("deleteAll(" + keysList + ") called.");
+        for (String key : keys) {
+            store.remove(key);
+        }
+    }
+
+}
+```
+
+Thanks and best,
+Lukas

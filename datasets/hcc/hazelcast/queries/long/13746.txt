@@ -1,0 +1,99 @@
+Event Journal when configured with TTL > 0 can sometimes throw `StaleSequenceException`
+
+```
+com.hazelcast.ringbuffer.StaleSequenceException: sequence:21393 is too small and data store is disabled. The current headSequence is:21394 tailSequence is:22124
+	at com.hazelcast.ringbuffer.impl.RingbufferContainer.checkBlockableReadSequence(RingbufferContainer.java:435)
+	at com.hazelcast.ringbuffer.impl.RingbufferContainer.shouldWait(RingbufferContainer.java:241)
+	at com.hazelcast.map.impl.journal.RingbufferMapEventJournalImpl.isNextAvailableSequence(RingbufferMapEventJournalImpl.java:122)
+	at com.hazelcast.internal.journal.EventJournalReadOperation.shouldWait(EventJournalReadOperation.java:140)
+	at com.hazelcast.spi.Operation.call(Operation.java:143)
+	at com.hazelcast.spi.impl.operationservice.impl.OperationRunnerImpl.call(OperationRunnerImpl.java:202)
+	at com.hazelcast.spi.impl.operationservice.impl.OperationRunnerImpl.run(OperationRunnerImpl.java:191)
+	at com.hazelcast.spi.impl.operationexecutor.impl.OperationThread.process(OperationThread.java:120)
+	at com.hazelcast.spi.impl.operationexecutor.impl.OperationThread.run(OperationThread.java:100)
+```
+A reproducer (might take a few runs / some time to reproduce):
+
+```java
+package test;
+
+import com.hazelcast.config.Config;
+import com.hazelcast.config.EventJournalConfig;
+import com.hazelcast.core.ExecutionCallback;
+import com.hazelcast.core.HazelcastInstance;
+import com.hazelcast.core.IMap;
+import com.hazelcast.internal.journal.EventJournalReader;
+import com.hazelcast.map.journal.EventJournalMapEvent;
+import com.hazelcast.projection.Projections;
+import com.hazelcast.ringbuffer.ReadResultSet;
+import com.hazelcast.test.HazelcastParallelClassRunner;
+import com.hazelcast.test.HazelcastTestSupport;
+import com.hazelcast.util.function.Consumer;
+import org.junit.Before;
+import org.junit.Test;
+import org.junit.runner.RunWith;
+
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.LockSupport;
+
+@RunWith(HazelcastParallelClassRunner.class)
+public class EventJournalTest extends HazelcastTestSupport {
+    private static final int JOURNAL_CAPACITY = 1000;
+    private IMap<String, Integer> map;
+    private String MAP_NAME = "test";
+    private EventJournalReader<EventJournalMapEvent<String, Integer>> reader;
+    private HazelcastInstance hz;
+
+    @Before
+    public void setUp() {
+        Config config = new Config();
+
+        EventJournalConfig journalConfig = new EventJournalConfig()
+                .setMapName("*")
+                .setCapacity(JOURNAL_CAPACITY)
+                .setTimeToLiveSeconds(1)
+                .setEnabled(true);
+        config.addEventJournalConfig(journalConfig);
+        config.setProperty("hazelcast.partition.count", "1");
+        hz = this.createHazelcastInstance(config);
+
+        map = hz.getMap(MAP_NAME);
+        reader = (EventJournalReader<EventJournalMapEvent<String, Integer>>) map;
+    }
+
+    @Test
+    public void test() {
+        readFromJournal(0, e -> {
+            System.out.println(e.getNewValue());
+        });
+
+        for (int i = 0; i < 100_000; i++) {
+            map.put("a", i);
+            LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(1));
+        }
+
+    }
+
+    private void readFromJournal(long seq,
+                                 Consumer<EventJournalMapEvent<String, Integer>> consumer
+    ) {
+        reader.readFromEventJournal(
+                seq, 1, 128, 0, e -> true, Projections.identity()
+        ).andThen(new ExecutionCallback<ReadResultSet<EventJournalMapEvent<String, Integer>>>() {
+            @Override
+            public void onResponse(ReadResultSet<EventJournalMapEvent<String, Integer>> response) {
+                readFromJournal(response.getNextSequenceToReadFrom(), consumer);
+                for (EventJournalMapEvent<String, Integer> event : response) {
+                    consumer.accept(event);
+                }
+                LockSupport.parkNanos(TimeUnit.SECONDS.toNanos(2));
+            }
+
+            @Override
+            public void onFailure(Throwable t) {
+                t.printStackTrace();
+            }
+        });
+    }
+}
+```

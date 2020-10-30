@@ -1,0 +1,521 @@
+Hi,
+
+if you have a multi node cluster and one node is initializing a map while another tries to execute an operation, the operation runs into a timeout.
+
+The test below reproduces this scenario:
+1. It starts a two node hazelcast cluster
+2. The first node acquires a count down latch and starts to initialize a map which takes a long time to load all keys from persistent storage.
+3. The second node now starts to wait for the count down latch, but the operation times out.
+
+Best,
+Lukas
+
+``` java
+package com.nm.test.hazelcast.mapstore;
+
+import com.hazelcast.config.Config;
+import com.hazelcast.config.MapConfig;
+import com.hazelcast.config.MapStoreConfig;
+import com.hazelcast.config.XmlConfigBuilder;
+import com.hazelcast.core.Hazelcast;
+import com.hazelcast.core.HazelcastInstance;
+import com.hazelcast.core.ICountDownLatch;
+import com.hazelcast.core.IMap;
+import com.nm.test.hazelcast.TestHazelcast;
+import com.nm.test.hazelcast.utils.Sleep;
+import com.nm.test.hazelcast.utils.SlowMapStore;
+import org.apache.log4j.BasicConfigurator;
+import org.apache.log4j.Logger;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import junit.framework.TestCase;
+
+/**
+ * Test to ensure waiting for init latch during map init works.
+ */
+public class TestMapStore21 extends TestCase {
+
+    private static final Logger logger = Logger.getLogger(TestMapStore21.class);
+
+    private static final String mapName = "testMap" + TestMapStore21.class.getSimpleName();
+
+    private static final String latchName = "testLatch" + TestMapStore21.class.getSimpleName();
+
+    private static final int writeDelaySeconds = 5;
+
+    private final StringBuffer bufError = new StringBuffer();
+
+    private final AtomicBoolean latchSet = new AtomicBoolean(false);
+
+    @Override
+    protected void setUp() throws Exception {
+
+        // configure logging
+        if (!TestHazelcast.loggingInitialized) {
+            TestHazelcast.loggingInitialized = true;
+            BasicConfigurator.configure();
+        }
+    }
+
+    public void testLongLoad() throws Exception {
+
+        // create hazelcast config
+        Config config = new XmlConfigBuilder().build();
+        config.setProperty("hazelcast.logging.type", "log4j");
+
+        // set call timeout to 5 seconds to make the problem appear quicker
+        config.setProperty("hazelcast.operation.call.timeout.millis", "5000");
+
+        // use initial min cluster size
+        config.setProperty("hazelcast.initial.min.cluster.size", "2");
+
+        // create map store
+        // - configure 20s sleep in loadAllKeys()
+        SlowMapStore store = new SlowMapStore();
+        store.setSleepMsLoadAllKeys(1000 * 20);
+
+        // configure map store
+        MapStoreConfig mapStoreConfig = new MapStoreConfig();
+        mapStoreConfig.setEnabled(true);
+        mapStoreConfig.setWriteDelaySeconds(writeDelaySeconds);
+        mapStoreConfig.setClassName(null);
+        mapStoreConfig.setImplementation(store);
+        MapConfig mapConfig = config.getMapConfig(mapName);
+        mapConfig.setMapStoreConfig(mapStoreConfig);
+
+        // thread 1: node 1
+        Thread thread1 = new Thread(new TestMapStore21Runnable(config), "Thread 1");
+        thread1.start();
+
+        // thread 2: node 2
+        Thread thread2 = new Thread(new TestMapStore21Runnable(config), "Thread 2");
+        thread2.start();
+
+        // join threads
+        thread1.join();
+        thread2.join();
+
+        // print potential errors
+        if (bufError.length() > 0) {
+            fail("Test failed: " + bufError.toString());
+        }
+    }
+
+    private class TestMapStore21Runnable implements Runnable {
+
+        private final Config config;
+
+        public TestMapStore21Runnable(Config config) {
+            this.config = config;
+        }
+
+        @Override
+        public void run() {
+
+            // start hazelcast instance
+            HazelcastInstance hcInstance = Hazelcast.newHazelcastInstance(config);
+            Sleep.sleep(5000, true);
+
+            // ------------------------------------------------------ {21s}
+
+            // try-finally to stop hazelcast instance
+            try {
+
+                // log started
+                logger.info(Thread.currentThread().getName() + " started.");
+
+                // set latch
+                ICountDownLatch latch = hcInstance.getCountDownLatch(latchName);
+                if (latch.trySetCount(1)) {
+                    latchSet.set(true);
+                    logger.info(Thread.currentThread().getName() + " latch set.");
+
+                    // get map
+                    // this will init the map (and call loadAllKeys())
+                    IMap<String, String> map = hcInstance.getMap(mapName);
+                    int size = map.size();
+                    logger.info("Map size = " + size);
+
+                    // release latch
+                    latchSet.set(false);
+                    latch.countDown();
+                    logger.info(Thread.currentThread().getName() + " latch released.");
+
+                } else {
+
+                    // 2nd node will take this branch
+
+                    // wait for latch
+                    logger.info(Thread.currentThread().getName() + " waiting for latch...");
+                    try {
+                        latch.await(7, TimeUnit.DAYS);
+                    } catch (InterruptedException e) {
+                        String msg = "Thread 2: Interrupted.";
+                        bufError.append(msg);
+                        logger.error(msg);
+                        return;
+                    }
+                    logger.info(Thread.currentThread().getName() + " latch has become 0.");
+
+                    // ensure wait was not aborted
+                    if (latchSet.get()) {
+                        String msg = Thread.currentThread().getName() + " latch.await() returned too early.";
+                        bufError.append(msg);
+                        logger.error(msg);
+                        return;
+                    }
+                }
+
+                // -------------------------------------------------- {41s}
+
+                // wait
+                Sleep.sleep(10000, true);
+
+                // -------------------------------------------------- {51s}
+
+            } catch (Exception e) {
+
+                // ensure no exceptions
+                String msg = Thread.currentThread().getName() + " exception: " + e.getMessage();
+                bufError.append(msg);
+                logger.error(msg);
+
+            } finally {
+                hcInstance.getLifecycleService().terminate();
+            }
+            logger.info(Thread.currentThread().getName() + " done.");
+        }
+    }
+
+}
+```
+
+The map store implementation simply sleeps during loadAllKeys():
+
+``` java
+package com.nm.test.hazelcast.utils;
+
+import com.hazelcast.core.MapStore;
+import org.apache.log4j.Logger;
+import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+
+/**
+ * A map store implementation which allows to wait in operations if configured.
+ */
+public class SlowMapStore implements MapStore<String, String> {
+
+    private static final Logger logger = Logger.getLogger(SlowMapStore.class);
+
+    // ----------------------------------------------------------------- config
+
+    private int sleepMsLoad;
+
+    private int sleepMsLoadAll;
+
+    private int sleepMsLoadAllPerKey;
+
+    private int sleepMsLoadAllKeys;
+
+    // ------------------------------------------------------------------ state
+
+    private final ConcurrentHashMap<String, String> store = new ConcurrentHashMap<String, String>();
+
+    // ----------------------------------------------------------- construction
+
+    public SlowMapStore() {
+        this.sleepMsLoad = 20;
+        this.sleepMsLoadAll = 50;
+        this.sleepMsLoadAllPerKey = 10;
+        this.sleepMsLoadAllKeys = 8000;
+    }
+
+    public void preload(int size) {
+        for (int i = 0; i < size; i++) {
+            store.put("k" + i, "v" + i);
+        }
+    }
+
+    // ---------------------------------------------------------------- setters
+
+    public void setSleepMsLoad(int sleepMsLoad) {
+        this.sleepMsLoad = sleepMsLoad;
+    }
+
+    public void setSleepMsLoadAll(int sleepMsLoadAll) {
+        this.sleepMsLoadAll = sleepMsLoadAll;
+    }
+
+    public void setSleepMsLoadAllPerKey(int sleepMsLoadAllPerKey) {
+        this.sleepMsLoadAllPerKey = sleepMsLoadAllPerKey;
+    }
+
+    public void setSleepMsLoadAllKeys(int sleepMsLoadAllKeys) {
+        this.sleepMsLoadAllKeys = sleepMsLoadAllKeys;
+    }
+
+    // ----------------------------------------------------- MapStore interface
+
+    @Override
+    public String load(String key) {
+        logger.info("load(" + key + ") called.");
+        Sleep.sleep(sleepMsLoad, false);
+        return store.get(key);
+    }
+
+    @Override
+    public Map<String, String> loadAll(Collection<String> keys) {
+        List<String> keysList = new ArrayList<String>(keys);
+        Collections.sort(keysList);
+        logger.info("loadAll(" + keysList + ") called.");
+        Sleep.sleep(sleepMsLoadAll, false);
+        Map<String, String> result = new HashMap<String, String>();
+        for (String key : keys) {
+            Sleep.sleep(sleepMsLoadAllPerKey, false);
+            String value = store.get(key);
+            if (value != null) {
+                result.put(key, value);
+            }
+        }
+        return result;
+    }
+
+    @Override
+    public Set<String> loadAllKeys() {
+        logger.info("loadAllKeys() called.");
+        Sleep.sleep(sleepMsLoadAllKeys, true);
+        Set<String> result = new HashSet<String>(store.keySet());
+        List<String> resultList = new ArrayList<String>(result);
+        Collections.sort(resultList);
+        logger.info("loadAllKeys result: size = " + result.size() + ", keys = " + resultList + ".");
+        return result;
+    }
+
+    @Override
+    public void store(String key, String value) {
+        logger.info("store(" + key + ") called.");
+        store.put(key, value);
+    }
+
+    @Override
+    public void storeAll(Map<String, String> map) {
+        TreeSet<String> setSorted = new TreeSet<String>(map.keySet());
+        logger.info("storeAll(" + setSorted + ") called.");
+        store.putAll(map);
+    }
+
+    @Override
+    public void delete(String key) {
+        logger.info("delete(" + key + ") called.");
+        store.remove(key);
+    }
+
+    @Override
+    public void deleteAll(Collection<String> keys) {
+        List<String> keysList = new ArrayList<String>(keys);
+        Collections.sort(keysList);
+        logger.info("deleteAll(" + keysList + ") called.");
+        for (String key : keys) {
+            store.remove(key);
+        }
+    }
+
+}
+```
+
+And here is my output:
+
+```
+Feb 12, 2015 5:12:11 PM com.hazelcast.config.XmlConfigLocator
+INFO: Loading 'hazelcast-default.xml' from classpath.
+0 [Thread 1] INFO com.hazelcast.instance.DefaultAddressPicker  - [LOCAL] [dev] [3.4.2-dev-20150212] Prefer IPv4 stack is true.
+0 [Thread 2] INFO com.hazelcast.instance.DefaultAddressPicker  - [LOCAL] [dev] [3.4.2-dev-20150212] Prefer IPv4 stack is true.
+11 [Thread 1] INFO com.hazelcast.instance.DefaultAddressPicker  - [LOCAL] [dev] [3.4.2-dev-20150212] Picked Address[10.0.1.62]:5701, using socket ServerSocket[addr=/0:0:0:0:0:0:0:0,localport=5701], bind any local is true
+11 [Thread 2] INFO com.hazelcast.instance.DefaultAddressPicker  - [LOCAL] [dev] [3.4.2-dev-20150212] Picked Address[10.0.1.62]:5702, using socket ServerSocket[addr=/0:0:0:0:0:0:0:0,localport=5702], bind any local is true
+250 [Thread 1] INFO com.hazelcast.spi.OperationService  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] Backpressure is disabled
+250 [Thread 2] INFO com.hazelcast.spi.OperationService  - [10.0.1.62]:5702 [dev] [3.4.2-dev-20150212] Backpressure is disabled
+255 [Thread 2] INFO com.hazelcast.spi.impl.BasicOperationScheduler  - [10.0.1.62]:5702 [dev] [3.4.2-dev-20150212] Starting with 2 generic operation threads and 4 partition operation threads.
+255 [Thread 1] INFO com.hazelcast.spi.impl.BasicOperationScheduler  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] Starting with 2 generic operation threads and 4 partition operation threads.
+331 [Thread 1] INFO com.hazelcast.system  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] Hazelcast 3.4.2-dev-20150212 (20150212 - 5a16e5a) starting at Address[10.0.1.62]:5701
+331 [Thread 2] INFO com.hazelcast.system  - [10.0.1.62]:5702 [dev] [3.4.2-dev-20150212] Hazelcast 3.4.2-dev-20150212 (20150212 - 5a16e5a) starting at Address[10.0.1.62]:5702
+331 [Thread 2] INFO com.hazelcast.system  - [10.0.1.62]:5702 [dev] [3.4.2-dev-20150212] Copyright (C) 2008-2014 Hazelcast.com
+331 [Thread 1] INFO com.hazelcast.system  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] Copyright (C) 2008-2014 Hazelcast.com
+338 [Thread 2] INFO com.hazelcast.instance.Node  - [10.0.1.62]:5702 [dev] [3.4.2-dev-20150212] Creating MulticastJoiner
+339 [Thread 1] INFO com.hazelcast.instance.Node  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] Creating MulticastJoiner
+346 [Thread 2] INFO com.hazelcast.core.LifecycleService  - [10.0.1.62]:5702 [dev] [3.4.2-dev-20150212] Address[10.0.1.62]:5702 is STARTING
+346 [Thread 1] INFO com.hazelcast.core.LifecycleService  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] Address[10.0.1.62]:5701 is STARTING
+8720 [Thread 1] INFO com.hazelcast.cluster.impl.MulticastJoiner  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] 
+
+
+Members [1] {
+    Member [10.0.1.62]:5701 this
+}
+
+8748 [Thread 1] INFO com.hazelcast.instance.HazelcastInstanceImpl  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] HazelcastInstance waiting for cluster size of 2
+8823 [Thread 2] INFO com.hazelcast.cluster.impl.MulticastJoiner  - [10.0.1.62]:5702 [dev] [3.4.2-dev-20150212] Trying to join to discovered node: Address[10.0.1.62]:5701
+8840 [hz._hzInstance_1_dev.cached.thread-3] INFO com.hazelcast.nio.tcp.SocketConnector  - [10.0.1.62]:5702 [dev] [3.4.2-dev-20150212] Connecting to /10.0.1.62:5701, timeout: 0, bind-any: true
+8842 [hz._hzInstance_2_dev.IO.thread-Acceptor] INFO com.hazelcast.nio.tcp.SocketAcceptor  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] Accepting socket connection from /10.0.1.62:53527
+8852 [hz._hzInstance_1_dev.cached.thread-3] INFO com.hazelcast.nio.tcp.TcpIpConnectionManager  - [10.0.1.62]:5702 [dev] [3.4.2-dev-20150212] Established socket connection between /10.0.1.62:53527 and 10.0.1.62/10.0.1.62:5701
+8856 [hz._hzInstance_2_dev.cached.thread-3] INFO com.hazelcast.nio.tcp.TcpIpConnectionManager  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] Established socket connection between /10.0.1.62:5701 and 10.0.1.62/10.0.1.62:53527
+9748 [Thread 1] INFO com.hazelcast.instance.HazelcastInstanceImpl  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] HazelcastInstance waiting for cluster size of 2
+10749 [Thread 1] INFO com.hazelcast.instance.HazelcastInstanceImpl  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] HazelcastInstance waiting for cluster size of 2
+11749 [Thread 1] INFO com.hazelcast.instance.HazelcastInstanceImpl  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] HazelcastInstance waiting for cluster size of 2
+12750 [Thread 1] INFO com.hazelcast.instance.HazelcastInstanceImpl  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] HazelcastInstance waiting for cluster size of 2
+13750 [Thread 1] INFO com.hazelcast.instance.HazelcastInstanceImpl  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] HazelcastInstance waiting for cluster size of 2
+14751 [Thread 1] INFO com.hazelcast.instance.HazelcastInstanceImpl  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] HazelcastInstance waiting for cluster size of 2
+15751 [Thread 1] INFO com.hazelcast.instance.HazelcastInstanceImpl  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] HazelcastInstance waiting for cluster size of 2
+15861 [hz._hzInstance_2_dev.generic-operation.thread-1] INFO com.hazelcast.cluster.ClusterService  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] 
+
+Members [2] {
+    Member [10.0.1.62]:5701 this
+    Member [10.0.1.62]:5702
+}
+
+15862 [hz._hzInstance_1_dev.generic-operation.thread-1] INFO com.hazelcast.cluster.ClusterService  - [10.0.1.62]:5702 [dev] [3.4.2-dev-20150212] 
+
+Members [2] {
+    Member [10.0.1.62]:5701
+    Member [10.0.1.62]:5702 this
+}
+
+16752 [Thread 1] INFO com.hazelcast.partition.InternalPartitionService  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] Initializing cluster partition table first arrangement...
+16765 [Thread 1] INFO com.hazelcast.instance.HazelcastInstanceImpl  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] HazelcastInstance starting after waiting for cluster size of 2
+16765 [Thread 1] INFO com.hazelcast.core.LifecycleService  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] Address[10.0.1.62]:5701 is STARTED
+20845 [Thread 2] INFO com.hazelcast.instance.HazelcastInstanceImpl  - [10.0.1.62]:5702 [dev] [3.4.2-dev-20150212] HazelcastInstance starting after waiting for cluster size of 2
+20845 [Thread 2] INFO com.hazelcast.core.LifecycleService  - [10.0.1.62]:5702 [dev] [3.4.2-dev-20150212] Address[10.0.1.62]:5702 is STARTED
+
+--- up to here this is a regular startup with min cluster size = 2 ---
+
+21766 [Thread 1] INFO com.nm.test.hazelcast.utils.Sleep  - Slept 5s.
+21767 [Thread 1] INFO com.nm.test.hazelcast.mapstore.TestMapStore21  - Thread 1 started.
+21790 [Thread 1] INFO com.nm.test.hazelcast.mapstore.TestMapStore21  - Thread 1 latch set.
+21820 [hz._hzInstance_2_dev.cached.thread-1] INFO com.nm.test.hazelcast.utils.SlowMapStore  - loadAllKeys() called.
+21824 [hz._hzInstance_1_dev.cached.thread-2] INFO com.nm.test.hazelcast.utils.SlowMapStore  - loadAllKeys() called.
+
+--- up to here node 1 set the latch and start map init ---
+
+25845 [Thread 2] INFO com.nm.test.hazelcast.utils.Sleep  - Slept 5s.
+25846 [Thread 2] INFO com.nm.test.hazelcast.mapstore.TestMapStore21  - Thread 2 started.
+25847 [Thread 2] INFO com.nm.test.hazelcast.mapstore.TestMapStore21  - Thread 2 waiting for latch...
+
+--- up to here node 2 starts to wait for the latch ---
+
+35848 [Thread 2] WARN com.hazelcast.spi.impl.BasicInvocation  - [10.0.1.62]:5702 [dev] [3.4.2-dev-20150212] No response for 10000 ms. BasicInvocationFuture{invocation=BasicInvocation{ serviceName='hz:impl:countDownLatchService', op=Operation{serviceName='hz:impl:countDownLatchService', callId=0, invocationTime=1423757558187, waitTimeout=604800000, callTimeout=5000}, partitionId=225, replicaIndex=0, tryCount=250, tryPauseMillis=500, invokeCount=1, callTimeout=5000, target=Address[10.0.1.62]:5702, backupsExpected=0, backupsCompleted=0}, response=null, done=false}
+35850 [Thread 2] WARN com.hazelcast.spi.impl.BasicInvocation  - [10.0.1.62]:5702 [dev] [3.4.2-dev-20150212] Asking if operation execution has been started: BasicInvocationFuture{invocation=BasicInvocation{ serviceName='hz:impl:countDownLatchService', op=Operation{serviceName='hz:impl:countDownLatchService', callId=0, invocationTime=1423757558187, waitTimeout=604800000, callTimeout=5000}, partitionId=225, replicaIndex=0, tryCount=250, tryPauseMillis=500, invokeCount=1, callTimeout=5000, target=Address[10.0.1.62]:5702, backupsExpected=0, backupsCompleted=0}, response=null, done=false}
+35850 [Thread 2] WARN com.hazelcast.spi.impl.BasicInvocation  - [10.0.1.62]:5702 [dev] [3.4.2-dev-20150212] 'is-executing': false -> BasicInvocationFuture{invocation=BasicInvocation{ serviceName='hz:impl:countDownLatchService', op=Operation{serviceName='hz:impl:countDownLatchService', callId=0, invocationTime=1423757558187, waitTimeout=604800000, callTimeout=5000}, partitionId=225, replicaIndex=0, tryCount=250, tryPauseMillis=500, invokeCount=1, callTimeout=5000, target=Address[10.0.1.62]:5702, backupsExpected=0, backupsCompleted=0}, response=null, done=false}
+35851 [Thread 2] ERROR com.nm.test.hazelcast.mapstore.TestMapStore21  - Thread 2 exception: No response for 10000 ms. Aborting invocation! BasicInvocationFuture{invocation=BasicInvocation{ serviceName='hz:impl:countDownLatchService', op=Operation{serviceName='hz:impl:countDownLatchService', callId=0, invocationTime=1423757558187, waitTimeout=604800000, callTimeout=5000}, partitionId=225, replicaIndex=0, tryCount=250, tryPauseMillis=500, invokeCount=1, callTimeout=5000, target=Address[10.0.1.62]:5702, backupsExpected=0, backupsCompleted=0}, response=null, done=false} No response has been received!  backups-expected:0 backups-completed: 0
+
+--- this is the problem! the latch wait timed out ---
+
+--- everything below is just shutdown ---
+
+35852 [Thread 2] INFO com.hazelcast.core.LifecycleService  - [10.0.1.62]:5702 [dev] [3.4.2-dev-20150212] Address[10.0.1.62]:5702 is SHUTTING_DOWN
+35852 [Thread 2] WARN com.hazelcast.instance.Node  - [10.0.1.62]:5702 [dev] [3.4.2-dev-20150212] Terminating forcefully...
+35852 [Thread 2] INFO com.hazelcast.instance.Node  - [10.0.1.62]:5702 [dev] [3.4.2-dev-20150212] Shutting down multicast service...
+35853 [Thread 2] INFO com.hazelcast.instance.Node  - [10.0.1.62]:5702 [dev] [3.4.2-dev-20150212] Shutting down connection manager...
+35857 [Thread 2] INFO com.hazelcast.nio.tcp.TcpIpConnection  - [10.0.1.62]:5702 [dev] [3.4.2-dev-20150212] Connection [Address[10.0.1.62]:5701] lost. Reason: Socket explicitly closed
+35857 [hz._hzInstance_2_dev.IO.thread-in-0] INFO com.hazelcast.nio.tcp.TcpIpConnection  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] Connection [Address[10.0.1.62]:5702] lost. Reason: java.io.EOFException[Remote socket closed!]
+35860 [hz._hzInstance_2_dev.IO.thread-in-0] WARN com.hazelcast.nio.tcp.ReadHandler  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] hz._hzInstance_2_dev.IO.thread-in-0 Closing socket to endpoint Address[10.0.1.62]:5702, Cause:java.io.EOFException: Remote socket closed!
+35860 [Thread 2] INFO com.hazelcast.instance.Node  - [10.0.1.62]:5702 [dev] [3.4.2-dev-20150212] Shutting down node engine...
+35952 [hz._hzInstance_2_dev.cached.thread-20] INFO com.hazelcast.nio.tcp.SocketConnector  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] Connecting to /10.0.1.62:5702, timeout: 0, bind-any: true
+35955 [hz._hzInstance_2_dev.cached.thread-20] INFO com.hazelcast.nio.tcp.SocketConnector  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] Could not connect to: /10.0.1.62:5702. Reason: SocketException[Connection refused to address /10.0.1.62:5702]
+35971 [hz._hzInstance_2_dev.cached.thread-20] INFO com.hazelcast.nio.tcp.SocketConnector  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] Connecting to /10.0.1.62:5702, timeout: 0, bind-any: true
+35972 [hz._hzInstance_2_dev.cached.thread-20] INFO com.hazelcast.nio.tcp.SocketConnector  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] Could not connect to: /10.0.1.62:5702. Reason: SocketException[Connection refused to address /10.0.1.62:5702]
+35981 [hz._hzInstance_2_dev.cached.thread-20] INFO com.hazelcast.nio.tcp.SocketConnector  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] Connecting to /10.0.1.62:5702, timeout: 0, bind-any: true
+35982 [hz._hzInstance_2_dev.cached.thread-20] INFO com.hazelcast.nio.tcp.SocketConnector  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] Could not connect to: /10.0.1.62:5702. Reason: SocketException[Connection refused to address /10.0.1.62:5702]
+35986 [hz._hzInstance_2_dev.cached.thread-20] INFO com.hazelcast.nio.tcp.SocketConnector  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] Connecting to /10.0.1.62:5702, timeout: 0, bind-any: true
+35987 [hz._hzInstance_2_dev.cached.thread-20] INFO com.hazelcast.nio.tcp.SocketConnector  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] Could not connect to: /10.0.1.62:5702. Reason: SocketException[Connection refused to address /10.0.1.62:5702]
+35988 [hz._hzInstance_2_dev.cached.thread-20] INFO com.hazelcast.nio.tcp.SocketConnector  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] Connecting to /10.0.1.62:5702, timeout: 0, bind-any: true
+35988 [hz._hzInstance_2_dev.cached.thread-20] INFO com.hazelcast.nio.tcp.SocketConnector  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] Could not connect to: /10.0.1.62:5702. Reason: SocketException[Connection refused to address /10.0.1.62:5702]
+35992 [hz._hzInstance_2_dev.cached.thread-20] INFO com.hazelcast.nio.tcp.SocketConnector  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] Connecting to /10.0.1.62:5702, timeout: 0, bind-any: true
+35992 [hz._hzInstance_2_dev.cached.thread-20] INFO com.hazelcast.nio.tcp.SocketConnector  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] Could not connect to: /10.0.1.62:5702. Reason: SocketException[Connection refused to address /10.0.1.62:5702]
+35999 [hz._hzInstance_2_dev.cached.thread-20] INFO com.hazelcast.nio.tcp.SocketConnector  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] Connecting to /10.0.1.62:5702, timeout: 0, bind-any: true
+36000 [hz._hzInstance_2_dev.cached.thread-20] INFO com.hazelcast.nio.tcp.SocketConnector  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] Could not connect to: /10.0.1.62:5702. Reason: SocketException[Connection refused to address /10.0.1.62:5702]
+36001 [hz._hzInstance_2_dev.cached.thread-20] INFO com.hazelcast.nio.tcp.SocketConnector  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] Connecting to /10.0.1.62:5702, timeout: 0, bind-any: true
+36001 [hz._hzInstance_2_dev.cached.thread-20] INFO com.hazelcast.nio.tcp.SocketConnector  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] Could not connect to: /10.0.1.62:5702. Reason: SocketException[Connection refused to address /10.0.1.62:5702]
+36002 [hz._hzInstance_2_dev.cached.thread-20] INFO com.hazelcast.nio.tcp.SocketConnector  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] Connecting to /10.0.1.62:5702, timeout: 0, bind-any: true
+36003 [hz._hzInstance_2_dev.cached.thread-20] INFO com.hazelcast.nio.tcp.SocketConnector  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] Could not connect to: /10.0.1.62:5702. Reason: SocketException[Connection refused to address /10.0.1.62:5702]
+36006 [hz._hzInstance_2_dev.cached.thread-20] INFO com.hazelcast.nio.tcp.SocketConnector  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] Connecting to /10.0.1.62:5702, timeout: 0, bind-any: true
+36007 [hz._hzInstance_2_dev.cached.thread-20] INFO com.hazelcast.nio.tcp.SocketConnector  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] Could not connect to: /10.0.1.62:5702. Reason: SocketException[Connection refused to address /10.0.1.62:5702]
+36007 [hz._hzInstance_2_dev.cached.thread-20] INFO com.hazelcast.nio.tcp.SocketConnector  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] Connecting to /10.0.1.62:5702, timeout: 0, bind-any: true
+36008 [hz._hzInstance_2_dev.cached.thread-20] INFO com.hazelcast.nio.tcp.SocketConnector  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] Could not connect to: /10.0.1.62:5702. Reason: SocketException[Connection refused to address /10.0.1.62:5702]
+36008 [hz._hzInstance_2_dev.cached.thread-19] INFO com.hazelcast.nio.tcp.SocketConnector  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] Connecting to /10.0.1.62:5702, timeout: 0, bind-any: true
+36009 [hz._hzInstance_2_dev.cached.thread-19] INFO com.hazelcast.nio.tcp.SocketConnector  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] Could not connect to: /10.0.1.62:5702. Reason: SocketException[Connection refused to address /10.0.1.62:5702]
+36009 [hz._hzInstance_2_dev.cached.thread-21] INFO com.hazelcast.nio.tcp.SocketConnector  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] Connecting to /10.0.1.62:5702, timeout: 0, bind-any: true
+36010 [hz._hzInstance_2_dev.cached.thread-21] INFO com.hazelcast.nio.tcp.SocketConnector  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] Could not connect to: /10.0.1.62:5702. Reason: SocketException[Connection refused to address /10.0.1.62:5702]
+36011 [hz._hzInstance_2_dev.cached.thread-20] INFO com.hazelcast.nio.tcp.SocketConnector  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] Connecting to /10.0.1.62:5702, timeout: 0, bind-any: true
+36011 [hz._hzInstance_2_dev.cached.thread-20] INFO com.hazelcast.nio.tcp.SocketConnector  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] Could not connect to: /10.0.1.62:5702. Reason: SocketException[Connection refused to address /10.0.1.62:5702]
+36014 [hz._hzInstance_2_dev.cached.thread-20] INFO com.hazelcast.nio.tcp.SocketConnector  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] Connecting to /10.0.1.62:5702, timeout: 0, bind-any: true
+36016 [hz._hzInstance_2_dev.cached.thread-20] INFO com.hazelcast.nio.tcp.SocketConnector  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] Could not connect to: /10.0.1.62:5702. Reason: SocketException[Connection refused to address /10.0.1.62:5702]
+36018 [hz._hzInstance_2_dev.cached.thread-20] INFO com.hazelcast.nio.tcp.SocketConnector  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] Connecting to /10.0.1.62:5702, timeout: 0, bind-any: true
+36018 [hz._hzInstance_2_dev.cached.thread-20] INFO com.hazelcast.nio.tcp.SocketConnector  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] Could not connect to: /10.0.1.62:5702. Reason: SocketException[Connection refused to address /10.0.1.62:5702]
+36018 [hz._hzInstance_2_dev.cached.thread-20] INFO com.hazelcast.nio.tcp.SocketConnector  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] Connecting to /10.0.1.62:5702, timeout: 0, bind-any: true
+36019 [hz._hzInstance_2_dev.cached.thread-20] INFO com.hazelcast.nio.tcp.SocketConnector  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] Could not connect to: /10.0.1.62:5702. Reason: SocketException[Connection refused to address /10.0.1.62:5702]
+36029 [hz._hzInstance_2_dev.cached.thread-20] INFO com.hazelcast.nio.tcp.SocketConnector  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] Connecting to /10.0.1.62:5702, timeout: 0, bind-any: true
+36029 [hz._hzInstance_2_dev.cached.thread-20] INFO com.hazelcast.nio.tcp.SocketConnector  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] Could not connect to: /10.0.1.62:5702. Reason: SocketException[Connection refused to address /10.0.1.62:5702]
+36034 [hz._hzInstance_2_dev.cached.thread-20] INFO com.hazelcast.nio.tcp.SocketConnector  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] Connecting to /10.0.1.62:5702, timeout: 0, bind-any: true
+36035 [hz._hzInstance_2_dev.cached.thread-20] INFO com.hazelcast.nio.tcp.SocketConnector  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] Could not connect to: /10.0.1.62:5702. Reason: SocketException[Connection refused to address /10.0.1.62:5702]
+36036 [hz._hzInstance_2_dev.cached.thread-22] INFO com.hazelcast.nio.tcp.SocketConnector  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] Connecting to /10.0.1.62:5702, timeout: 0, bind-any: true
+36036 [hz._hzInstance_2_dev.cached.thread-22] INFO com.hazelcast.nio.tcp.SocketConnector  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] Could not connect to: /10.0.1.62:5702. Reason: SocketException[Connection refused to address /10.0.1.62:5702]
+36039 [hz._hzInstance_2_dev.cached.thread-22] INFO com.hazelcast.nio.tcp.SocketConnector  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] Connecting to /10.0.1.62:5702, timeout: 0, bind-any: true
+36040 [hz._hzInstance_2_dev.cached.thread-22] INFO com.hazelcast.nio.tcp.SocketConnector  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] Could not connect to: /10.0.1.62:5702. Reason: SocketException[Connection refused to address /10.0.1.62:5702]
+36041 [hz._hzInstance_2_dev.cached.thread-22] INFO com.hazelcast.nio.tcp.SocketConnector  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] Connecting to /10.0.1.62:5702, timeout: 0, bind-any: true
+36041 [hz._hzInstance_2_dev.cached.thread-22] INFO com.hazelcast.nio.tcp.SocketConnector  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] Could not connect to: /10.0.1.62:5702. Reason: SocketException[Connection refused to address /10.0.1.62:5702]
+36045 [hz._hzInstance_2_dev.cached.thread-20] INFO com.hazelcast.nio.tcp.SocketConnector  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] Connecting to /10.0.1.62:5702, timeout: 0, bind-any: true
+36046 [hz._hzInstance_2_dev.cached.thread-20] INFO com.hazelcast.nio.tcp.SocketConnector  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] Could not connect to: /10.0.1.62:5702. Reason: SocketException[Connection refused to address /10.0.1.62:5702]
+36052 [hz._hzInstance_2_dev.cached.thread-20] INFO com.hazelcast.nio.tcp.SocketConnector  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] Connecting to /10.0.1.62:5702, timeout: 0, bind-any: true
+36053 [hz._hzInstance_2_dev.cached.thread-20] INFO com.hazelcast.nio.tcp.SocketConnector  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] Could not connect to: /10.0.1.62:5702. Reason: SocketException[Connection refused to address /10.0.1.62:5702]
+36054 [hz._hzInstance_2_dev.cached.thread-20] INFO com.hazelcast.nio.tcp.SocketConnector  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] Connecting to /10.0.1.62:5702, timeout: 0, bind-any: true
+36054 [hz._hzInstance_2_dev.cached.thread-20] INFO com.hazelcast.nio.tcp.SocketConnector  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] Could not connect to: /10.0.1.62:5702. Reason: SocketException[Connection refused to address /10.0.1.62:5702]
+36056 [hz._hzInstance_2_dev.cached.thread-22] INFO com.hazelcast.nio.tcp.SocketConnector  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] Connecting to /10.0.1.62:5702, timeout: 0, bind-any: true
+36057 [hz._hzInstance_2_dev.cached.thread-22] INFO com.hazelcast.nio.tcp.SocketConnector  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] Could not connect to: /10.0.1.62:5702. Reason: SocketException[Connection refused to address /10.0.1.62:5702]
+36057 [hz._hzInstance_2_dev.cached.thread-22] INFO com.hazelcast.nio.tcp.SocketConnector  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] Connecting to /10.0.1.62:5702, timeout: 0, bind-any: true
+36058 [hz._hzInstance_2_dev.cached.thread-22] INFO com.hazelcast.nio.tcp.SocketConnector  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] Could not connect to: /10.0.1.62:5702. Reason: SocketException[Connection refused to address /10.0.1.62:5702]
+36063 [hz._hzInstance_2_dev.cached.thread-22] INFO com.hazelcast.nio.tcp.SocketConnector  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] Connecting to /10.0.1.62:5702, timeout: 0, bind-any: true
+36064 [hz._hzInstance_2_dev.cached.thread-22] INFO com.hazelcast.nio.tcp.SocketConnector  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] Could not connect to: /10.0.1.62:5702. Reason: SocketException[Connection refused to address /10.0.1.62:5702]
+36071 [hz._hzInstance_2_dev.cached.thread-22] INFO com.hazelcast.nio.tcp.SocketConnector  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] Connecting to /10.0.1.62:5702, timeout: 0, bind-any: true
+36072 [hz._hzInstance_2_dev.cached.thread-22] INFO com.hazelcast.nio.tcp.SocketConnector  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] Could not connect to: /10.0.1.62:5702. Reason: SocketException[Connection refused to address /10.0.1.62:5702]
+36077 [hz._hzInstance_2_dev.cached.thread-22] INFO com.hazelcast.nio.tcp.SocketConnector  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] Connecting to /10.0.1.62:5702, timeout: 0, bind-any: true
+36077 [hz._hzInstance_2_dev.cached.thread-22] INFO com.hazelcast.nio.tcp.SocketConnector  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] Could not connect to: /10.0.1.62:5702. Reason: SocketException[Connection refused to address /10.0.1.62:5702]
+36078 [hz._hzInstance_2_dev.cached.thread-22] INFO com.hazelcast.nio.tcp.SocketConnector  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] Connecting to /10.0.1.62:5702, timeout: 0, bind-any: true
+36078 [hz._hzInstance_2_dev.cached.thread-22] INFO com.hazelcast.nio.tcp.SocketConnector  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] Could not connect to: /10.0.1.62:5702. Reason: SocketException[Connection refused to address /10.0.1.62:5702]
+36079 [hz._hzInstance_2_dev.cached.thread-20] INFO com.hazelcast.nio.tcp.SocketConnector  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] Connecting to /10.0.1.62:5702, timeout: 0, bind-any: true
+36080 [hz._hzInstance_2_dev.cached.thread-20] INFO com.hazelcast.nio.tcp.SocketConnector  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] Could not connect to: /10.0.1.62:5702. Reason: SocketException[Connection refused to address /10.0.1.62:5702]
+36080 [hz._hzInstance_2_dev.cached.thread-20] INFO com.hazelcast.nio.tcp.SocketConnector  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] Connecting to /10.0.1.62:5702, timeout: 0, bind-any: true
+36080 [hz._hzInstance_2_dev.cached.thread-20] INFO com.hazelcast.nio.tcp.SocketConnector  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] Could not connect to: /10.0.1.62:5702. Reason: SocketException[Connection refused to address /10.0.1.62:5702]
+36081 [hz._hzInstance_2_dev.cached.thread-21] INFO com.hazelcast.nio.tcp.SocketConnector  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] Connecting to /10.0.1.62:5702, timeout: 0, bind-any: true
+36081 [hz._hzInstance_2_dev.cached.thread-21] INFO com.hazelcast.nio.tcp.SocketConnector  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] Could not connect to: /10.0.1.62:5702. Reason: SocketException[Connection refused to address /10.0.1.62:5702]
+36081 [hz._hzInstance_2_dev.cached.thread-18] INFO com.hazelcast.nio.tcp.SocketConnector  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] Connecting to /10.0.1.62:5702, timeout: 0, bind-any: true
+36082 [hz._hzInstance_2_dev.cached.thread-18] INFO com.hazelcast.nio.tcp.SocketConnector  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] Could not connect to: /10.0.1.62:5702. Reason: SocketException[Connection refused to address /10.0.1.62:5702]
+36085 [hz._hzInstance_2_dev.cached.thread-19] INFO com.hazelcast.nio.tcp.SocketConnector  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] Connecting to /10.0.1.62:5702, timeout: 0, bind-any: true
+36085 [hz._hzInstance_2_dev.cached.thread-19] INFO com.hazelcast.nio.tcp.SocketConnector  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] Could not connect to: /10.0.1.62:5702. Reason: SocketException[Connection refused to address /10.0.1.62:5702]
+36435 [hz._hzInstance_2_dev.cached.thread-18] INFO com.hazelcast.nio.tcp.SocketConnector  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] Connecting to /10.0.1.62:5702, timeout: 0, bind-any: true
+36436 [hz._hzInstance_2_dev.cached.thread-18] INFO com.hazelcast.nio.tcp.SocketConnector  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] Could not connect to: /10.0.1.62:5702. Reason: SocketException[Connection refused to address /10.0.1.62:5702]
+36436 [hz._hzInstance_2_dev.cached.thread-18] WARN com.hazelcast.nio.tcp.TcpIpConnectionMonitor  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] Removing connection to endpoint Address[10.0.1.62]:5702 Cause => java.net.SocketException {Connection refused to address /10.0.1.62:5702}, Error-Count: 5
+36438 [hz._hzInstance_2_dev.cached.thread-18] INFO com.hazelcast.cluster.ClusterService  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] Removing Member [10.0.1.62]:5702
+36451 [hz._hzInstance_2_dev.cached.thread-18] INFO com.hazelcast.cluster.ClusterService  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] 
+
+Members [1] {
+    Member [10.0.1.62]:5701 this
+}
+
+38867 [Thread 2] INFO com.hazelcast.instance.NodeExtension  - [10.0.1.62]:5702 [dev] [3.4.2-dev-20150212] Destroying node NodeExtension.
+38871 [Thread 2] INFO com.hazelcast.instance.Node  - [10.0.1.62]:5702 [dev] [3.4.2-dev-20150212] Hazelcast Shutdown is completed in 3017 ms.
+38874 [Thread 2] INFO com.hazelcast.core.LifecycleService  - [10.0.1.62]:5702 [dev] [3.4.2-dev-20150212] Address[10.0.1.62]:5702 is SHUTDOWN
+38874 [Thread 2] INFO com.nm.test.hazelcast.mapstore.TestMapStore21  - Thread 2 done.
+38957 [hz._hzInstance_2_dev.migration] INFO com.hazelcast.partition.InternalPartitionService  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] Partition balance is ok, no need to re-partition cluster data... 
+41820 [hz._hzInstance_2_dev.cached.thread-1] INFO com.nm.test.hazelcast.utils.Sleep  - Slept 20s.
+41821 [hz._hzInstance_2_dev.cached.thread-1] INFO com.nm.test.hazelcast.utils.SlowMapStore  - loadAllKeys result: size = 0, keys = [].
+42086 [Thread 1] INFO com.nm.test.hazelcast.mapstore.TestMapStore21  - Map size = 0
+42087 [Thread 1] INFO com.nm.test.hazelcast.mapstore.TestMapStore21  - Thread 1 latch released.
+52088 [Thread 1] INFO com.nm.test.hazelcast.utils.Sleep  - Slept 10s.
+52088 [Thread 1] INFO com.hazelcast.core.LifecycleService  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] Address[10.0.1.62]:5701 is SHUTTING_DOWN
+52088 [Thread 1] WARN com.hazelcast.instance.Node  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] Terminating forcefully...
+52088 [Thread 1] INFO com.hazelcast.instance.Node  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] Shutting down multicast service...
+52089 [Thread 1] INFO com.hazelcast.instance.Node  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] Shutting down connection manager...
+52090 [Thread 1] INFO com.hazelcast.instance.Node  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] Shutting down node engine...
+52099 [Thread 1] INFO com.hazelcast.instance.NodeExtension  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] Destroying node NodeExtension.
+52100 [Thread 1] INFO com.hazelcast.instance.Node  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] Hazelcast Shutdown is completed in 12 ms.
+52132 [Thread 1] INFO com.hazelcast.core.LifecycleService  - [10.0.1.62]:5701 [dev] [3.4.2-dev-20150212] Address[10.0.1.62]:5701 is SHUTDOWN
+52132 [Thread 1] INFO com.nm.test.hazelcast.mapstore.TestMapStore21  - Thread 1 done.
+```

@@ -1,0 +1,54 @@
+Steps to reproduce (on 6.0.0 or 6.5.0)
+
+1. Setup an instance with 10 sample entries under dc=example,dc=com
+2. Rebuild indexes for an attribute type with no index set by default such as address:
+
+$ /tmp/opendj-6-0-0/bin/rebuild-index -p 60444 -wpassword -b dc=example,dc=com -i address -X 
+Rebuild Index task 20181102122236833 scheduled to start immediately
+[02/Nov/2018:12:22:36 +0100] severity="NOTICE" msgCount=0 msgID=org.opends.messages.backend-413 message="Rebuild Index task 20181102122236833 started execution"
+[02/Nov/2018:12:22:36 +0100] severity="NOTICE" msgCount=1 msgID=org.opends.messages.backend-370 message="The backend userRoot is now taken offline"
+[02/Nov/2018:12:22:36 +0100] severity="INFORMATION" msgCount=2 msgID=org.opends.messages.backend-410 message="JE backend 'userRoot' does not specify the number of cleaner threads: defaulting to 3 threads"
+[02/Nov/2018:12:22:36 +0100] severity="INFORMATION" msgCount=3 msgID=org.opends.messages.backend-411 message="JE backend 'userRoot' does not specify the number of lock tables: defaulting to 23"
+[02/Nov/2018:12:22:37 +0100] severity="ERROR" msgCount=4 msgID=org.opends.messages.tool-852 message="An error occurred while attempting to perform index rebuild:  There is no index configured for attribute type 'address' (id=org.opends.messages.backend-455)"
+[02/Nov/2018:12:22:37 +0100] severity="ERROR" msgCount=5 msgID=org.opends.messages.config-422 message="The Directory Server was unable to acquire a shared lock for backend userRoot: The attempt to obtain a shared lock on file /tmp/opendj-6-0-0/locks/backend-userRoot.lock was rejected because an exclusive lock was already held on that file. This generally means that the backend is in use by a process that requires an exclusive lock (e.g., importing from LDIF or restoring a backup). This backend will be disabled"
+[02/Nov/2018:12:22:37 +0100] severity="ERROR" msgCount=6 msgID=org.opends.messages.config-646 message="org.forgerock.opendj.config.server.ConfigChangeListenerAdaptor.applyConfigurationChange failed for entry ds-cfg-backend-id=userRoot,cn=Backends,cn=config: result code=Constraint Violation, admin action required=true, messages="The Directory Server was unable to acquire a shared lock for backend userRoot: The attempt to obtain a shared lock on file /tmp/opendj-6-0-0/locks/backend-userRoot.lock was rejected because an exclusive lock was already held on that file. This generally means that the backend is in use by a process that requires an exclusive lock (e.g., importing from LDIF or restoring a backup). This backend will be disabled""
+[02/Nov/2018:12:22:37 +0100] severity="ERROR" msgCount=7 msgID=null--1 message="Constraint Violation: The task could not enable a backend: ds-cfg-backend-id=userRoot,cn=Backends,cn=config"
+[02/Nov/2018:12:22:37 +0100] severity="NOTICE" msgCount=8 msgID=org.opends.messages.backend-414 message="Rebuild Index task 20181102122236833 finished execution in the state Stopped by error"
+[02/11/2018:12:22:39 +0100] category=SDK seq=0 severity=FINE msg=LdapClientImpl 'org.forgerock.opendj.ldap.LdapClientImpl@4a668b6e' is closing while 1 active connections remain
+Rebuild Index task 20181102122236833 did not complete successfully
+
+
+
+3. Try to search for dc=example,dc=com
+
+$ /tmp/opendj-6-0-0/bin/ldapsearch -h localhost -p 60444 -X -Z -D "cn=Directory Manager" -wpassword -b "dc=example,dc=com" "&"
+# The LDAP search request failed: 32 (No Such Entry)
+# Additional Information:  The entry dc=example,dc=com specified as the search base does not exist in the Directory Server
+
+
+
+Expected behavior
+rebuild-index should fail but must re-enable the backend before exiting such as in previous version (example below with 5.5.0) so that the search succeeds:
+
+$ /tmp/opendj-5-5-0/bin/rebuild-index -p 55444 -wpassword -b dc=example,dc=com -i address -X 
+Rebuild Index task 20181102122311561 scheduled to start immediately
+[02/Nov/2018:12:23:11 +0100] severity="NOTICE" msgCount=0 msgID=org.opends.messages.backend-413 message="Rebuild Index task 20181102122311561 started execution"
+[02/Nov/2018:12:23:11 +0100] severity="NOTICE" msgCount=1 msgID=org.opends.messages.backend-370 message="The backend userRoot is now taken offline"
+[02/Nov/2018:12:23:11 +0100] severity="INFORMATION" msgCount=2 msgID=org.opends.messages.backend-410 message="JE backend 'userRoot' does not specify the number of cleaner threads: defaulting to 12 threads"
+[02/Nov/2018:12:23:11 +0100] severity="INFORMATION" msgCount=3 msgID=org.opends.messages.backend-411 message="JE backend 'userRoot' does not specify the number of lock tables: defaulting to 73"
+[02/Nov/2018:12:23:12 +0100] severity="ERROR" msgCount=4 msgID=org.opends.messages.tool-852 message="An error occurred while attempting to perform index rebuild:  There is no index configured for attribute type 'address' (id=org.opends.messages.backend-455)"
+[02/Nov/2018:12:23:12 +0100] severity="INFORMATION" msgCount=5 msgID=org.opends.messages.backend-410 message="JE backend 'userRoot' does not specify the number of cleaner threads: defaulting to 12 threads"
+[02/Nov/2018:12:23:12 +0100] severity="INFORMATION" msgCount=6 msgID=org.opends.messages.backend-411 message="JE backend 'userRoot' does not specify the number of lock tables: defaulting to 73"
+[02/Nov/2018:12:23:12 +0100] severity="NOTICE" msgCount=7 msgID=org.opends.messages.backend-513 message="The database backend userRoot containing 12 entries has started"
+[02/Nov/2018:12:23:12 +0100] severity="NOTICE" msgCount=8 msgID=org.opends.messages.backend-414 message="Rebuild Index task 20181102122311561 finished execution in the state Stopped by error"
+Rebuild Index task 20181102122311561 did not complete successfully
+
+$ /tmp/opendj-5-5-0/bin/ldapsearch -h localhost -p 55444 -X -Z -D "cn=Directory Manager" -wpassword -b "dc=example,dc=com" -s base "&"
+dn: dc=example,dc=com
+objectClass: top
+objectClass: domain
+dc: example
+
+
+
+As a workaround, server can be restarted or dsconfig can be used to enable the disabled backend.

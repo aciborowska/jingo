@@ -1,0 +1,56 @@
+**Describe the bug**
+Calling ``Cache#getAll`` does not result in a call to ``CacheLoader#loadAll`` in any case.
+
+**Expected behavior**
+A call to ``Cache#getAll`` should use ``CacheLoader#loadAll`` if there is more than one value to load, to reduce e.g. the number of requests to the backing database.
+
+**To Reproduce**
+Here is a minimal code example to reproduce the issue:
+```
+public static void main(String[] args) {
+	Config config = new Config();
+
+	HazelcastInstance hazelcastInstance = Hazelcast.newHazelcastInstance(config);
+
+	CachingProvider cachingProvider = new HazelcastServerCachingProvider(hazelcastInstance);
+	CacheManager cacheManager = cachingProvider.getCacheManager();
+
+	CacheConfig<String, String> configuration = new CacheConfig<>("test-cache");
+	configuration.setTypes(String.class, String.class);
+	configuration.setStoreByValue(false);
+	configuration.setReadThrough(true);
+	configuration.setCacheLoaderFactory(new TestCacheLoaderFactory());
+
+	Cache<String, String> cache = cacheManager.createCache("test-cache", configuration);
+
+	System.out.println(cache.get("test1"));
+	System.out.println(cache.getAll(Sets.newHashSet("test2", "test3")));
+
+	hazelcastInstance.shutdown();
+}
+
+private static class TestCacheLoaderFactory implements Factory<TestCacheLoader> {
+	@Override
+	public TestCacheLoader create() {
+		return new TestCacheLoader();
+	}
+}
+
+private static class TestCacheLoader implements CacheLoader<String, String> {
+	@Override
+	public String load(String key) throws CacheLoaderException {
+		System.out.println("LOAD " + key);
+		return key;
+	}
+
+	@Override
+	public Map<String, String> loadAll(Iterable<? extends String> keys) throws CacheLoaderException {
+		return StreamSupport.stream(keys.spliterator(), false).peek(key -> System.out.println("LOAD ALL " + key)).collect(Collectors.toMap(Function.identity(), Function.identity()));
+	}
+}
+```
+
+**Additional context**
+Hazelcast version: 4.0
+Java Version: 1.8.0_162
+javax cache-api version: 1.1.1

@@ -1,0 +1,106 @@
+Attached a test to the issue i am facing. The one implementing ICache has no issue but the one implementing IMap seems to have propagation delay. If I change the sleep in testNearCacheMap() to 10 seconds it will pass.
+
+Tested this on version 3.7.2 and 3.9-SNAPSHOT
+
+
+```java
+import com.hazelcast.cache.ICache;
+import com.hazelcast.client.HazelcastClient;
+import com.hazelcast.client.cache.impl.HazelcastClientCacheManager;
+import com.hazelcast.client.cache.impl.HazelcastClientCachingProvider;
+import com.hazelcast.client.config.ClientConfig;
+import com.hazelcast.config.CacheConfig;
+import com.hazelcast.config.Config;
+import com.hazelcast.config.InMemoryFormat;
+import com.hazelcast.config.NearCacheConfig;
+import com.hazelcast.core.Hazelcast;
+import com.hazelcast.core.HazelcastInstance;
+import com.hazelcast.core.IMap;
+import com.hazelcast.spi.properties.GroupProperty;
+import org.junit.Test;
+
+import javax.cache.spi.CachingProvider;
+
+import static org.junit.Assert.assertEquals;
+
+public class NearCacheTest {
+
+    @Test
+    public void testNearCacheMap() throws Exception {
+        final Config config = new Config();
+        config.setProperty(GroupProperty.CACHE_INVALIDATION_MESSAGE_BATCH_ENABLED.getName(), "true");
+        config.setProperty(GroupProperty.CACHE_INVALIDATION_MESSAGE_BATCH_FREQUENCY_SECONDS.getName(), "2");
+        Hazelcast.newHazelcastInstance(config);
+
+        NearCacheConfig nearCacheConfig = new NearCacheConfig("default");
+        nearCacheConfig.setInMemoryFormat(InMemoryFormat.OBJECT);
+        nearCacheConfig.setInvalidateOnChange(true);
+        nearCacheConfig.setEvictionPolicy("NONE");
+        nearCacheConfig.setTimeToLiveSeconds(0);
+        nearCacheConfig.setMaxIdleSeconds(0);
+
+        final HazelcastInstance client1 = HazelcastClient.newHazelcastClient(getClientConfig("default"));
+        final HazelcastInstance client2 = HazelcastClient.newHazelcastClient(getClientConfig("default"));
+
+        IMap<Object, Object> map1 = client1.getMap("default");
+        IMap<Object, Object> map2 = client2.getMap("default");
+
+        for (int i = 0; i < 3; i++) {
+            String value = "val-" + i;
+            map1.put("abcdefg", value);
+            assertEquals(value, map1.get("abcdefg"));
+            Thread.sleep(2000);
+            assertEquals(value, map2.get("abcdefg"));
+        }
+    }
+
+    @Test
+    public void testNearCache() throws Exception {
+        final Config config = new Config();
+        config.setProperty(GroupProperty.CACHE_INVALIDATION_MESSAGE_BATCH_ENABLED.getName(), "true");
+        config.setProperty(GroupProperty.CACHE_INVALIDATION_MESSAGE_BATCH_FREQUENCY_SECONDS.getName(), "2");
+        Hazelcast.newHazelcastInstance(config);
+
+        NearCacheConfig nearCacheConfig = new NearCacheConfig("default");
+        nearCacheConfig.setInMemoryFormat(InMemoryFormat.OBJECT);
+        nearCacheConfig.setInvalidateOnChange(true);
+        nearCacheConfig.setEvictionPolicy("NONE");
+        nearCacheConfig.setTimeToLiveSeconds(0);
+        nearCacheConfig.setMaxIdleSeconds(0);
+
+        final HazelcastInstance client1 = HazelcastClient.newHazelcastClient(getClientConfig("default"));
+        final HazelcastInstance client2 = HazelcastClient.newHazelcastClient(getClientConfig("default"));
+
+        CachingProvider provider = HazelcastClientCachingProvider.createCachingProvider(client1);
+        HazelcastClientCacheManager cacheManager = (HazelcastClientCacheManager) provider.getCacheManager();
+        cacheManager.createCache("default", createCacheConfig("default", InMemoryFormat.OBJECT));
+
+        final ICache<Object, Object> cache1 = client1.getCacheManager().getCache("default");
+        final ICache<Object, Object> cache2 = client2.getCacheManager().getCache("default");
+
+        for (int i = 0; i < 3; i++) {
+            String value = "val-" + i;
+            cache1.put("abcdefg", value);
+            assertEquals(value, cache1.get("abcdefg"));
+            Thread.sleep(2000);
+            assertEquals(value, cache2.get("abcdefg"));
+        }
+    }
+
+    private CacheConfig<String, String> createCacheConfig(String cacheName, InMemoryFormat inMemoryFormat) {
+        return new CacheConfig<String, String>()
+                .setName(cacheName)
+                .setInMemoryFormat(inMemoryFormat);
+    }
+
+    private ClientConfig getClientConfig(String mapName) {
+        NearCacheConfig nearCacheConfig = new NearCacheConfig(mapName)
+                .setInMemoryFormat(InMemoryFormat.BINARY)
+                .setLocalUpdatePolicy(NearCacheConfig.LocalUpdatePolicy.INVALIDATE);
+
+        ClientConfig clientConfig = new ClientConfig();
+        clientConfig.addNearCacheConfig(nearCacheConfig);
+        return clientConfig;
+    }
+}
+```

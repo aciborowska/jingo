@@ -1,0 +1,67 @@
+Read and write separation, no proper routing when multithreading
+
+version:3.0.0
+
+Our requirement is to force the main library to be routed at the beginning of the "add", "create", "save", "insert", "update", "del" methods. In the process of using high-concurrency, the route is not correct。
+
+Found in the middleware, found that the judgment route is a static variable， `private static boolean isMasterRouteOnly` 。
+
+This static variable is shared by all threads. The a thread is not executed. The b thread modifies this value. Then, when routing, it uses this variable to judge the route, resulting in no correct route.
+
+sharding code
+``` java
+@NoArgsConstructor(access = AccessLevel.PRIVATE)
+public final class HintManagerHolder {
+    
+    public static final String DB_TABLE_NAME = "DB_TABLE_NAME";
+    
+    public static final String DB_COLUMN_NAME = "DB_COLUMN_NAME";
+    
+    private static final ThreadLocal<HintManager> HINT_MANAGER_HOLDER = new ThreadLocal<>();
+    
+    private static final Multimap<String, Comparable<?>> DATABASE_SHARDING_VALUES = HashMultimap.create();
+    
+    private static final Multimap<String, Comparable<?>> TABLE_SHARDING_VALUES = HashMultimap.create();
+    
+    @Setter
+    private static boolean databaseShardingOnly;
+    
+    @Setter
+    private static boolean isMasterRouteOnly;
+```
+
+our code
+``` java
+private static final ThreadLocal<Boolean> CUS_HINT_MANAGER_HOLDER = new ThreadLocal<>();
+
+    @Order(Ordered.HIGHEST_PRECEDENCE)
+    @Around("execution(public * com.xhg..dao..*.*(..)) || execution(public * com.xhg..service.impl..*.*(..))")
+    public Object hintMasterCalls(ProceedingJoinPoint jp) throws Throwable {
+        String methodName = jp.getSignature().getName();
+
+        if (HintManagerHolder.isMasterRouteOnly() || HintManagerHolder.get() != null) {
+            if (CUS_HINT_MANAGER_HOLDER.get() == null || !CUS_HINT_MANAGER_HOLDER.get()) {
+                CUS_HINT_MANAGER_HOLDER.set(true);
+            }
+            return jp.proceed();
+        }
+
+        if (CUS_HINT_MANAGER_HOLDER.get() == null || !CUS_HINT_MANAGER_HOLDER.get()) {
+            String[] methodPreArr = {"add", "create", "save", "insert", "update", "del"};
+            for (String methodPre : methodPreArr) {
+                if (methodName.startsWith(methodPre)) {
+                    CUS_HINT_MANAGER_HOLDER.set(true);
+                    break;
+                }
+            }
+        }
+
+        if (CUS_HINT_MANAGER_HOLDER.get() != null && CUS_HINT_MANAGER_HOLDER.get()) {
+            HintManager hintManager = HintManager.getInstance();
+            hintManager.setMasterRouteOnly();
+
+        }
+        return jp.proceed();
+    }
+```
+

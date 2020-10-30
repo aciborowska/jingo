@@ -1,0 +1,57 @@
+`close()` method of a singleton `Closeable` `CacheLoader` is called when some of the partitions are moved to a newly started `HazelcastInstance`... which is an unexpected situation.. I even call this violation. 
+
+``` java
+@org.junit.Test
+public void testCloseableCacheLoader() throws InterruptedException {
+    CachingProvider provider = HazelcastServerCachingProvider
+            .createCachingProvider(Hazelcast.newHazelcastInstance());
+
+    CacheManager cacheManager = provider.getCacheManager();
+
+    CloseableCacheLoader loader = new CloseableCacheLoader();
+
+    Factory<CloseableCacheLoader> loaderFactory = FactoryBuilder.factoryOf(loader);
+    CompleteConfiguration<Object, Object> configuration = new CacheConfig()
+            .setCacheLoaderFactory(loaderFactory).setReadThrough(true);
+
+    Cache<Object, Object> cache = cacheManager.createCache("test", configuration);
+
+    // trigger partition assignment
+    cache.get("key");
+
+    Hazelcast.newHazelcastInstance();
+
+    for (int i = 0; i < 1000; i++) {
+        cache.get(i);
+        LockSupport.parkNanos(1000);
+    }
+
+    Assert.assertFalse("CacheLoader should not be closed!", loader.closed);
+}
+
+static class CloseableCacheLoader implements CacheLoader, Closeable, Serializable {
+
+    volatile boolean closed = false;
+
+    @Override
+    public Object load(Object key) throws CacheLoaderException {
+        if (closed) {
+            throw new IllegalStateException();
+        }
+        return null;
+    }
+
+    @Override
+    public Map loadAll(Iterable keys) throws CacheLoaderException {
+        if (closed) {
+            throw new IllegalStateException();
+        }
+        return null;
+    }
+
+    @Override
+    public void close() throws IOException {
+        closed = true;
+    }
+}
+```

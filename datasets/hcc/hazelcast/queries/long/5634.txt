@@ -1,0 +1,206 @@
+Hi,
+
+in our application, besides several other IMaps, we also use a IMap to keep PDFs in main memory - so the size of the values in this map are quite large (e.g. 250 kB).
+
+While testing the performance of our application, I realized that a call to IMap.keySet() not only fetches the keys, but also the values! This seriously affects the network load, making our performance tests fail misserably...
+
+The problem did not exist in Hazelcast version 3.3, but was introduced in version 3.4 and still exists in version 3.5. Please fix this as soon as possible and if anyhow possible, please also backport to version 3.4.
+
+Measuring network traffic in a JUnit test is kind of difficult, but if you are using Linux and have iptables installed, you can check the traffic on the loopback device. The following test does this, but needs to be run as root (as iptables can only be executed as root on my machine).
+
+``` java
+package com.nm.test.hazelcast.map;
+
+import com.hazelcast.config.Config;
+import com.hazelcast.config.XmlConfigBuilder;
+import com.hazelcast.core.HazelcastInstance;
+import com.hazelcast.core.IMap;
+import com.nm.test.hazelcast.TestHazelcast;
+import com.nm.test.hazelcast.utils.StartHcInstances;
+import org.apache.log4j.BasicConfigurator;
+import org.apache.log4j.Logger;
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
+import java.io.Serializable;
+import java.text.DecimalFormat;
+import java.text.NumberFormat;
+import java.util.List;
+import java.util.Random;
+import java.util.Set;
+import junit.framework.TestCase;
+
+/**
+ * A test to ensure IMap.keySet() only fetches the keys - and not also the values over the network.
+ */
+public class TestMap2 extends TestCase {
+
+    private static final Logger logger = Logger.getLogger(TestMap2.class);
+
+    private static final String mapName = "testMap" + TestMap2.class.getSimpleName();
+
+    public static void main(String[] args) throws Exception {
+        TestMap2 test = new TestMap2();
+        test.setUp();
+        test.testKeySet();
+    }
+
+    @Override
+    protected void setUp() throws Exception {
+
+        // configure logging
+        if (!TestHazelcast.loggingInitialized) {
+            TestHazelcast.loggingInitialized = true;
+            BasicConfigurator.configure();
+        }
+    }
+
+    public void testKeySet() throws Exception {
+
+        // create hazelcast config
+        Config config = new XmlConfigBuilder().build();
+        config.setProperty("hazelcast.logging.type", "log4j");
+
+        // use initial min cluster size
+        config.setProperty("hazelcast.initial.min.cluster.size", "2");
+
+        // create two Hazelcast instances
+        List<HazelcastInstance> hcInstances = new StartHcInstances(config, 2).getHcInstances();
+        HazelcastInstance hcInstance1 = hcInstances.get(0);
+        logger.info("Hazelcast cluster created. Cluster size = " + hcInstance1.getCluster().getMembers().size());
+
+        // try-finally to stop hazelcast instances
+        try {
+
+            // put entries into map
+            int numKeys = 1000;
+            NumberFormat format = new DecimalFormat("00000");
+            IMap<String, Blob> map = hcInstance1.getMap(mapName);
+            for (int i = 0; i < numKeys; i++) {
+                String key = "key__" + format.format(i);
+                map.put(key, new Blob());
+            }
+            logger.info("Map size after put: " + map.size());
+
+            // zero loopback traffic
+            zeroLoopbackTraffic();
+            long traffic0 = getLoopbackTraffic();
+            logger.info("Traffic before in bytes: " + traffic0);
+
+            // call keySet multiple times
+            int repeatTimes = 20;
+            for (int i = 0; i < repeatTimes; i++) {
+                Set<String> keys = map.keySet();
+                StringBuilder buf = new StringBuilder();
+                for (String key : keys) {
+                    buf.append(key);
+                }
+                assertTrue("Unexpected total key length!", buf.length() == numKeys * 10);
+            }
+
+            // measure traffic
+            long traffic1 = getLoopbackTraffic();
+            long trafficTotal = traffic1 - traffic0;
+            logger.info("Traffic after in bytes: " + traffic1);
+            logger.info("Measured traffic in bytes: " + trafficTotal);
+
+            // fail if too much traffic
+            long trafficMax = repeatTimes * (numKeys * 10 * 5);
+            logger.info("Max expected traffic in bytes: " + trafficMax);
+            logger.info("Factor: " + ((double) trafficTotal / trafficMax));
+            assertTrue("Too much traffic!", trafficTotal < trafficMax);
+
+        } finally {
+            for (HazelcastInstance hcInstanceCur : hcInstances) {
+                hcInstanceCur.getLifecycleService().terminate();
+            }
+        }
+
+        logger.info("Test done.");
+    }
+
+    public static class Blob implements Serializable {
+
+        private static final long serialVersionUID = 1L;
+
+        private byte[] data;
+
+        public Blob() {
+            data = new byte[250000];
+            Random random = new Random();
+            random.nextBytes(data);
+        }
+    }
+
+    private void zeroLoopbackTraffic() throws Exception {
+
+        // iptables --zero
+        String cmd = "iptables --zero";
+        logger.info("executing: '" + cmd + "'...");
+        Process p = Runtime.getRuntime().exec(cmd);
+        BufferedReader input = new BufferedReader(new InputStreamReader(p.getInputStream()));
+        BufferedReader error = new BufferedReader(new InputStreamReader(p.getErrorStream()));
+        String line = null;
+        logger.debug("input:");
+        while ((line = input.readLine()) != null) {
+            logger.debug(line);
+        }
+        logger.debug("error:");
+        while ((line = error.readLine()) != null) {
+            logger.debug(line);
+            if (line.contains("Permission denied (you must be root)")) {
+                throw new Exception(line);
+            }
+        }
+    }
+
+    private long getLoopbackTraffic() throws Exception {
+
+        // iptables -vnL
+        // 21579  236M ACCEPT     all  --  lo     *       0.0.0.0/0            0.0.0.0/0
+        long bytes = -1;
+        String cmd = "iptables -vnL";
+        logger.info("executing: '" + cmd + "'...");
+        Process p = Runtime.getRuntime().exec(cmd);
+        BufferedReader input = new BufferedReader(new InputStreamReader(p.getInputStream()));
+        BufferedReader error = new BufferedReader(new InputStreamReader(p.getErrorStream()));
+        logger.debug("input:");
+        String line = null;
+        while ((line = input.readLine()) != null) {
+            logger.debug(line);
+            if (bytes == -1 && line.contains(" lo ")) {
+                bytes = parseTraffic(line);
+            }
+        }
+        logger.debug("error:");
+        while ((line = error.readLine()) != null) {
+            logger.debug(line);
+            if (line.contains("Permission denied (you must be root)")) {
+                throw new Exception(line);
+            }
+        }
+
+        return bytes;
+    }
+
+    private long parseTraffic(String line) {
+        String[] cols = line.trim().split("\\s+");
+        String trafficStr = cols[1];
+        System.out.println("Traffic: " + cols[1]);
+        long bytes = 0;
+        if (trafficStr.endsWith("K")) {
+            bytes = Long.parseLong(trafficStr.substring(0, trafficStr.length() - 1)) * 1024;
+        } else if (trafficStr.endsWith("M")) {
+            bytes = Long.parseLong(trafficStr.substring(0, trafficStr.length() - 1)) * 1024 * 1024;
+        } else if (trafficStr.endsWith("G")) {
+            bytes = Long.parseLong(trafficStr.substring(0, trafficStr.length() - 1)) * 1024 * 1024 * 1024;
+        } else {
+            bytes = Long.parseLong(trafficStr);
+        }
+        return bytes;
+    }
+
+}
+```
+
+Thanks and best,
+Lukas

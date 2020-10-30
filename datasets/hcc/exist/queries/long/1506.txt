@@ -1,0 +1,145 @@
+### What is the problem
+
+We have a java application using eXist-db 2.2 as a database (eXist-db is installed as a standalone server). We use queries to retrieve the XML documents stored in the database.
+
+On these queries, we call the function `transform:transform` to get the requested output from an input document.
+
+Basically, the output is the input XML document with some attributes from a dictionary XML document.
+
+We are in the process to migrate to eXist-db version 3 as we have some problems with indexation with eXist-db 2.2 (sometimes, some documents are not indexed properly and they can't be found with the `doc()` function). We hope not to have the same problem with eXist-db version 3 (hence the migration project), but we found an issue with the XSL function `key()`.
+
+For example, we have queries and XSL documents like the ones below (these files are just examples, the queries and XSL files we have in a production environment are more complex and we need XSL transformation to get the requested output):
+
+`testListOps.xqy`:
+
+```xquery
+xquery version "3.0";
+
+(:Read document with xsl:for-each and look for key in the dictionary document :)
+declare variable $xsltPath as xs:string := '/db/agd';
+declare variable $listOpsFileUri as xs:string := '/db/agd/listOpsErr.xml';
+declare variable $inputFileUri as xs:string := '/db/agd/inputListOps.xml';
+
+let $params :=  <parameters>
+                    <param name="listOpsFileUri" value="{$listOpsFileUri}" />
+                </parameters>
+
+let $xmlData := doc($inputFileUri)
+
+return transform:transform($xmlData, doc(concat($xsltPath, '/', 'testListOps.xsl')),$params)
+
+```
+`testListOps.xsl`:
+
+```xslt
+<xsl:stylesheet xmlns:xsl="http://www.w3.org/1999/XSL/Transform" xmlns:ts="http://www.talentia-software.fr" version="2.0">
+    <xsl:output method="xml" encoding="UTF-8"/>
+    <xsl:param name="listOpsFileUri"/>
+
+    <xsl:variable name="ts:listOps" select="doc($listOpsFileUri)"/>
+    <xsl:key name="ts:listOpsById" match="//ops" use="@id"/>
+
+    <xsl:template match="/">
+        <DSN_FLAT>
+            <xsl:for-each select="//ops">
+                <xsl:variable name="keyId" select="@id"/>
+                <xsl:variable name="refListOpsEntry" select="$ts:listOps/key('ts:listOpsById', $keyId)"/>
+                <xsl:element name="keyId">
+                    <xsl:value-of select="$keyId"/>
+                </xsl:element>
+                <xsl:element name="listOpsEntry">
+                    <xsl:for-each select="$refListOpsEntry/@*">
+                        <xsl:value-of select="concat(name(), ': ', ., ' ')"/>
+                    </xsl:for-each>
+                </xsl:element>
+            </xsl:for-each>
+        </DSN_FLAT>
+    </xsl:template>
+</xsl:stylesheet>
+```
+
+The input file (`inputListOps.xml`) is:
+```xml
+<listOps>
+    <ops id="IRCANTEC"/>
+    <ops id="CIBTP"/>
+    <ops id="AGIRC-ARRCO"/>
+    <ops id="CTIP-FFSA-FNMF"/>
+</listOps>
+```
+
+And the dictionary document (`listOpsErr.xml`) is:
+```xml
+<listOps>
+    <ops id="IRCANTEC" doEntiteAff="false" doGenerateB20="true"> </ops>
+    <ops id="CIBTP" doEntiteAff="true" doGenerateB20="true"/>
+    <ops id="AGIRC-ARRCO" doEntiteAff="true" doGenerateB20="false"> </ops>
+    <ops id="CTIP-FFSA-FNMF" doEntiteAff="true" doGenerateB20="true"> </ops>
+    <ops id="POLEEMPLOI" doEntiteAff="true" doGenerateB20="true"> </ops>
+</listOps>
+```
+
+### What did you expect
+From the examples above, the output should be:
+```xml
+<DSN_FLAT xmlns:ts="http://www.talentia-software.fr">
+    <keyId>IRCANTEC</keyId>
+    <listOpsEntry>id: IRCANTEC doEntiteAff: false doGenerateB20: true </listOpsEntry>
+    <keyId>CIBTP</keyId>
+    <listOpsEntry>id: CIBTP doEntiteAff: true doGenerateB20: true </listOpsEntry>
+    <keyId>AGIRC-ARRCO</keyId>
+    <listOpsEntry>id: AGIRC-ARRCO doEntiteAff: true doGenerateB20: false </listOpsEntry>
+    <keyId>CTIP-FFSA-FNMF</keyId>
+    <listOpsEntry>id: CTIP-FFSA-FNMF doEntiteAff: true doGenerateB20: true </listOpsEntry>
+</DSN_FLAT>
+```
+
+But with eXist-db version 3.3, the output is:
+```xml
+<DSN_FLAT xmlns:ts="http://www.talentia-software.fr">
+    <keyId>IRCANTEC</keyId>
+    <listOpsEntry>id: IRCANTEC doEntiteAff: false doGenerateB20: true </listOpsEntry>
+    <keyId>CIBTP</keyId>
+    <listOpsEntry>id: CIBTP doEntiteAff: true doGenerateB20: true </listOpsEntry>
+    <keyId>AGIRC-ARRCO</keyId>
+    <listOpsEntry/>
+    <keyId>CTIP-FFSA-FNMF</keyId>
+    <listOpsEntry/>
+</DSN_FLAT>
+```
+
+As soon as the dictionary document has an element with no text value (`<ops id="CIBTP" doEntiteAff="true" doGenerateB20="true"/>`), the following elements are not found with the function key(). In the example above, the elements `AGIRC-ARRCO` and `CTIP-FFSA-FNMF` are not found if the element `CIBTP` has no text value.
+
+We had the same issue with eXist-db version 3.0 or 3.2.
+
+This query/xsl works fine using eXist-db 2.2.
+
+
+### Describe how to reproduce or add a test
+Attached are the query and XSL files (`testListOps.xqy`, `testListOps.xsl`), the input file (`inputListOps.xml`) and the dictionary document (`listOpsErr.xml`)
+
+These files can be uploaded in a collection (`/db/agd`) and the query `testListOps.xqy` can be run with eXide.
+
+
+
+### Context information
+- eXist-db version 3.3.0 build 201707021658 - Git commit dc76b14
+- Java version 1.8.0_121
+- Operating system Windows Server 2008 R2
+- 64 bit
+
+eXist-db is installed as a standalone server, with no change to the `conf.xml` file.
+Attached are also the eXist-db logs
+
+
+
+
+[testListOps.zip](https://github.com/eXist-db/exist/files/1190064/testListOps.zip)
+[eXist-db.zip](https://github.com/eXist-db/exist/files/1190063/eXist-db.zip)
+
+
+
+
+
+
+

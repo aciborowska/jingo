@@ -1,0 +1,47 @@
+Imagine the following extension code:
+
+
+final SearchRequest searchRequest = Requests.newSearchRequest(searchBase.toString(),
+                SearchScope.WHOLE_SUBTREE, searchFilter.toString());
+        searchRequest.addAttribute("1.1");
+        searchRequest.setSizeLimit(500);
+        Result results = connection.processSearch(searchRequest, new SearchResultHandler() {
+            @Override
+            public boolean handleEntry(SearchResultEntry entry) {
+                final Result result = connection.processDelete(Requests.newDeleteRequest(entry.getName()));
+                if (result.getResultCode().isExceptional()) {
+                    LOGGER.error(LocalizableMessage.valueOf(result.getDiagnosticMessage()));
+                }
+                return true;
+            }
+
+            @Override
+            public boolean handleReference(SearchResultReference reference) {
+                return true;
+            }
+        });
+
+
+
+Sadly this code does not work on 4.0.0 as expected because the passed in SearchResultHandler's methods aren't invoked with the individual search hits as and when those hits are found (and not even afterwards).
+
+The problem seems to be that
+
+
+      final List<Response> responses = flow.toList().blockingGet();
+
+
+throws a RuntimeException that embeds the expected LdapException for size limit exceeded error result.
+
+The preference would be that for each search result the handler should be invoked when that search result is found (and not after the search is completed).
+
+Note there is also some bizarre error handling code in there:
+
+
+    } catch (LdapException e) {
+      throw e;
+    }
+
+
+
+Potentially other areas may be also affected by the same problem when a non fatal Ldap error is returned by the backend.

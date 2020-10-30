@@ -1,0 +1,35 @@
+Creating Aggregate node fails in rules: LogicalWindowAggregateRule and ExtendedAggregateExtractProjectRule if the only grouping expression is a window and
+we compute aggregation on NON NULLABLE field.
+
+The root cause for that, is how return type inference strategies in calcite work and how we handle window aggregates. Take org.apache.calcite.sql.type.ReturnTypes#AGG_SUM as an example, based on groupCount it adjusts type nullability based on groupCount.
+
+Though we pass a false information as we strip down window aggregation from groupSet (in LogicalWindowAggregateRule).
+
+One can reproduce this problem also with a unit test like this:
+
+
+
+@Test
+  def testTumbleFunction2() = {
+ 
+    val innerQuery =
+      """
+        |SELECT
+        | CASE a WHEN 1 THEN 1 ELSE 99 END AS correct,
+        | rowtime
+        |FROM MyTable
+      """.stripMargin
+
+    val sql =
+      "SELECT " +
+        "  SUM(correct) as cnt, " +
+        "  TUMBLE_START(rowtime, INTERVAL '15' MINUTE) as wStart " +
+        s"FROM ($innerQuery) " +
+        "GROUP BY TUMBLE(rowtime, INTERVAL '15' MINUTE)"
+    val expected = ""
+    streamUtil.verifySql(sql, expected)
+  }
+
+
+
+This causes e2e tests to fail: https://travis-ci.org/apache/flink/builds/521183361?utm_source=slack&utm_medium=notificationhttps://travis-ci.org/apache/flink/builds/521183361?utm_source=slack&utm_medium=notification

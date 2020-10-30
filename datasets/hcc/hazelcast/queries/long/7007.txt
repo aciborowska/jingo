@@ -1,0 +1,97 @@
+If the following sequence occurs across two clients, it will result in a memory leak on "Client B."
+
+| Client A | Client B |
+| --- | --- |
+| `ISemaphore sem = instance.getSemaphore("foo");` |  |
+| `sem.init(...);` |  |
+|  | `ISemaphore sem = instance.getSemaphore("foo");` |
+|  | `sem.init(...);` |
+| `sem.destroy();` |  |
+
+If this occurs on members rather than clients, there does not appear to be a memory leak.
+
+Below is the code I used to reproduce the issue.
+
+``` java
+public class SemaphoreLeakMember
+{
+    public static void main (String[] args)
+    {
+        HazelcastInstance instance = Hazelcast.newHazelcastInstance();
+        // used to track the state of each semaphore
+        IMap<String, String> uuidMap = instance.getMap("uuidMap");
+
+        while (true) {
+            // limit the size of the map and the amount of semaphores that might exist.
+            if (uuidMap.size() < 1000) {
+                for (int i = 0; i < 10_000; i++) {
+                    uuidMap.put(UUID.randomUUID().toString(), "uninitialized");
+                }
+            }
+            else {
+                try {
+                    Thread.sleep(1000);
+                } catch (InterruptedException ignore) {}
+            }
+        }
+    }
+}
+```
+
+``` java
+public class SemaphoreLeakClientA
+{
+    public static void main (String[] args)
+    {
+        HazelcastInstance client = HazelcastClient.newHazelcastClient();
+
+        IMap<String, String> uuidMap = client.getMap("uuidMap");
+        Predicate<String, String> uninitPredicate = Predicates.equal("this", "uninitialized");
+        Predicate<String, String> reinitPredicate = Predicates.equal("this", "reinitialized");
+
+        while (true) {
+            // initialize up to 10 semaphores
+            uuidMap.keySet(initPredicate).stream().limit(10)
+                    .forEach(uuid -> {
+                        ISemaphore sem = client.getSemaphore("sem:" + uuid);
+                        sem.init(Integer.MAX_VALUE);
+                        uuidMap.put(uuid, "initialized");
+                    });
+            // destroy up to 10 semaphores which have been "initialized" by ClientB
+            uuidMap.keySet(reinitPredicate).stream().limit(10)
+                    .forEach(uuid -> {
+                        ISemaphore sem = client.getSemaphore("sem:" + uuid);
+                        sem.destroy();
+                        uuidMap.remove(uuid);
+                    });
+        }
+    }
+}
+```
+
+``` java
+public class SemaphoreLeakClientB
+{
+    public static void main (String[] args)
+    {
+        HazelcastInstance client = HazelcastClient.newHazelcastClient();
+
+        IMap<String, String> uuidMap = client.getMap("uuidMap");
+        Predicate initPredicate = Predicates.equal("this", "initialized");
+
+        while (true) {
+            // "initialize" semaphores which have been initialized by ClientA
+            for (String uuid : uuidMap.keySet(initPredicate)) {
+                ISemaphore sem = client.getSemaphore("sem:" + uuid);
+                sem.init(Integer.MAX_VALUE);
+                uuidMap.put(uuid, "reinitialized");
+            }
+        }
+    }
+}
+```
+
+The image below shows the location of the memory leak on `SemaphoreLeakClientB`.
+![heap_dump](https://cloud.githubusercontent.com/assets/1213865/11623339/539afd5c-9c70-11e5-8641-f6f453c49bde.png)
+
+The behavior was observed on version 3.5.4 and 3.6-EA2 on Windows 7 and 8.1 using Java 8. Similar behavior was also observed on CentOS 6.6 using Java 8, although not with this exact test.

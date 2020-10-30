@@ -1,0 +1,115 @@
+I think this is related to the host name similar to #1806 
+
+This is only happening on the build server and not locally.  I am trying to get this test breaking locally and will update when I make some progress.
+
+
+### Task List
+
+- [x] Steps to reproduce provided
+- [x] Stacktrace (if present) provided
+- [ ] Example that reproduces the problem uploaded to Github
+- [x] Full description of the issue provided (see below)
+
+### Steps to Reproduce
+
+The test below (and all httpclient injected @MicronautTest) similar to the one included worked fine in Micronaut 1.2.0, but around 1.2.2 it broke with a the same error listed in #1806 but ONLY on the build slave whose name is `slave1-6x8-jenkins-agent-2.0.1-5h7sl`.  We upgraded to 1.2.5 and the error from #1806  went away locally.  We even copied in the test from the fix to see that it worked. Now tests using an RxHttpClient are all throwing a NPE only on the build server where the hostname conforms to the pattern above.
+
+```java
+@MicronautTest
+class LoginControllerSpec extends Specification {
+
+    @Inject
+    @Client('/login')
+    RxHttpClient client
+
+    @Unroll
+    def "POST /login - #contentType - HTTP 200 (OK)"() {
+        given:
+        String username = "user"
+        String password = "password"
+        Map<String, String> body = ["username": username, "password": password]
+
+        when:
+        HttpResponse<Map> response = client
+                .toBlocking()
+                .exchange(HttpRequest.POST("/", body).contentType(contentType), Map)
+
+        then:
+        response.status == HttpStatus.OK
+        response.headers.get("Username") == username
+        response.headers.get(JwtConfigurationProperties.JWT_AUTHN_HEADER_NAME)
+        response.body.isPresent()
+        response.body.get()["name"] == username
+        response.body.get()["token"]
+
+        where:
+        contentType << [ MediaType.APPLICATION_FORM_URLENCODED, MediaType.APPLICATION_JSON]
+    }
+}
+```
+
+```java
+import io.micronaut.http.client.HttpClient
+import io.micronaut.http.client.exceptions.HttpClientException
+import spock.lang.Specification;
+
+/**
+ * Bug in micronaut < 1.2.5 test here for regression
+ * of issue https://github.com/micronaut-projects/micronaut-core/issues/1806
+ */
+class HostNameSpec extends Specification {
+
+    void "test host name with dots and dashes"() {
+        when:
+        def client = HttpClient.create(new URL("http://slave1-6x8-jenkins-agent-2.0.1-0vnqb"))
+        client.toBlocking().retrieve("/")
+
+        then:
+        def e = thrown(HttpClientException)
+        e.message.contains('Connect Error: slave1-6x8-jenkins-agent-2.0.1-0vnqb')
+
+        cleanup:
+        client.close()
+    }
+
+    void "test host name with underscores"() {
+        when:
+        def client = HttpClient.create(new URL("https://foo_bar"))
+        client.toBlocking().retrieve("/")
+
+        then:
+        def e = thrown(HttpClientException)
+        e.message.contains('Connect Error: foo_bar')
+
+        cleanup:
+        client.close()
+    }
+
+
+    void "test host name with underscores and port"() {
+        when:
+        def client = HttpClient.create(new URL("https://foo_bar:8080"))
+        client.toBlocking().retrieve("/")
+
+        then:
+        def e = thrown(HttpClientException)
+        e.message.contains('Connect Error: foo_bar')
+
+        cleanup:
+        client.close()
+    }
+}
+```
+
+All the tests fail in Spock with NPE (but only on build server....)
+
+```
+[ERROR] Errors: 
+[ERROR]   LoginControllerSpec.POST /login - application/json - HTTP 200 (OK) ? NullPointer
+[ERROR]   LoginControllerSpec.POST /login - application/x-www-form-urlencoded - HTTP 200 (OK) ? NullPointer
+[ERROR]   TokenControllerSpec.GET /token/refresh - HTTP 200 (OK) ? NullPointer
+[ERROR]   SvgBadgeControllerSpec.GET /badge/compliance?org={org}&repo={repo} - HTTP 200 (OK) ? NullPointer
+[ERROR]   SvgBadgeControllerSpec.GET /badge/compliance?org={org}&repo={repo}&branch={branch} - HTTP 200 (OK) ? NullPointer
+[ERROR]   SvgBadgeControllerSpec.GET /badge/latest-version?groupId={groupId}&artifactId={artifactId} - HTTP 200 (OK) ? NullPointer
+.... (plus tens of more tests...)
+```

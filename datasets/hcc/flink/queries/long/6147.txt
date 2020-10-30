@@ -1,0 +1,17 @@
+I tested in yarn mode, reproduce step:
+1. flink run xx.jar
+2. kill yarn application
+CLI hangs there only showing "New JobManager elected. Connecting to null " instead of cleanup and close itself.
+
+After some digging, I found the main logic is in JobClientActor. It would terminate itself once receiving message ConnectionTimeout. It receive jobmanager status changes from two sources: zookeeper and akka deathwatch. Client sets current  leaderSessionId and unwatch previous jobmanager from zk, receives Teminated of previous jobmanager from akka deathwatch and send ConnectionTimeout to itself after 60s. In a great chance, they would interfere with each other.
+
+Situation1:
+1. client get notified from zk, set leaderSessionId to null
+2. client unwatch previous jobmanager
+3. msg Teminated of previous jobmanager never got received
+
+Situation 2:
+1. msg Teminated of current jobmanager is received
+2. schedule msg ConnectionTimeout after 60s
+3. client get notified from zk, set leaderSessionId to null in less than 60s
+4. ConnectionTimeout will be filtered out due to different  leaderSessionId

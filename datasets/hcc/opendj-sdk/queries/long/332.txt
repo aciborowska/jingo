@@ -1,0 +1,45 @@
+After configuring a 3-way replication agreement on a single host using "matts-laptop" as the hostname in all dsreplication commands I see this in the error log:
+
+[23/Oct/2011:21:19:40 +0200] category=SYNC severity=SEVERE_ERROR msgID=14942263 msg=In Replication server Replication Server 9989 15435: replication servers 127.0.1.1:10989 and 127.0.0.1:10989 have the same ServerId : 12360
+...
+[23/Oct/2011:21:19:40 +0200] category=SYNC severity=SEVERE_ERROR msgID=14942387 msg=Replication server 15435 was attempting to connect to replication server matts-laptop/127.0.1.1:8989 but has disconnected in handshake phase
+
+Could this be a regression caused by the fixes for OPENDJ-65 or OPENDJ-224? We should test against previous versions of OpenDJ like 2.4.3.
+
+Steps to reproduce (change matts-laptop to your hostname):
+
+1) Content of /etc/hosts:
+
+127.0.0.1       localhost
+127.0.1.1       matts-laptop
+
+2) Install and configure 3 OpenDJ instances:
+
+rm -rf m*
+
+for i in 1 2 3; do
+  mkdir m$i
+  unzip OpenDJ-2.4.4.zip -d m$i
+done
+
+for i in 1 2 3; do
+  cd m$i/OpenDJ-2.4.4
+  ./setup -i -d 10 -w password -n
+  cd ../..
+done
+
+cd m1/OpenDJ-2.4.4
+
+./bin/dsreplication enable --host1 matts-laptop --port1 4444 --bindDN1 cn=directory\ manager --bindPassword1 password --host2 matts-laptop --port2 5444 --bindDN2 cn=directory\ manager --bindPassword2 password --replicationPort1 8989 --replicationPort2 9989 --baseDN dc=example,dc=com --adminUID admin --adminPassword password --trustAll --no-prompt
+
+./bin/dsreplication enable --host1 matts-laptop --port1 4444 --bindDN1 cn=directory\ manager --bindPassword1 password --host2 matts-laptop --port2 6444 --bindDN2 cn=directory\ manager --bindPassword2 password --replicationPort1 8989 --replicationPort2 10989 --baseDN dc=example,dc=com --adminUID admin --adminPassword password --trustAll --no-prompt
+
+./bin/dsreplication initialize-all --baseDN cn=admin\ data -w password --trustAll --no-prompt
+./bin/dsreplication initialize-all --baseDN cn=schema -w password --trustAll --no-prompt
+./bin/dsreplication initialize-all --baseDN dc=example,dc=com -w password --trustAll --no-prompt
+
+for i in 4444 5444 6444; do
+  ./bin/dsconfig set-log-publisher-prop --publisher-name File-Based\ Audit\ Logger --set enabled:true --hostname matts-laptop --port $i --trustAll -D cn=directory\ manager -w password --no-prompt
+done
+
+3) Stop and restart one of the servers and observe the errors above.

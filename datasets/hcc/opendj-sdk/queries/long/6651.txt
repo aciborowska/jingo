@@ -1,0 +1,148 @@
+We are able to setup proxy for send 'master-key' certificate for mutual TLS authentication. It should not be possible to configure the master key and server should not choose master key when ssl-cert-nickname is set on default (Let the server decide.)
+
+Steps for reproduce:
+
+	Tested with OpenDJ: 7.0.0-SNAPSHOT 432a9c1d10a
+	we can follow steps of example at installation Guide for Trying DS Directory Proxy Server
+
+
+	Install two DS directory servers for evaluation, then configure and initialize replication between them
+	Create a proxy account with permission to use proxied authorization on the DS directory servers
+	Set up the DS directory proxy server to forward requests to the DS directory servers
+
+/path/to/proxy/setup \
+ --serverId proxy \
+ --deploymentKey $DEPLOYMENT_KEY \
+ --deploymentKeyPassword password \
+ --rootUserDN uid=admin \
+ --rootUserPassword password \
+ --hostname opendj.example.com \
+ --ldapPort 1389 \
+ --enableStartTls \
+ --ldapsPort 1636 \
+ --adminConnectorPort 4444 \
+ --profile ds-proxy-server \
+ --set ds-proxy-server/replicationServers:"opendj.example.com:14444" \
+ --set ds-proxy-server/replicationServers:"opendj.example.com:24444" \
+ --set ds-proxy-server/rsConnectionSecurity:start-tls \
+ --set ds-proxy-server/certNicknames:ssl-key-pair \
+ --set ds-proxy-server/keyManagerProvider:PKCS12 \
+ --set ds-proxy-server/trustManagerProvider:PKCS12 \
+ --acceptLicense
+
+	
+		Check configure the properties of the Backend "proxyRoot" at proxy
+
+>>>> Configure the properties of the Backend "proxyRoot"
+
+         Property                           Value(s)
+         ----------------------------------------------------------------------
+    1)   backend-id                         proxyRoot
+    2)   base-dn                            Unless route-all is enabled, a
+                                            proxy with empty base DNs does not
+                                            handle any requests. This helps
+                                            incrementally building a proxy's
+                                            configuration.
+    3)   bind-connection-pool-idle-timeout  10 s
+    4)   bind-connection-pool-max-size      1024
+    5)   bind-connection-pool-min-size      4
+    6)   connection-timeout                 3 s
+    7)   discovery-interval                 1 m
+    8)   enabled                            true
+    9)   heartbeat-interval                 10 s
+    10)  heartbeat-search-request-base-dn   ""
+    11)  key-manager-provider               PKCS12
+    12)  load-balancing-algorithm           affinity
+    13)  partition-base-dn                  No consistency for add/delete
+                                            operations.
+    14)  proxy-user-dn                      -
+    15)  proxy-user-password                -
+    16)  request-connection-pool-size       10
+    17)  route-all                          true
+    18)  shard                              Replication Service Discovery
+                                            Mechanism
+    19)  ssl-cert-nickname                  Let the server decide.
+    20)  use-mutual-tls                     true
+
+
+	
+	
+	Searches the directory through the proxy
+
+ldapsearch \
+ --port 1636 \
+ --useSsl \
+ --usePkcs12TrustStore /path/to/proxy/config/keystore \
+ --trustStorePasswordFile /path/to/proxy/config/keystore.pin \
+ --bindDN uid=kvaughan,ou=people,dc=example,dc=com \
+ --bindPassword bribery \
+ --baseDN "ou=people,dc=example,dc=com" \
+ "(|(cn=Babs Jensen)(cn=Sam Carter))" \
+ cn
+
+	
+		This search can have two results  - that is correctly done without problem (because server decide use ssl-key-pair) or failed with The LDAP bind request failed: 49 (Invalid Credentials) (because server decide use master-key).
+	
+	
+	set up ssl-cert-nickname on "master-key"
+
+dsconfig set-backend-prop \
+          --backend-name proxyRoot \
+          --set ssl-cert-nickname:master-key \
+          --hostname localhost \
+          --port 4444 \
+          --bindDn uid=admin \
+          --trustAll \
+          --bindPassword ****** \
+          --no-prompt
+
+	
+		It should not be possible set up ssl-cert-nickname on master key, and also should not be possible for the server to choose to send it for mutual TLS authentication.
+		It cause invalid credentials in result (for previous steps with search)
+	
+	
+
+
+
+Note: keystore for the proxy:
+
+keytool -list -keystore /path/to/proxy/config/keystore -storepass:file /path/to/proxy/config/keystore.pin
+
+Keystore type: PKCS12
+Keystore provider: SUN
+
+Your keystore contains 3 entries
+
+ssl-key-pair, Sep 20, 2019, PrivateKeyEntry, 
+Certificate fingerprint (SHA-256):
+***************************************
+master-key, Sep 20, 2019, PrivateKeyEntry, 
+Certificate fingerprint (SHA-256):
+***************************************
+ca-cert, Sep 20, 2019, trustedCertEntry, 
+Certificate fingerprint (SHA-256): 
+***************************************
+
+
+
+The dates on that one make it invalid by design:
+
+keytool -list -V -alias master-key -keystore /path/to/proxy/config/keystore -storepass:file /path/to/proxy/config/keystore.pin
+
+Alias name: master-key
+Creation date: Sep 20, 2019
+Entry type: PrivateKeyEntry
+Certificate chain length: 1
+Certificate[1]:
+Owner: CN=Master key, O=ForgeRock.com
+Issuer: CN=Master key, O=ForgeRock.com
+Serial number: 1
+Valid from: Thu Jan 01 01:00:00 CET 1970 until: Thu Jan 01 01:00:01 CET 1970
+Certificate fingerprints:
+     SHA1:  *****
+     SHA256: *****
+Signature algorithm name: SHA256withRSA
+Subject Public Key Algorithm: 3072-bit RSA key
+Version: 3
+
+

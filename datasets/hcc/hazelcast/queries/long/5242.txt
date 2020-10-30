@@ -1,0 +1,36 @@
+This bug is reported on 3.4.2.
+
+During our upgrade from 1.9.4.3 to 3.4.2, I ran into inconsistency when using Hazelcast WebFilter to cluster http session across multiple nodes in a cluster. So I have done the following to look for the issue:
+1. I ran my webapp with hazelcast embedded, with WebFilter enabled. Therefore it's a single node cluster. 
+2. I access the webapp via browser, to trigger HazelcastHttpSession to be created in the cluster and on the local node.
+3. Through debugging, I examined the session object during a browser request, thus can view the localCache value of the session object.
+4. Via a Hazelcast client, I connect to the cluster, and examine the session object in cluster, it's the same as the localCache value above.
+5. Via the Hazelcast client, I changed a property on the session object in cluster, and verified that its value changed.
+6. Through debugging a browser request, I examine the session object again and found the property I changed in cluster wasn't present.
+
+The above steps proved that after a node retrieves a session object from the clusterMap and stores it in localCache, update to that session object in the clusterMap (even for a single node cluster) will NOT be broadcast to appropriate nodes for their localCache to be reloaded from the clusterMap to get latest version of the session object.
+
+The following is the code I used in my hazelcast client to modify a property:
+
+<pre>
+ClientConfig clientConfig = new XmlClientConfigBuilder().build();
+HazelcastInstance client = HazelcastClient.newHazelcastClient();
+IMap map = client .getMap("httpSessionMap");
+NetChefSessionState st = (NetChefSessionState) map.get("HZ5BCAAF164C094D5188B79C2B75F73686::hz::scopedTarget.netChefSessionState");
+        st.getUserSession().setUserFirstName("Haixi");
+map.put("HZ5BCAAF164C094D5188B79C2B75F73686::hz::scopedTarget.netChefSessionState", st);
+</pre>
+
+
+Comparing the WebFilter.java from 1.9.4.3 and 3.4.2, the older version has the following in getClusterMap().addEntryListener section of init(), while the new version does not:
+
+<pre>
+               public void entryUpdated(EntryEvent entryEvent) {
+                    if (!entryEvent.getMember().localMember()) {
+                        markSessionDirty((String) entryEvent.getKey());
+                    }
+                }
+</pre>
+
+
+I am not sure whether this is no longer important, but I cannot find code in WebFilter.java of the new version that broadcasts a change for an object in the clusterMap, so it can be refreshed from a node.

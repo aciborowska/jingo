@@ -1,0 +1,44 @@
+A performance regression has been observed since refactoring done in OPENDJ-4735.
+Problem is that the writer, on stream completion, sends systematically a useless cancel() upstream which leads to the costly creation of an LdapException signaling that the operation we try to cancel cannot be found.
+
+See the flamegraph grizzly-write-with-cancel-2.svg.
+Doing some jstack during a searchrate we can see stack traces like
+
+"LDAP 0.0.0.0:1389(1) SelectorRunner" #69 daemon prio=5 os_prio=0 cpu=61715,83ms elapsed=120,75s tid=0x00007fdf69909000 nid=0xec0 runnable  [0x00007fde276f7000]
+   java.lang.Thread.State: RUNNABLE
+	at java.lang.Throwable.fillInStackTrace(java.base@11.0.6/Native Method)
+	at java.lang.Throwable.fillInStackTrace(java.base@11.0.6/Throwable.java:787)
+	- locked <0x000000066b8f6190> (a org.forgerock.opendj.ldap.LdapException)
+	at java.lang.Throwable.<init>(java.base@11.0.6/Throwable.java:315)
+	at java.lang.Exception.<init>(java.base@11.0.6/Exception.java:102)
+	at java.io.IOException.<init>(java.base@11.0.6/IOException.java:99)
+	at org.forgerock.opendj.ldap.LdapException.<init>(LdapException.java:279)
+	at org.forgerock.opendj.ldap.LdapException.newLdapException(LdapException.java:255)
+	at org.forgerock.opendj.ldap.LdapException.newLdapException(LdapException.java:145)
+	at org.forgerock.opendj.ldap.LdapException.newLdapException(LdapException.java:114)
+	at org.forgerock.opendj.ldap.LdapException.newLdapException(LdapException.java:52)
+	at org.forgerock.opendj.server.core.ConnectionContext.cancelRequest(ConnectionContext.java:158)
+	at org.opends.server.protocols.ldap.LdapClientConnection.lambda$handle$4(LdapClientConnection.java:528)
+	at org.opends.server.protocols.ldap.LdapClientConnection$$Lambda$598/0x00000008405a3040.run(Unknown Source)
+	at io.reactivex.internal.operators.flowable.FlowableDoOnLifecycle$SubscriptionLambdaSubscriber.cancel(FlowableDoOnLifecycle.java:115)
+	at io.reactivex.internal.subscriptions.SubscriptionArbiter.drainLoop(SubscriptionArbiter.java:221)
+	at io.reactivex.internal.subscriptions.SubscriptionArbiter.drain(SubscriptionArbiter.java:190)
+	at io.reactivex.internal.subscriptions.SubscriptionArbiter.cancel(SubscriptionArbiter.java:182)
+	at org.forgerock.opendj.server.core.RequestState.cancel(RequestState.java:179)
+	at io.reactivex.internal.subscribers.BasicFuseableSubscriber.cancel(BasicFuseableSubscriber.java:158)
+	at io.reactivex.internal.operators.flowable.FlowableDoFinally$DoFinallySubscriber.cancel(FlowableDoFinally.java:101)
+	at io.reactivex.internal.subscribers.BasicFuseableSubscriber.cancel(BasicFuseableSubscriber.java:158)
+	at io.reactivex.internal.subscribers.BasicFuseableSubscriber.cancel(BasicFuseableSubscriber.java:158)
+	at io.reactivex.internal.subscriptions.SubscriptionArbiter.drainLoop(SubscriptionArbiter.java:221)
+	at io.reactivex.internal.subscriptions.SubscriptionArbiter.drain(SubscriptionArbiter.java:190)
+	at io.reactivex.internal.subscriptions.SubscriptionArbiter.cancel(SubscriptionArbiter.java:182)
+	at io.reactivex.internal.subscribers.BasicFuseableSubscriber.cancel(BasicFuseableSubscriber.java:158)
+	at io.reactivex.internal.subscribers.BasicFuseableSubscriber.cancel(BasicFuseableSubscriber.java:158)
+	at io.reactivex.internal.subscribers.SinglePostCompleteSubscriber.cancel(SinglePostCompleteSubscriber.java:124)
+	at io.reactivex.internal.subscribers.BasicFuseableSubscriber.cancel(BasicFuseableSubscriber.java:158)
+	at org.forgerock.opendj.grizzly.GrizzlyLdapSocketFilter$GrizzlyWriter$$Lambda$607/0x00000008405c2040.cancel(Unknown Source)
+	at io.reactivex.internal.disposables.CancellableDisposable.dispose(CancellableDisposable.java:48)
+	at io.reactivex.internal.operators.completable.CompletableCreate$Emitter.onComplete(CompletableCreate.java:67)
+	at org.forgerock.opendj.grizzly.GrizzlyLdapSocketFilter$GrizzlyWriter$RequestMoreOnCompletion.completed(GrizzlyLdapSocketFilter.java:196)
+	at org.forgerock.opendj.grizzly.GrizzlyLdapSocketFilter$GrizzlyWriter$RequestMoreOnCompletion.completed(GrizzlyLdapSocketFilter.java:188)
+

@@ -1,0 +1,125 @@
+While running a test, I see a stacktrace in the logging. I don't know if it is benign or not. For test case to reproduce the issue see the end of the message. Run it a few times and you will see the stacktrace.
+
+```
+17:41:08,361  INFO |test| - [ClusterService] hz._hzInstance_2_dev.cached.thread-3 - [127.0.0.1]:5002 [dev] [3.7-SNAPSHOT] 
+
+Members [1] {
+    Member [127.0.0.1]:5002 - 905512aa-c21b-4d04-a9d9-b791755c2a2e this
+}
+
+17:41:08,361  INFO |test| - [TransactionManagerService] hz._hzInstance_2_dev.cached.thread-2 - [127.0.0.1]:5002 [dev] [3.7-SNAPSHOT] Committing/rolling-back alive transactions of Member [127.0.0.1]:5001 - 86ab2a7f-bcba-4df9-869f-2f5e06eae36f, UUID: 86ab2a7f-bcba-4df9-869f-2f5e06eae36f
+17:41:08,362  INFO |test| - [InternalPartitionService] hz._hzInstance_2_dev.migration - [127.0.0.1]:5002 [dev] [3.7-SNAPSHOT] Fetching most recent partition table! my version: 543
+17:41:08,362  INFO |test| - [InternalPartitionService] hz._hzInstance_2_dev.migration - [127.0.0.1]:5002 [dev] [3.7-SNAPSHOT] Most recent partition table version: 543
+17:41:08,363 DEBUG |test| - [InternalPartitionService] hz._hzInstance_2_dev.migration - [127.0.0.1]:5002 [dev] [3.7-SNAPSHOT] Sync'ing partition state, version: 544
+17:41:08,373  INFO |test| - [NodeExtension] Thread-0 - [127.0.0.1]:5001 [dev] [3.7-SNAPSHOT] Destroying node NodeExtension.
+17:41:08,373  INFO |test| - [Node] Thread-0 - [127.0.0.1]:5001 [dev] [3.7-SNAPSHOT] Hazelcast Shutdown is completed in 15 ms.
+17:41:08,374  INFO |test| - [LifecycleService] Thread-0 - [127.0.0.1]:5001 [dev] [3.7-SNAPSHOT] [127.0.0.1]:5001 is SHUTDOWN
+17:41:08,374  INFO |test| - [LifecycleService] Thread-0 - [127.0.0.1]:5002 [dev] [3.7-SNAPSHOT] [127.0.0.1]:5002 is SHUTTING_DOWN
+17:41:08,374  WARN |test| - [Node] Thread-0 - [127.0.0.1]:5002 [dev] [3.7-SNAPSHOT] Terminating forcefully...
+17:41:08,374  INFO |test| - [Node] Thread-0 - [127.0.0.1]:5002 [dev] [3.7-SNAPSHOT] Shutting down connection manager...
+17:41:08,374 DEBUG |test| - [MockConnectionManager] Thread-0 - [127.0.0.1]:5002 [dev] [3.7-SNAPSHOT] Stopping connection manager
+17:41:08,374  INFO |test| - [Node] Thread-0 - [127.0.0.1]:5002 [dev] [3.7-SNAPSHOT] Shutting down node engine...
+17:41:08,379  WARN |test| - [MigrationThread] hz._hzInstance_2_dev.migration - [127.0.0.1]:5002 [dev] [3.7-SNAPSHOT] Invalid replica! Destination: [127.0.0.1]:5002, index: 1, Partition [1]{
+}
+java.lang.AssertionError: Invalid replica! Destination: [127.0.0.1]:5002, index: 1, Partition [1]{
+}
+    at com.hazelcast.internal.partition.impl.MigrationManager$RepairPartitionTableTask.commitPromotionMigrations(MigrationManager.java:1058)
+    at com.hazelcast.internal.partition.impl.MigrationManager$RepairPartitionTableTask.promoteBackupsForMissingOwners(MigrationManager.java:1032)
+    at com.hazelcast.internal.partition.impl.MigrationManager$RepairPartitionTableTask.run(MigrationManager.java:981)
+    at com.hazelcast.internal.partition.impl.MigrationThread.processTask(MigrationThread.java:103)
+    at com.hazelcast.internal.partition.impl.MigrationThread.doRun(MigrationThread.java:81)
+    at com.hazelcast.internal.partition.impl.MigrationThread.run(MigrationThread.java:56)
+17:41:09,473  INFO |test| - [NodeExtension] Thread-0 - [127.0.0.1]:5002 [dev] [3.7-SNAPSHOT] Destroying node NodeExtension.
+17:41:09,473  INFO |test| - [Node] Thread-0 - [127.0.0.1]:5002 [dev] [3.7-SNAPSHOT] Hazelcast Shutdown is completed in 1099 ms.
+17:41:09,525  INFO |test| - [LifecycleService] Thread-0 - [127.0.0.1]:5002 [dev] [3.7-SNAPSHOT] [127.0.0.1]:5002 is SHUTDOWN
+```
+
+Reproducable with the following test:
+
+```
+package com.hazelcast.spi.impl.operationservice.impl;
+
+import com.hazelcast.core.HazelcastInstance;
+import com.hazelcast.spi.AbstractOperation;
+import com.hazelcast.spi.BackupAwareOperation;
+import com.hazelcast.spi.BackupOperation;
+import com.hazelcast.spi.InternalCompletableFuture;
+import com.hazelcast.spi.Operation;
+import com.hazelcast.test.HazelcastParallelClassRunner;
+import com.hazelcast.test.HazelcastTestSupport;
+import com.hazelcast.test.annotation.ParallelTest;
+import com.hazelcast.test.annotation.QuickTest;
+import org.junit.Before;
+import org.junit.Test;
+import org.junit.experimental.categories.Category;
+import org.junit.runner.RunWith;
+
+import java.util.concurrent.atomic.AtomicReference;
+
+import static org.junit.Assert.assertSame;
+
+/**
+ * A unit test that verifies that there is no need to explicitly pass the callerUuid.
+ *
+ * See the following PR for more detail:
+ * https://github.com/hazelcast/hazelcast/pull/8173
+ */
+@RunWith(HazelcastParallelClassRunner.class)
+@Category({QuickTest.class, ParallelTest.class})
+public class Backup_CallerUuidTest extends HazelcastTestSupport {
+
+    private HazelcastInstance hz;
+    private final static AtomicReference CALLER_UUID = new AtomicReference();
+
+    @Before
+    public void setup() {
+        setLoggingLog4j();
+        HazelcastInstance[] cluster = createHazelcastInstanceFactory(2).newInstances();
+        warmUpPartitions(cluster);
+        hz = cluster[0];
+    }
+
+    @Test
+    public void test() {
+        InternalCompletableFuture f = getOperationService(hz).invokeOnPartition(new DummyUpdateOperation().setPartitionId(0));
+        assertCompletesEventually(f);
+
+        assertSame(CALLER_UUID, hz.getCluster().getLocalMember().getUuid());
+    }
+
+    private static class DummyUpdateOperation extends AbstractOperation implements BackupAwareOperation {
+        @Override
+        public boolean shouldBackup() {
+            return true;
+        }
+
+        @Override
+        public int getSyncBackupCount() {
+            return 1;
+        }
+
+        @Override
+        public int getAsyncBackupCount() {
+            return 0;
+        }
+
+        @Override
+        public Operation getBackupOperation() {
+            return new DummyBackupOperation();
+        }
+
+        @Override
+        public void run() throws Exception {
+            System.out.println("DummyUpdateOperation completed");
+        }
+    }
+
+    private static class DummyBackupOperation extends AbstractOperation implements BackupOperation {
+        @Override
+        public void run() throws Exception {
+            System.out.println("DummyBackupOperation completed");
+            CALLER_UUID.set(getCallerUuid());
+        }
+    }
+}
+```

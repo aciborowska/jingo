@@ -1,0 +1,161 @@
+### Task List
+
+- [x] Steps to reproduce provided
+- [x] Stacktrace (if present) provided
+- [ ] Example that reproduces the problem uploaded to Github
+- [x] Full description of the issue provided (see below)
+
+### Steps to Reproduce
+
+1. install micronaut-1.3.1
+2. mn create-app hello-world
+3. add the following controller to the hello-world project
+
+```
+package hello.world.controller;
+
+import io.micronaut.http.MediaType;
+import io.micronaut.http.annotation.Controller;
+import io.micronaut.http.annotation.Get;
+import io.micronaut.http.context.ServerRequestContext;
+import io.reactivex.Single;
+import io.reactivex.schedulers.Schedulers;
+
+@Controller("/hello")
+public class HelloController {
+    @Get(value = "/ng", produces = MediaType.TEXT_PLAIN)
+    public Single<String> index() {
+        return Single.just("hello").observeOn(Schedulers.computation()).map(r -> {
+            if (ServerRequestContext.currentRequest().isPresent()) {
+                return r;
+            } else {
+                throw new RuntimeException("fail");
+            }
+        });
+    }
+
+    @Get(value = "/ok", produces = MediaType.TEXT_PLAIN)
+    public Single<String> ok() {
+        return Single.just("hello").map(r -> {
+            if (ServerRequestContext.currentRequest().isPresent()) {
+                return r;
+            } else {
+                throw new RuntimeException("fail");
+            }
+        });
+    }
+}
+```
+
+4. build and run
+5. access localhost:8080/hello/ng
+
+### Expected Behaviour
+
+The application should return `hello` with status code 200.
+
+Actually, 
+
+- accessing localhost:8080/hello/ok returns `hello` with status code 200.
+- accessing localhost:8080/hello/ng on micronaut-1.2.10 returns `hello` with status code 200.
+
+### Actual Behaviour
+
+The application returns `{"message":"Internal Server Error: fail"}` with status code 500,
+
+Stacktrace:
+
+```
+10:50:26.177 [RxComputationThreadPool-1] ERROR i.m.h.s.netty.RoutingInBoundHandler - Unexpected error occurred: fail
+java.lang.RuntimeException: fail
+	at hello.world.controller.HelloController.lambda$index$0(HelloController.java:18)
+	at io.reactivex.internal.operators.single.SingleMap$MapSingleObserver.onSuccess(SingleMap.java:57)
+	at io.micronaut.reactive.rxjava2.RxInstrumentedSingleObserver.onSuccess(RxInstrumentedSingleObserver.java:81)
+	at io.reactivex.internal.operators.single.SingleObserveOn$ObserveOnSingleObserver.run(SingleObserveOn.java:81)
+	at io.reactivex.internal.schedulers.ScheduledDirectTask.call(ScheduledDirectTask.java:38)
+	at io.reactivex.internal.schedulers.ScheduledDirectTask.call(ScheduledDirectTask.java:26)
+	at java.base/java.util.concurrent.FutureTask.run(FutureTask.java:264)
+	at java.base/java.util.concurrent.ScheduledThreadPoolExecutor$ScheduledFutureTask.run(ScheduledThreadPoolExecutor.java:304)
+	at java.base/java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1128)
+	at java.base/java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:628)
+	at java.base/java.lang.Thread.run(Thread.java:834)
+```
+
+### Environment Information
+
+- **Operating System**: Windows 10 Pro 1809 build 17763.973
+- **Micronaut Version:** 1.3.1
+- **JDK Version:**  
+  openjdk version "11.0.6" 2020-01-14 LTS  
+  OpenJDK Runtime Environment Corretto-11.0.6.10.1 (build 11.0.6+10-LTS)  
+  OpenJDK 64-Bit Server VM Corretto-11.0.6.10.1 (build 11.0.6+10-LTS, mixed mode)
+
+### Example Application
+
+Sorry but see "Steps to Reproduce" .
+
+----
+
+Adding the following to the project makes the application pass, but I don't know whether it is correct workaround.
+
+```
+package io.micronaut.reactive.rxjava2;
+
+import io.micronaut.context.annotation.Context;
+import io.micronaut.context.annotation.Requires;
+import io.reactivex.Flowable;
+import io.reactivex.functions.Function;
+import io.reactivex.plugins.RxJavaPlugins;
+
+import javax.annotation.PostConstruct;
+import javax.annotation.PreDestroy;
+import javax.inject.Inject;
+import javax.inject.Singleton;
+
+@Singleton
+@Context
+@Requires(classes = Flowable.class)
+public class RxJava2InstrumentationPatch implements AutoCloseable {
+    private final RxInstrumenterFactory instrumenterFactory;
+
+    Function<? super Runnable, ? extends Runnable> oldOnScheduleHandler;
+
+    @Inject
+    public RxJava2InstrumentationPatch(RxInstrumenterFactory instrumenterFactory) {
+        this.instrumenterFactory = instrumenterFactory;
+    }
+
+    @PostConstruct
+    void init() {
+        if (instrumenterFactory.hasInstrumenters()) {
+            oldOnScheduleHandler = RxJavaPlugins.getScheduleHandler();
+            RxJavaPlugins.setScheduleHandler(runnable -> {
+                var instrumenter = instrumenterFactory.create();
+                if (instrumenter != null) {
+                    return () -> {
+                        try {
+                            instrumenter.beforeInvocation();
+                            runnable.run();
+                        } finally {
+                            instrumenter.afterInvocation();
+                        }
+                    };
+                }
+                return runnable;
+            });
+        }
+    }
+
+    @Override
+    @PreDestroy
+    public void close() throws Exception {
+        if (instrumenterFactory.hasInstrumenters()) {
+            try {
+                RxJavaPlugins.setScheduleHandler(oldOnScheduleHandler);
+            } catch (Exception e) {
+                // ignore
+            }
+        }
+    }
+}
+```

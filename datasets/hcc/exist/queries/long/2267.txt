@@ -1,0 +1,51 @@
+eXist-db 4.4.0. Cannot reproduce with eXist-db 2.2
+
+```
+FORG0001 cannot cast 'xs:anyAtomicType("ext")' to xs:NCName [at line 4002, column 40] In function: art:setDecorNamespaces(xs:string, element()*) 
+```
+
+I've not been able to create a simple repro for this, but just from reading the error, it should be clear that "ext" is a proper NCName and so the error is unjustified. Seeking advice on how to get around this problem in eXist-db 4.4.0.
+
+Note that the function below is as complex as it is, because eXist-db insists on ditching every namespace declaration it thinks it doesn't need. So we use pseudo attributes on the root element to force declaration.
+
+The line 4002 that is being called out is the line that declares the function itself. The line that I think it is actually complaining about is the "update delete" line in the function:
+
+```
+(:~ Updates the current DECOR namespace declarations with the given set. The given set is assumed to be the 
+:   full set you want to have on the project. The default namespace declarations for hl7 and cda are never updated or deleted
+:   The set should have zero or more elements that look like:
+:   <ns uri="xx" prefix="yy"/>
+:   
+:   @param $projectId       - required. Shall match decor/project/@id
+:   @param $namespace-nodes - optional. Zero nodes will delete every declaration except xml, hl7 and cda
+:   @return nothing
+:   @since 2015-03-19
+:)
+declare function art:setDecorNamespaces($projectId as xs:string, $namespace-nodes as element(ns)*) {
+    let $reservedPrefixes   := ('xml','xsi','hl7','cda')
+    let $currentDecor       := $get:colDecorData//project[@id=$projectId]/ancestor::decor
+    let $ns-set             := $namespace-nodes[string-length(@uri) gt 0][string-length(@prefix) gt 0][not(@prefix = $reservedPrefixes)]
+    
+    let $delete             := 
+        for $ns in art:getDecorNamespaces($projectId, ())[not(@prefix = $reservedPrefixes)]
+        let $ns-uri         := $ns/@uri
+        let $ns-prefix      := $ns/@prefix
+        return
+            update delete $currentDecor/@*[matches(local-name(),'^dummy-\d*')][namespace-uri()=$ns-uri][prefix-from-QName(QName(namespace-uri(),name()))=$ns-prefix]
+    
+    let $add                :=
+        for $ns at $i in $ns-set
+        let $ns-uri         := $ns/@uri
+        let $ns-prefix      := $ns/@prefix
+        return
+            update insert attribute {QName($ns-uri,concat($ns-prefix,':dummy-',$i))} {$ns-uri} into $currentDecor
+    
+    (: workaround for eXist-db not recognizing namespaces on the root unless you re-save the whole thing :)
+    let $coll               := util:collection-name($currentDecor)
+    let $res                := util:document-name($currentDecor)
+    let $doc                := doc(concat($coll, '/', $res))
+    let $store              := xmldb:store($coll, $res, $doc)
+    
+    return ()
+};
+```

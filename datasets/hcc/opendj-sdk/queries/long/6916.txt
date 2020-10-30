@@ -1,0 +1,149 @@
+Description
+
+In gke cluster, when allowing 12 or more CPU to DJ pod, search throughput has 200 000 ops/sec threshold
+Topology
+
+1 gke cluster with one namespace
+
+	one stand alone DS deployed in one dedicated machine type
+	one searchrate client deployed in one dedicated machine type (overseer pod name)
+
+
+
+
+Test methodology
+
+Use custom-64-59136 machine type for both DS and searchrate node.
+ Run searchrate using different CPU resources limits and requests for DS pod only
+DS configuration
+
+	100 000 entries
+	java args : -server -Xms8g -Xmx8g -XX:+UseG1GC
+
+
+
+Client configuration
+
+export OPENDJ_JAVA_ARGS="-Dorg.forgerock.opendj.transport.selectorThreads=63"
+/clients/ds/bin/searchrate --noPropertiesFile -p 1389 -h ds-0.ds -D "uid=admin" -w password -i 10 -b uid=user.\{1},ou=People,dc=com -S -g "rand(0,99999)" -c 40 -t 3 -s base -F "(&)" 1.1
+
+
+References
+
+	full test specification
+	full test report investigation
+
+
+
+Results
+
+
+
+All results are available here
+Observations
+
+ 
+ or charts
+ The contention for 10 CPU has been solved by tuning selector and work threads numbers.
+ Then the throughput threshold starts when DS uses 12 CPU or more
+Comparison with lab machine
+
+ 
+ or table
+How to reproduce
+Cluster information
+
+see attachments
+
+	create a ds node pool
+	
+		number of node : 1
+		machine type : custom-64-59136
+		label : ds: true
+		taints : WorkerDedicatedDS=true (noSchedule)
+	
+	
+
+
+
+
+	create a client pool
+	
+		number of node : 1
+		machine type : custom-64-59136
+		label : type: client
+		taints : type=client (noSchedule)
+	
+	
+
+
+
+Connect to your cluster
+
+gcloud container clusters get-credentials ....
+
+
+Create your namespace
+
+ kubectl create namespace ${USER}
+ kubens ${USER}
+
+
+Unzip deployment.zip in attachment
+
+ cd deployment
+ skaffold dev --default-repo gcr.io/engineering-devops/${USER}
+
+
+Once the components are deployed, open new shell window and log to overseer pod
+
+ $ kubectl get pods
+ NAME READY STATUS RESTARTS AGE
+ ds-0 1/1 Running 0 34m
+ forgeops-secrets-z9nc9 0/1 Completed 0 34m
+ overseer-0-7dfd5f5c98-twvpq 1/1 Running 0 34m
+
+
+
+$ kubectl exec overseer-0-7dfd5f5c98-twvpq -it bash
+ root@overseer-0-7dfd5f5c98-twvpq:/dsperf# ./searchrate.sh
+ - prime server
+ /clients/ds/bin/ldapsearch -p 1389 -h ds-0.ds -D uid=admin -w password -b dc=com "(&)" 1.1 2>&1 >/dev/null
+
+ - run ldapsearch
+ export OPENDJ_JAVA_ARGS="-Dorg.forgerock.opendj.transport.selectorThreads=63" ; /clients/ds/bin/searchrate --noPropertiesFile -p 1389 -h ds-0.ds -D "uid=admin" -w password -i 10 -b uid=user.\{1},ou=People,dc=com -S -g "rand(0,99999)" -c 40 -t 3 -s base -F "(&)" 1.1
+ Time (seconds),Recent throughput (ops/second),Average throughput (ops/second),Recent response time (milliseconds),Average response time (milliseconds),99.9% response time (milliseconds),99.99% response time (milliseconds),99.999% response time (milliseconds),Errors/second,Entries/Srch
+10.003,163512.8,163512.8,0.717,0.717,10.55,21.76,64.75,0.0,1.0
+20.000,200604.5,182058.7,0.594,0.649,9.24,18.61,57.93,0.0,1.0
+30.000,202230.4,188782.6,0.589,0.628,7.93,14.02,50.86,0.0,1.0
+40.000,203231.2,192394.7,0.586,0.617,7.11,12.98,38.27,0.0,1.0 ...
+
+
+Testing with 32 CPU for DS pod
+Searchrate
+
+root@overseer-0-6d656d589c-x25d4:/clients# export OPENDJ_JAVA_ARGS="-Dorg.forgerock.opendj.transport.selectorThreads=63" ; /clients/ds/bin/searchrate --noPropertiesFile -p 1389 -h ds-0.ds -D "uid=admin" -w password -i 10 -b uid=user.{1},ou=People,dc=com -S -g "rand(0,99999)" -c 40 -t 3 -s base -F "(&)" 1.1
+Time (seconds),Recent throughput (ops/second),Average throughput (ops/second),Recent response time (milliseconds),Average response time (milliseconds),99.9% response time (milliseconds),99.99% response time (milliseconds),99.999% response time (milliseconds),Errors/second,Entries/Srch
+10.004,176734.8,176734.8,0.664,0.664,11.27,25.03,109.05,0.0,1.0
+20.003,206897.4,191818.4,0.575,0.616,9.11,17.96,102.24,0.0,1.0
+30.000,206362.7,196665.0,0.577,0.602,8.26,14.55,76.02,0.0,1.0
+40.000,207035.1,199257.6,0.575,0.595,7.86,13.76,54.53,0.0,1.0
+50.000,206980.4,200802.1,0.575,0.591,7.73,12.85,46.40,0.0,1.0
+60.000,205098.9,201518.3,0.580,0.589,7.54,12.26,33.16,0.0,1.0
+70.000,189705.8,199830.8,0.628,0.594,7.47,11.93,25.43,0.0,1.0
+80.000,189041.5,198482.1,0.630,0.599,7.37,11.67,25.17,0.0,1.0
+90.000,209423.1,199697.8,0.568,0.595,7.27,11.40,25.03,0.0,1.0
+100.000,210038.0,200731.8,0.567,0.592,7.21,11.27,25.03,0.0,1.0
+110.000,207393.1,201337.4,0.574,0.591,7.11,11.08,24.77,0.0,1.0
+120.000,204111.4,201568.5,0.583,0.590,7.08,10.94,24.64,0.0,1.0
+130.000,207641.4,202035.7,0.573,0.589,7.05,10.75,19.14,0.0,1.0
+140.000,208226.7,202477.9,0.572,0.587,7.05,10.42,18.87,0.0,1.0
+150.000,210117.2,202987.2,0.566,0.586,7.05,10.42,18.74,0.0,1.0
+160.000,207940.2,203296.7,0.572,0.585,7.01,10.29,18.74,0.0,1.0
+170.000,200602.9,203138.3,0.594,0.586,7.01,10.09,18.61,0.0,1.0
+
+
+Jstacks and flamegraph in attachment
+
+
+

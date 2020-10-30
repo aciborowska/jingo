@@ -1,0 +1,268 @@
+**Describe the bug**
+
+The contentextraction libraries, which were working in eXist 4.7.1, are not working in eXist 5.0.0-5.1.1. Calling `contentextraction:get-metadata()` produces an error:
+
+```
+2019-12-17 10:53:27,043 [qtp1158869572-876] ERROR (ContentFunctions.java [eval]:168) - Problem with content extraction library: Unexpected RuntimeException from org.apache.tika.parser.EmptyParser@4fc9f8fd 
+org.exist.contentextraction.ContentExtractionException: Problem with content extraction library: Unexpected RuntimeException from org.apache.tika.parser.EmptyParser@4fc9f8fd
+	at org.exist.contentextraction.ContentExtraction.extractMetadata(ContentExtraction.java:74) ~[exist-contentextraction-5.1.1.jar:5.1.1]
+	at org.exist.contentextraction.xquery.ContentFunctions.eval(ContentFunctions.java:146) ~[exist-contentextraction-5.1.1.jar:5.1.1]
+	at org.exist.xquery.BasicFunction.eval(BasicFunction.java:74) ~[exist-core-5.1.1.jar:5.1.1]
+	...
+Caused by: java.lang.NullPointerException
+	at org.apache.tika.sax.ContentHandlerDecorator.startDocument(ContentHandlerDecorator.java:106) ~[tika-core-1.22.jar:1.22]
+	at org.apache.tika.sax.XHTMLContentHandler.startDocument(XHTMLContentHandler.java:120) ~[tika-core-1.22.jar:1.22]
+	at org.apache.tika.parser.EmptyParser.parse(EmptyParser.java:54) ~[tika-core-1.22.jar:1.22]
+	at org.apache.tika.parser.CompositeParser.parse(CompositeParser.java:280) ~[tika-core-1.22.jar:1.22]
+	at org.apache.tika.parser.AutoDetectParser.parse(AutoDetectParser.java:143) ~[tika-core-1.22.jar:1.22]
+	at org.exist.contentextraction.ContentExtraction.extractMetadata(ContentExtraction.java:71) ~[exist-contentextraction-5.1.1.jar:5.1.1]
+```
+
+Calling `contentextraction:get-metadata-and-content()` produces no error, but the result is clearly broken. Here's the result when applied to a PDF, whether in the db or on disk:
+
+```xml
+<html xmlns="http://www.w3.org/1999/xhtml">
+    <head>
+        <meta name="X-Parsed-By" content="org.apache.tika.parser.EmptyParser"/>
+        <meta name="Content-Type" content="application/pdf"/>
+        <title/>
+    </head>
+    <body/>
+</html>
+```
+
+**Expected behavior**
+
+I expect no error to be thrown, and instead for `contentextraction:get-metadata()` to be able to receive the `xs:base64Binary` data and extract the metadata, and for `contentextraction:get-metadata-and-content()` to extract both the metadata and content.
+
+**To Reproduce**
+
+```xquery
+xquery version "3.1";
+
+module namespace t="http://exist-db.org/xquery/test";
+
+declare namespace test="http://exist-db.org/xquery/xqsuite";
+declare namespace html="http://www.w3.org/1999/xhtml";
+
+(: minimal PDF taken from https://brendanzagaeski.appspot.com/0004.html :)
+declare variable $t:PDF := "%PDF-1.1
+%¥±ë
+
+1 0 obj
+  << /Type /Catalog
+     /Pages 2 0 R
+  >>
+endobj
+
+2 0 obj
+  << /Type /Pages
+     /Kids [3 0 R]
+     /Count 1
+     /MediaBox [0 0 300 144]
+  >>
+endobj
+
+3 0 obj
+  <<  /Type /Page
+      /Parent 2 0 R
+      /Resources
+       << /Font
+           << /F1
+               << /Type /Font
+                  /Subtype /Type1
+                  /BaseFont /Times-Roman
+               >>
+           >>
+       >>
+      /Contents 4 0 R
+  >>
+endobj
+
+4 0 obj
+  << /Length 55 >>
+stream
+  BT
+    /F1 18 Tf
+    0 0 Td
+    (Hello World) Tj
+  ET
+endstream
+endobj
+
+xref
+0 5
+0000000000 65535 f 
+0000000018 00000 n 
+0000000077 00000 n 
+0000000178 00000 n 
+0000000457 00000 n 
+trailer
+  <<  /Root 1 0 R
+      /Size 5
+  >>
+startxref
+565
+%%EOF" => util:string-to-binary();
+
+declare variable $t:temp-dir := util:system-property("java.io.tmpdir");
+
+declare
+    %test:setUp
+function t:setup() {
+    let $testCol := xmldb:create-collection("/db", "test")
+    return
+        (
+            xmldb:store("/db/test", "test.pdf", $t:PDF),
+            file:serialize-binary($t:PDF, $t:temp-dir || "/test.pdf", false())
+        )
+};
+
+declare
+    %test:tearDown
+function t:tearDown() {
+    xmldb:remove("/db/test"),
+    file:delete($t:temp-dir || "/test.pdf")
+};
+
+declare
+    %test:assertTrue
+function t:exists-on-disk() {
+    let $pdf-path := $t:temp-dir || "/test.pdf"
+    return
+        if (file:exists($pdf-path)) then
+            let $pdf := file:read-binary($pdf-path)
+            return
+                $pdf instance of xs:base64Binary
+        else
+            false()
+};
+
+declare
+    %test:assertTrue
+function t:exists-in-db() {
+    let $pdf-path := "/db/test/test.pdf"
+    return
+        if (util:binary-doc-available($pdf-path)) then
+            let $pdf := util:binary-doc($pdf-path)
+            return
+                $pdf instance of xs:base64Binary
+        else
+            false()
+};
+
+declare
+    %test:assertEquals("1")
+function t:read-metadata-from-disk() {
+    (
+        file:read-binary($t:temp-dir || "/test.pdf")
+        => contentextraction:get-metadata()
+    )//html:meta[@name eq "xmpTPg:NPages"]/@content/string()
+};
+
+declare
+    %test:assertEquals("1")
+function t:read-metadata-from-db() {
+    (
+        util:binary-doc("/db/test/test.pdf")
+        => contentextraction:get-metadata()
+    )//html:meta[@name eq "xmpTPg:NPages"]/@content/string()
+};
+
+declare
+    %test:assertEquals("Hello World")
+function t:read-content-and-metadata-from-disk() {
+    (
+        file:read-binary($t:temp-dir || "/test.pdf")
+        => contentextraction:get-metadata-and-content()
+    )//html:p[2]/string()
+};
+
+declare
+    %test:assertEquals("Hello World")
+function t:read-content-and-metadata-from-db() {
+    (
+        util:binary-doc("/db/test/test.pdf")
+        => contentextraction:get-metadata-and-content()
+    )//html:p[2]/string()
+};
+```
+
+In eXist 4.7.1, all tests pass. In eXist 5.0.0 and higher (including 5.1.1), the testsuite fails, as follows:
+
+```xml
+<testsuites>
+    <testsuite package="http://exist-db.org/xquery/test" timestamp="2019-12-17T12:09:22.634-05:00"
+        tests="6" failures="2" errors="2" pending="0" time="PT0.132S">
+        <testcase name="exists-in-db" class="t:exists-in-db"/>
+        <testcase name="exists-on-disk" class="t:exists-on-disk"/>
+        <testcase name="read-content-and-metadata-from-db"
+            class="t:read-content-and-metadata-from-db">
+            <failure
+                message="assertEquals failed: wrong number of items returned by function. Expected: 1. Got: 0"
+                type="failure-error-code-1">Hello World</failure>
+            <output/>
+        </testcase>
+        <testcase name="read-content-and-metadata-from-disk"
+            class="t:read-content-and-metadata-from-disk">
+            <failure
+                message="assertEquals failed: wrong number of items returned by function. Expected: 1. Got: 0"
+                type="failure-error-code-1">Hello World</failure>
+            <output/>
+        </testcase>
+        <testcase name="read-metadata-from-db" class="t:read-metadata-from-db">
+            <error type="java:org.exist.contentextraction.ContentExtractionException"
+                message="Problem with content extraction library: Unexpected RuntimeException from org.apache.tika.parser.EmptyParser@7fb817d6"
+            />
+        </testcase>
+        <testcase name="read-metadata-from-disk" class="t:read-metadata-from-disk">
+            <error type="java:org.exist.contentextraction.ContentExtractionException"
+                message="Problem with content extraction library: Unexpected RuntimeException from org.apache.tika.parser.EmptyParser@7b849b06"
+            />
+        </testcase>
+    </testsuite>
+</testsuites>
+```
+
+For comparison, run `tika -x test.pdf` on [test.pdf](https://github.com/eXist-db/exist/files/3974285/test.pdf). The result:
+
+```xml
+<html xmlns="http://www.w3.org/1999/xhtml">
+    <head>
+        <meta name="pdf:PDFVersion" content="1.1" />
+        <meta name="X-Parsed-By" content="org.apache.tika.parser.DefaultParser" />
+        <meta name="X-Parsed-By" content="org.apache.tika.parser.pdf.PDFParser" />
+        <meta name="access_permission:modify_annotations" content="true" />
+        <meta name="access_permission:can_print_degraded" content="true" />
+        <meta name="access_permission:extract_for_accessibility" content="true" />
+        <meta name="access_permission:assemble_document" content="true" />
+        <meta name="xmpTPg:NPages" content="1" />
+        <meta name="resourceName" content="test.pdf" />
+        <meta name="dc:format" content="application/pdf; version=1.1" />
+        <meta name="access_permission:extract_content" content="true" />
+        <meta name="access_permission:can_print" content="true" />
+        <meta name="access_permission:fill_in_form" content="true" />
+        <meta name="pdf:encrypted" content="false" />
+        <meta name="Content-Length" content="738" />
+        <meta name="access_permission:can_modify" content="true" />
+        <meta name="Content-Type" content="application/pdf" />
+        <title></title>
+    </head>
+    <body>
+        <div class="page">
+            <p></p>
+            <p>Hello World</p>
+            <p></p>
+        </div>
+    </body>
+</html>
+```
+
+**Context (please always complete the following information):**
+ - OS: macOS 10.15.2
+ - eXist-db version: 5.0.0-5.1.1 (release) (problem not evident in 4.7.1)
+ - Java Version: OpenJDK 1.8.0_232 (Zulu 8.42.0.23-CA-macosx)
+
+**Additional context**
+- How is eXist-db installed? DMG via homebrew
+- Any custom changes in e.g. `conf.xml`? none

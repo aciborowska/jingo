@@ -1,0 +1,31 @@
+The SDK LoadBalancer directly fails over to the next LDAP client if a request encounter a transient error or a connection failure (i.e associated connection is stale). Stale connection might happen often if the ldapClient used by the load balancer is implemented with a ConnectionPool.
+
+
+        private Flowable<Response> notifyServerOfflineMaybeRetry(final Throwable error,
+                                                                 final Request request,
+                                                                 final AtomicInteger responseCount,
+                                                                 final RequestHandle handle,
+                                                                 final LoadBalancedContext context) {
+            final LdapException ex = newLdapException(error);
+            final ResultCode resultCode = ex.getResultCode();
+            if (context != null && (resultCode.isTransientError() || isConnectionFailure(resultCode))) {
+                // Rely on the heartbeat to check when the remote servers are back up
+                notifyServerOffline(context.getServerIndex(), ex); //(1)
+                closeSilently(context.getConnection());
+                if (responseCount.get() == 0 && (resultCode.isTransientError() || canSafelyRetry(request))) {
+                    return executeRequest(request, handle); // (2)
+                }
+            }
+            return Flowable.error(error);
+        }
+
+
+
+The underlying LdapClient implementation (i.e ConnectionPool) which holds the stale connection will be marked as offline (1).
+Next, executeRequest(...) call will led the load balancer to chose the next LdapClient according to the load balance strategy (fail over, least requests...).
+
+Expecting behavior would be to have an LdapClient marked as offline only if a connect attempt to it fails. In case of stale connection, a connect retry should be performed.
+
+Current behavior might have a negative impact especially if the load balancer if configured with only one LdapClient. In such case code above will implies that the load balancer will return connect error (no more connection factories available) until the periodic task which is responsible to check if the clients are back online is executed.
+
+The bug will be fixed hence this issue could be closed once the LoadBalancer expecting behavior described above will have replaced the actual one.

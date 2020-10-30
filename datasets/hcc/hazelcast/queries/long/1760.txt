@@ -1,0 +1,92 @@
+Hazelcast version: 2.6.6
+The main problem with this is that if the second node re-load all the keys (and then the objects) a modified value in the node-1 is not seen from the node-2.
+In this test:
+1. write-behind is equal to 24h in order to not write any modification to the DB.
+2. start the first node
+3. make a modification to an object which will be passed to the second node after its startup in the first node
+4. start the second node
+5. read the same object in the second node ===> As a result I get the old value from the DB and not the good one from the cache.
+
+Here's the logs:
+
+```
+======
+NODE 1
+======
+
+==>> just one node in the cluster
+
+INFO: [127.0.0.1]:5701 [htdatagridsdk] 
+Members [1] {
+    Member [127.0.0.1]:5701 this
+}
+
+==>> node-1 loads all the objects from the DB
+
+INFO: [127.0.0.1]:5701 [htdatagridsdk] Initializing cluster partition table first arrangement...
+2014-02-11 18:57:23.633 INFO  [com.hazelcast.cache.HazelcastCacheWrapper:60] com.hypertv.datagrid.test.model.ValueObject initializing...
+2014-02-11 18:57:23.678 DEBUG [com.hypertv.datagrid.test.store.ValueObjectDataStore:127] =====>>>> MapLoader#loadAllKeys
+2014-02-11 18:57:24.390 DEBUG [com.hypertv.datagrid.test.store.ValueObjectDataStore:134] Loaded 7500 keys
+INFO: [127.0.0.1]:5701 [htdatagridsdk] Address[127.0.0.1]:5701[com.hypertv.datagrid.test.model.ValueObject] loaded 7500 objects in total.
+
+==>> node-1 owns all the objects
+
+2014-02-11 18:58:04.963 INFO  [com.hazelcast.cache.HazelcastCacheWrapper:80] com.hypertv.datagrid.test.model.ValueObject local stats: [ownedKeyCount=7500, ownedEntryCount=7500, ownedEntryMemoryCost=9270007, dirtyEntryCount=0, backupEntryCount=0, backupEntryMemoryCost=0, markedAsRemovedEntryCount=0, markedAsRemovedMemoryCost=0, creationTime=1392141443636, lastAccessTime=1392141450828, lastUpdateTime=1392141448120, lastEvictionTime=0, hits=7500, lockedEntryCount=0, lockWaitCount=0]
+
+==>> in the node-1 I modify value of the object with key[id=4342,name=name100] from 20 to 21
+
+2014-02-11 18:58:59.405 DEBUG [com.hypertv.datagrid.test.servlet.WriteServlet:62] OBJECT FOUND [Id: ValueObjectKey [id=4342, name=name100], Object: ValueObject [primaryKey=ValueObjectKey [id=4342, name=name100], value=20, uuid=null, groupId=0, userId=0, gameId=0, score=11, roleId=0]] increase score value
+2014-02-11 18:58:59.406 DEBUG [com.hypertv.datagrid.test.servlet.WriteServlet:76] PUT IN CACHE : [Id: ValueObjectKey [id=4342, name=name100], Object: ValueObject [primaryKey=ValueObjectKey [id=4342, name=name100], value=21, uuid=null, groupId=0, userId=0, gameId=0, score=12, roleId=0]]
+2014-02-11 18:59:03.574 DEBUG [com.hypertv.datagrid.queue.hz.HazelcastStoringQueueWrapper:116] com.hypertv.datagrid.test.model.ValueObject No objects to store
+
+==>> node-1: dirtyEntry=1
+
+2014-02-11 18:59:04.931 INFO  [com.hazelcast.cache.HazelcastCacheWrapper:80] com.hypertv.datagrid.test.model.ValueObject local stats: [ownedKeyCount=7500, ownedEntryCount=7500, ownedEntryMemoryCost=9270007, dirtyEntryCount=1, backupEntryCount=0, backupEntryMemoryCost=0, markedAsRemovedEntryCount=0, markedAsRemovedMemoryCost=0, creationTime=1392141443636, lastAccessTime=1392141539404, lastUpdateTime=1392141539405, lastEvictionTime=0, hits=7501, lockedEntryCount=0, lockWaitCount=0]
+
+==>> after starting the node-2 we have a cluster of 2 nodes
+
+Feb 11, 2014 7:00:06 PM com.hazelcast.cluster.ClusterManager
+INFO: [127.0.0.1]:5701 [htdatagridsdk] 
+Members [2] {
+    Member [127.0.0.1]:5701 this
+    Member [127.0.0.1]:5702
+}
+Feb 11, 2014 7:00:07 PM com.hazelcast.impl.PartitionManager
+INFO: [127.0.0.1]:5701 [htdatagridsdk] Re-partitioning cluster data... Immediate-Tasks: 271, Scheduled-Tasks: 0
+
+==>> node-1 owns half the keys. 
+==>> Problem 1: where did the dirtyEntry go??? DB has not been update, the write-behind is set to 24h. 
+
+2014-02-11 19:00:34.946 INFO  [com.hazelcast.cache.HazelcastCacheWrapper:80] com.hypertv.datagrid.test.model.ValueObject local stats: [ownedKeyCount=3788, ownedEntryCount=3788, ownedEntryMemoryCost=4681971, dirtyEntryCount=0, backupEntryCount=3712, backupEntryMemoryCost=4588036, markedAsRemovedEntryCount=0, markedAsRemovedMemoryCost=0, creationTime=1392141443636, lastAccessTime=1392141616044, lastUpdateTime=1392141448120, lastEvictionTime=0, hits=7576, lockedEntryCount=0, lockWaitCount=0]
+
+
+======
+NODE 2
+======
+
+==>> node-2 started, two nodes in the cluster
+
+Feb 11, 2014 7:00:06 PM com.hazelcast.cluster.ClusterManager
+INFO: [127.0.0.1]:5702 [htdatagridsdk] 
+Members [2] {
+    Member [127.0.0.1]:5701
+    Member [127.0.0.1]:5702 this
+}
+
+==>> node-2: loadAllKeys in node-2 is called, and half the objects are loaded in the node-2 from the DB
+
+2014-02-11 19:00:09.314 DEBUG [com.hypertv.datagrid.test.store.ValueObjectDataStore:127] =====>>>> MapLoader#loadAllKeys
+2014-02-11 19:00:10.303 DEBUG [com.hypertv.datagrid.test.store.ValueObjectDataStore:134] Loaded 7500 keys
+INFO: [127.0.0.1]:5702 [htdatagridsdk] Address[127.0.0.1]:5702[com.hypertv.datagrid.test.model.ValueObject] loaded 3712 objects in total.
+
+==>> of course node-2 owns half the objects
+
+2014-02-11 19:00:48.037 INFO  [com.hazelcast.cache.HazelcastCacheWrapper:80] com.hypertv.datagrid.test.model.ValueObject local stats: [ownedKeyCount=3712, ownedEntryCount=3712, ownedEntryMemoryCost=4588036, dirtyEntryCount=0, backupEntryCount=3788, backupEntryMemoryCost=4681971, markedAsRemovedEntryCount=0, markedAsRemovedMemoryCost=0, creationTime=1392141607144, lastAccessTime=1392141616108, lastUpdateTime=1392141613959, lastEvictionTime=0, hits=3712, lockedEntryCount=0, lockWaitCount=0]
+
+==>> if I read the same value modified in the node-1 but not yet written in the DB I got I old value (13 != 14)
+
+2014-02-11 19:01:00.625 INFO  [com.hypertv.datagrid.test.servlet.ReadServlet:53] READ: [Id: 4342, Value: ValueObject [primaryKey=ValueObjectKey [id=4342, name=name100], value=20, uuid=null, groupId=0, userId=0, gameId=0, score=11, roleId=0]]
+```
+
+Other info in the following mailing list thread:
+https://groups.google.com/forum/#!topic/hazelcast/DT5Gb9T89l8

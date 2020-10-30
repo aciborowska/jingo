@@ -1,0 +1,73 @@
+Exception stack is as following:
+  
+
+We can reproduce this problem by add following test in org.apache.flink.table.planner.runtime.stream.sql#TimeAttributeITCase
+
+
+
+// Some comments here
+  @Test
+  def testWindowAggregateOnConstantValue(): Unit = {
+    val ddl1 =
+      """
+        |CREATE TABLE src (
+        |  log_ts STRING,
+        |  ts TIMESTAMP(3),
+        |  a INT,
+        |  b DOUBLE,
+        |  rowtime AS CAST(log_ts AS TIMESTAMP(3)),
+        |  WATERMARK FOR rowtime AS rowtime - INTERVAL '0.001' SECOND
+        |) WITH (
+        |  'connector' = 'COLLECTION',
+        |  'is-bounded' = 'false'
+        |)
+      """.stripMargin
+    val ddl2 =
+      """
+        |CREATE TABLE dst (
+        |  ts TIMESTAMP(3),
+        |  a BIGINT,
+        |  b DOUBLE
+        |) WITH (
+        |  'connector.type' = 'filesystem',
+        |  'connector.path' = '/tmp/1',
+        |  'format.type' = 'csv'
+        |)
+      """.stripMargin
+    val query =
+      """
+        |INSERT INTO dst
+        |SELECT TUMBLE_END(rowtime, INTERVAL '0.003' SECOND), COUNT(ts), SUM(b)
+        |FROM src
+        | GROUP BY 'a', TUMBLE(rowtime, INTERVAL '0.003' SECOND)
+        |-- GROUP BY TUMBLE(rowtime, INTERVAL '0.003' SECOND)
+      """.stripMargin
+    tEnv.sqlUpdate(ddl1)
+    tEnv.sqlUpdate(ddl2)
+    tEnv.sqlUpdate(query)
+    println(tEnv.explain(true))
+  }
+
+
+
+
+
+
+
+
+
+
+I spent lots of work digging into this bug, and found the problem may be caused by AggregateProjectPullUpConstantsRule which doesn't generate proper project items correctly.
+After I remove AggregateProjectPullUpConstantsRule from FlinkStreamRuleSets#DEFAULT_REWRITE_RULES, the test passed as expect.
+
+The problem is that WindowPropertiesRule can not match RelNodeTree after the transformation of AggregateProjectPullUpConstantsRule, we also can add ProjectMergeRule.INSTANCE in FlinkStreamRuleSets#DEFAULT_REWRITE_RULES after AggregateProjectPullUpConstantsRule.INSTANCE to solve this problem.
+
+
+
+
+
+
+
+
+
+

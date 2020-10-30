@@ -1,0 +1,137 @@
+**Describe the bug**
+
+According to [the spec](https://www.w3.org/TR/xquery-31/#dt-context-item):
+
+> The **context item** is the item currently being processed. [Definition: When the context item is a node, it can also be referred to as the **context node**.] The context item is returned by an expression consisting of a single dot (`.`). 
+
+However, eXist throws an error when `.` is a map, array, or function—valid types of items. 
+
+**Expected behavior**
+
+eXist should process maps, arrays, and function items when using the context item (`.`) and should not throw an error. 
+
+For example, the following code should return the 1st map and does so in BaseX and Saxon:
+
+```xquery
+(map { "id": 1 }, map { "id": 2, "foo": 3 })[map:size(.) eq 1]
+```
+
+Instead, eXist throws the following error:
+
+> err:XPTY0004 checking function parameter 1 in call map:size(self::node()): cannot convert map(*)('') to a node set
+
+Similarly, this query should return the 1st array and does so in BaseX and Saxon:
+
+```xquery
+([1, 2], ["a", "b", "c"])[array:size(.) eq 2]
+```
+
+Instead, eXist throws the following error:
+
+> err:XPTY0004 checking function parameter 1 in call array:size(self::node()): cannot convert array(*)('') to a node set
+
+Similarly, the following query should return `string-join#1` and does so in BaseX and Saxon:
+
+```xquery
+(current-date#0, string-join#1)[function-arity(.) eq 1]
+```
+
+Instead, eXist throws the following error:
+
+> err:XPTY0004 checking function parameter 1 in call function-arity(self::node()): cannot convert function(*)('') to a node set
+
+Other issues have touched on this, but not as directly as reported here:
+
+- https://github.com/eXist-db/exist/issues/2205
+- https://github.com/eXist-db/exist/issues/2364
+- https://github.com/eXist-db/exist/issues/2308
+
+@adamretter investigated how eXist treats `.` here: https://github.com/eXist-db/exist/issues/2308#issuecomment-443990266.
+
+**To Reproduce**
+
+The queries above, as well as 2 other variants, are provided here as a self-contained XQSuite test:
+
+```xquery
+xquery version "3.1";
+
+module namespace t="http://exist-db.org/xquery/test/context-item";
+
+declare namespace test="http://exist-db.org/xquery/xqsuite";
+
+declare
+    %test:assertTrue
+function t:map-function() {
+    (map { "id": 1 }, map { "id": 2, "foo": 3 })[map:size(.) eq 1]?id eq 1
+};
+
+declare
+    %test:assertTrue
+function t:map-lookup() {
+    (map { "id": 1 }, map { "id": 2, "foo": 3 })[.?id eq 2]?id eq 2
+};
+
+declare
+    %test:assertTrue
+function t:array-function() {
+    ([1, 2], ["a", "b", "c"])[array:size(.) eq 2]?1 eq 1
+};
+
+declare
+    %test:assertTrue
+function t:named-function-function() {
+    (current-date#0, string-join#1)[function-arity(.) eq 1] => exists()
+};
+
+declare
+    %test:assertTrue
+function t:anonymous-function-function() {
+    (function() { "foo" }, function($x) { "bar" })[function-arity(.) eq 1] => exists()
+};
+```
+
+The test returns the following results:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites>
+    <testsuite package="http://exist-db.org/xquery/test/context-item"
+        timestamp="2020-02-04T11:08:49.657-05:00" tests="5" failures="0" errors="5" pending="0"
+        time="PT0.05S">
+        <testcase name="anonymous-function-function" class="t:anonymous-function-function">
+            <error type="err:XPTY0004"
+                message="It is a type error if, during the static analysis phase, an expression is found to have a static type that is not appropriate for the context in which the expression occurs, or during the dynamic evaluation phase, the dynamic type of a value does not match a required type as specified by the matching rules in 2.5.4 SequenceType Matching. checking function parameter 1 in call function-arity(self::node()): cannot convert function(*)('') to a node set"
+            />
+        </testcase>
+        <testcase name="array-function" class="t:array-function">
+            <error type="err:XPTY0004"
+                message="It is a type error if, during the static analysis phase, an expression is found to have a static type that is not appropriate for the context in which the expression occurs, or during the dynamic evaluation phase, the dynamic type of a value does not match a required type as specified by the matching rules in 2.5.4 SequenceType Matching. checking function parameter 1 in call array:size(self::node()): cannot convert array(*)('') to a node set"
+            />
+        </testcase>
+        <testcase name="map-function" class="t:map-function">
+            <error type="err:XPTY0004"
+                message="It is a type error if, during the static analysis phase, an expression is found to have a static type that is not appropriate for the context in which the expression occurs, or during the dynamic evaluation phase, the dynamic type of a value does not match a required type as specified by the matching rules in 2.5.4 SequenceType Matching. checking function parameter 1 in call map:size(self::node()): cannot convert map(*)('') to a node set"
+            />
+        </testcase>
+        <testcase name="map-lookup" class="t:map-lookup">
+            <error type="java:org.exist.xquery.XPathException"
+                message="exerr:ERROR cannot convert map(*)('') to a node set [at line 15, column 22, source: /db/context-item-tests.xql]&#xA;In function:&#xA;&#x9;t:map-lookup() [6:5:/db/context-item-tests.xql]&#xA;&#x9;test:apply(function(*), item()*) [560:9:jar:file:/Applications/eXist-db.app/Contents/Java/exist-core-5.2.0.jar!/org/exist/xquery/lib/xqsuite/xqsuite.xql]&#xA;&#x9;test:apply(function(*), element(), item()*) [467:9:jar:file:/Applications/eXist-db.app/Contents/Java/exist-core-5.2.0.jar!/org/exist/xquery/lib/xqsuite/xqsuite.xql]&#xA;&#x9;test:call-test(function(*), element(), element()*) [279:32:jar:file:/Applications/eXist-db.app/Contents/Java/exist-core-5.2.0.jar!/org/exist/xquery/lib/xqsuite/xqsuite.xql]. cannot convert map(*)('') to a node set"
+            />
+        </testcase>
+        <testcase name="named-function-function" class="t:named-function-function">
+            <error type="err:XPTY0004"
+                message="It is a type error if, during the static analysis phase, an expression is found to have a static type that is not appropriate for the context in which the expression occurs, or during the dynamic evaluation phase, the dynamic type of a value does not match a required type as specified by the matching rules in 2.5.4 SequenceType Matching. checking function parameter 1 in call function-arity(self::node()): cannot convert function(*)('') to a node set"
+            />
+        </testcase>
+    </testsuite>
+</testsuites>
+```
+
+**Context (please always complete the following information):**
+ - OS: macOS 10.15.2
+ - eXist-db version: 5.2.0
+ - Java Version: 1.8.0_232 (Zulu 8.42.0.23-CA-macosx)
+
+**Additional context**
+- How is eXist-db installed? DMG
+- Any custom changes in e.g. `conf.xml`? none

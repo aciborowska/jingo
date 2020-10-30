@@ -1,0 +1,97 @@
+Found in OpenDJ 4.0.0 rev b2dc0243fdef08a6c1d751fec039366fd244a18c
+
+When running our ACI tests for effective rights on the 4.0.0 branch of OpenDJ, some tests that used to work are now failing.
+
+It seems that there is a change in the behaviour when requesting aclrights for a user.
+
+Scenario:
+
+
+	we install DJ
+	set it up and import some data
+	remove some global aci settings
+
+
+
+
+${INSTANCE1}/opendj/bin/dsconfig -h localhost -p 4444 -D "cn=myself" -w password -X set-access-control-handler-prop --remove "global-aci:(targetattr!=\"userPassword||authPassword||debugsearchindex||changes||changeNumber||changeType||changeTime||targetDN||newRDN||newSuperior||deleteOldRDN\")(version 3.0; acl \"Anonymous read access\"; allow (read,search,compare) userdn=\"ldap:///anyone\";)" -n
+
+
+
+
+	add some aci on main branch to allow read access for anyone
+
+${INSTANCE1}/opendj/bin/ldapmodify -h localhost -p 1389 -D "cn=myself" -w password 
+dn: dc=example,dc=com
+changetype: modify
+add: aci
+aci: (targetcontrol="*") (version 3.0; acl "allow control access"; allow(read) userdn="ldap:///anyone";)
+
+
+
+
+
+
+	add aci for a specific user to search and read aclRights and aclRightsInfo on a branch:
+
+${INSTANCE1}/opendj/bin/ldapmodify -h localhost -p 1389 -D "cn=myself" -w password  
+dn: o=ACI Tests,dc=example,dc=com
+changetype: modify
+add: aci
+aci: (target="ldap:///ou=aci branch,o=ACI Tests,dc=example,dc=com")(targetattr="aclRights || aclRightsInfo")(version 3.0; acl "add_effrights_aci"; allow (search,read) userdn="ldap:///uid=auser,ou=people,o=ACI Tests,dc=example,dc=com";)
+
+
+
+
+
+
+	set aci for all to have read access on specific branch
+
+${INSTANCE1}/opendj/bin/ldapmodify -h localhost -p 1389 -D "cn=myself" -w password 
+dn: ou=aci branch,o=ACI Tests,dc=example,dc=com
+changetype: modify
+add: aci
+aci: (targetattr="*")(version 3.0; acl "add_aci1"; allow (read) userdn="ldap:///all";)
+
+
+
+
+
+
+	then we search for aclRights for some attributes for our specific user:
+
+${INSTANCE1}/opendj/bin/ldapsearch -h localhost -p 1389 -D "cn=myself" -w password -T -b "uid=scarter,ou=people,ou=aci branch,o=aci tests,dc=example,dc=com" -g "dn: uid=auser,ou=people,o=ACI Tests,dc=example,dc=com" -e uid -e roomnumber -e aclRights "objectclass=*" uid aclRights roomnumber
+
+
+
+
+
+
+The result we had before (3.0.0, 2.6.x) is the following:
+
+dn: uid=scarter,ou=People,ou=aci branch,o=ACI Tests,dc=example,dc=com
+uid: scarter
+roomnumber: 4612
+aclRights;attributeLevel;uid: search:0,read:1,compare:0,write:0,selfwrite_add:0,selfwrite_delete:0,proxy:0
+aclRights;attributeLevel;roomNumber: search:0,read:1,compare:0,write:0,selfwrite_add:0,selfwrite_delete:0,proxy:0
+aclRights;attributeLevel;aclRights: search:0,read:1,compare:0,write:0,selfwrite_add:0,selfwrite_delete:0,proxy:0
+aclRights;entryLevel: add:0,delete:0,read:1,write:0,proxy:0
+
+
+
+and here is what we are getting now:
+
+dn: uid=scarter,ou=People,ou=aci branch,o=ACI Tests,dc=example,dc=com
+uid: scarter
+roomnumber: 4612
+aclRights;attributeLevel;uid: search:0,read:1,compare:0,write:0,selfwrite_add:0,selfwrite_delete:0,proxy:0
+aclRights;attributeLevel;roomNumber: search:0,read:1,compare:0,write:0,selfwrite_add:0,selfwrite_delete:0,proxy:0
+aclRights;attributeLevel;aclRights: search:1,read:1,compare:0,write:0,selfwrite_add:0,selfwrite_delete:0,proxy:0
+aclRights;entryLevel: add:0,delete:0,read:1,write:0,proxy:0
+
+
+
+search access appears now as on while it wasn't in previous versions.
+What should be the correct behaviour?
+
+

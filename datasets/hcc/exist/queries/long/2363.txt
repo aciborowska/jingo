@@ -1,0 +1,84 @@
+The following XQuery shows 3 different formulations of the same simple query expression. The two most obvious formulations fail to use the configured Range Index. The least obvious and most complex formulation correctly uses the Range Index.
+
+Occurs on both eXist-db 4.5.0 and 5.0.0-RC5.
+This was originally reported by KevinBrown on StackOverflow: https://stackoverflow.com/questions/53858401/issue-in-index-upgrading-exist-db-version-2-to-4-5
+
+The query below can simply be stored in the database as `/db/test-range-index.xq`, and monitored from Monex Profiler whilst called from `http://localhost:8080/exist/rest/db/test-range-index.xq`. Commenting in and out the different formulations at the bottom of the query, clearly shows that Range Indexes are not always used, when they absolutely should be!
+
+```xquery
+(: setup the stuff needed for the query further below... :)
+declare variable $local:test-col-name := "test-range-index";
+declare variable $local:test-col-config := document {
+   <collection xmlns="http://exist-db.org/collection-config/1.0">
+    <index>
+        <fulltext default="none" attributes="false"/>
+        <range>
+        	  <create qname="foo" type="xs:string"/>
+        	  <create qname="bar" type="xs:string"/>
+        </range>
+    </index>
+</collection>
+};
+declare variable $local:test-doc-name := "test-range-index.xml";
+declare variable $local:test-doc := document {
+    <data>
+    	<foo>hello</foo>
+    	<foo>goodbye</foo>
+    	<bar>say hello</bar>
+    	<bar>say good day</bar>
+    </data>
+};
+let $test-col-config-col := xmldb:create-collection("/db/system/config/db", $local:test-col-name)
+let $_ := xmldb:store($test-col-config-col, "collection.xconf", $local:test-col-config)
+let $test-col := xmldb:create-collection("/db", $local:test-col-name)
+let $_ := xmldb:store($test-col, $local:test-doc-name, $local:test-doc)
+let $collection := collection($test-col)
+return
+
+
+        (: THE actual interesting query... :)
+	let $string := "hello"
+	return
+
+		(: Formulation 1 - Correctly uses the new-range index for full-optimisation :)
+		$collection//foo[fn:contains(., $string)] | $collection//bar[fn:contains(., $string)]
+
+		(: Formulation 2 - FAILS to use the new range index :)
+		(:
+		($collection//foo | $collection//bar)[fn:contains(., $string)]
+		:)
+
+		(: Formulation 3 - FAILS to use the new range index :)
+                (:
+		$collection//(foo|bar)[fn:contains(., $string)]
+                :)
+```
+
+I also obtained query traces from the Java Admin Client, that clearly show index optimisations are only applied to the first formulation. Also, significantly **worrying** is that formulation 1 and 2 appear to use the wrong axis too, i.e. `descendant` and not `descendant-or-self`.
+
+## Formulation 1 Query Trace
+```
+$collection
+(# exist:optimize-field #)
+(# exist:optimize #)
+{
+    descendant::{}foo[range:contains(self::node(), $string)]
+}
+ union $collection
+(# exist:optimize-field #)
+(# exist:optimize #)
+{
+    descendant::{}bar[range:contains(self::node(), $string)]
+}
+```
+
+## Formulation 2 Query Trace
+```
+$collection/descendant::{}foo union $collection/descendant::{}bar[contains(self::node(), $string)]
+```
+
+## Formulation 3 Query Trace
+```
+$collection
+descendant-or-self::{}foo union descendant-or-self::{}bar[contains(self::node(), $string)]
+```

@@ -1,0 +1,403 @@
+We are considering upgrade current production hazelcast2.5 to latest released version. I perform some POC base on latest released hazelcast3.3.1, but found the performance dropped a lot.
+
+To redisplay the benchmark test you need to create two maven projects.
+#1. hazelcast2.5 project
+
+``` xml
+        <dependency>
+            <groupId>com.hazelcast</groupId>
+            <artifactId>hazelcast-all</artifactId>
+            <version>2.5</version>
+        </dependency>
+```
+## 1.1 create domain object
+
+``` java
+package com.hazelcast.query.domain;
+
+import java.io.Serializable;
+
+import org.apache.commons.lang.builder.ToStringBuilder;
+
+public class Employee implements Serializable {
+
+    private String name;
+    private int age;
+    private boolean active;
+    private double salary;
+
+    public Employee(String name, int age, boolean live, double price) {
+        this.name = name;
+        this.age = age;
+        this.active = live;
+        this.salary = price;
+    }
+
+    public Employee() {}
+
+    public String getName() {
+        return name;
+    }
+
+    public int getAge() {
+        return age;
+    }
+
+    public double getSalary() {
+        return salary;
+    }
+
+    public boolean isActive() {
+        return active;
+    }
+
+    @Override
+    public String toString() {
+        return ToStringBuilder.reflectionToString(this);
+    }
+
+}
+```
+## 1.2 hazelcast server
+
+You need manual run this application, then run 1.3 junit test to get the 'time spent' from console
+
+``` java
+package com.hazelcast.server;
+
+import com.hazelcast.config.Config;
+import com.hazelcast.config.Interfaces;
+import com.hazelcast.core.Hazelcast;
+import com.hazelcast.core.HazelcastInstance;
+import com.hazelcast.core.IMap;
+import com.hazelcast.impl.GroupProperties;
+import com.hazelcast.query.domain.Employee;
+import java.io.IOException;
+import java.util.concurrent.TimeUnit;
+import org.apache.commons.lang.RandomStringUtils;
+import org.apache.commons.lang.math.RandomUtils;
+import org.apache.commons.lang.time.DurationFormatUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public class HazelcastServer {
+
+    private static final Logger logger = LoggerFactory.getLogger(HazelcastServer.class);
+
+    public static final int MAP_SIZE = 1;
+    public static final int DATA_VOLUME = 1000000;
+
+    public static void main(String... args) throws Exception {
+        Config cfg = new Config();
+        cfg.setProperty(GroupProperties.PROP_LOGGING_TYPE, "slf4j");
+        cfg.setProperty("hazelcast.memcache.enabled", "false");
+        cfg.setProperty("hazelcast.rest.enabled", "false");
+        cfg.getGroupConfig().setName("hz2");
+        cfg.getGroupConfig().setPassword("***");
+        Interfaces interfacesCfg = cfg.getNetworkConfig().getInterfaces();
+        interfacesCfg.setEnabled(true);
+        interfacesCfg.addInterface("127.0.0.1");
+        HazelcastInstance hzServerInst = Hazelcast.newHazelcastInstance(cfg);
+
+        generateTestData(hzServerInst);
+
+        Thread.sleep(TimeUnit.MINUTES.toMillis(120));
+        hzServerInst.getLifecycleService().shutdown();
+    }
+
+    public static void generateTestData(HazelcastInstance hzServerInst) throws IOException {
+        long startTime = System.currentTimeMillis();
+        for (int mapSize = 0; mapSize < MAP_SIZE; mapSize++) {
+            IMap<String, Employee> imap = hzServerInst.getMap("employee_map" + mapSize);
+            for (int i = 0; i < DATA_VOLUME; i++) {
+                Employee employee = new Employee(RandomStringUtils.randomAlphabetic(10), RandomUtils.nextInt(101),
+                        RandomUtils.nextBoolean(), RandomUtils.nextDouble() * 100000d);
+                imap.put(employee.getName(), employee);
+            }
+        }
+        long endTime = System.currentTimeMillis();
+
+        logger.debug("generate {} test data, time spent: {}", DATA_VOLUME * MAP_SIZE,
+                DurationFormatUtils.formatDurationHMS(endTime - startTime));
+    }
+}
+```
+## 1.3 performance benchmark test, get the 'time spent' from console
+
+``` java
+package com.hazelcast.query;
+
+import com.hazelcast.client.ClientConfig;
+import com.hazelcast.client.HazelcastClient;
+import com.hazelcast.core.HazelcastInstance;
+import com.hazelcast.core.IMap;
+import com.hazelcast.query.domain.Employee;
+import com.hazelcast.server.HazelcastServer;
+import java.io.IOException;
+import java.util.Collection;
+import java.util.Iterator;
+import org.apache.commons.lang.time.DurationFormatUtils;
+import org.junit.AfterClass;
+import org.junit.BeforeClass;
+import org.junit.Test;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public class HazelcastQueryPerformanceTest {
+
+    private static final Logger logger = LoggerFactory.getLogger(HazelcastQueryPerformanceTest.class);
+
+    private static final int QUERY_TIMES = 5;
+    private static HazelcastInstance hzClientInst;
+
+    @BeforeClass
+    public static void setUp() throws IOException {
+        ClientConfig clientConfig = new ClientConfig();
+        clientConfig.getGroupConfig().setName("hz2");
+        clientConfig.getGroupConfig().setPassword("***");
+        hzClientInst = HazelcastClient.newHazelcastClient(clientConfig);
+
+//        Config cfg = new Config();
+//        cfg.getGroupConfig().setName("hz2");
+//        cfg.getGroupConfig().setPassword("***");
+//        cfg.setProperty(GroupProperties.PROP_LOGGING_TYPE, "slf4j");
+//        cfg.setLiteMember(true);
+//        Interfaces interfacesCfg = cfg.getNetworkConfig().getInterfaces();
+//        interfacesCfg.setEnabled(true);
+//        interfacesCfg.addInterface("127.0.0.1");
+//        hzClientInst = Hazelcast.newHazelcastInstance(cfg);
+    }
+
+    @AfterClass
+    public static void tearDown() throws IOException {
+        try {
+            hzClientInst.getLifecycleService().shutdown();
+        } catch (Exception exp) {
+            logger.error(exp.getMessage(), exp);
+        }
+    }
+
+    @Test
+    public void testQuery() throws IOException {
+        long startTime = System.currentTimeMillis();
+        for (int i = 0; i < QUERY_TIMES; i++) {
+            for (int j = 0; j < HazelcastServer.MAP_SIZE; j++) {
+                hazelcstQuery("a", 100, "employee_map" + j);
+            }
+        }
+        long endTime = System.currentTimeMillis();
+        logger.debug("total time spent: {}", DurationFormatUtils.formatDurationHMS((endTime - startTime)));
+    }
+
+    @SuppressWarnings({"rawtypes", "unused"})
+    public void hazelcstQuery(String fuzzy, int age, String mapName) {
+        Predicate predicate = new SqlPredicate("active and age < " + age + " and name like '%" + fuzzy + "%'");
+        IMap<String, Employee> imap = hzClientInst.getMap(mapName);
+        long startTime = System.currentTimeMillis();
+        Collection<Employee> employees = imap.values(predicate);
+
+        Iterator<Employee> itr = employees.iterator();
+        while (itr.hasNext()) {
+            Employee employee = itr.next();
+            //            logger.debug("{}", employee);
+        }
+        long endTime = System.currentTimeMillis();
+        logger.debug("hazelcast search: [{}-{}-{}] find employees size: {}, time spent: {}",
+                new Object[]{mapName, fuzzy, age, employees.size(), DurationFormatUtils.formatDurationHMS(endTime - startTime)});
+    }
+
+}
+```
+#2. hazelcast3.3.1 project
+
+``` xml
+        <dependency>
+            <groupId>com.hazelcast</groupId>
+            <artifactId>hazelcast-all</artifactId>
+            <version>3.3.1</version>
+        </dependency>
+```
+## 2.1 create domain object
+
+The com.hazelcast.query.domain.Employee same as 1.1 introduced.
+## 2.2 hazelcast server
+
+Similar with 1.2, only some hazelcast API changed, no big difference.
+
+``` java
+package com.hazelcast.server;
+
+import com.hazelcast.config.Config;
+import com.hazelcast.config.InterfacesConfig;
+import com.hazelcast.core.Hazelcast;
+import com.hazelcast.core.HazelcastInstance;
+import com.hazelcast.core.IMap;
+import com.hazelcast.instance.GroupProperties;
+import com.hazelcast.query.domain.Employee;
+import java.io.IOException;
+import java.util.concurrent.TimeUnit;
+import org.apache.commons.lang.RandomStringUtils;
+import org.apache.commons.lang.math.RandomUtils;
+import org.apache.commons.lang.time.DurationFormatUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public class HazelcastServer {
+
+    private static final Logger logger = LoggerFactory.getLogger(HazelcastServer.class);
+
+    public static final int MAP_SIZE = 1;
+    public static final int DATA_VOLUME = 1000000;
+
+    public static void main(String... args) throws Exception {
+        Config cfg = new Config();
+        cfg.setProperty(GroupProperties.PROP_LOGGING_TYPE, "slf4j");
+        cfg.setProperty("hazelcast.memcache.enabled", "false");
+        cfg.setProperty("hazelcast.rest.enabled", "false");
+//        cfg.setProperty("hazelcast.io.thread.count", "50");
+        cfg.getGroupConfig().setName("hz3");
+        cfg.getGroupConfig().setPassword("***");
+        InterfacesConfig interfacesCfg = cfg.getNetworkConfig().getInterfaces();
+        interfacesCfg.setEnabled(true);
+        interfacesCfg.addInterface("127.0.0.1");
+        HazelcastInstance hzServerInst = Hazelcast.newHazelcastInstance(cfg);
+
+        generateTestData(hzServerInst);
+
+        Thread.sleep(TimeUnit.MINUTES.toMillis(120));
+        hzServerInst.shutdown();
+    }
+
+    public static void generateTestData(HazelcastInstance hzServerInst) throws IOException {
+        long startTime = System.currentTimeMillis();
+        for (int mapSize = 0; mapSize < MAP_SIZE; mapSize++) {
+            IMap<String, Employee> imap = hzServerInst.getMap("employee_map" + mapSize);
+            for (int i = 0; i < DATA_VOLUME; i++) {
+                Employee employee = new Employee(RandomStringUtils.randomAlphabetic(10), RandomUtils.nextInt(101),
+                        RandomUtils.nextBoolean(), RandomUtils.nextDouble() * 100000d);
+                imap.put(employee.getName(), employee);
+            }
+        }
+        long endTime = System.currentTimeMillis();
+
+        logger.debug("generate {} test data, time spent: {}", DATA_VOLUME * MAP_SIZE,
+                DurationFormatUtils.formatDurationHMS(endTime - startTime));
+    }
+}
+```
+## 2.3 performance benchmark test, get the 'time spent' from console
+
+Similar with 1.3 with minor API changes.
+
+``` java
+package com.hazelcast.query;
+
+import com.hazelcast.client.HazelcastClient;
+import com.hazelcast.client.config.ClientConfig;
+import com.hazelcast.core.HazelcastInstance;
+import com.hazelcast.core.IMap;
+import com.hazelcast.instance.GroupProperties;
+import com.hazelcast.query.Predicate;
+import com.hazelcast.query.SqlPredicate;
+import com.hazelcast.query.domain.Employee;
+import com.hazelcast.server.HazelcastServer;
+import java.io.IOException;
+import java.util.Collection;
+import java.util.Iterator;
+import org.apache.commons.lang.time.DurationFormatUtils;
+import org.junit.AfterClass;
+import org.junit.BeforeClass;
+import org.junit.Test;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public class HazelcastQueryPerformanceTest {
+
+    private static final Logger logger = LoggerFactory.getLogger(HazelcastQueryPerformanceTest.class);
+
+    private static final int QUERY_TIMES = 5;
+    private static HazelcastInstance hzClientInst;
+
+    @BeforeClass
+    public static void setUp() throws IOException {
+        ClientConfig clientConfig = new ClientConfig();
+        clientConfig.getGroupConfig().setName("hz3");
+        clientConfig.getGroupConfig().setPassword("***");
+        clientConfig.setProperty(GroupProperties.PROP_LOGGING_TYPE, "slf4j");
+        hzClientInst = HazelcastClient.newHazelcastClient(clientConfig);
+    }
+
+    @AfterClass
+    public static void tearDown() throws IOException {
+        try {
+            hzClientInst.shutdown();
+        } catch (Exception exp) {
+            logger.error(exp.getMessage(), exp);
+        }
+    }
+
+    @Test
+    public void testQuery() throws IOException {
+        long startTime = System.currentTimeMillis();
+        for (int i = 0; i < QUERY_TIMES; i++) {
+            for (int j = 0; j < HazelcastServer.MAP_SIZE; j++) {
+                hazelcstQuery("a", 100, "employee_map" + j);
+            }
+        }
+        long endTime = System.currentTimeMillis();
+        logger.debug("total time spent: {}", DurationFormatUtils.formatDurationHMS((endTime - startTime)));
+    }
+
+    @SuppressWarnings({"rawtypes", "unused"})
+    public void hazelcstQuery(String fuzzy, int age, String mapName) {
+        Predicate predicate = new SqlPredicate("active and age < " + age + " and name like '%" + fuzzy + "%'");
+        IMap<String, Employee> imap = hzClientInst.getMap(mapName);
+        long startTime = System.currentTimeMillis();
+        Collection<Employee> employees = imap.values(predicate);
+
+        Iterator<Employee> itr = employees.iterator();
+        while (itr.hasNext()) {
+            Employee employee = itr.next();
+            //            logger.debug("{}", employee);
+        }
+        long endTime = System.currentTimeMillis();
+        logger.debug("hazelcast search: [{}-{}-{}] find employees size: {}, time spent: {}",
+                new Object[]{mapName, fuzzy, age, employees.size(), DurationFormatUtils.formatDurationHMS(endTime - startTime)});
+    }
+}
+```
+#3. test & get test result
+
+I use windows-x64 jdk1.7.0_60 + maven 3.2.1, run HazelcastServer and HazelcastQueryPerformanceTest in my laptop.
+- run HazelcastServer: 
+  Will create 1M Employee objects to IMap (employee_map0).
+- run HazelcastQueryPerformanceTest: 
+  Query all Employee which name contains 'a' and aga less than 100.
+## 3.1 hazelcast2.5 project benchmark result
+
+```
+18:23:02.554 [main] DEBUG c.h.q.HazelcastQueryPerformanceTest - hazelcast search: [employee_map0-a-100] find employees size: 87295, time spent: 0:00:09.801
+18:23:04.024 [main] DEBUG c.h.q.HazelcastQueryPerformanceTest - hazelcast search: [employee_map0-a-100] find employees size: 87295, time spent: 0:00:01.467
+18:23:05.679 [main] DEBUG c.h.q.HazelcastQueryPerformanceTest - hazelcast search: [employee_map0-a-100] find employees size: 87295, time spent: 0:00:01.654
+18:23:07.029 [main] DEBUG c.h.q.HazelcastQueryPerformanceTest - hazelcast search: [employee_map0-a-100] find employees size: 87295, time spent: 0:00:01.349
+18:23:08.638 [main] DEBUG c.h.q.HazelcastQueryPerformanceTest - hazelcast search: [employee_map0-a-100] find employees size: 87295, time spent: 0:00:01.608
+18:23:08.638 [main] DEBUG c.h.q.HazelcastQueryPerformanceTest - total time spent: 0:00:15.926
+```
+## 3.2 hazelcast3.3.1 project benchmark result
+
+```
+18:24:01.047 [main] DEBUG c.h.q.HazelcastQueryPerformanceTest - hazelcast search: [employee_map0-a-100] find employees size: 87532, time spent: 0:00:05.936
+18:24:05.215 [main] DEBUG c.h.q.HazelcastQueryPerformanceTest - hazelcast search: [employee_map0-a-100] find employees size: 87532, time spent: 0:00:04.164
+18:24:09.336 [main] DEBUG c.h.q.HazelcastQueryPerformanceTest - hazelcast search: [employee_map0-a-100] find employees size: 87532, time spent: 0:00:04.120
+18:24:13.330 [main] DEBUG c.h.q.HazelcastQueryPerformanceTest - hazelcast search: [employee_map0-a-100] find employees size: 87532, time spent: 0:00:03.992
+18:24:18.231 [main] DEBUG c.h.q.HazelcastQueryPerformanceTest - hazelcast search: [employee_map0-a-100] find employees size: 87532, time spent: 0:00:04.901
+18:24:18.232 [main] DEBUG c.h.q.HazelcastQueryPerformanceTest - total time spent: 0:00:23.170
+```
+## 3.3 hazelcast2.5 vs. hazelcast3.3.1
+
+From test result get to know, both get about 8.7K Employee objects, it is nearly fair.
+- For hazelcast2.5 first time spent 9.8 second, but 2nd, 3rd, 4th, 5th... spent about 1.5 second, which is hugely dropped, why?
+- For hazelcast3.3.1 first time spent a little more time then the following query, but 2nd, 3rd, 4th, 5th... will cost cosely 4+ second, I guess this make sense. But compare to hazelcast2.5, it only spent 1.5 second, compare to 4+ second, this is doubled.
+
+We already get feedback query very slowly from our product environment against hazelcast2.5, if we finally decide upgrade to hazelcast3.3.1, the query speed could not be accepted.
+Could you give some suggestions?!

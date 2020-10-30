@@ -1,0 +1,30 @@
+While trying to run Flink in a yarn cluster with more than 1 physical computer in the cluster, the first task manager will start fine, but the second task manager fails to start because it is looking for the kerberos keytab in the location that is on the FIRST taskmanager. See below log lines (unrelated lines removed for clarity):
+
+
+2018-09-01 23:00:34,322 INFO class=o.a.f.yarn.YarnTaskExecutorRunner thread=main Current working/local Directory: /mnt/yarn/usercache/hadoop/appcache/application_1535833786616_0005
+2018-09-01 23:00:34,339 INFO class=o.a.f.r.c.BootstrapTools thread=main Setting directories for temporary files to: /mnt/yarn/usercache/hadoop/appcache/application_1535833786616_0005
+
+2018-09-01 23:00:34,339 INFO class=o.a.f.yarn.YarnTaskExecutorRunner thread=main keytab path: /mnt/yarn/usercache/hadoop/appcache/application_1535833786616_0005/container_1535833786616_0005_01_000319/krb5.keytab
+
+2018-09-01 23:00:34,339 INFO class=o.a.f.yarn.YarnTaskExecutorRunner thread=main YARN daemon is running as: hadoop Yarn client user obtainer: hadoop
+
+2018-09-01 23:00:34,343 ERROR class=o.a.f.yarn.YarnTaskExecutorRunner thread=main YARN TaskManager initialization failed.
+org.apache.flink.configuration.IllegalConfigurationException: Kerberos login configuration is invalid; keytab '/mnt/yarn/usercache/hadoop/appcache/application_1535833786616_0005/container_1535833786616_0005_01_000001/krb5.keytab' does not exist
+at org.apache.flink.runtime.security.SecurityConfiguration.validate(SecurityConfiguration.java:139)
+at org.apache.flink.runtime.security.SecurityConfiguration.<init>(SecurityConfiguration.java:90)
+at org.apache.flink.runtime.security.SecurityConfiguration.<init>(SecurityConfiguration.java:71)
+at org.apache.flink.yarn.YarnTaskExecutorRunner.run(YarnTaskExecutorRunner.java:120)
+at org.apache.flink.yarn.YarnTaskExecutorRunner.main(YarnTaskExecutorRunner.java:73)
+
+ 
+
+You'll notice that the log statement says that the keytab should be located in container 000319:
+/mnt/yarn/usercache/hadoop/appcache/application_1535833786616_0005/container_1535833786616_0005_01_000319/krb5.keytab
+
+But after I changed the code so that it would show the file that it's actually checking when doing the SecurityConfiguration init it is actually checking container 000001, which is not on the host:
+
+/mnt/yarn/usercache/hadoop/appcache/application_1535833786616_0005/container_1535833786616_0005_01_000001/krb5.keytab
+
+This causes the YARN task managers to restart over and over again (which is why we're up to container 319!)
+
+I'll submit a PR for this fix, though basically it's just moving the initialization of the SecurityConfiguration down 2 lines.

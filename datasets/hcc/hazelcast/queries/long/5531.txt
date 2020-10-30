@@ -1,0 +1,61 @@
+In 3.4.3 and 3.5 the WebFilter is broken (again).
+
+The test written for issue #2187 fails for me with deferred-write set to true.
+(17 WebFilter tests in total are failing for me)
+
+You can reproduce this error with the following steps
+- set deferred-write to true
+- set an attribute on an empty session (e.g. setAttribute("key", "test"))
+- get the attribute for the same key before it is copied to the distributed map (e.g. in the same request: getAttribute("key"))
+
+The expected result is to get "test", but the current implementation always returns null.
+
+I think the test got broken with the commit 98850a51c610de0259cede1eea5f1054af4b0b7f
+
+In HazelcastHttpSession.setAttribute a new LocalCacheEntry is created:
+
+``` java
+    entry = new LocalCacheEntry(transientEntry);
+```
+
+which uses the following constructor:
+
+``` java
+    public LocalCacheEntry(boolean transientEntry) {
+        this.transientEntry = transientEntry;
+        this.reload = true;
+    }
+```
+
+As you can see, reload is set to true, which causes the HazelcastHttpSession.getAttribute method to load the key from the distributed map:
+
+``` java
+public Object getAttribute(final String name) {
+        LocalCacheEntry cacheEntry = localCache.get(name);
+        Object value = null;
+
+        if (cacheEntry == null || cacheEntry.isReload()) {
+            try {
+                value = webFilter.getClusteredSessionService().getAttribute(id, name);
+                if (value == null) {
+                    return null;
+                }
+         …
+```
+
+As the distributed map is empty, null will be returned.
+
+Just as a note:
+
+The other constructor of LocalCacheEntry does not set reload to true:
+
+``` java
+ public LocalCacheEntry(boolean transientEntry, Object value) {
+        this(transientEntry);
+        this.value = value;
+ }
+```
+
+Also LocalCacheEntry.setValue doesn't set reload to false. So if a value is set on an entry that has reload set to true, the value will get lost when calling getAttribute.
+
+HazelcastHttpSession.getAttribute creates a LocalCacheEntry but never puts it in the localCache - wondered if it is intentional.

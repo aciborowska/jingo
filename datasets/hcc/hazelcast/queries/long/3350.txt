@@ -1,0 +1,28 @@
+The resource adapter, and _com.hazelcast.jca.XAResourceWrapper_ in particular, maintains a boolean that indicates whether a transaction is currently running. Whenever the application container calls _com.hazelcast.jca.XAResourceWrapper.setTransactionTimeout(int)_, this flag is checked. The following table describes what happens depending on the value of the flag:
+
+| Value of _isStarted_ | result of running setTransactionTimeout |
+| --- | --- |
+| `false` | _transactionTimeoutSeconds_ is set to the given parameter, and the method returns `true`, signalling that the timeout has been successfully set |
+| `true` | the method returns `false`, signalling that the timeout has **not** been set |
+
+In the case where a transaction has been running, this makes sense. However, you might notice that this flag is never set back to `false` within the class.
+
+We mean to use the RA with WebLogic, and at least within that container, we notice that the transaction timeout is set pretty often. However, the second time around, the timeout ends up being `0` (zero), which triggers the throwing an exception in _com.hazelcast.transaction.TransactionOptions.setTimeout(long, TimeUnit)_
+
+The following patch seems to fix this problem:
+
+``` diff
+diff --git a/hazelcast-ra/hazelcast-jca/src/main/java/com/hazelcast/jca/XAResourceWrapper.java b/hazelcast-ra/hazelcast-jca/src/main/java/com/hazelcast/jca/XAResourceWrapper.java
+index 8bd73a6..8dbb2f7 100644
+--- a/hazelcast-ra/hazelcast-jca/src/main/java/com/hazelcast/jca/XAResourceWrapper.java
++++ b/hazelcast-ra/hazelcast-jca/src/main/java/com/hazelcast/jca/XAResourceWrapper.java
+@@ -67,6 +67,9 @@ public class XAResourceWrapper implements XAResource {
+     public void end(Xid xid, int flags) throws XAException {
+         managedConnection.log(Level.FINEST, "XA end: " + xid + ", " + flags);
+         validateInner();
++        if (flags != TMSUSPEND) {
++            isStarted = false;
++        }
+         inner.end(xid, flags);
+     }
+```

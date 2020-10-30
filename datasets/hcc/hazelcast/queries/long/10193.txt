@@ -1,0 +1,103 @@
+It seems like the Near Cache statistics seem to be off-by-one for at least the `ownedEntryCount`. Sometimes the `ownedEntryMemoryCost` seems to be affected as well.
+
+This issue occurs when using `assertNearCacheSizeEventually()` after e.g. triggering invalidations. This method uses `assertTrueEventually()`, so it's not a single assert and even lazy invalidation events should be waited for. The assert method first checks the `size()` of the Near Cache itself and then the `ownedEntryCount` from the `NearCacheStats` (which should eventually be the same).
+
+The stack trace looks like this:
+```
+java.lang.AssertionError: Invalidation is not working on putAll() Near Cache owned entry
+  count didn't reach the desired value (0 vs. -1) (NearCacheStatsImpl{ownedEntryCount=-1,
+  ownedEntryMemoryCost=-108, creationTime=1490872312504, hits=0, misses=1000,
+  ratio=0.0%, evictions=0, expirations=0, lastPersistenceTime=0, persistenceCount=0,
+  lastPersistenceDuration=0, lastPersistenceWrittenBytes=0, lastPersistenceKeyCount=0,
+  lastPersistenceFailure=''}) expected:<0> but was:<-1>
+	at org.junit.Assert.fail(Assert.java:88)
+	at org.junit.Assert.failNotEquals(Assert.java:834)
+	at org.junit.Assert.assertEquals(Assert.java:645)
+	at com.hazelcast.internal.nearcache.NearCacheTestUtils.assertNearCacheSize(NearCacheTestUtils.java:171)
+	at com.hazelcast.internal.nearcache.NearCacheTestUtils$2.run(NearCacheTestUtils.java:187)
+	at com.hazelcast.test.HazelcastTestSupport.assertTrueEventually(HazelcastTestSupport.java:972)
+	at com.hazelcast.test.HazelcastTestSupport.assertTrueEventually(HazelcastTestSupport.java:989)
+	at com.hazelcast.internal.nearcache.NearCacheTestUtils.assertNearCacheSizeEventually(NearCacheTestUtils.java:184)
+	at com.hazelcast.internal.nearcache.AbstractNearCacheBasicTest.whenPutAllIsUsed_thenNearCacheShouldBeInvalidated(AbstractNearCacheBasicTest.java:258)
+	at com.hazelcast.internal.nearcache.AbstractNearCacheBasicTest.whenPutAllIsUsed_thenNearCacheShouldBeInvalidated_withUpdateOnDataAdapter(AbstractNearCacheBasicTest.java:240)
+	at sun.reflect.NativeMethodAccessorImpl.invoke0(Native Method)
+	at sun.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:39)
+	at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:25)
+	at java.lang.reflect.Method.invoke(Method.java:597)
+	at org.junit.runners.model.FrameworkMethod$1.runReflectiveCall(FrameworkMethod.java:50)
+	at org.junit.internal.runners.model.ReflectiveCallable.run(ReflectiveCallable.java:12)
+	at org.junit.runners.model.FrameworkMethod.invokeExplosively(FrameworkMethod.java:47)
+	at org.junit.internal.runners.statements.InvokeMethod.evaluate(InvokeMethod.java:17)
+	at com.hazelcast.test.FailOnTimeoutStatement$CallableStatement.call(FailOnTimeoutStatement.java:105)
+	at com.hazelcast.test.FailOnTimeoutStatement$CallableStatement.call(FailOnTimeoutStatement.java:97)
+	at java.util.concurrent.FutureTask$Sync.innerRun(FutureTask.java:303)
+	at java.util.concurrent.FutureTask.run(FutureTask.java:138)
+	at java.lang.Thread.run(Thread.java:662)
+```
+https://hazelcast-l337.ci.cloudbees.com/job/new-lab-fast-pr/7904/testReport/junit/com.hazelcast.client.map.impl.nearcache/ClientMapNearCacheBasicTest/whenPutAllIsUsed_thenNearCacheShouldBeInvalidated_withUpdateOnDataAdapter_format_BINARY_/
+
+Affected tests:
+```
+com.hazelcast.client.map.impl.nearcache.ClientMapNearCacheBasicTest
+1x whenCacheIsFull_thenPutOnSameKeyShouldUpdateValue_withUpdateOnDataAdapter[format:BINARY]
+1x whenPutAllIsUsed_thenNearCacheShouldBeInvalidated_withUpdateOnDataAdapter[format:OBJECT]
+1x whenPutAllIsUsed_thenNearCacheShouldBeInvalidated_withUpdateOnDataAdapter[format:BINARY]
+2x whenRemoveAsyncIsUsed_thenNearCacheShouldBeInvalidated_withUpdateOnDataAdapter[format:BINARY]
+3x whenReplaceIsUsed_thenNearCacheShouldBeInvalidated_withUpdateOnDataAdapter[format:BINARY]
+1x whenReplaceWithOldValueIsUsed_thenNearCacheShouldBeInvalidated_withUpdateOnDataAdapter[format:BINARY]
+```
+All `ClientMapNearCacheBasicTest` seem to fail when the `DataAdapter` is used (the one without Near Cache, so invalidation events are needed).
+
+PR builder runs:
+https://hazelcast-l337.ci.cloudbees.com/job/new-lab-fast-pr/7904/testReport/junit/com.hazelcast.client.map.impl.nearcache/ClientMapNearCacheBasicTest/whenPutAllIsUsed_thenNearCacheShouldBeInvalidated_withUpdateOnDataAdapter_format_BINARY_/
+https://hazelcast-l337.ci.cloudbees.com/job/new-lab-fast-pr/7903/testReport/junit/com.hazelcast.client.map.impl.nearcache/ClientMapNearCacheBasicTest/whenPutAllIsUsed_thenNearCacheShouldBeInvalidated_withUpdateOnDataAdapter_format_OBJECT_/
+https://hazelcast-l337.ci.cloudbees.com/job/new-lab-fast-pr/7918/testReport/junit/com.hazelcast.client.map.impl.nearcache/ClientMapNearCacheBasicTest/whenReplaceWithOldValueIsUsed_thenNearCacheShouldBeInvalidated_withUpdateOnDataAdapter_format_BINARY_/
+https://hazelcast-l337.ci.cloudbees.com/job/new-lab-fast-pr/7935/testReport/junit/com.hazelcast.client.map.impl.nearcache/ClientMapNearCacheBasicTest/whenReplaceIsUsed_thenNearCacheShouldBeInvalidated_withUpdateOnDataAdapter_format_BINARY_/
+https://hazelcast-l337.ci.cloudbees.com/job/new-lab-fast-pr/7908/testReport/junit/com.hazelcast.client.map.impl.nearcache/ClientMapNearCacheBasicTest/whenRemoveAsyncIsUsed_thenNearCacheShouldBeInvalidated_withUpdateOnDataAdapter_format_BINARY_/
+https://hazelcast-l337.ci.cloudbees.com/job/new-lab-fast-pr/7924/testReport/junit/com.hazelcast.client.map.impl.nearcache/ClientMapNearCacheBasicTest/whenReplaceIsUsed_thenNearCacheShouldBeInvalidated_withUpdateOnDataAdapter_format_BINARY_/
+https://hazelcast-l337.ci.cloudbees.com/job/new-lab-fast-pr/7922/testReport/junit/com.hazelcast.client.map.impl.nearcache/ClientMapNearCacheBasicTest/whenRemoveAsyncIsUsed_thenNearCacheShouldBeInvalidated_withUpdateOnDataAdapter_format_BINARY_/
+https://hazelcast-l337.ci.cloudbees.com/job/new-lab-fast-pr/7928/testReport/junit/com.hazelcast.client.map.impl.nearcache/ClientMapNearCacheBasicTest/whenCacheIsFull_thenPutOnSameKeyShouldUpdateValue_withUpdateOnDataAdapter_format_BINARY_/
+https://hazelcast-l337.ci.cloudbees.com/job/new-lab-fast-pr/7928/testReport/junit/com.hazelcast.client.map.impl.nearcache/ClientMapNearCacheBasicTest/whenReplaceIsUsed_thenNearCacheShouldBeInvalidated_withUpdateOnDataAdapter_format_BINARY_/
+
+There is a similar pattern on a new test:
+```
+java.lang.AssertionError: Population is not working on putIfAbsentAsync() Near Cache owned entry
+  count didn't reach the desired value (1000 vs. 999) (NearCacheStatsImpl{ownedEntryCount=999,
+  ownedEntryMemoryCost=148782, creationTime=1490861443955, hits=986, misses=14,
+   ratio=7042.9%, evictions=0, expirations=0, lastPersistenceTime=0, persistenceCount=0,
+   lastPersistenceDuration=0, lastPersistenceWrittenBytes=0, lastPersistenceKeyCount=0,
+   lastPersistenceFailure=''}) expected:<1000> but was:<999>
+	at org.junit.Assert.fail(Assert.java:88)
+	at org.junit.Assert.failNotEquals(Assert.java:834)
+	at org.junit.Assert.assertEquals(Assert.java:645)
+	at com.hazelcast.internal.nearcache.NearCacheTestUtils.assertNearCacheSize(NearCacheTestUtils.java:190)
+	at com.hazelcast.internal.nearcache.NearCacheTestUtils$2.run(NearCacheTestUtils.java:206)
+	at com.hazelcast.test.HazelcastTestSupport.assertTrueEventually(HazelcastTestSupport.java:972)
+	at com.hazelcast.test.HazelcastTestSupport.assertTrueEventually(HazelcastTestSupport.java:989)
+	at com.hazelcast.internal.nearcache.NearCacheTestUtils.assertNearCacheSizeEventually(NearCacheTestUtils.java:203)
+	at com.hazelcast.internal.nearcache.AbstractNearCacheBasicTest.whenPutIfAbsentIsUsed_thenNearCacheShouldBePopulated(AbstractNearCacheBasicTest.java:274)
+	at com.hazelcast.internal.nearcache.AbstractNearCacheBasicTest.whenPutIfAbsentAsyncIsUsed_thenNearCacheShouldBePopulated_withUpdateOnNearCacheAdapter(AbstractNearCacheBasicTest.java:244)
+	at sun.reflect.NativeMethodAccessorImpl.invoke0(Native Method)
+	at sun.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:39)
+	at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:25)
+	at java.lang.reflect.Method.invoke(Method.java:597)
+	at org.junit.runners.model.FrameworkMethod$1.runReflectiveCall(FrameworkMethod.java:50)
+	at org.junit.internal.runners.model.ReflectiveCallable.run(ReflectiveCallable.java:12)
+	at org.junit.runners.model.FrameworkMethod.invokeExplosively(FrameworkMethod.java:47)
+	at org.junit.internal.runners.statements.InvokeMethod.evaluate(InvokeMethod.java:17)
+	at com.hazelcast.test.FailOnTimeoutStatement$CallableStatement.call(FailOnTimeoutStatement.java:105)
+	at com.hazelcast.test.FailOnTimeoutStatement$CallableStatement.call(FailOnTimeoutStatement.java:97)
+	at java.util.concurrent.FutureTask$Sync.innerRun(FutureTask.java:303)
+	at java.util.concurrent.FutureTask.run(FutureTask.java:138)
+	at java.lang.Thread.run(Thread.java:662)
+```
+The test is a new one, so it's not in the code base yet:
+```
+com.hazelcast.client.cache.nearcache.ClientCacheNearCacheBasicTest
+2x whenPutIfAbsentAsyncIsUsed_thenNearCacheShouldBePopulated_withUpdateOnNearCacheAdapter[format:BINARY CACHE_ON_UPDATE]
+```
+Here we fail on the `NearCacheAdapter` with `CACHE_ON_UPDATE`, so maybe there is something wrong on the new `NearCachedClientCacheProxy`.
+
+PR builder runs:
+https://hazelcast-l337.ci.cloudbees.com/job/new-lab-fast-pr/7889/testReport/junit/com.hazelcast.client.cache.nearcache/ClientCacheNearCacheBasicTest/whenPutIfAbsentAsyncIsUsed_thenNearCacheShouldBePopulated_withUpdateOnNearCacheAdapter_format_BINARY_CACHE_ON_UPDATE_/
+https://hazelcast-l337.ci.cloudbees.com/job/new-lab-fast-pr/7908/testReport/junit/com.hazelcast.client.cache.nearcache/ClientCacheNearCacheBasicTest/whenPutIfAbsentAsyncIsUsed_thenNearCacheShouldBePopulated_withUpdateOnNearCacheAdapter_format_BINARY_CACHE_ON_UPDATE_/

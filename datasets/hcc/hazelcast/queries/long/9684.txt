@@ -1,0 +1,67 @@
+Consider the following:
+
+```
+HazelcastInstance hz = Hazelcast.newHazelcastInstance();
+IMap<String, String> heapData = hz.getMap("heap");
+
+String data = String.valueOf(1);         
+heapData.put(data, data);
+```
+
+Hazelcast reports the above cost to be **158 bytes**.
+Checking the same with `jvisualvm` and other profilers, it is reported to be **216 bytes**.
+
+The Entry cost calculation is using the following formula
+`Data + Record + MapEntry`
+
+Visually inspecting the data-structures and confirming with profilers and tools like JOL, we can get the following figures:
+
+```
+ConcurrentReferenceHashMap$HashEntry object internals:
+ OFFSET  SIZE      TYPE DESCRIPTION                    VALUE
+      0    12           (object header)                N/A
+     12     4       int HashEntry.hash                 N/A
+     16     4    Object HashEntry.keyRef               N/A
+     20     4    Object HashEntry.valueRef             N/A
+     24     4 HashEntry HashEntry.next                 N/A
+     28     4           (loss due to the next object alignment)
+Instance size: 32 bytes
+Space losses: 0 bytes internal + 4 bytes external = 4 bytes total
+```
+**Note**: Extra padding at the end of the object, 8 byte aligned.
+```
+com.hazelcast.internal.serialization.impl.HeapData object internals:
+ OFFSET  SIZE   TYPE DESCRIPTION                    VALUE
+      0    12        (object header)                N/A
+     12     4 byte[] HeapData.payload               N/A
+Instance size: 16 bytes
+Space losses: 0 bytes internal + 0 bytes external = 0 bytes total
+```
+```
+com.hazelcast.map.impl.record.CachedDataRecordWithStats object internals:
+ OFFSET  SIZE   TYPE DESCRIPTION                           VALUE
+      0    12        (object header)                       N/A
+     12     4   Data AbstractRecord.key                    N/A
+     16     8   long AbstractRecord.version                N/A
+     24     8   long AbstractRecord.ttl                    N/A
+     32     8   long AbstractRecord.creationTime           N/A
+     40     8   long AbstractRecord.hits                   N/A
+     48     8   long AbstractRecord.lastAccessTime         N/A
+     56     8   long AbstractRecord.lastUpdateTime         N/A
+     64     8   long AbstractRecordWithStats.lastStoredTime N/A
+     72     8   long AbstractRecordWithStats.expirationTime N/A
+     80     4   Data DataRecordWithStats.value             N/A
+     84     4 Object CachedDataRecordWithStats.cachedValue N/A
+Instance size: 88 bytes
+Space losses: 0 bytes internal + 0 bytes external = 0 bytes total
+
+```
+
+From the above we get 32 bytes for the Hash Entry alone, 16 bytes for a HeapData object, and 88 bytes for the CachedDataRecordWithStats.
+`32 + (16 * 2) /Key & Value/ + 88` = `152` which is the total cost of the entry assuming empty payload byte-arrays.
+
+On the above example the payload byte-array to represent the String value of `1` costs `13 bytes` + `16 bytes array header` + `4 bytes padding` = `32 bytes`. So Key + Value = `64 bytes`.
+
+**152 + 64 = 216 bytes which should be the correct Heap footprint for the given entry.**
+
+In our current implementation we are missing `58 bytes` for the given example, which are mostly static and don't have any big impact on cost calculation, since the biggest memory portion is actual data rather than the Object overhead, but, it would still be nice to have it match the correct figure.

@@ -1,0 +1,13 @@
+MergeIterator.HeadStream.nextHead saves a reference into `this.head` of the `reuse` object that it got as an argument. This object might be modified later by the caller.
+
+This actually happens when ReduceDriver.run calls input.next (which will actually be MergeIterator.next(E reuse)) in the inner while loop of the objectReuseEnabled branch, and that calls top.nextHead with the reference that it got from ReduceDriver, which erroneously saves the reference, and then ReduceDriver later uses that same object for doing the reduce.
+
+Another way in which this fails is when MergeIterator.next(E reuse) gives `reuse` to different `top`s in different calls, and then the heads end up being the same object.
+
+You can observe the latter situation in action by running ReducePerformance here:
+https://github.com/ggevay/flink/tree/merge-iterator-object-reuse-bug
+Set memory to -Xmx200m (so that the MergeIterator actually has merging to do), put a breakpoint at the beginning of MergeIterator.next(reuse), and then watch `reuse`, and the heads of the first two elements of `this.heap` in the debugger. They will get to be the same object after hitting continue about 6 times.
+
+You can also look at the count that is printed at the end, which shouldn't be larger than the key range. Also, if you look into the output file /tmp/xxxobjectreusebug, for example the key 999977 appears twice.
+
+The good news is that I think I can see an easy fix that doesn't affect performance: MergeIterator.HeadStream could have a reuse object of its own as a member, and give that to iterator.next in nextHead(E reuse). And then we wouldn't need the overload of nextHead that has the reuse parameter, and MergeIterator.next(E reuse) could just call its other overload.

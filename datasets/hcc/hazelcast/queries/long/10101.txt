@@ -1,0 +1,66 @@
+This is the exact same issue in this ticket: https://github.com/hazelcast/hazelcast/issues/9766
+The problem is not fixed in 3.7.6. I am not sure how the original ticket was closed when the problem still exists.
+Here is the description of the problem again:
+I'm using Enterprise 3.7.6 version.
+Application ->hzClient (3.7.6 version) ------------------- hzServer1 (3.7.6)
+                                                            ------------------- hzServer2 (3.7.6)
+hzServer1 and hzServer2 are members in the same cluster.
+hzClient registers message listener with the cluster to receive messages from reliable topic.
+
+Steps to reproduce:
+stop hzServer1
+start hzServer1
+stop hzServer2
+start hzServer2
+... repeat couple times as needed.
+Basically alternate start/stop of the two servers but leave one server active at a time.
+The listener is then terminated incorrectly (see log below). After that client never receives any messages from the topic again.
+
+Please make sure that you address all the items below and test it carefully before closing the ticket. It's very time consuming to pick up new version and problem still not fixed. 
+
+1) When isTerminal(Throwable failure) on ReliableMessageListener returns false (and isLossTolerant() returns true) then listener CANNOT BE TERMINATED FOR ANY REASON. Currently, look like these call back NEVER INVOKED which looks like more bugs.
+2) When you get exception (ex: TargetDisconnectException like below), feed the exception into isTerminal(...) call back. If the call back returns false then find another active cluster member and re-register the listeners. If there are no active member, wait until one of them become active and register listeners again. Basically the logic that register/re-register listener needs to be observer of connection state so that it can re-register (as needed) when cluster member disconnect/reconnect. 
+3) Make sure that fix is tested carefully so that fixed really means fixed. Steps to test.
+- Create a cluster with two members hzServer1 and hzServer2
+- Start hzServer1 first then start hzServer2
+- Create client and register for reliable topic.
+- Create a publish client.
+- Publish something and verify that client receives the messages.
+- Stop hzServer1
+- Look at logs and verify that listener not terminated.
+- Publish something and make sure that client receives the messages.
+- Start hzServer1 and wait until it's up.
+- Stop hzServer2
+- Look at logs and verify that listener not terminated.
+- Publish something and make sure that client receives the messages.
+- Start hzServer2
+- Repeat this cycle 3-4 times to make sure that listeners not terminated and client still receives message.
+
+Logs:
+```
+2017.03.17 11:15:09:298 EDT | Warn       | Hazelcast
+        hz.client_0 [hzc1] [3.7.6] Terminating MessageListener com.broadsoft.persistence.hazelcast.BWHazelcastInstance$TopicContainer$ReliableMessageListenerImpl@111bed78 on topic: profileManagementUpdate. Reason: Unhandled exception, message: com.hazelcast.spi.exception.TargetDisconnectedException: Disconnecting from member [10.16.176.21]:5701 due to heartbeat problems. Current time: 2017-03-17 11:15:09.265. Last heartbeat requested: 2017-03-17 11:14:49.266. Last heartbeat received: 2017-03-17 11:14:49.268. Last read: 2017-03-17 11:15:08.561. Connection ClientConnection{live=false, connectionId=2, socketChannel=SSLSocketChannelWrapper{socketChannel=java.nio.channels.SocketChannel[closed]}, remoteEndpoint=[10.16.176.21]:5701, lastReadTime=2017-03-17 11:15:08.561, lastWriteTime=2017-03-17 11:14:59.443, closedTime=2017-03-17 11:15:08.561, lastHeartbeatRequested=2017-03-17 11:14:49.266, lastHeartbeatReceived=2017-03-17 11:14:49.268, connected server version=3.7.6} <java.util.concurrent.ExecutionException: com.hazelcast.spi.exception.TargetDisconnectedException: Disconnecting from member [10.16.176.21]:5701 due to heartbeat problems. Current time: 2017-03-17 11:15:09.265. Last heartbeat requested: 2017-03-17 11:14:49.266. Last heartbeat received: 2017-03-17 11:14:49.268. Last read: 2017-03-17 11:15:08.561. Connection ClientConnection{live=false, connectionId=2, socketChannel=SSLSocketChannelWrapper{socketChannel=java.nio.channels.SocketChannel[closed]}, remoteEndpoint=[10.16.176.21]:5701, lastReadTime=2017-03-17 11:15:08.561, lastWriteTime=2017-03-17 11:14:59.443, closedTime=2017-03-17 11:15:08.561, lastHeartbeatRequested=2017-03-17 11:14:49.266, lastHeartbeatReceived=2017-03-17 11:14:49.268, connected server version=3.7.6}>java.util.concurrent.ExecutionException: com.hazelcast.spi.exception.TargetDisconnectedException: Disconnecting from member [10.16.176.21]:5701 due to heartbeat problems. Current time: 2017-03-17 11:15:09.265. Last heartbeat requested: 2017-03-17 11:14:49.266. Last heartbeat received: 2017-03-17 11:14:49.268. Last read: 2017-03-17 11:15:08.561. Connection ClientConnection{live=false, connectionId=2, socketChannel=SSLSocketChannelWrapper{socketChannel=java.nio.channels.SocketChannel[closed]}, remoteEndpoint=[10.16.176.21]:5701, lastReadTime=2017-03-17 11:15:08.561, lastWriteTime=2017-03-17 11:14:59.443, closedTime=2017-03-17 11:15:08.561, lastHeartbeatRequested=2017-03-17 11:14:49.266, lastHeartbeatReceived=2017-03-17 11:14:49.268, connected server version=3.7.6}
+        at com.hazelcast.client.spi.impl.ClientInvocationFuture.resolve(ClientInvocationFuture.java:66)
+        at com.hazelcast.spi.impl.AbstractInvocationFuture$1.run(AbstractInvocationFuture.java:246)
+        at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1142)
+        at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:617)
+        at java.lang.Thread.run(Thread.java:745)
+        at com.hazelcast.util.executor.HazelcastManagedThread.executeRun(HazelcastManagedThread.java:76)
+        at com.hazelcast.util.executor.HazelcastManagedThread.run(HazelcastManagedThread.java:92)
+Caused by: com.hazelcast.spi.exception.TargetDisconnectedException: Disconnecting from member [10.16.176.21]:5701 due to heartbeat problems. Current time: 2017-03-17 11:15:09.265. Last heartbeat requested: 2017-03-17 11:14:49.266. Last heartbeat received: 2017-03-17 11:14:49.268. Last read: 2017-03-17 11:15:08.561. Connection ClientConnection{live=false, connectionId=2, socketChannel=SSLSocketChannelWrapper{socketChannel=java.nio.channels.SocketChannel[closed]}, remoteEndpoint=[10.16.176.21]:5701, lastReadTime=2017-03-17 11:15:08.561, lastWriteTime=2017-03-17 11:14:59.443, closedTime=2017-03-17 11:15:08.561, lastHeartbeatRequested=2017-03-17 11:14:49.266, lastHeartbeatReceived=2017-03-17 11:14:49.268, connected server version=3.7.6}
+        at com.hazelcast.spi.exception.TargetDisconnectedException.newTargetDisconnectedExceptionCausedByHeartbeat(TargetDisconnectedException.java:66)
+        at com.hazelcast.client.spi.impl.ClientInvocationServiceSupport$CleanResourcesTask.run(ClientInvocationServiceSupport.java:221)
+        at java.util.concurrent.Executors$RunnableAdapter.call(Executors.java:511)
+        at java.util.concurrent.FutureTask.runAndReset(FutureTask.java:308)
+        at java.util.concurrent.ScheduledThreadPoolExecutor$ScheduledFutureTask.access$301(ScheduledThreadPoolExecutor.java:180)
+        at java.util.concurrent.ScheduledThreadPoolExecutor$ScheduledFutureTask.run(ScheduledThreadPoolExecutor.java:294)
+        ... 5 more
+Caused by: java.io.EOFException: Remote socket closed!
+        at com.hazelcast.client.connection.nio.ClientReadHandler.handle(ClientReadHandler.java:87)
+        at com.hazelcast.nio.tcp.nonblocking.NonBlockingIOThread.handleSelectionKey(NonBlockingIOThread.java:345)
+        at com.hazelcast.nio.tcp.nonblocking.NonBlockingIOThread.handleSelectionKeys(NonBlockingIOThread.java:330)
+        at com.hazelcast.nio.tcp.nonblocking.NonBlockingIOThread.selectLoop(NonBlockingIOThread.java:248)
+        at com.hazelcast.nio.tcp.nonblocking.NonBlockingIOThread.run(NonBlockingIOThread.java:201)
+
+
+```

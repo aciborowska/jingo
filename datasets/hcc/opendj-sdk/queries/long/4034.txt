@@ -1,0 +1,9 @@
+A server has a JE backend holding 30 million CTS tokens. As per CTS tuning recommendations, the ds-cfg-subordinate-indexes-enabled flag is FALSE.
+
+When the customer restarted the server, start-ds timed out. A few jstacks of the server revealed the main thread was inside getEntryCount() on a JE backend.
+
+It looks like if subordinate indexes are enabled, getEntryCount() can query a single record in id2subtree to return the entry count, but if subordinate indexes are disabled (like here), getEntryCount() has to call JE's database.count() method on id2entry. This is taking an extremely long time as the database is large. (The customer reports it took about 3 hours, this may be in part due to limited IOPs on the AWS disk, and a default filecache of 100. The JE cleaner threads were also observed to be reading the database.)
+
+We appear to only call getEntryCount() on startup so we can log something nice. However getEntryCount() is also called when you query the backend stats via cn=monitor or JMX, so each query of that will involve another call to database.count().
+
+The dsreplication status command reports the number of entries held in each suffix, which is done by searching cn=monitor for (ds-backend-id=backend) and retrieving the ds-basedn-entry-count, which is in turn calling getEntryCount(). The customer also reported that the dsreplication status command does not seem to report anything for any DSes.

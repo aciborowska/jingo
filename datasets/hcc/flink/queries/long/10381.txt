@@ -1,0 +1,59 @@
+if submit multiple jobs concurrently, some the them are likely to fail, and return following exception: 
+
+java.util.concurrent.CompletionException: org.apache.flink.util.FlinkException: Could not run the jar. 
+at org.apache.flink.runtime.webmonitor.handlers.JarRunHandler.lambda$handleJsonRequest$0(JarRunHandler.java:90) 
+at org.apache.flink.runtime.webmonitor.handlers.JarRunHandler$$Lambda$47/713642705.get(Unknown Source) 
+at java.util.concurrent.CompletableFuture$AsyncSupply.run(CompletableFuture.java:1582) 
+at java.util.concurrent.Executors$RunnableAdapter.call(Executors.java:511) 
+at java.util.concurrent.FutureTask.run(FutureTask.java:266) 
+at java.util.concurrent.ScheduledThreadPoolExecutor$ScheduledFutureTask.access$201(ScheduledThreadPoolExecutor.java:180) 
+at java.util.concurrent.ScheduledThreadPoolExecutor$ScheduledFutureTask.run(ScheduledThreadPoolExecutor.java:293) 
+at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1142) 
+at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:617) 
+at java.lang.Thread.run(Thread.java:745)
+Caused by: org.apache.flink.util.FlinkException: Could not run the jar. ... 10 more
+
+Caused by: org.apache.flink.client.program.ProgramInvocationException: The program caused an error: 
+at org.apache.flink.client.program.OptimizerPlanEnvironment.getOptimizedPlan(OptimizerPlanEnvironment.java:93) 
+at org.apache.flink.client.program.ClusterClient.getOptimizedPlan(ClusterClient.java:334) 
+at org.apache.flink.runtime.webmonitor.handlers.JarActionHandler.getJobGraphAndClassLoader(JarActionHandler.java:76) 
+at org.apache.flink.runtime.webmonitor.handlers.JarRunHandler.lambda$handleJsonRequest$0(JarRunHandler.java:69) ... 9 more
+
+Caused by: org.apache.flink.client.program.OptimizerPlanEnvironment$ProgramAbortException 
+at org.apache.flink.streaming.api.environment.StreamPlanEnvironment.execute(StreamPlanEnvironment.java:72) 
+... 
+at sun.reflect.NativeMethodAccessorImpl.invoke0(Native Method) 
+at sun.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:62) 
+at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43) 
+at java.lang.reflect.Method.invoke(Method.java:497) 
+at org.apache.flink.client.program.PackagedProgram.callMainMethod(PackagedProgram.java:525) 
+at org.apache.flink.client.program.PackagedProgram.invokeInteractiveModeForExecution(PackagedProgram.java:417) 
+at org.apache.flink.client.program.OptimizerPlanEnvironment.getOptimizedPlan(OptimizerPlanEnvironment.java:83
+
+ 
+Possible Cause:
+
+in OptimizerPlanEnvironment.getOptimizerPlan(), setAsContext() will set a static variable named contextEnvironmentFactory in ExecutionEnviroment, which will eventually cause ExecutionEnviroment.getExecutionEnvironment() returns the currently OptimizerPlanEnvironment instance, and capture the optimizerPlan and save to a instance vairable in OptimizerPlanEnvironment.
+
+However, if multiple jobs are submitted at the same time, the static variable contextEnvironmentFactory in ExecutionEnvironment will be set again by a following job, hence force ExecutionEnviroment.getExecutionEnvironment() return another new instance of OptimizerPlanEnvironment, therefore, the first intance of OptimizerPlanEnvironment will not caputre the optimizerPlan, and throws ProgramInvocationException. The spot is copied below for you convience:
+
+setAsContext();
+ try 
+{
+ prog.invokeInteractiveModeForExecution();
+ }
+ catch (ProgramInvocationException e) 
+{
+ throw e;
+ }
+ catch (Throwable t) {
+ // the invocation gets aborted with the preview plan
+ if (optimizerPlan != null) 
+{
+ return optimizerPlan;
+ }
+ else 
+{
+ throw new ProgramInvocationException("The program caused an error: ", t);
+ }
+ }

@@ -1,0 +1,108 @@
+## Bug Report
+**As a result, after integration with mybatis, some special operations lead to an endless cycle of mybatis**
+
+### Which version of Sharding-Sphere did you use?
+```xml
+<dependency>
+    <groupId>io.shardingsphere</groupId>
+    <artifactId>sharding-jdbc-spring-boot-starter</artifactId>
+    <version>3.0.0</version>
+</dependency>
+```
+
+### Which project did you use? Sharding-JDBC or Sharding-Proxy?
+Sharding-JDBC
+
+### Expected behavior
+**It doesn't create an infinite loop**
+```
+ DEBUG org.mapper.UserRoleMapper.insertBySelect2 - ==>  Preparing: INSERT INTO `user_role`(`username`, `role_name`) VALUES (?, ?) 
+ INFO  Sharding-Sphere-SQL - Rule Type: master-slave
+ INFO  Sharding-Sphere-SQL - SQL: INSERT INTO `user_role`(`username`, `role_name`) VALUES (?, ?) ::: DataSources: write
+ DEBUG org.mapper.UserRoleMapper.insertBySelect2 - ==> Parameters: write(String), write(String)
+ DEBUG org.mapper.UserRoleMapper.insertBySelect2 - <==    Updates: 1
+ ...... The database operation completes printing other business logs
+```
+
+### Actual behavior
+```
+ DEBUG org.mapper.UserRoleMapper.insertBySelect2 - ==>  Preparing: INSERT INTO `user_role`(`username`, `role_name`) VALUES (?, ?) 
+ INFO  Sharding-Sphere-SQL - Rule Type: master-slave
+ INFO  Sharding-Sphere-SQL - SQL: INSERT INTO `user_role`(`username`, `role_name`) VALUES (?, ?) ::: DataSources: write
+ DEBUG org.mapper.UserRoleMapper.insertBySelect2 - ==> Parameters: write(String), write(String)
+ DEBUG org.mapper.UserRoleMapper.insertBySelect2 - <==    Updates: 1
+ DEBUG org.mapper.UserRoleMapper.insertBySelect2 - <==    Updates: 1
+ DEBUG org.mapper.UserRoleMapper.insertBySelect2 - <==    Updates: 1
+ DEBUG org.mapper.UserRoleMapper.insertBySelect2 - <==    Updates: 1
+ DEBUG org.mapper.UserRoleMapper.insertBySelect2 - <==    Updates: 1
+ DEBUG org.mapper.UserRoleMapper.insertBySelect2 - <==    Updates: 1
+ DEBUG org.mapper.UserRoleMapper.insertBySelect2 - <==    Updates: 1
+ DEBUG org.mapper.UserRoleMapper.insertBySelect2 - <==    Updates: 1
+ DEBUG org.mapper.UserRoleMapper.insertBySelect2 - <==    Updates: 1
+ DEBUG org.mapper.UserRoleMapper.insertBySelect2 - <==    Updates: 1
+ DEBUG org.mapper.UserRoleMapper.insertBySelect2 - <==    Updates: 1
+ DEBUG org.mapper.UserRoleMapper.insertBySelect2 - <==    Updates: 1
+ ......Loop printing
+```
+
+### Reason analyze (If you can)
+
+`java.sql.Statement#getMoreResults()`The interface returns false as specified below：
+```java
+    // io.shardingsphere.shardingjdbc.jdbc.adapter.AbstractStatementAdapter
+
+    @Override
+    public final boolean getMoreResults() {
+        return false;
+    }
+    
+    @Override
+    public final boolean getMoreResults(final int current) {
+        return false;
+    }
+```
+**As a result, after integration with mybatis, some special operations cause mybatis to generate a dead loop. The position of the dead loop of mybatis code is as follows through debugging:**
+```java
+  // org.apache.ibatis.executor.resultset.DefaultResultSetHandler.java
+
+  private ResultSetWrapper getFirstResultSet(Statement stmt) throws SQLException {
+    ResultSet rs = stmt.getResultSet();
+    while (rs == null) {
+      // move forward to get the first resultset in case the driver
+      // doesn't return the resultset as the first result (HSQLDB 2.1)
+      if (stmt.getMoreResults()) {
+        rs = stmt.getResultSet();
+      } else {
+        // Note: using sharding- JDBC, stmt.getupdatecount () is always greater than 1 (resulting in an infinite loop),
+        // But using mysql's native driver returns -1
+        if (stmt.getUpdateCount() == -1) {
+          // no more results. Must be no resultset
+          break;
+        }
+      }
+    }
+    return rs != null ? new ResultSetWrapper(rs, configuration) : null;
+  }
+```
+Use mybatis to reproduce the code：
+```java
+@Repository
+@Mapper
+public interface UserRoleMapper extends BaseMapper<UserRole> {
+    // Define update database statements in @select
+    @Select("INSERT INTO `user_role`(`username`, `role_name`) VALUES (#{userRole.username}, #{userRole.roleName})")
+    Integer insertBySelect(@Param("userRole") UserRole userRole);
+}
+```
+
+**My current solution**
+``` java
+    // Modify the io.shardingsphere.shardingjdbc.jdbc.core.statement.MasterSlavePreparedStatement 
+
+    @Override
+    public final boolean getMoreResults() {
+        return routedStatements.iterator().next().getMoreResults();
+    }
+```
+
+**After the test is modified in this way, online problems can be solved, but I do not know whether it will bring about other problems. I hope the official support (online is in use urgently).**

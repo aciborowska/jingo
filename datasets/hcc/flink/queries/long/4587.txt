@@ -1,0 +1,130 @@
+For some reason I need to use org.apache.httpcomponents:httpasyncclient:4.1.2 in flink.
+The source file is:
+
+import org.apache.flink.streaming.api.scala._
+import org.apache.http.impl.nio.conn.ManagedNHttpClientConnectionFactory
+
+/**
+  * Created by renkai on 16/9/7.
+  */
+object Main {
+  def main(args: Array[String]): Unit = {
+    val instance = ManagedNHttpClientConnectionFactory.INSTANCE
+    println("instance = " + instance)
+
+    val env = StreamExecutionEnvironment.getExecutionEnvironment
+    val stream = env.fromCollection(1 to 100)
+    val result = stream.map { x =>
+      x * 2
+    }
+    result.print()
+    env.execute("xixi")
+  }
+}
+
+
+
+
+and 
+
+name := "flink-explore"
+
+version := "1.0"
+
+scalaVersion := "2.11.8"
+
+crossPaths := false
+
+libraryDependencies ++= Seq(
+  "org.apache.flink" %% "flink-scala" % "1.2-SNAPSHOT"
+    exclude("com.google.code.findbugs", "jsr305"),
+  "org.apache.flink" %% "flink-connector-kafka-0.8" % "1.2-SNAPSHOT"
+    exclude("com.google.code.findbugs", "jsr305"),
+  "org.apache.flink" %% "flink-streaming-scala" % "1.2-SNAPSHOT"
+    exclude("com.google.code.findbugs", "jsr305"),
+  "org.apache.flink" %% "flink-clients" % "1.2-SNAPSHOT"
+    exclude("com.google.code.findbugs", "jsr305"),
+  "org.apache.httpcomponents" % "httpasyncclient" % "4.1.2"
+)
+
+
+I use `sbt assembly` to get a fat jar.
+
+If I run the command
+
+ java -cp flink-explore-assembly-1.0.jar Main
+
+
+I get the result 
+
+
+instance = org.apache.http.impl.nio.conn.ManagedNHttpClientConnectionFactory@4909b8da
+log4j:WARN No appenders could be found for logger (org.apache.flink.api.scala.ClosureCleaner$).
+log4j:WARN Please initialize the log4j system properly.
+log4j:WARN See http://logging.apache.org/log4j/1.2/faq.html#noconfig for more info.
+Connected to JobManager at Actor[akka://flink/user/jobmanager_1#-1177584915]
+09/07/2016 12:05:26	Job execution switched to status RUNNING.
+09/07/2016 12:05:26	Source: Collection Source(1/1) switched to SCHEDULED
+09/07/2016 12:05:26	Source: Collection Source(1/1) switched to DEPLOYING
+...
+09/07/2016 12:05:26	Map -> Sink: Unnamed(20/24) switched to RUNNING
+09/07/2016 12:05:26	Map -> Sink: Unnamed(19/24) switched to RUNNING
+15> 30
+20> 184
+...
+19> 182
+1> 194
+8> 160
+09/07/2016 12:05:26	Source: Collection Source(1/1) switched to FINISHED
+...
+09/07/2016 12:05:26	Map -> Sink: Unnamed(1/24) switched to FINISHED
+09/07/2016 12:05:26	Job execution switched to status FINISHED.
+
+
+
+Nothing special.
+
+But if I run the jar by
+
+./bin/flink run shop-monitor-flink-assembly-1.0.jar
+
+
+
+I will get an error
+
+
+$ ./bin/flink run flink-explore-assembly-1.0.jar
+Cluster configuration: Standalone cluster with JobManager at /127.0.0.1:6123
+Using address 127.0.0.1:6123 to connect to JobManager.
+JobManager web interface address http://127.0.0.1:8081
+Starting execution of program
+
+------------------------------------------------------------
+ The program finished with the following exception:
+
+java.lang.NoSuchFieldError: INSTANCE
+	at org.apache.http.impl.nio.codecs.DefaultHttpRequestWriterFactory.<init>(DefaultHttpRequestWriterFactory.java:53)
+	at org.apache.http.impl.nio.codecs.DefaultHttpRequestWriterFactory.<init>(DefaultHttpRequestWriterFactory.java:57)
+	at org.apache.http.impl.nio.codecs.DefaultHttpRequestWriterFactory.<clinit>(DefaultHttpRequestWriterFactory.java:47)
+	at org.apache.http.impl.nio.conn.ManagedNHttpClientConnectionFactory.<init>(ManagedNHttpClientConnectionFactory.java:75)
+	at org.apache.http.impl.nio.conn.ManagedNHttpClientConnectionFactory.<init>(ManagedNHttpClientConnectionFactory.java:83)
+	at org.apache.http.impl.nio.conn.ManagedNHttpClientConnectionFactory.<clinit>(ManagedNHttpClientConnectionFactory.java:64)
+	at Main$.main(Main.scala:9)
+	at Main.main(Main.scala)
+	at sun.reflect.NativeMethodAccessorImpl.invoke0(Native Method)
+	at sun.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:62)
+	at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)
+	at java.lang.reflect.Method.invoke(Method.java:497)
+	at org.apache.flink.client.program.PackagedProgram.callMainMethod(PackagedProgram.java:509)
+	at org.apache.flink.client.program.PackagedProgram.invokeInteractiveModeForExecution(PackagedProgram.java:403)
+	at org.apache.flink.client.program.ClusterClient.run(ClusterClient.java:322)
+	at org.apache.flink.client.CliFrontend.executeProgram(CliFrontend.java:774)
+	at org.apache.flink.client.CliFrontend.run(CliFrontend.java:250)
+	at org.apache.flink.client.CliFrontend.parseParameters(CliFrontend.java:1002)
+	at org.apache.flink.client.CliFrontend.main(CliFrontend.java:1045)
+
+
+
+I tried hard to find the reason of this exception, usually it is caused by another class with same package and classname but have different content in the classpath,but I checked every jar in FLINK_HOME/lib, there is no class named DefaultHttpRequestWriterFactory.
+
+I doubt the jar file is somehow broken by org.apache.flink.runtime.execution.librarycache.BlobLibraryCacheManager, but I don't have any evidence.Could anyone help?

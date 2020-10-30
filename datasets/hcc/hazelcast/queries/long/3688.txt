@@ -1,0 +1,75 @@
+We can see that the cache loader is loading items into the cache,  but when we want to get the cache loader instance from the config object,  the returned object will not have the correct state.
+
+every member / client  on the cluster executes this.
+
+```
+config = new CacheConfig();
+        config.setName(basename);
+        config.setTypes(Object.class, Object.class);
+        config.setReadThrough(true);
+        config.setWriteThrough(true);
+        RecordingCacheLoader a = new RecordingCacheLoader();
+        a.load=true;
+        config.setCacheLoaderFactory(FactoryBuilder.factoryOf( a ));
+        config.setCacheWriterFactory(FactoryBuilder.factoryOf( new RecordingCacheWriter() ));
+
+        cacheManager.createCache(basename, config);
+        cache = cacheManager.getCache(basename);
+        config = cache.getConfiguration(CacheConfig.class);
+```
+
+one member of the cluster executes this
+
+```
+        Set keySet = new HashSet();
+        for(int i=0; i<initalKeyLoad; i++){
+            keySet.add(i);
+        }
+
+        CompletionListenerFuture loaded = new CompletionListenerFuture();
+        cache.loadAll(keySet, true, loaded);
+        loaded.get();
+```
+
+then all members do this verification step
+
+```
+ RecordingCacheLoader loader = (RecordingCacheLoader) config.getCacheLoaderFactory().create();
+        RecordingCacheWriter writer = (RecordingCacheWriter) config.getCacheWriterFactory().create();
+
+        log.info(basename+": "+loader);
+        log.info(basename+": "+writer);
+```
+
+with prints this
+
+```
+grepall worker.log iCacheRW:
+./2014-09-24__14_53_12/worker-10.81.188.23-1-server/worker.log
+INFO  2014-09-24 14:55:56,854 [Thread-86] com.hazelcast.stabilizer.tests.icache.ReadWriteICacheTest: iCacheRW: RecordingCacheLoader{loaded={}, loadCount=0, uuid=b74753b2-a834-4f0a-aa13-f16f455115d1, loadBoole=true}
+INFO  2014-09-24 14:55:56,854 [Thread-86] com.hazelcast.stabilizer.tests.icache.ReadWriteICacheTest: iCacheRW: RecordingCacheWriter{writtenKeys={}, deletedEntries={}, writeCount=0, deleteCount=0}
+
+./2014-09-24__14_53_12/worker-10.231.163.160-1-server/worker.log
+INFO  2014-09-24 14:55:55,761 [Thread-124] com.hazelcast.stabilizer.tests.icache.ReadWriteICacheTest: iCacheRW: Counter{put=9627} from 6 worker threads
+junit.framework.AssertionFailedError: iCacheRW: Key 0 not in loader
+INFO  2014-09-24 14:55:56,771 [Thread-126] com.hazelcast.stabilizer.tests.icache.ReadWriteICacheTest: iCacheRW: RecordingCacheLoader{loaded={5=5, 7=7, 8=8, 1=1, 3=3, 4=4}, loadCount=6, uuid=9546cd6c-c601-4528-bdcb-5d74a4275965, loadBoole=true}
+INFO  2014-09-24 14:55:56,780 [Thread-126] com.hazelcast.stabilizer.tests.icache.ReadWriteICacheTest: iCacheRW: RecordingCacheWriter{writtenKeys={13=13, 17=17, 10=10, 16=16, 11=11}, deletedEntries={}, writeCount=4796, deleteCount=0}
+
+./2014-09-24__14_53_12/worker-10.231.163.160-2-client/worker.log
+INFO  2014-09-24 14:55:57,457 [Thread-85] com.hazelcast.stabilizer.tests.icache.ReadWriteICacheTest: iCacheRW: RecordingCacheLoader{loaded={}, loadCount=0, uuid=f24d7e41-bb7c-4b87-b735-bd1b72453020, loadBoole=true}
+INFO  2014-09-24 14:55:57,457 [Thread-85] com.hazelcast.stabilizer.tests.icache.ReadWriteICacheTest: iCacheRW: RecordingCacheWriter{writtenKeys={}, deletedEntries={}, writeCount=0, deleteCount=0}
+
+./2014-09-24__14_53_12/worker-10.81.188.23-2-client/worker.log
+INFO  2014-09-24 14:55:57,643 [Thread-85] com.hazelcast.stabilizer.tests.icache.ReadWriteICacheTest: iCacheRW: RecordingCacheLoader{loaded={}, loadCount=0, uuid=e79ee181-bc20-428e-ab31-537fb91bfe1e, loadBoole=true}
+INFO  2014-09-24 14:55:57,643 [Thread-85] com.hazelcast.stabilizer.tests.icache.ReadWriteICacheTest: iCacheRW: RecordingCacheWriter{writtenKeys={}, deletedEntries={}, writeCount=0, deleteCount=0}
+```
+
+and we assert the all keys have been loaded with
+
+```
+for(int k=0; k<initalKeyLoad; k++){
+            assertTrue(basename + ": key "+k+" not in cache", cache.containsKey(k));
+        }
+```
+
+so there is a mismatch between the state recorded by the loader object,  and the data loaded correctly into the cache 

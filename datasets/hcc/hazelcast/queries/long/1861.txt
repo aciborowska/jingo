@@ -1,0 +1,103 @@
+Hi,
+
+we discovered a race condition which was introduced from 3.1.5 to 3.1.6. The following code reproduces the issue. Simply run it twice (meaning start it twice in parallel) on your development laptop. If you run it with 3.1.5 it works whereas it fails in 3.1.6.
+
+This issue might be related to issue #1829 
+
+```
+package com.nm.test.hazelcast;
+
+import com.hazelcast.config.*;
+import com.hazelcast.core.Hazelcast;
+import com.hazelcast.core.HazelcastInstance;
+import com.hazelcast.core.IMap;
+import org.apache.log4j.BasicConfigurator;
+import org.apache.log4j.Logger;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Random;
+
+public class TestPutIfAbsent {
+
+    private static final Logger logger = Logger.getLogger(TestPutIfAbsent.class);
+
+    public static void main(String[] args) {
+
+        // vars
+        final int numThreads = 32;
+        final int numIterations = 5000;
+
+        // configure logging
+        BasicConfigurator.configure();
+
+        // create map
+        Config config = new XmlConfigBuilder().build();
+        config.setProperty("hazelcast.logging.type", "log4j");
+        config.setProperty("hazelcast.initial.min.cluster.size", "2");
+
+        // configure near cache
+        MapConfig mapConfig = config.getMapConfig("testMap");
+        NearCacheConfig nearCacheConfig = new NearCacheConfig();
+        nearCacheConfig.setMaxSize(0);
+        nearCacheConfig.setTimeToLiveSeconds(0);
+        nearCacheConfig.setMaxIdleSeconds(0);
+        nearCacheConfig.setEvictionPolicy("NONE");
+        nearCacheConfig.setInvalidateOnChange(true);
+        nearCacheConfig.setInMemoryFormat(InMemoryFormat.BINARY);
+        mapConfig.setNearCacheConfig(nearCacheConfig);
+        HazelcastInstance hcInstance = Hazelcast.newHazelcastInstance(config);
+        final IMap<String, String> map = hcInstance.getMap("testMap");
+
+        // create threads
+        List<Thread> threads = new ArrayList<Thread>();
+        for (int i = 0; i < numThreads; i++) {
+            Thread thread = new Thread(new Runnable() {
+
+                @Override
+                public void run() {
+                    Random random = new Random();
+
+                    // loop over keys
+                    for (int k = 0; k < numIterations; k++) {
+                        int keyInt = random.nextInt(1024);
+                        String key = String.valueOf(keyInt);
+                        String value = "merhaba" + keyInt;
+                        map.get(key); // TODO this causes the problem
+                        map.putIfAbsent(key, value);
+                        String value2 = map.get(key);
+                        if (value2 == null) {
+                            throw new RuntimeException("Value should never be null here.");
+                        }
+                    }
+                    logger.info("Thread '" + Thread.currentThread().getName() + "' done.");
+                }
+
+            }, "put-if-absent-test" + i);
+            threads.add(thread);
+        }
+
+        // start threads
+        for (Thread thread : threads) {
+            thread.start();
+        }
+
+        // join threads
+        for (Thread thread : threads) {
+            try {
+                thread.join();
+            } catch (InterruptedException ignored) {
+            }
+        }
+
+        // stop hazelcast
+        hcInstance.getLifecycleService().shutdown();
+    }
+
+}
+
+```
+
+The map.get() before the map.putIfAbsent() combined with a near cache causes the problem.
+
+Thanks for looking into this and best,
+Lukas

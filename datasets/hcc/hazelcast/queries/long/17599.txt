@@ -1,0 +1,57 @@
+  **Describe the bug**
+I'm using Hazelcast in [Client/Server topology](https://docs.hazelcast.org/docs/latest/manual/html-single/#hazelcast-topology). There is a case, when I want to atomically (using XA transaction) put data to two Hazelcast Map, where each of them has configured MapStore to the PostgreSQL database. Unfortunately, despite of exception from a MapStore's `store()` method of one of the map, transaction is committing, leaving cluster and database in incosistency.
+
+As a workaround, I tried to explicitly call a MapStore's `store` method (retrieving MapStore instance programically from Hazelcast config) in the same block, where I put data into maps, which works pretty well on server side, but it's impossible to use on Hazelcast client's side, because retrieving cluster config is not permitted (and it's reasonable for me):
+```
+Client config object only supports adding new data structure configurations
+```
+
+**Expected behavior**
+Exception throws from the `commit()` method should be propagated to caller, letting it rollback transaction. 
+
+**To Reproduce**
+
+Consider below code:
+```java
+ try {
+            xaTxManager.begin();
+            xaTxManager.getTransaction().enlistResource(hzXAResource);
+            TransactionContext transactionContext = hzXAResource.getTransactionContext();
+
+            transactionContext.<String, SomeEntity>getMap("Some map 1").set("key", new SomeEntity("key")); //OK - store in map and DB
+            transactionContext.<String, SomeOtherEntity>getMap("Some map 2").set("key", new SomeOtherEntity("key")); 
+
+            xaTxManager.getTransaction().delistResource(hzXAResource, XAResource.TMSUCCESS);
+            xaTxManager.commit(); // silent exception from 'Some map 2' MapStore - no data in map and DB 
+        } catch (Throwable e) {
+            //does not catch anything - exception from commit() not propagaded 
+            xaTxManager.getTransaction().delistResource(hzXAResource, XAResource.TMFAIL);
+            xaTxManager.rollback();
+        }
+```
+
+**Additional context**
+* Hazelcast version: 4.0
+* Spring Boot 2.2.4.RELEASE
+* Could be related to https://github.com/hazelcast/hazelcast/issues/15542
+<!--
+Add any other context about the problem here.
+
+Common details that we're often interested in:
+- Detailed description of the steps to reproduce your issue
+- Logs and stack traces, if available
+- Hazelcast version that you use (e.g. 3.4, also specify whether it is a minor release or the latest snapshot)
+- If available, integration module versions (e.g. Tomcat, Jetty, Spring, Hibernate). Also, include their detailed configuration information such as web.xml, Hibernate configuration and `context.xml` for Spring
+- Cluster size, i.e. the number of Hazelcast cluster members
+- Number of the clients
+- Version of Java. It is also helpful to mention the JVM parameters
+- Operating system. If it is Linux, kernel version is helpful
+- Unit test with the `hazelcast.xml` file. If you could include a unit test which reproduces your issue, we would be grateful
+-->
+
+
+Could you explain - it is possible to run XA transaction from Hazelcast client's side with fully worked MapStore on Hazelcast maps ? If MapStore cannot be used, is there any possibility to keep consistency between Hazelcast Map and database while manipulating data from the cluster's client ?
+
+
+Thanks for any help in advance!
+Mariusz

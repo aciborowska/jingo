@@ -1,0 +1,65 @@
+Running the following test on 3.2.2 - 3.2.5 versions we got the #1276 exception.
+Test case sometimes works on the second try.
+
+``` java
+public void lockIsNotOwnedByTheTransactionTest() throws InterruptedException {
+        Config config = new XmlConfigBuilder().build();
+        config.getNetworkConfig().setPortAutoIncrement(true);
+        config.getNetworkConfig().getJoin().getMulticastConfig().setEnabled(true);
+        config.getNetworkConfig().getJoin().getMulticastConfig().setMulticastTimeoutSeconds(1);
+
+
+        HazelcastInstance hazelcast1 = Hazelcast.newHazelcastInstance(config);
+        HazelcastInstance hazelcast2 = Hazelcast.newHazelcastInstance(config);
+
+        class T extends Thread {
+            private int count;
+            HazelcastInstance instance;
+
+            T(int count, HazelcastInstance instance) {
+                this.count = count;
+                this.instance = instance;
+            }
+
+            @Override
+            public void run() {
+                for (int i = 0; i < count; ++i) {
+                    TransactionContext ctx = instance.newTransactionContext();
+                    ctx.beginTransaction();
+                    TransactionalMultiMap<Integer, Integer> txnMap = ctx.getMultiMap("test");
+                    txnMap.put((int) (Math.random() * 100), (int) (Math.random() * 100));
+                    ctx.commitTransaction();
+                }
+            }
+        }
+
+        int tc = 500;
+        T[] threads = new T[tc];
+        for (int i = 0; i < tc; i++) {
+            threads[i] = new T(10000, i % 2 == 0 ? hazelcast1 : hazelcast2);
+            threads[i].start();
+        }
+
+        for (int i = 0; i < tc; i++) {
+            threads[i].join();
+        }
+    }
+```
+
+The result:
+
+```
+SEVERE: [172.23.1.33]:5702 [dev] [3.2.5] Lock is not owned by the transaction! -> Owner: c9aecad8-e836-4693-ac4c-c8b22ad6d432, thread-id: 146
+com.hazelcast.transaction.TransactionException: Lock is not owned by the transaction! -> Owner: c9aecad8-e836-4693-ac4c-c8b22ad6d432, thread-id: 146
+    at com.hazelcast.multimap.txn.TxnPrepareBackupOperation.run(TxnPrepareBackupOperation.java:51)
+    at com.hazelcast.spi.impl.BasicOperationService.processOperation(BasicOperationService.java:363)
+    at com.hazelcast.spi.impl.BasicOperationService.runOperation(BasicOperationService.java:228)
+    at com.hazelcast.spi.impl.Backup.run(Backup.java:98)
+    at com.hazelcast.spi.impl.BasicOperationService.processOperation(BasicOperationService.java:363)
+    at com.hazelcast.spi.impl.BasicOperationService.processPacket(BasicOperationService.java:309)
+    at com.hazelcast.spi.impl.BasicOperationService.access$400(BasicOperationService.java:102)
+    at com.hazelcast.spi.impl.BasicOperationService$BasicOperationProcessorImpl.process(BasicOperationService.java:766)
+    at com.hazelcast.spi.impl.BasicOperationScheduler$PartitionThread.process(BasicOperationScheduler.java:288)
+    at com.hazelcast.spi.impl.BasicOperationScheduler$PartitionThread.doRun(BasicOperationScheduler.java:282)
+    at com.hazelcast.spi.impl.BasicOperationScheduler$PartitionThread.run(BasicOperationScheduler.java:257)
+```

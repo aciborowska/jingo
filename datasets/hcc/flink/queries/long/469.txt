@@ -1,0 +1,17 @@
+I'm currently working on (#25 | FLINK-25) and discovered a possible deadlock in the network stack, because of the buffer management in combination with the `LocalDistributedExecutor` (LDE).
+
+The LDE starts a JobManager and multiple TaskManagers on different network ports in a single VM. Every TaskManager has an associated `ByteBufferedChannelManager` (single instance) and `GlobalBufferPool` (singleton) for data transfers. When tasks get registered with a TaskManager (which is atomic per TaskManager), the ChannelManager ensures that there are enough network buffers available to execute the task – this means that there has to be at least one buffer per task channel. If this condition does not hold, an exception is thrown and the task fails. This decision is made locally per task and not for the whole plan, e.g. for WordCount it is possible that all map tasks get enough buffers, but a following reduce throws an exception at runtime.
+
+The problem occurs in combination with the LDE: we have multiple TMs with their ChannelManager instances, but only a singleton GlobalBufferPool. This results in a problem with the available buffer computation, because each TM justs considers its local channels (registered at the ChannelManager) and not the channels of others TMs (which is perfectly fine in a real distributed setup). Therefore, it is possible for tasks to deadlock, because of missing buffers (buffer requests are blocking).
+
+You are likely to reproduce this problem by running `LocalDistributedExecutorTest` and setting the number of buffers to 20 and the buffer size to 4096 bytes (see `ConfigConstants`; make also sure to set `multicastEnabled` in ByteBufferedChannelManager to `false`, because it influences the computation – multicast does not work anyways).
+
+I will fix this with the upcoming PR for (#25 | FLINK-25).
+
+---------------- Imported from GitHub ----------------
+Url: https://github.com/stratosphere/stratosphere/issues/469
+Created by: uce
+Labels: bug, runtime, 
+Assignee: uce
+Created at: Wed Feb 12 13:58:36 CET 2014
+State: open

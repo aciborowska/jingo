@@ -1,0 +1,61 @@
+Hazelcast version: 3.10
+JDK Version: 1.8.0_162
+
+In our server log, we noticed following errors:
+```
+Exception in thread "Thread-1" java.lang.IllegalMonitorStateException: Current thread is not owner of the lock! -> Owner: null, thread ID: 0
+	at com.hazelcast.concurrent.lock.operations.UnlockOperation.unlock(UnlockOperation.java:75)
+	at com.hazelcast.concurrent.lock.operations.UnlockOperation.run(UnlockOperation.java:64)
+	at com.hazelcast.spi.Operation.call(Operation.java:148)
+	at com.hazelcast.spi.impl.operationservice.impl.OperationRunnerImpl.call(OperationRunnerImpl.java:202)
+	at com.hazelcast.spi.impl.operationservice.impl.OperationRunnerImpl.run(OperationRunnerImpl.java:191)
+	at com.hazelcast.spi.impl.operationexecutor.impl.OperationThread.process(OperationThread.java:120)
+	at com.hazelcast.spi.impl.operationexecutor.impl.OperationThread.run(OperationThread.java:100)
+	at ------ submitted from ------.(Unknown Source)
+	at com.hazelcast.spi.impl.operationservice.impl.InvocationFuture.resolve(InvocationFuture.java:127)
+	at com.hazelcast.spi.impl.operationservice.impl.InvocationFuture.resolveAndThrowIfException(InvocationFuture.java:79)
+	at com.hazelcast.spi.impl.AbstractInvocationFuture.get(AbstractInvocationFuture.java:162)
+	at com.hazelcast.spi.impl.AbstractInvocationFuture.join(AbstractInvocationFuture.java:143)
+	at com.hazelcast.concurrent.lock.LockProxySupport.unlock(LockProxySupport.java:151)
+	at com.hazelcast.concurrent.lock.LockProxy.unlock(LockProxy.java:106)
+```
+
+And we reproduce these errors by following test codes:
+
+```java
+public class App {
+    public static void main(String[] args) throws InterruptedException {
+        HazelcastInstance hazelcastInstance = Hazelcast.newHazelcastInstance();
+        final ILock lock = hazelcastInstance.getLock("testLock");
+        final ICondition condition = lock.newCondition("testCondition");
+
+        Thread thread = new Thread() {
+            @Override
+            public void run() {
+                lock.lock();
+
+                try {
+                    while (true) {
+                        condition.await();
+                    }
+                } catch (InterruptedException e) {
+                    System.out.println("interrupted...");
+                } finally {
+                    lock.unlock();
+                }
+            }
+        };
+
+        thread.start();
+        thread.interrupt();
+        thread.join();
+        System.out.println("thread finished");
+    }
+}
+```
+
+But if we replace `lock` and `condition` with JUC implementation, it just works fine. Or we just add `lock.lock()` in "catch(InterruptedException e)" code block, it works without any error messages either.
+
+Will Hazelcast re-acquire lock released by `await()` if the InterruptedException occurs as `java.util.concurrent.locks.Condition#await()` doc suggested? Since it seems like the lock is not re-acquiring after the InterruptedException, or if I miss something important?
+
+Thanks for help : )

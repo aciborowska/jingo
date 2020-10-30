@@ -1,0 +1,96 @@
+We have hazelcast cluster with 3 members: arbiter and 2 nodes, and quorum rule with two members to manage some lock. Nodes trying to get lock, arbiter do nothing.
+Sometimes both nodes can start to indefinitely wait lock, for example:
+1. arbiter, node1 and node2 started
+2. node1 got lock, node2 waits
+3. node1 shutdown
+4. node2 got lock
+5. node2 shutdown
+6. node2 starts again
+7. node2 indefinitely wait lock, lock owner uuid = {previous instance of node2} that was already gracefully (or not, tested both) shutdowned
+
+Tested on 3.10.1, 3.10.6, 3.11. jdk1.8.0_181
+
+Example:
+```java
+package hazelcast;
+
+import com.hazelcast.config.Config;
+import com.hazelcast.config.LockConfig;
+import com.hazelcast.config.QuorumConfig;
+import com.hazelcast.core.Hazelcast;
+import com.hazelcast.core.HazelcastInstance;
+import com.hazelcast.core.ILock;
+import org.junit.Test;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public class HazelcastLockTest {
+
+	private static final Logger LOGGER = LoggerFactory.getLogger(HazelcastLockTest.class);
+
+	private static final String LOCK = "MY_LOCK";
+
+	@Test
+	public void testLock() {
+		final Config config = new Config();
+		config.getGroupConfig().setName("test");
+		config.getNetworkConfig().getJoin().getMulticastConfig().setEnabled(false);
+		config.getNetworkConfig().getJoin().getTcpIpConfig()
+				.setEnabled(true)
+				.addMember("127.0.0.1:13703")
+				.addMember("127.0.0.1:13704")
+				.addMember("127.0.0.1:13705");
+		config.getQuorumConfigs()
+				.put("quorumRuleWithTwoMembers", new QuorumConfig("quorumRuleWithTwoMembers", true, 2));
+		config.addLockConfig(new LockConfig(LOCK).setQuorumName("quorumRuleWithTwoMembers"));
+
+		// Start arbiter and two nodes: primary and secondary
+		config.getNetworkConfig().setPort(13703);
+		final HazelcastInstance arbiter = Hazelcast.newHazelcastInstance(config);
+
+		config.getNetworkConfig().setPort(13704);
+		final HazelcastInstance primary = Hazelcast.newHazelcastInstance(config);
+
+		config.getNetworkConfig().setPort(13705);
+		final HazelcastInstance secondary = Hazelcast.newHazelcastInstance(config);
+
+		{
+			final ILock primaryLock = primary.getLock(LOCK);
+			LOGGER.info("PRIMARY READY TO GET LOCK: {} is {}, {}", primaryLock.getLockCount(),
+					primaryLock.isLocked(), primaryLock.getLockCount());
+			primaryLock.lock();
+			LOGGER.info("PRIMARY LOCKED");
+		}
+
+		// Shutdown primary
+		primary.shutdown();
+
+		{
+			final ILock secondaryLock = secondary.getLock(LOCK);
+			LOGGER.info("SECONDARY READY TO GET LOCK: {} is {}, {}", secondaryLock.getLockCount(),
+					secondaryLock.isLocked(), secondaryLock.getLockCount());
+			secondaryLock.lock();
+			LOGGER.info("SECONDARY LOCKED");
+		}
+
+		// Shutdown secondary
+		secondary.shutdown();
+
+		// Start secondary again
+		config.getNetworkConfig().setPort(13705);
+		final HazelcastInstance secondaryRestarted = Hazelcast.newHazelcastInstance(config);
+
+		{
+			final ILock secondaryLock = secondaryRestarted.getLock(LOCK);
+			LOGGER.info("SECONDARY READY TO GET LOCK again: {} is {}, {}", secondaryLock.getLockCount(),
+					secondaryLock.isLocked(), secondaryLock.getLockCount());
+			secondaryLock.lock(); // TODO fails here, indefinitely wait
+		}
+
+		// Shutdown arbiter and secondary
+		arbiter.shutdown();
+		secondaryRestarted.shutdown();
+	}
+
+}
+```

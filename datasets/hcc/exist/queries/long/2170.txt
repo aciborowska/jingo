@@ -1,0 +1,92 @@
+### What is the problem
+In eXist-4.4.0 and eXist-5.0.0-RC4, when elements containing descendants that match a Lucene full-text search with `ft:query()` are expanded with `util:expand()`, this creates duplications of parts of the content of elements with full-text hits.
+
+### What did you expect
+I would expect an identical copy of the nodes in the input documents to be returned, with `<exist:match>` element wrappers around the full text matches.
+
+### Describe how to reproduce or add a test
+1. Store following index configuration as `/db/system/config/db/apps/expand-test/collection.xconf`:
+
+```xml
+        <collection xmlns="http://exist-db.org/collection-config/1.0">
+          <index>
+            <fulltext default="none" attributes="no"/>
+            <lucene>
+              <text qname="p"/>
+            </lucene>
+          </index>
+        </collection>
+```
+
+2. Store following test document as `/db/apps/expand-test/test.xml`:
+
+```xml
+        <test>
+          <p>Colorless green ideas sleep furiously. They sleep a furiously ideal green sleep.</p>
+          <p>Furiously sleep ideas green colorless. They greenly sleep a furiously ideal sleep.</p>
+        </test>
+```
+
+3. Execute following XQuery:
+
+```xquery
+        <queries>
+          <query1>{util:expand(doc('/db/apps/expand-test/test.xml')//p[ft:query(., 'sleep')]/ancestor::test)}</query1>
+          <query2>{util:expand(doc('/db/apps/expand-test/test.xml')//test[.//p[ft:query(., 'sleep')]])}</query2>
+        </queries>
+```
+
+Both queries illustrate how the content of the second `<p>` element in the source document is littered with all sorts of repeated fragments. This is the expected output (with 6 `<exist:match>` elements per query):
+
+```xml
+    <queries>
+      <query1>
+        <test>
+          <p>Colorless green ideas <exist:match>sleep</exist:match> furiously. They <exist:match>sleep</exist:match> a furiously ideal green <exist:match>sleep</exist:match>.</p>
+          <p>Furiously <exist:match>sleep</exist:match> ideas green colorless. They greenly <exist:match>sleep</exist:match> a furiously ideal <exist:match>sleep</exist:match>.</p>
+        </test>
+      </query1>
+      <query2>
+        <test>
+          <p>Colorless green ideas <exist:match>sleep</exist:match> furiously. They <exist:match>sleep</exist:match> a furiously ideal green <exist:match>sleep</exist:match>.</p>
+          <p>Furiously <exist:match>sleep</exist:match> ideas green colorless. They greenly <exist:match>sleep</exist:match> a furiously ideal <exist:match>sleep</exist:match>.</p>
+        </test>
+      </query2>
+    </queries>
+```
+
+Instead, some content of the second paragraph is repeated, resulting in **8** `<exist:match>` elements per query:
+
+```xml
+    <queries>
+      <query1>
+        <test>
+          <p>Colorless green ideas <exist:match>sleep</exist:match> furiously. They <exist:match>sleep</exist:match> a furiously ideal green <exist:match>sleep</exist:match>.</p>
+          <p>Furiously <exist:match>sleep</exist:match> ideas green colorless. They greenly <exist:match>sleep</exist:match> a furiously ideal <exist:match>sleep</exist:match><exist:match>sleep</exist:match> a furiously ideal <exist:match>sleep</exist:match>.</p>
+        </test>
+      </query1>
+      <query2>
+        <test>
+          <p>Colorless green ideas <exist:match>sleep</exist:match> furiously. They <exist:match>sleep</exist:match> a furiously ideal green <exist:match>sleep</exist:match>.</p>
+          <p>Furiously <exist:match>sleep</exist:match> ideas green colorless. They greenly <exist:match>sleep</exist:match> a furiously ideal <exist:match>sleep</exist:match><exist:match>sleep</exist:match> a furiously ideal <exist:match>sleep</exist:match>.</p>
+        </test>
+      </query2>
+    </queries>
+```
+
+Clearly, something is wrong here, and `util:expand()` seems to be involved; without that function, the expected nodes are returned correctly (without `<exist:match>` elements, of course).
+
+This is quite critical for code that relies on `<exist:match>` elements for highlighting search results in their broader context (i.e. when the parents of nodes with full-text matches are to be shown).
+
+This bug seems to have been introduced after eXist-4.3.1. That version produces correct results, whereas eXist-4.4.0 and eXist-5.0.0-RC4 show the faulty behaviour.
+
+### Context information
+Please always add the following information
+- eXist-db version + Git Revision hash: 
+  - eXist-db 4.4.0 /  494953d
+  - eXist-db 5.0.0-RC4 /  af02118
+- Java version:  Java8u181
+- Operating system: Windows 7
+- 32 or 64 bit: 64 bit
+- How is eXist-db installed? JAR installer
+- Any custom changes in e.g. conf.xml: none

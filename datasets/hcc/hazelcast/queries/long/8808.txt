@@ -1,0 +1,54 @@
+We have a custom population service, it load data to our distributed cache from underlying DB. The service start population tasks after ~15 sec after all nodes joined cluster:
+
+```
+2016-08-29 17:47:51.665 8eaca06 [hz.int1.priority-generic-operation.thread-0] INFO  com.hazelcast.internal.cluster.ClusterService - [xxx.zzz.com]:30005 [dbTruss] [3.7] 
+
+Members [16] {
+    Member [xxx.yyy.com]:30001 - 25c7c02c-96c6-47d3-9f00-72bd1eae870d
+    Member [xxx.zzz.com]:30001 - accdb83b-f308-4161-a1e4-16c97eb2562c
+    Member [xxx.yyy.com]:30002 - df2ea432-c535-45bc-98b2-8738f28f9be5
+    Member [xxx.zzz.com]:30002 - 4c1b7812-32a6-4734-8310-62e1e8532131
+    Member [xxx.yyy.com]:30003 - 584173ff-1405-4d5f-bec2-586e957a6fbc
+    Member [xxx.zzz.com]:30003 - 7941ca04-a52b-4162-8835-551c3af857d4
+    Member [xxx.yyy.com]:30004 - 6bd93e58-8daf-43b3-a34b-52d206f051b4
+    Member [xxx.zzz.com]:30004 - c7151e71-1c2c-4e74-8a70-dee5374a08b7
+    Member [xxx.yyy.com]:30005 - f236bd21-2be2-4bf0-8a2e-faca690080b8
+    Member [xxx.zzz.com]:30005 - 842f9349-8f59-4f95-a4df-68fb1cb76a6a this
+    Member [xxx.yyy.com]:30006 - acd567e3-75c8-4ce8-b774-5e6d3a97e7c3
+    Member [xxx.zzz.com]:30006 - 5d83c542-9c7e-498b-bd8d-43e7d0b4ae5b
+    Member [xxx.yyy.com]:30007 - 3934dd9b-e51e-411e-a90b-2cc935d51fcb
+    Member [xxx.zzz.com]:30007 - 8f07753d-ee3b-44f4-a408-d8d56ba7a650
+    Member [xxx.yyy.com]:30008 - bb059c87-4c86-4c09-8ae0-17718cdbd752
+    Member [xxx.zzz.com]:30008 - 6a28d8b1-64ed-4fb6-819a-d65375633a2f
+}
+
+2016-08-29 17:47:51.666 54b027c [hz.int1.cached.thread-2] INFO  com.hazelcast.nio.tcp.InitConnectionTask - [xxx.zzz.com]:30005 [dbTruss] [3.7] Connecting to xxx.yyy.com/10.236.110.208:30008, timeout: 0, bind-any: true
+2016-08-29 17:47:51.666 3ec7d7b [hz.int1.cached.thread-11] INFO  com.hazelcast.nio.tcp.InitConnectionTask - [xxx.zzz.com]:30005 [dbTruss] [3.7] Connecting to xxx.zzz.com/10.235.131.169:30008, timeout: 0, bind-any: true
+2016-08-29 17:47:51.667 cccdfa4 [hz.int1.cached.thread-11] INFO  com.hazelcast.nio.tcp.TcpIpConnectionManager - [xxx.zzz.com]:30005 [dbTruss] [3.7] Established socket connection between /10.235.131.169:30801 and xxx.zzz.com/10.235.131.169:30008
+2016-08-29 17:47:51.668 c0b41b3 [hz.int1.cached.thread-2] INFO  com.hazelcast.nio.tcp.TcpIpConnectionManager - [xxx.zzz.com]:30005 [dbTruss] [3.7] Established socket connection between /10.235.131.169:30800 and xxx.yyy.com/10.236.110.208:30008
+2016-08-29 17:48:01.506 dd1f4ab [Camel (camelContext) thread #0 - hazelcast://seda:populationQueue] INFO  auditableCamelLogger - Population was requested at 20160829_17:48:01 for [audit-events-store, sequences-store, rule-processing-store, rule-config-store, data-model-store, data-connectivity-store, data-view-store, data-view-details-store, data-field-store, load-schedule-store, data-model-processing-status-store, consumer-access-store, transfer-validation-history-store, calendar-store, bsm-data-row-store]
+```
+
+Most of data was populated fine, but one thread has stucked and we got TimeoutException. May be it was caused by the PartitionMigration process happened a bit earlier:
+
+```
+................
+2016-08-29 17:48:11.072 7598fb0 [Camel (camelContext) thread #5 - Split] INFO  com.db.truss.cache.processor.PopulationProcessor - process.exit; population complete in PT7.023S: mapName: calendar-store size: 2503
+2016-08-29 17:48:11.073 4dd24a6 [Camel (camelContext) thread #5 - Split] INFO  auditableCamelLogger - calendar-store population was finished 20160829_17:48:11
+2016-08-29 17:48:11.075 f2af596 [Camel (camelContext) thread #5 - Split] INFO  auditableCamelLogger - version-row-store population was started 20160829_17:48:11
+2016-08-29 17:48:11.075 9205985 [Camel (camelContext) thread #5 - Split] INFO  com.db.truss.cache.processor.PopulationProcessor - process.enter; exchange: Exchange[ID-xxx-zzz-com-58112-1472489254575-0-40]
+...........
+2016-08-29 17:48:13.922 86e4667 [hz.int1.partition-operation.thread-5] WARN  com.hazelcast.map.impl.operation.ClearExpiredOperation - [xxx.zzz.com]:30005 [dbTruss] [3.7] com.hazelcast.spi.exception.PartitionMigratingException: Partition is migrating! this: [xxx.zzz.com]:30005, partitionId: 485, operation: com.hazelcast.map.impl.operation.ClearExpiredOperation, service: hz:impl:mapService
+..........
+2016-08-29 18:48:20.065 6625ae6 [Camel (camelContext) thread #5 - Split] ERROR com.db.truss.cache.population.VersionRowStorePopulationStrategy - member Member [xxx.yyy.com]:30002 - df2ea432-c535-45bc-98b2-8738f28f9be5; error while getting future java.util.concurrent.TimeoutException: MemberCallableTaskOperation failed to complete within 60 MINUTES. Invocation{op=com.hazelcast.executor.impl.operations.MemberCallableTaskOperation{serviceName='hz:impl:executorService', identityHash=268056871, partitionId=-1, replicaIndex=0, callId=2286, invocationTime=1472489299721 (2016-08-29 17:48:19.721), waitTimeout=-1, callTimeout=540000, name=dbt-exec-pool}, tryCount=250, tryPauseMillis=500, invokeCount=1, callTimeoutMillis=540000, firstInvocationTimeMs=1472489299722, firstInvocationTime='2016-08-29 17:48:19.722', lastHeartbeatMillis=1472492874258, lastHeartbeatTime='2016-08-29 18:47:54.258', target=[xxx.yyy.com]:30002, pendingResponse={VOID}, backupsAcksExpected=0, backupsAcksReceived=0, connection=Connection[id=3, /10.235.131.169:30005->/10.236.110.208:30736, endpoint=[xxx.yyy.com]:30002, alive=true, type=MEMBER]}
+java.util.concurrent.TimeoutException: MemberCallableTaskOperation failed to complete within 60 MINUTES. Invocation{op=com.hazelcast.executor.impl.operations.MemberCallableTaskOperation{serviceName='hz:impl:executorService', identityHash=268056871, partitionId=-1, replicaIndex=0, callId=2286, invocationTime=1472489299721 (2016-08-29 17:48:19.721), waitTimeout=-1, callTimeout=540000, name=dbt-exec-pool}, tryCount=250, tryPauseMillis=500, invokeCount=1, callTimeoutMillis=540000, firstInvocationTimeMs=1472489299722, firstInvocationTime='2016-08-29 17:48:19.722', lastHeartbeatMillis=1472492874258, lastHeartbeatTime='2016-08-29 18:47:54.258', target=[xxx.yyy.com]:30002, pendingResponse={VOID}, backupsAcksExpected=0, backupsAcksReceived=0, connection=Connection[id=3, /10.235.131.169:30005->/10.236.110.208:30736, endpoint=[xxx.yyy.com]:30002, alive=true, type=MEMBER]}
+    at com.hazelcast.spi.impl.operationservice.impl.InvocationFuture.newTimeoutException(InvocationFuture.java:63) ~[hazelcast-all-3.7.jar:3.7]
+    at com.hazelcast.spi.impl.AbstractInvocationFuture.get(AbstractInvocationFuture.java:197) ~[hazelcast-all-3.7.jar:3.7]
+    at com.hazelcast.util.executor.DelegatingFuture.get(DelegatingFuture.java:73) ~[hazelcast-all-3.7.jar:3.7]
+    at com.db.truss.cache.population.VersionRowStorePopulationStrategy.lambda$loadMap$31(VersionRowStorePopulationStrategy.java:80) ~[dbtruss-data-cache-16.2.1.1-SNAPSHOT.jar:na]
+..........
+```
+
+the issue is reproduceable on HZ 3.7. And it does not happened on HZ 3.6.4 (just tested :) ). Please have a look.
+
+Thanks, Denis.

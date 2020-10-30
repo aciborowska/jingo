@@ -1,0 +1,51 @@
+A customer is doing frequent changelog range searches, and reported that some searches get aborted with a NullPointerException in the LDAP diagnostic message. The NPE is reported while finding the change for CSN "X".
+
+Other changelog searches covering different ranges, but still including X, work and don't report any NPE.
+
+findReplicaUpdateMessage Investigation
+
+The actual NPE was due to findReplicaUpdateMessage() getting a null UpdateMsg from the replicaUpdatesCursor.
+
+However in the bad search case, I observed that almost all of the previous calls to findReplicaUpdateMessage() were returning an UpdateMsg that was newer than the passed in CSN. In other words, csn.compareTo() returned -1, and we entered the method's "best efforts" attempt at returning an UpdateMsg.
+
+So it seems as though the replicaUpdatesCursor was essentially incorrect for all of the previous searches, and the search was only succeeding due to error recovery in findReplicaUpdateMessage().
+
+On further investigation, I observed that the initial replicaUpdatesCursor created for the bad search was subtly different from the cursor created for working searches.
+
+replicaUpdatesCursor Investigation
+
+The changelog has two replicas holding dc=example,dc=com: server id 20 and 220. When the replicaUpdatesCursor is created in the ChangelogBackend it tries to position an internal cursor for that domain for each of those replicas. In the bad search case, the cursor for id 220 was immediately marked as "exhausted". In all the good search cases, neither cursor was started as "exhausted".
+
+The reason for the initial exhausted cursor is because of the start CSN "A", which is 01020172a6a61836016c53b720. This is computed from the first cnIndexRecord returned from the changenumber index. Decoding the CSN "A" gives:
+
+CSNv2 01020172a6a61836016c53b720
+ ts=0172a6a61836 (1591933802550) Fri Jun 12 2020 04:50:02.550 BST
+ id=20
+ no=016c53b7 (23876535)
+
+
+We then create a cursor for id 20 that is positioned inside a certain log file for that CSN. That cursor seems valid.
+
+We create a second cursor for id 220 that is positioned inside another log file. However we select the subtly wrong log file for the id 220 cursor.
+
+The reason for that is we have two log files for id 220:
+
+	DSID	220
+		Log               	./1.dom/220.server/0103017235b68a9e013a2c07220.log.txt
+		First change      	Thu May 21 2020 06:30:55.006 BST  (0103017235b68a9e013a2c07220)
+		Last change       	Fri Jun 12 2020 04:47:44.677 BST  (01030172a6a3fda50149fbf1220)
+		Current state     	Reported online (offline state not available)
+	DSID	220
+		Log               	./1.dom/220.server/01030172a6a6190d0149fc3d220.log.txt
+		First change      	Fri Jun 12 2020 04:50:02.765 BST  (01030172a6a6190d0149fc3d220)
+		Last change       	Fri Jun 12 2020 17:38:23.610 BST  (01030172a9658a7a014a6070220)
+		Current state     	Reported online (offline state not available)
+
+
+Note that the start CSN is after the last CSN in the first log, but before the first CSN in the second log by a whole 215ms. The logic in findLogFileForOrNull() chooses the first log. The consequence is that our cursor starts after the last record of the first log, and is immediately exhausted.
+
+In the good searches, the start CSN is never started "between" log files for server 220.
+
+Summary
+
+Creating a correct replicaUpdatesCursor may fix the bug.

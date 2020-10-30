@@ -1,0 +1,53 @@
+When deciding if a class conforms to POJO using the type extractor Flink checks that the class implements a setter and getter method. For the setter method Flink makes the assertion that the return type is `Void`. This is an issue if using a case class as often the return type of a case class setter is a copy of the objects class. Consider the following case class:
+
+
+
+
+case class  SomeClass(x: Int) {
+    x_=(newX: Int): SomeClass = { this.copy(x = newX) }
+}
+
+
+
+
+This class will be identified as not being valid POJO although getter (generated) and setter methods are provided because the return type of the setter is not void. 
+
+This issue discourages immutabilaty and makes the usage of case classes not possible without falling back to Kryo Serializer.
+
+The issue is located in https://github.com/apache/flink/blob/master/flink-core/src/main/java/org/apache/flink/api/java/typeutils/TypeExtractor.java on line 1806. Here is a permalink to the line 
+
+https://github.com/apache/flink/blob/80b27a150026b7b5cb707bd9fa3e17f565bb8112/flink-core/src/main/java/org/apache/flink/api/java/typeutils/TypeExtractor.java#L1806
+
+
+A copy of the if check is here
+
+
+if((methodNameLow.equals("set"+fieldNameLow) || methodNameLow.equals(fieldNameLow+"_$eq")) &&
+					m.getParameterTypes().length == 1 && // one parameter of the field's type
+					(m.getGenericParameterTypes()[0].equals( fieldType ) || (fieldTypeWrapper != null && m.getParameterTypes()[0].equals( fieldTypeWrapper )) || (fieldTypeGeneric != null && m.getGenericParameterTypes()[0].equals(fieldTypeGeneric) ) )&&
+					// return type is void.
+					m.getReturnType().equals(Void.TYPE)
+				) {
+					hasSetter = true;
+				}
+			}
+
+
+
+
+I believe the 
+
+
+m.getReturnType().equals(Void.TYPE)
+
+
+
+should be modified to 
+
+
+
+m.getReturnType().equals(Void.TYPE) || m.getReturnType().equals(clazz)
+
+
+
+This will allow for case class setters which return copies of the object enabling to use case classes. This allows us to maintain immutability without being forced to fall back to the Kryo Serializer.  

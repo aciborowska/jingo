@@ -1,0 +1,32 @@
+Using a custom StreamSerializer to serialize a class, in the read(ObjectDataInput in) method, I need to use the thread context classloader in order to be able to properly deserialize the object. However, from a stack trace, I can see that the thread context classloader is not being used.
+
+Doing: 
+
+`IMap.set("foo", sessionData); //where sessionData is a class with a custom StreamSerializer`
+
+I get:
+
+```
+2020-06-19 12:34:44.734:ERROR:com.hazelcast.map.impl.operation.SetOperation:hz.SESSION_TEST_350314772.partition-operation.thread-0: [192.168.1.8]:5701 [dev] [3.12.6] java.io.IOException: java.lang.ClassNotFoundException: Proxyable
+com.hazelcast.nio.serialization.HazelcastSerializationException: java.io.IOException: java.lang.ClassNotFoundException: Proxyable
+	at com.hazelcast.internal.serialization.impl.SerializationUtil.handleException(SerializationUtil.java:70)
+	at com.hazelcast.internal.serialization.impl.AbstractSerializationService.toObject(AbstractSerializationService.java:193)
+	at com.hazelcast.map.impl.record.Records.tryStoreIntoCache(Records.java:153)
+	at com.hazelcast.map.impl.record.Records.getValueOrCachedValue(Records.java:120)
+	at com.hazelcast.map.impl.recordstore.AbstractRecordStore.saveIndex(AbstractRecordStore.java:162)
+	at com.hazelcast.map.impl.recordstore.DefaultRecordStore.putInternal(DefaultRecordStore.java:713)
+	at com.hazelcast.map.impl.recordstore.DefaultRecordStore.set(DefaultRecordStore.java:684)
+	at com.hazelcast.map.impl.operation.SetOperation.run(SetOperation.java:39)
+	at com.hazelcast.spi.Operation.call(Operation.java:170)
+	at com.hazelcast.spi.impl.operationservice.impl.OperationRunnerImpl.call(OperationRunnerImpl.java:210)
+	at com.hazelcast.spi.impl.operationservice.impl.OperationRunnerImpl.run(OperationRunnerImpl.java:199)
+	at com.hazelcast.spi.impl.operationexecutor.impl.OperationThread.process(OperationThread.java:147)
+	at com.hazelcast.spi.impl.operationexecutor.impl.OperationThread.process(OperationThread.java:125)
+	at com.hazelcast.spi.impl.operationexecutor.impl.OperationThread.run(OperationThread.java:110)
+```
+
+Proxyable is my class that is only visible to the specific thread context class loader I set before calling `IMap.set()`.
+
+In https://github.com/hazelcast/hazelcast/issues/723 the solution was to ensure that if the classloader in the configuration is null, then the thread context classloader will be null. However, I can see at https://github.com/hazelcast/hazelcast/blob/v3.12.6/hazelcast/src/main/java/com/hazelcast/nio/ClassLoaderUtil.java#L145 that if the classloader passed in is null, then the classloader that loaded the ClassLoaderUtil class is used instead.
+
+Is there any way to force the use of the thread context classloader? Please note that it is not possible for me to set a classloader to use on the configuration, as there will be many different classloaders that need to be used to deserialize objects stored in hazelcast.

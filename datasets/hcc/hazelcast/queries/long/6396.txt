@@ -1,0 +1,105 @@
+In hazelcast version 3.4.\* the `migrationStarted/migrationCompleted` was only called once when a partition migration was done. In 3.5.\* these methods get's called twice for each partition.
+
+That's my test:
+
+```
+import com.hazelcast.config.Config;
+import com.hazelcast.config.NetworkConfig;
+import com.hazelcast.core.Hazelcast;
+import com.hazelcast.core.HazelcastInstance;
+import com.hazelcast.core.IMap;
+import com.hazelcast.core.MigrationEvent;
+import com.hazelcast.core.MigrationListener;
+import com.hazelcast.instance.GroupProperties;
+import org.junit.Test;
+
+import java.util.HashSet;
+import java.util.Set;
+
+public class HazelcastTest {
+
+    @Test
+    public void migrationListener() throws InterruptedException {
+        Config config = new Config();
+        config.setProperty(GroupProperties.PROP_VERSION_CHECK_ENABLED, "" + false);
+        config.setProperty(GroupProperties.PROP_PREFER_IPv4_STACK, "" + true);
+        config.setProperty(GroupProperties.PROP_PARTITION_COUNT, "" + 10);
+
+        NetworkConfig netConfig = new NetworkConfig();
+        Set<String> interfaces = new HashSet<>();
+        interfaces.add("127.0.0.1");
+        netConfig.getJoin().getMulticastConfig().setEnabled(false);
+        netConfig.getJoin().getTcpIpConfig().addMember("127.0.0.1").setEnabled(true);
+        netConfig.setPort(55555);
+        netConfig.getInterfaces().addInterface("127.0.0.1").setEnabled(true);
+        config.setNetworkConfig(netConfig);
+        config.getGroupConfig().setName("cluster-test" + 55555);
+        HazelcastInstance instance1 = Hazelcast.newHazelcastInstance(config);
+
+        IMap<String, String> map1 = instance1.getMap("foo");
+        map1.put("bla", "bar");
+        map1.put("foo", "bar");
+        map1.put("bar", "bar");
+
+        instance1.getPartitionService().addMigrationListener(new MigrationListener() {
+            @Override
+            public void migrationStarted(MigrationEvent migrationEvent) {
+                System.out.println("migration: " + migrationEvent);
+            }
+
+            @Override
+            public void migrationCompleted(MigrationEvent migrationEvent) {
+                System.out.println("migration: " + migrationEvent);
+            }
+
+            @Override
+            public void migrationFailed(MigrationEvent migrationEvent) {
+                System.out.println("migration: " + migrationEvent);
+            }
+        });
+
+        HazelcastInstance instance2 = Hazelcast.newHazelcastInstance(config);
+        Thread.sleep(500);
+    }
+}
+```
+
+Output in 3.4.2:
+
+```
+migration: MigrationEvent{partitionId=0, status=STARTED, oldOwner=Member [127.0.0.1]:55555 this, newOwner=Member [127.0.0.1]:55556}
+migration: MigrationEvent{partitionId=1, status=STARTED, oldOwner=Member [127.0.0.1]:55555 this, newOwner=Member [127.0.0.1]:55556}
+migration: MigrationEvent{partitionId=0, status=COMPLETED, oldOwner=Member [127.0.0.1]:55555 this, newOwner=Member [127.0.0.1]:55556}
+migration: MigrationEvent{partitionId=2, status=STARTED, oldOwner=Member [127.0.0.1]:55555 this, newOwner=Member [127.0.0.1]:55556}
+migration: MigrationEvent{partitionId=1, status=COMPLETED, oldOwner=Member [127.0.0.1]:55555 this, newOwner=Member [127.0.0.1]:55556}
+migration: MigrationEvent{partitionId=3, status=STARTED, oldOwner=Member [127.0.0.1]:55555 this, newOwner=Member [127.0.0.1]:55556}
+migration: MigrationEvent{partitionId=2, status=COMPLETED, oldOwner=Member [127.0.0.1]:55555 this, newOwner=Member [127.0.0.1]:55556}
+migration: MigrationEvent{partitionId=3, status=COMPLETED, oldOwner=Member [127.0.0.1]:55555 this, newOwner=Member [127.0.0.1]:55556}
+migration: MigrationEvent{partitionId=4, status=STARTED, oldOwner=Member [127.0.0.1]:55555 this, newOwner=Member [127.0.0.1]:55556}
+migration: MigrationEvent{partitionId=4, status=COMPLETED, oldOwner=Member [127.0.0.1]:55555 this, newOwner=Member [127.0.0.1]:55556}
+```
+
+and in 3.5.2 
+
+```
+migration: MigrationEvent{partitionId=0, status=STARTED, oldOwner=Member [127.0.0.1]:55555 this, newOwner=Member [127.0.0.1]:55556}
+migration: MigrationEvent{partitionId=0, status=COMPLETED, oldOwner=Member [127.0.0.1]:55555 this, newOwner=Member [127.0.0.1]:55556}
+migration: MigrationEvent{partitionId=1, status=STARTED, oldOwner=Member [127.0.0.1]:55555 this, newOwner=Member [127.0.0.1]:55556}
+migration: MigrationEvent{partitionId=0, status=STARTED, oldOwner=Member [127.0.0.1]:55555 this, newOwner=Member [127.0.0.1]:55556}
+migration: MigrationEvent{partitionId=0, status=COMPLETED, oldOwner=Member [127.0.0.1]:55555 this, newOwner=Member [127.0.0.1]:55556}
+migration: MigrationEvent{partitionId=1, status=STARTED, oldOwner=Member [127.0.0.1]:55555 this, newOwner=Member [127.0.0.1]:55556}
+migration: MigrationEvent{partitionId=2, status=STARTED, oldOwner=Member [127.0.0.1]:55555 this, newOwner=Member [127.0.0.1]:55556}
+migration: MigrationEvent{partitionId=1, status=COMPLETED, oldOwner=Member [127.0.0.1]:55555 this, newOwner=Member [127.0.0.1]:55556}
+migration: MigrationEvent{partitionId=1, status=COMPLETED, oldOwner=Member [127.0.0.1]:55555 this, newOwner=Member [127.0.0.1]:55556}
+migration: MigrationEvent{partitionId=2, status=STARTED, oldOwner=Member [127.0.0.1]:55555 this, newOwner=Member [127.0.0.1]:55556}
+migration: MigrationEvent{partitionId=2, status=COMPLETED, oldOwner=Member [127.0.0.1]:55555 this, newOwner=Member [127.0.0.1]:55556}
+migration: MigrationEvent{partitionId=3, status=STARTED, oldOwner=Member [127.0.0.1]:55555 this, newOwner=Member [127.0.0.1]:55556}
+migration: MigrationEvent{partitionId=2, status=COMPLETED, oldOwner=Member [127.0.0.1]:55555 this, newOwner=Member [127.0.0.1]:55556}
+migration: MigrationEvent{partitionId=4, status=STARTED, oldOwner=Member [127.0.0.1]:55555 this, newOwner=Member [127.0.0.1]:55556}
+migration: MigrationEvent{partitionId=3, status=STARTED, oldOwner=Member [127.0.0.1]:55555 this, newOwner=Member [127.0.0.1]:55556}
+migration: MigrationEvent{partitionId=3, status=COMPLETED, oldOwner=Member [127.0.0.1]:55555 this, newOwner=Member [127.0.0.1]:55556}
+migration: MigrationEvent{partitionId=3, status=COMPLETED, oldOwner=Member [127.0.0.1]:55555 this, newOwner=Member [127.0.0.1]:55556}
+migration: MigrationEvent{partitionId=4, status=STARTED, oldOwner=Member [127.0.0.1]:55555 this, newOwner=Member [127.0.0.1]:55556}
+migration: MigrationEvent{partitionId=4, status=COMPLETED, oldOwner=Member [127.0.0.1]:55555 this, newOwner=Member [127.0.0.1]:55556}
+migration: MigrationEvent{partitionId=4, status=COMPLETED, oldOwner=Member [127.0.0.1]:55555 this, newOwner=Member [127.0.0.1]:55556}
+```

@@ -1,0 +1,220 @@
+Hi folks.
+
+I am developing a Spring Boot App with hazelcast integration. Using Hazelcast 3.9 - EA
+
+Here is my code from the class configuration
+
+````
+import com.hazelcast.client.HazelcastClient;
+import com.hazelcast.client.config.ClientConfig;
+import com.hazelcast.client.config.ClientNetworkConfig;
+import com.hazelcast.client.config.ClientUserCodeDeploymentConfig;
+import com.hazelcast.config.Config;
+import com.hazelcast.config.TcpIpConfig;
+import com.hazelcast.config.UserCodeDeploymentConfig;
+import com.hazelcast.core.Hazelcast;
+import com.hazelcast.core.HazelcastInstance;
+import com.hazelcast.core.ManagedContext;
+import com.hazelcast.instance.HazelcastInstanceFactory;
+import com.hazelcast.spring.context.SpringManagedContext;
+import com.microsip.cloud.existencias.model.Stock;
+import com.microsip.cloud.existencias.model.Sucursal;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.BeansException;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.ApplicationContext;
+import org.springframework.context.ApplicationContextAware;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Profile;
+
+import javax.annotation.PreDestroy;
+import java.util.UUID;
+
+import static com.hazelcast.config.UserCodeDeploymentConfig.ClassCacheMode.ETERNAL;
+import static com.hazelcast.config.UserCodeDeploymentConfig.ProviderMode.LOCAL_AND_CACHED_CLASSES;
+
+
+@Configuration
+public class HazelcastConfig implements ApplicationContextAware {
+
+    private static Logger log = LoggerFactory.getLogger(HazelcastConfig.class);
+
+    @Autowired
+    private ApplicationProperties applicationProperties;
+
+    private ApplicationContext applicationContext;
+
+    /**
+     * Create a Hazelcast {@code ClientConfig} object as a bean. Spring Boot will use
+     * the presence of this to determine that a {@code HazelcastInstance} should
+     * be created with this configuration.
+     *
+     * @return Configuration for the Hazelcast instance
+     */
+    @Bean
+    @Profile({Constants.PROFILE_PROD, Constants.PROFILE_QA, Constants.PROFILE_DEV})
+    public ClientConfig clientConfig(ManagedContext managedContext) {
+        ClientConfig clientConfig = new ClientConfig();
+        ClientNetworkConfig clientNetworkConfig = clientConfig.getNetworkConfig();
+        clientNetworkConfig.setAddresses(applicationProperties.getHazelcast().getClientConfig().getClientNetworkConfig().getAddresses());
+        clientConfig.setManagedContext(managedContext);
+        ClientUserCodeDeploymentConfig clientUserCodeDeploymentConfig = new ClientUserCodeDeploymentConfig();
+        clientUserCodeDeploymentConfig.setEnabled(true);
+        clientUserCodeDeploymentConfig.addClass("com.microsip.cloud.existencias.model.Sucursal");
+        clientUserCodeDeploymentConfig.addClass("com.microsip.cloud.existencias.model.Stock");
+        //clientUserCodeDeploymentConfig.addClass(Sucursal.class);
+        //clientUserCodeDeploymentConfig.addClass(Stock.class);
+        clientConfig.setUserCodeDeploymentConfig(clientUserCodeDeploymentConfig);
+        return clientConfig;
+    }
+
+    @Bean
+    public ManagedContext managedContext() {
+        ManagedContext springManagedContext = new SpringManagedContext();
+        return springManagedContext;
+    }
+
+    /**
+     * Create a Hazelcast client and wrap it as a Spring bean.
+     *
+     * @return A Hazelcast client singleton
+     */
+    @Bean
+    @Profile({Constants.PROFILE_PROD, Constants.PROFILE_QA, Constants.PROFILE_DEV})
+    public HazelcastInstance hazelcastInstance(ClientConfig clientConfig) throws Exception {
+        log.debug("applicationProperties is " + applicationProperties);
+        clientConfig.setInstanceName(UUID.randomUUID().toString());
+        return HazelcastClient.newHazelcastClient(clientConfig);
+    }
+
+    @Bean
+    @Profile({Constants.PROFILE_DEV_LOCAL, Constants.PROFILE_TEST})
+    public HazelcastInstance localHazelcastInstance(ManagedContext managedContext) {
+        log.debug("localHazelcastInstance");
+        Config hazelcastConfig = new Config(UUID.randomUUID().toString());
+
+        hazelcastConfig.getNetworkConfig().setReuseAddress(true);
+        hazelcastConfig.getNetworkConfig().getJoin().getMulticastConfig().setEnabled(false);
+        hazelcastConfig.getNetworkConfig().getJoin().getAwsConfig().setEnabled(false);
+        hazelcastConfig.setManagedContext(managedContext);
+
+        TcpIpConfig tcpIpConfig = hazelcastConfig.getNetworkConfig().getJoin().getTcpIpConfig();
+        tcpIpConfig.setEnabled(true);
+        tcpIpConfig.setMembers(applicationProperties.getHazelcast().getClientConfig().getClientNetworkConfig().getAddresses());
+        tcpIpConfig.setRequiredMember(applicationProperties.getHazelcast().getClientConfig().getClientNetworkConfig().getAddresses().get(0));
+
+        hazelcastConfig.getNetworkConfig().setPort(5701);
+        hazelcastConfig.getNetworkConfig().setPortAutoIncrement(true);
+
+        UserCodeDeploymentConfig userCodeDeploymentConfig = new UserCodeDeploymentConfig();
+        userCodeDeploymentConfig.setEnabled(true)
+                .setClassCacheMode(ETERNAL)
+                .setProviderMode(LOCAL_AND_CACHED_CLASSES)
+        //.setBlacklistedPrefixes("com.microsip.cloud")
+        //.setWhitelistedPrefixes("com.microsip.cloud.existencias.model")
+        //.setProviderFilter("HAS_ATTRIBUTE:lite")
+        ;
+        hazelcastConfig.setUserCodeDeploymentConfig(userCodeDeploymentConfig);
+
+        HazelcastInstance hazelcastInstance = Hazelcast.newHazelcastInstance(hazelcastConfig);
+
+        return hazelcastInstance;
+    }
+
+    @Override
+    public void setApplicationContext(ApplicationContext applicationContext) throws BeansException {
+        this.applicationContext = applicationContext;
+    }
+
+    @PreDestroy
+    void destroyHazelcast() {
+        Hazelcast.shutdownAll();
+        HazelcastInstanceFactory.shutdownAll();
+    }
+}
+````
+
+When I run the code inside a docker container, connecting to an active hazelcast cluster I got the Following Exception:
+
+````
+11:57:16.031 [main] ERROR o.s.boot.SpringApplication - Application startup failed
+org.springframework.beans.factory.UnsatisfiedDependencyException: Error creating bean with name 'stocksService': Unsatisfied dependency expressed through field 'hazelcastInstance'; nested exception is org.springframework.beans.factory.BeanCreationException: Error creating bean with name 'hazelcastInstance' defined in class path resource [com/microsip/cloud/existencias/config/HazelcastConfig.class]: Bean instantiation via factory method failed; nested exception is org.springframework.beans.BeanInstantiationException: Failed to instantiate [com.hazelcast.core.HazelcastInstance]: Factory method 'hazelcastInstance' threw exception; nested exception is com.hazelcast.core.HazelcastException: java.lang.ClassNotFoundException: com/microsip/cloud/existencias/model/Sucursal.class
+	at org.springframework.beans.factory.annotation.AutowiredAnnotationBeanPostProcessor$AutowiredFieldElement.inject(AutowiredAnnotationBeanPostProcessor.java:588)
+	at org.springframework.beans.factory.annotation.InjectionMetadata.inject(InjectionMetadata.java:88)
+	at org.springframework.beans.factory.annotation.AutowiredAnnotationBeanPostProcessor.postProcessPropertyValues(AutowiredAnnotationBeanPostProcessor.java:366)
+	at org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory.populateBean(AbstractAutowireCapableBeanFactory.java:1264)
+	at org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory.doCreateBean(AbstractAutowireCapableBeanFactory.java:553)
+	at org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory.createBean(AbstractAutowireCapableBeanFactory.java:483)
+	at org.springframework.beans.factory.support.AbstractBeanFactory$1.getObject(AbstractBeanFactory.java:306)
+	at org.springframework.beans.factory.support.DefaultSingletonBeanRegistry.getSingleton(DefaultSingletonBeanRegistry.java:230)
+	at org.springframework.beans.factory.support.AbstractBeanFactory.doGetBean(AbstractBeanFactory.java:302)
+	at org.springframework.beans.factory.support.AbstractBeanFactory.getBean(AbstractBeanFactory.java:197)
+	at org.springframework.beans.factory.support.DefaultListableBeanFactory.preInstantiateSingletons(DefaultListableBeanFactory.java:761)
+	at org.springframework.context.support.AbstractApplicationContext.finishBeanFactoryInitialization(AbstractApplicationContext.java:867)
+	at org.springframework.context.support.AbstractApplicationContext.refresh(AbstractApplicationContext.java:543)
+	at org.springframework.boot.context.embedded.EmbeddedWebApplicationContext.refresh(EmbeddedWebApplicationContext.java:122)
+	at org.springframework.boot.SpringApplication.refresh(SpringApplication.java:693)
+	at org.springframework.boot.SpringApplication.refreshContext(SpringApplication.java:360)
+	at org.springframework.boot.SpringApplication.run(SpringApplication.java:303)
+	at org.springframework.boot.SpringApplication.run(SpringApplication.java:1118)
+	at org.springframework.boot.SpringApplication.run(SpringApplication.java:1107)
+	at com.microsip.cloud.existencias.MsExistenciasMicroserviceApplication.main(MsExistenciasMicroserviceApplication.java:22)
+	at sun.reflect.NativeMethodAccessorImpl.invoke0(Native Method)
+	at sun.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:62)
+	at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)
+	at java.lang.reflect.Method.invoke(Method.java:498)
+	at org.springframework.boot.loader.MainMethodRunner.run(MainMethodRunner.java:48)
+	at org.springframework.boot.loader.Launcher.launch(Launcher.java:87)
+	at org.springframework.boot.loader.Launcher.launch(Launcher.java:50)
+	at org.springframework.boot.loader.JarLauncher.main(JarLauncher.java:51)
+Caused by: org.springframework.beans.factory.BeanCreationException: Error creating bean with name 'hazelcastInstance' defined in class path resource [com/microsip/cloud/existencias/config/HazelcastConfig.class]: Bean instantiation via factory method failed; nested exception is org.springframework.beans.BeanInstantiationException: Failed to instantiate [com.hazelcast.core.HazelcastInstance]: Factory method 'hazelcastInstance' threw exception; nested exception is com.hazelcast.core.HazelcastException: java.lang.ClassNotFoundException: com/microsip/cloud/existencias/model/Sucursal.class
+	at org.springframework.beans.factory.support.ConstructorResolver.instantiateUsingFactoryMethod(ConstructorResolver.java:599)
+	at org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory.instantiateUsingFactoryMethod(AbstractAutowireCapableBeanFactory.java:1173)
+	at org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory.createBeanInstance(AbstractAutowireCapableBeanFactory.java:1067)
+	at org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory.doCreateBean(AbstractAutowireCapableBeanFactory.java:513)
+	at org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory.createBean(AbstractAutowireCapableBeanFactory.java:483)
+	at org.springframework.beans.factory.support.AbstractBeanFactory$1.getObject(AbstractBeanFactory.java:306)
+	at org.springframework.beans.factory.support.DefaultSingletonBeanRegistry.getSingleton(DefaultSingletonBeanRegistry.java:230)
+	at org.springframework.beans.factory.support.AbstractBeanFactory.doGetBean(AbstractBeanFactory.java:302)
+	at org.springframework.beans.factory.support.AbstractBeanFactory.getBean(AbstractBeanFactory.java:202)
+	at org.springframework.beans.factory.config.DependencyDescriptor.resolveCandidate(DependencyDescriptor.java:208)
+	at org.springframework.beans.factory.support.DefaultListableBeanFactory.doResolveDependency(DefaultListableBeanFactory.java:1138)
+	at org.springframework.beans.factory.support.DefaultListableBeanFactory.resolveDependency(DefaultListableBeanFactory.java:1066)
+	at org.springframework.beans.factory.annotation.AutowiredAnnotationBeanPostProcessor$AutowiredFieldElement.inject(AutowiredAnnotationBeanPostProcessor.java:585)
+	... 27 common frames omitted
+Caused by: org.springframework.beans.BeanInstantiationException: Failed to instantiate [com.hazelcast.core.HazelcastInstance]: Factory method 'hazelcastInstance' threw exception; nested exception is com.hazelcast.core.HazelcastException: java.lang.ClassNotFoundException: com/microsip/cloud/existencias/model/Sucursal.class
+	at org.springframework.beans.factory.support.SimpleInstantiationStrategy.instantiate(SimpleInstantiationStrategy.java:189)
+	at org.springframework.beans.factory.support.ConstructorResolver.instantiateUsingFactoryMethod(ConstructorResolver.java:588)
+	... 39 common frames omitted
+Caused by: com.hazelcast.core.HazelcastException: java.lang.ClassNotFoundException: com/microsip/cloud/existencias/model/Sucursal.class
+	at com.hazelcast.util.ExceptionUtil.peel(ExceptionUtil.java:94)
+	at com.hazelcast.util.ExceptionUtil.peel(ExceptionUtil.java:56)
+	at com.hazelcast.util.ExceptionUtil.peel(ExceptionUtil.java:52)
+	at com.hazelcast.util.ExceptionUtil.rethrow(ExceptionUtil.java:105)
+	at com.hazelcast.client.impl.HazelcastClientInstanceImpl.start(HazelcastClientInstanceImpl.java:417)
+	at com.hazelcast.client.HazelcastClientManager.newHazelcastClient(HazelcastClientManager.java:78)
+	at com.hazelcast.client.HazelcastClient.newHazelcastClient(HazelcastClient.java:72)
+	at com.microsip.cloud.existencias.config.HazelcastConfig.hazelcastInstance(HazelcastConfig.java:90)
+	at com.microsip.cloud.existencias.config.HazelcastConfig$$EnhancerBySpringCGLIB$$d961868e.CGLIB$hazelcastInstance$3(<generated>)
+	at com.microsip.cloud.existencias.config.HazelcastConfig$$EnhancerBySpringCGLIB$$d961868e$$FastClassBySpringCGLIB$$5e91fdbd.invoke(<generated>)
+	at org.springframework.cglib.proxy.MethodProxy.invokeSuper(MethodProxy.java:228)
+	at org.springframework.context.annotation.ConfigurationClassEnhancer$BeanMethodInterceptor.intercept(ConfigurationClassEnhancer.java:358)
+	at com.microsip.cloud.existencias.config.HazelcastConfig$$EnhancerBySpringCGLIB$$d961868e.hazelcastInstance(<generated>)
+	at sun.reflect.NativeMethodAccessorImpl.invoke0(Native Method)
+	at sun.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:62)
+	at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)
+	at java.lang.reflect.Method.invoke(Method.java:498)
+	at org.springframework.beans.factory.support.SimpleInstantiationStrategy.instantiate(SimpleInstantiationStrategy.java:162)
+	... 40 common frames omitted
+Caused by: java.lang.ClassNotFoundException: com/microsip/cloud/existencias/model/Sucursal.class
+	at com.hazelcast.client.spi.impl.ClientUserCodeDeploymentService.loadClasses(ClientUserCodeDeploymentService.java:76)
+	at com.hazelcast.client.spi.impl.ClientUserCodeDeploymentService.start(ClientUserCodeDeploymentService.java:66)
+	at com.hazelcast.client.impl.HazelcastClientInstanceImpl.start(HazelcastClientInstanceImpl.java:414)
+	... 53 common frames omitted
+````
+
+Is there something extra I need to Configure. I´m following the same aproach described here:
+
+[Hazelcast client code deployment](https://github.com/hazelcast/hazelcast-code-samples/tree/master/clients/user-code-deployment)

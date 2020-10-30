@@ -1,0 +1,107 @@
+### What is the problem
+
+When using the `numeric=yes` option with the UCA collation in an `order by` clause of a FLWOR expression, sorting more than >8,192 strings will raise an "String index out of range" error.
+
+### What did you expect
+
+I expected there to be no fixed limit to the number of strings that could be sorted.
+
+For the documentation on the `numeric=yes` option, see https://www.w3.org/TR/xpath-functions-31/#uca-collations. Support for the UCA collation was added in https://github.com/eXist-db/exist/pull/1575.
+
+### Describe how to reproduce or add a test
+
+The following query and the variant described below illustrate how to reproduce:
+
+```xquery
+xquery version "3.1";
+
+let $terms := (1 to 8193) ! (. cast as xs:string)
+for $term in $terms
+order by $term collation "http://www.w3.org/2013/collation/UCA?numeric=yes"
+return 
+    $term
+```
+
+This raises no error and works correctly, returning the "terms" (strings) in *numeric* order (1, 2, 3) rather than in string order (1, 10, 100). **However,** if you change "8192" to "8193", you will trigger an "String index out of range" error [1]. 
+
+Saxon 9.8.0.12 (run via oXygen 20.1) and BaseX 9.1 (with icu4j-63_1.jar added to the classpath as per http://docs.basex.org/wiki/XQuery_3.1#Collations) returns the expected results without error.
+
+Moreover, if you submit the query several times in succession, one of the queries will hang instead of returning an error quickly, and monex will perpetually report the stack is in a state of waiting. [2] However, memory and CPU usage is idle, and the query cannot be killed (e.g., via monex). The only way out is to force kill eXist.
+
+**[1] exist.log**
+
+```text
+2018-11-07 22:27:30,775 [qtp1159770377-88] ERROR (XQueryServlet.java [process]:552) - String index out of range: 2 
+java.lang.StringIndexOutOfBoundsException: String index out of range: 2
+	at java.lang.StringLatin1.charAt(StringLatin1.java:47) ~[?:?]
+	at java.lang.String.charAt(String.java:693) ~[?:?]
+	at com.ibm.icu.impl.coll.UTF16CollationIterator.handleNextCE32(UTF16CollationIterator.java:107) ~[icu4j-59_1.jar:59.1]
+	at com.ibm.icu.impl.coll.CollationIterator.nextCE(CollationIterator.java:247) ~[icu4j-59_1.jar:59.1]
+	at com.ibm.icu.impl.coll.CollationCompare.compareUpToQuaternary(CollationCompare.java:60) ~[icu4j-59_1.jar:59.1]
+	at com.ibm.icu.text.RuleBasedCollator.doCompare(RuleBasedCollator.java:1688) ~[icu4j-59_1.jar:59.1]
+	at com.ibm.icu.text.RuleBasedCollator.compare(RuleBasedCollator.java:1483) ~[icu4j-59_1.jar:59.1]
+	at org.exist.util.Collations.compare(Collations.java:269) ~[exist.jar:4.5.0-SNAPSHOT]
+	at org.exist.xquery.value.StringValue.compareTo(StringValue.java:646) ~[exist.jar:4.5.0-SNAPSHOT]
+	at org.exist.xquery.value.OrderedValueSequence$Entry.compareTo(OrderedValueSequence.java:368) ~[exist.jar:4.5.0-SNAPSHOT]
+	at org.exist.xquery.value.OrderedValueSequence$Entry.compareTo(OrderedValueSequence.java:302) ~[exist.jar:4.5.0-SNAPSHOT]
+	at java.util.Comparators$NaturalOrderComparator.compare(Comparators.java:52) ~[?:?]
+	at java.util.Comparators$NaturalOrderComparator.compare(Comparators.java:47) ~[?:?]
+	at java.util.TimSort.countRunAndMakeAscending(TimSort.java:360) ~[?:?]
+	at java.util.TimSort.sort(TimSort.java:234) ~[?:?]
+	at java.util.ArraysParallelSortHelpers$FJObject$Sorter.compute(ArraysParallelSortHelpers.java:145) ~[?:?]
+	at java.util.concurrent.CountedCompleter.exec(CountedCompleter.java:746) ~[?:?]
+	at java.util.concurrent.ForkJoinTask.doExec(ForkJoinTask.java:290) ~[?:?]
+	at java.util.concurrent.ForkJoinTask.doInvoke(ForkJoinTask.java:408) ~[?:?]
+	at java.util.concurrent.ForkJoinTask.invoke(ForkJoinTask.java:736) ~[?:?]
+	at java.util.Arrays.parallelSort(Arrays.java:1122) ~[?:?]
+	at java.util.stream.SortedOps$OfRef.opEvaluateParallel(SortedOps.java:158) ~[?:?]
+	at java.util.stream.AbstractPipeline.opEvaluateParallelLazy(AbstractPipeline.java:710) ~[?:?]
+	at java.util.stream.AbstractPipeline.sourceSpliterator(AbstractPipeline.java:434) ~[?:?]
+	at java.util.stream.AbstractPipeline.evaluateToArrayNode(AbstractPipeline.java:260) ~[?:?]
+	at java.util.stream.ReferencePipeline.toArray(ReferencePipeline.java:517) ~[?:?]
+	at org.exist.xquery.value.OrderedValueSequence.sort(OrderedValueSequence.java:135) ~[exist.jar:4.5.0-SNAPSHOT]
+	at org.exist.xquery.OrderByClause.postEval(OrderByClause.java:74) ~[exist.jar:4.5.0-SNAPSHOT]
+	at org.exist.xquery.BindingExpression.postEval(BindingExpression.java:91) ~[exist.jar:4.5.0-SNAPSHOT]
+	at org.exist.xquery.BindingExpression.postEval(BindingExpression.java:91) ~[exist.jar:4.5.0-SNAPSHOT]
+	at org.exist.xquery.LetExpr.eval(LetExpr.java:157) ~[exist.jar:4.5.0-SNAPSHOT]
+	at org.exist.xquery.AbstractExpression.eval(AbstractExpression.java:71) ~[exist.jar:4.5.0-SNAPSHOT]
+	at org.exist.xquery.PathExpr.eval(PathExpr.java:276) ~[exist.jar:4.5.0-SNAPSHOT]
+	at org.exist.xquery.AbstractExpression.eval(AbstractExpression.java:71) ~[exist.jar:4.5.0-SNAPSHOT]
+	at org.exist.xquery.XQuery.execute(XQuery.java:261) ~[exist.jar:4.5.0-SNAPSHOT]
+	at org.exist.xquery.XQuery.execute(XQuery.java:185) ~[exist.jar:4.5.0-SNAPSHOT]
+        ...
+```
+
+**[2] monex stack report**
+
+```text
+java.base@11.0.1/java.lang.Object.wait(Native Method)
+java.base@11.0.1/java.util.concurrent.ForkJoinTask.externalAwaitDone(ForkJoinTask.java:330)
+java.base@11.0.1/java.util.concurrent.ForkJoinTask.doInvoke(ForkJoinTask.java:412)
+java.base@11.0.1/java.util.concurrent.ForkJoinTask.invoke(ForkJoinTask.java:736)
+java.base@11.0.1/java.util.Arrays.parallelSort(Arrays.java:1122)
+java.base@11.0.1/java.util.stream.SortedOps$OfRef.opEvaluateParallel(SortedOps.java:158)
+java.base@11.0.1/java.util.stream.AbstractPipeline.opEvaluateParallelLazy(AbstractPipeline.java:710)
+java.base@11.0.1/java.util.stream.AbstractPipeline.sourceSpliterator(AbstractPipeline.java:434)
+java.base@11.0.1/java.util.stream.AbstractPipeline.evaluateToArrayNode(AbstractPipeline.java:260)
+java.base@11.0.1/java.util.stream.ReferencePipeline.toArray(ReferencePipeline.java:517)
+org.exist.xquery.value.OrderedValueSequence.sort(OrderedValueSequence.java:135)
+org.exist.xquery.OrderByClause.postEval(OrderByClause.java:74)
+org.exist.xquery.BindingExpression.postEval(BindingExpression.java:91)
+org.exist.xquery.BindingExpression.postEval(BindingExpression.java:91)
+org.exist.xquery.LetExpr.eval(LetExpr.java:157)
+org.exist.xquery.AbstractExpression.eval(AbstractExpression.java:71)
+org.exist.xquery.PathExpr.eval(PathExpr.java:276)
+org.exist.xquery.AbstractExpression.eval(AbstractExpression.java:71)
+org.exist.xquery.XQuery.execute(XQuery.java:261)
+org.exist.xquery.XQuery.execute(XQuery.java:185)
+```
+
+### Context information
+
+- eXist-db version + Git Revision hash: develop-4.x.x 7ed8dd77f8ba53245c8039bc58e743e3c74cd960
+- Java version: OpenJDK 11.0.1+13
+- Operating system: macOS 10.13.6
+- 32 or 64 bit: 64 bit
+- How is eXist-db installed? Cloned from GitHub
+- Any custom changes in e.g. conf.xml: none

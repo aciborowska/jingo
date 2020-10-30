@@ -1,0 +1,114 @@
+We are creating and closing many queues in a cluster environment. If the created queues are not destroyed with an explicit call to "destroy" method on any machine, broker eventually throws an OutOfMemoryError and shuts the cluster down. Calling destroy method is, however, not very feasible since it destroys the queue cluster-wide, and there may be other machines processing the queue. Our expectation was Hazelcast to destroy inactive & empty queues on load.
+
+Both these cases can be easily observed with following classes. 
+
+``` java
+public class TooManyQueues {
+
+    public static void main(String[] args) throws InterruptedException {
+        new TooMenuQueues().doTest();
+    }
+
+    public class LoggingAtomicLong {
+        private AtomicLong atomic = new AtomicLong();
+
+        public void increment() {
+            long val = atomic.incrementAndGet();
+            if (val % 100 == 0) {
+                long msecs = System.currentTimeMillis() - lastLog;
+                lastLog += msecs;
+                if (write) {
+                    System.out.println(val + " messages written (" + msecs + " msecs)");
+                } else {
+                    System.out.println(val + " messages read (" + msecs + " msecs)");
+                }
+            }
+        }
+    }
+
+    public class ReadWriteThread extends Thread {
+
+        private int startQueue;
+        private int endQueue;
+        private CountDownLatch latch;
+
+        public ReadWriteThread(int startQueue, int endQueue, CountDownLatch latch) {
+            this.startQueue = startQueue;
+            this.endQueue = endQueue;
+            this.latch = latch;
+        }
+
+        @Override
+        public void run() {
+            for (int i = startQueue; i < endQueue; i++) {
+                IQueue<Object> q = hz.getQueue("queue-" + i);
+                try {
+                    if (write) {
+                        q.put(new String("message for " + i));
+                    } else {
+                        q.poll(10, TimeUnit.HOURS);
+                    }
+                    logAtom.increment();
+                } catch (InterruptedException e) {
+                    e.printStackTrace();
+                }
+            }
+            latch.countDown();
+        }
+    }
+
+    private HazelcastInstance hz;
+    private LoggingAtomicLong logAtom;
+    // Invert this variable and start another instance of this class on other JVM
+    private boolean write = false;
+    private long lastLog;
+
+    private void doTest() throws InterruptedException {
+        hz = Hazelcast.newHazelcastInstance();
+        logAtom = new LoggingAtomicLong();
+        lastLog = System.currentTimeMillis();
+        for (int i = 0; i < 50; i++) {
+            testBlock(i * 100);
+        }
+        hz.getLifecycleService().shutdown();
+    }
+
+    private void testBlock(int blockStart) throws InterruptedException {
+        CountDownLatch latch = new CountDownLatch(10);
+        for (int i = 0; i < 10; i++) {
+            new ReadWriteThread(blockStart, blockStart + 100, latch).start();
+        }
+        latch.await();
+        Thread.sleep(1000);
+        if (!write) {
+            for (int i = blockStart; i < blockStart + 100; i++) {
+                // You will eventually get an OutOfMemoryError if you comment this line
+                // hz.getQueue("queue-" + i).destroy();
+            }
+        }
+        System.gc();
+        System.out.println("End of block");
+        Thread.sleep(1000);
+    }
+}
+```
+
+Destroying queue before read:
+
+``` java
+public class DestroyBeforeRead {
+
+    public static void main(String[] args) throws InterruptedException {
+        HazelcastInstance hz1 = Hazelcast.newHazelcastInstance();
+        hz1.getQueue("a").put(new String("x"));
+        HazelcastInstance hz2 = Hazelcast.newHazelcastInstance();
+        IQueue<Object> q2 = hz2.getQueue("a");
+        hz1.getQueue("a").destroy();
+        Thread.sleep(10000);
+        String x = (String) q2.poll(1, TimeUnit.SECONDS);
+        System.out.println(x); // will print null
+        hz2.getLifecycleService().shutdown();
+        hz1.getLifecycleService().shutdown();
+    }
+}
+```

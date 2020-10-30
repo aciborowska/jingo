@@ -1,0 +1,113 @@
+This issue is applicable for Hazelcast 3.3-EA.
+If there is no time delay between the 2 consecutive put requests for the same key, then it results in only one call to store. Otherwise it calls store for all the changes.
+
+Below is the complete unit test code to verify it.
+Change value of intervalBetween2PutRequest to 0 and test passes.
+
+/\* UT to verify that only the latest value gets stored _/
+import static org.junit.Assert._;
+import java.io.IOException;
+import java.util.Collection;
+import java.util.Iterator;
+import java.util.Map;
+import java.util.Set;
+import java.util.Map.Entry;
+import org.junit.Test;
+import com.hazelcast.config.Config;
+import com.hazelcast.config.MapConfig;
+import com.hazelcast.config.MapStoreConfig;
+import com.hazelcast.config.XmlConfigBuilder;
+import com.hazelcast.core.Hazelcast;
+import com.hazelcast.core.HazelcastInstance;
+import com.hazelcast.core.IMap;
+import com.hazelcast.core.MapStore;
+
+public class PersistencyTest {
+
+```
+@Test
+public void test() throws InterruptedException, IOException {
+
+    int writeDelaySeconds = 5;
+    int intervalBetween2PutRequest = 1; //Make it 0 and test passes
+    String mapName = "testMap";
+
+    Config config = new XmlConfigBuilder().build();
+
+    MapStoreConfig mapStoreConfig = new MapStoreConfig();
+    mapStoreConfig.setEnabled(true);
+    mapStoreConfig.setWriteDelaySeconds(writeDelaySeconds);
+    mapStoreConfig.setClassName(null);
+
+    MapStoreImpl store = new MapStoreImpl();
+    mapStoreConfig.setImplementation(store);
+    MapConfig mapConfig = config.getMapConfig(mapName);
+    mapConfig.setMapStoreConfig(mapStoreConfig);
+
+    // start hazelcast instance
+    HazelcastInstance instance = Hazelcast.newHazelcastInstance(config);
+
+
+    IMap<Integer, String> mapDemo = instance.getMap(mapName);
+
+    int countOfStoreRequestCountInit = store.getStoreRequestCount();
+
+    Integer key = 1;
+    String value = "Some Value";
+    mapDemo.put(key, value);
+    Thread.sleep(intervalBetween2PutRequest*1000);
+    value = "Modified values after some time";
+    mapDemo.put(key, value);
+
+    Thread.sleep((intervalBetween2PutRequest + writeDelaySeconds + 1)*1000);
+
+    int countOfStoreRequestCountNow = store.getStoreRequestCount();
+
+    if (instance != null){
+        instance.shutdown();
+    }
+
+    assertEquals(1, countOfStoreRequestCountNow - countOfStoreRequestCountInit);
+}
+
+
+public class MapStoreImpl implements MapStore<Integer, String>{
+
+    private int storeRequestCount = 0;
+
+    @Override
+    public void store(Integer arg0, String arg1) {
+        storeRequestCount++;            
+    }
+
+    @Override
+    public void storeAll(Map<Integer, String> arg0) {           
+        Iterator<Entry<Integer, String>> entryIterator = arg0.entrySet().iterator();
+        while(entryIterator.hasNext()){
+            Entry<Integer, String> entry = entryIterator.next();
+            this.store(entry.getKey(), entry.getValue());
+        }       
+    }
+
+    public int getStoreRequestCount() {
+        return storeRequestCount;
+    }
+
+    @Override
+    public String load(Integer arg0) { return null; }
+
+    @Override
+    public Map<Integer, String> loadAll(Collection<Integer> arg0) { return null; }
+
+    @Override
+    public Set<Integer> loadAllKeys() { return null; }
+
+    @Override
+    public void delete(Integer arg0) {}
+
+    @Override
+    public void deleteAll(Collection<Integer> arg0) {}      
+}
+```
+
+}

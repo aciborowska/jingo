@@ -1,0 +1,69 @@
+### Description
+While a map is being populated from the map store, `IMap.get()` and `IMap.asyncGet()` may not wait for the ongoing load to complete, if the loader `owner` node dies during the load. It is because the replicas have no (currently checked - see the details section below) information about the ongoing load and after the migration, the `new owner` `previously replica` node may execute the operations if they arrive before load requests from the `SENDER`. In this case, the map's backing structure makes a last attempt to load the single key from the map store, which mitigates the issue. Though with improper `MapLoader` implementations - e.g. only bulk loading is implemented, single key loading is not - the operations may return `null` even for existing keys.
+
+This issue may impact the performance of key loading badly if the `new owner` node is being hit extensively by `GetOperation`s before loading requests arrive. 
+
+### Log
+An annotated log with locally added log lines describing the issue:
+```
+11:48:06,081  INFO |testLoadsAll_whenInitialLoaderNodeRemovedWhileLoading| - [DefaultRecordStore] hz._hzInstance_15_MapLoaderFailoverTest.partition-operation.thread-7 - [127.0.0.1]:5023 [MapLoaderFailoverTest] [3.10-SNAPSHOT] New RecordStore has been created on owner node for partition 7
+11:48:06,081  INFO |testLoadsAll_whenInitialLoaderNodeRemovedWhileLoading| - [DefaultRecordStore] hz._hzInstance_15_MapLoaderFailoverTest.partition-operation.thread-7 - [127.0.0.1]:5023 [MapLoaderFailoverTest] [3.10-SNAPSHOT] Adding future in startLoading() for partition 7
+11:48:06,081  INFO |testLoadsAll_whenInitialLoaderNodeRemovedWhileLoading| - [MapKeyLoader$LoadFinishedFuture] hz._hzInstance_15_MapLoaderFailoverTest.partition-operation.thread-7 - Current result is true on partition 7
+11:48:06,081  INFO |testLoadsAll_whenInitialLoaderNodeRemovedWhileLoading| - [MapKeyLoader] hz._hzInstance_15_MapLoaderFailoverTest.partition-operation.thread-7 - startInitialLoad invoked on partitionId=7 on [127.0.0.1]:5023 role=StateMachine{state=RECEIVER} state=StateMachine{state=LOADING} on partition 7
+11:48:06,081  INFO |testLoadsAll_whenInitialLoaderNodeRemovedWhileLoading| - [MapKeyLoader$LoadFinishedFuture] hz._hzInstance_15_MapLoaderFailoverTest.partition-operation.thread-7 - During instantiation, loading result has been set to null on partition 7
+
+===[Partition is being populated on the owner node, GetOperation retries]================================================
+11:48:06,081  INFO |testLoadsAll_whenInitialLoaderNodeRemovedWhileLoading| - [GetOperation] hz._hzInstance_15_MapLoaderFailoverTest.partition-operation.thread-7 - [127.0.0.1]:5023 [MapLoaderFailoverTest] [3.10-SNAPSHOT] Running GetOperation on partition 7
+11:48:06,082  INFO |testLoadsAll_whenInitialLoaderNodeRemovedWhileLoading| - [GetOperation] hz._hzInstance_15_MapLoaderFailoverTest.partition-operation.thread-7 - [127.0.0.1]:5023 [MapLoaderFailoverTest] [3.10-SNAPSHOT] Running GetOperation on partition 7
+11:48:06,083  INFO |testLoadsAll_whenInitialLoaderNodeRemovedWhileLoading| - [GetOperation] hz._hzInstance_15_MapLoaderFailoverTest.partition-operation.thread-7 - [127.0.0.1]:5023 [MapLoaderFailoverTest] [3.10-SNAPSHOT] Running GetOperation on partition 7
+11:48:06,084  INFO |testLoadsAll_whenInitialLoaderNodeRemovedWhileLoading| - [DefaultRecordStore] hz._hzInstance_15_MapLoaderFailoverTest.partition-operation.thread-7 - [127.0.0.1]:5023 [MapLoaderFailoverTest] [3.10-SNAPSHOT] Adding future in loadAllFromStore() for partition 7
+11:48:06,084  INFO |testLoadsAll_whenInitialLoaderNodeRemovedWhileLoading| - [GetOperation] hz._hzInstance_15_MapLoaderFailoverTest.partition-operation.thread-7 - [127.0.0.1]:5023 [MapLoaderFailoverTest] [3.10-SNAPSHOT] Running GetOperation on partition 7
+
+===[Backing structure of the map has been created on the replica node]=================================================
+11:48:06,084  INFO |testLoadsAll_whenInitialLoaderNodeRemovedWhileLoading| - [DefaultRecordStore] hz._hzInstance_13_MapLoaderFailoverTest.partition-operation.thread-7 - [127.0.0.1]:5021 [MapLoaderFailoverTest] [3.10-SNAPSHOT] New RecordStore has been created on replica node for partition 7
+11:48:06,084  INFO |testLoadsAll_whenInitialLoaderNodeRemovedWhileLoading| - [DefaultRecordStore] hz._hzInstance_13_MapLoaderFailoverTest.partition-operation.thread-7 - [127.0.0.1]:5021 [MapLoaderFailoverTest] [3.10-SNAPSHOT] Adding future in startLoading() for partition 7
+11:48:06,084  INFO |testLoadsAll_whenInitialLoaderNodeRemovedWhileLoading| - [MapKeyLoader$LoadFinishedFuture] hz._hzInstance_13_MapLoaderFailoverTest.partition-operation.thread-7 - Current result is true on partition 7
+
+===[Replica gets notified about that a loading is in progress]========================================================
+11:48:06,084  INFO |testLoadsAll_whenInitialLoaderNodeRemovedWhileLoading| - [MapKeyLoader] hz._hzInstance_13_MapLoaderFailoverTest.partition-operation.thread-7 - startInitialLoad invoked on partitionId=7 on [127.0.0.1]:5021 role=StateMachine{state=NONE} state=StateMachine{state=LOADING} on partition 7
+11:48:06,086  INFO |testLoadsAll_whenInitialLoaderNodeRemovedWhileLoading| - [DefaultRecordStore] hz._hzInstance_15_MapLoaderFailoverTest.partition-operation.thread-7 - [127.0.0.1]:5023 [MapLoaderFailoverTest] [3.10-SNAPSHOT] Adding future in loadAllFromStore() for partition 7
+11:48:06,086  INFO |testLoadsAll_whenInitialLoaderNodeRemovedWhileLoading| - [GetOperation] hz._hzInstance_15_MapLoaderFailoverTest.partition-operation.thread-7 - [127.0.0.1]:5023 [MapLoaderFailoverTest] [3.10-SNAPSHOT] Running GetOperation on partition 7
+
+===[Owner node dies here, GetOperation gets migrated to the replica node]===============================================
+11:48:06,093  INFO |testLoadsAll_whenInitialLoaderNodeRemovedWhileLoading| - [GetOperation] hz._hzInstance_13_MapLoaderFailoverTest.partition-operation.thread-7 - [127.0.0.1]:5021 [MapLoaderFailoverTest] [3.10-SNAPSHOT] Running GetOperation on partition 7
+11:48:06,094  INFO |testLoadsAll_whenInitialLoaderNodeRemovedWhileLoading| - [DefaultRecordStore] hz._hzInstance_13_MapLoaderFailoverTest.partition-operation.thread-7 - [127.0.0.1]:5021 [MapLoaderFailoverTest] [3.10-SNAPSHOT] Removing all futures on partition 7
+11:48:06,094  INFO |testLoadsAll_whenInitialLoaderNodeRemovedWhileLoading| - [DefaultRecordStore] hz._hzInstance_13_MapLoaderFailoverTest.partition-operation.thread-7 - [127.0.0.1]:5021 [MapLoaderFailoverTest] [3.10-SNAPSHOT] Future state is LoadFinishedFuture{done=true}on partition 7
+
+===[Try to load the missing key from the map store, but map store returns null...]============================================
+11:48:06,094  INFO |testLoadsAll_whenInitialLoaderNodeRemovedWhileLoading| - [DefaultRecordStore] hz._hzInstance_13_MapLoaderFailoverTest.partition-operation.thread-7 - [127.0.0.1]:5021 [MapLoaderFailoverTest] [3.10-SNAPSHOT] Loading value from the map store for missing key on partition 7
+
+===[...and finally, GetOperation returns null]==================================================================
+11:48:06,094  INFO |testLoadsAll_whenInitialLoaderNodeRemovedWhileLoading| - [GetOperation] hz._hzInstance_13_MapLoaderFailoverTest.partition-operation.thread-7 - [127.0.0.1]:5021 [MapLoaderFailoverTest] [3.10-SNAPSHOT] GetOperation succeeded with value null on partition 7
+
+===[Previously replica now owner node receives keys to load from the SENDER node, loading of the partition resumes]=======================
+11:48:06,103  INFO |testLoadsAll_whenInitialLoaderNodeRemovedWhileLoading| - [DefaultRecordStore] hz._hzInstance_13_MapLoaderFailoverTest.partition-operation.thread-7 - [127.0.0.1]:5021 [MapLoaderFailoverTest] [3.10-SNAPSHOT] Adding future in loadAllFromStore() for partition 7
+11:48:06,103  INFO |testLoadsAll_whenInitialLoaderNodeRemovedWhileLoading| - [DefaultRecordStore] hz._hzInstance_13_MapLoaderFailoverTest.partition-operation.thread-7 - [127.0.0.1]:5021 [MapLoaderFailoverTest] [3.10-SNAPSHOT] Adding future in loadAllFromStore() for partition 7
+11:48:06,105  INFO |testLoadsAll_whenInitialLoaderNodeRemovedWhileLoading| - [DefaultRecordStore] hz._hzInstance_13_MapLoaderFailoverTest.partition-operation.thread-7 - [127.0.0.1]:5021 [MapLoaderFailoverTest] [3.10-SNAPSHOT] Adding future in loadAllFromStore() for partition 7
+11:48:06,106  INFO |testLoadsAll_whenInitialLoaderNodeRemovedWhileLoading| - [DefaultRecordStore] hz._hzInstance_13_MapLoaderFailoverTest.partition-operation.thread-7 - [127.0.0.1]:5021 [MapLoaderFailoverTest] [3.10-SNAPSHOT] Adding future in loadAllFromStore() for partition 7
+11:48:06,106  INFO |testLoadsAll_whenInitialLoaderNodeRemovedWhileLoading| - [DefaultRecordStore] hz._hzInstance_13_MapLoaderFailoverTest.partition-operation.thread-7 - [127.0.0.1]:5021 [MapLoaderFailoverTest] [3.10-SNAPSHOT] Adding future in loadAllFromStore() for partition 7
+11:48:06,106  INFO |testLoadsAll_whenInitialLoaderNodeRemovedWhileLoading| - [DefaultRecordStore] hz._hzInstance_13_MapLoaderFailoverTest.partition-operation.thread-7 - [127.0.0.1]:5021 [MapLoaderFailoverTest] [3.10-SNAPSHOT] Adding future in loadAllFromStore() for partition 7
+11:48:06,106  INFO |testLoadsAll_whenInitialLoaderNodeRemovedWhileLoading| - [DefaultRecordStore] hz._hzInstance_13_MapLoaderFailoverTest.partition-operation.thread-7 - [127.0.0.1]:5021 [MapLoaderFailoverTest] [3.10-SNAPSHOT] Adding future in loadAllFromStore() for partition 7
+11:48:06,106  INFO |testLoadsAll_whenInitialLoaderNodeRemovedWhileLoading| - [DefaultRecordStore] hz._hzInstance_13_MapLoaderFailoverTest.partition-operation.thread-7 - [127.0.0.1]:5021 [MapLoaderFailoverTest] [3.10-SNAPSHOT] Adding future in loadAllFromStore() for partition 7
+11:48:06,109  INFO |testLoadsAll_whenInitialLoaderNodeRemovedWhileLoading| - [DefaultRecordStore] hz._hzInstance_13_MapLoaderFailoverTest.partition-operation.thread-7 - [127.0.0.1]:5021 [MapLoaderFailoverTest] [3.10-SNAPSHOT] Adding future in loadAllFromStore() for partition 7
+
+===[Loading of the map has been completed (now for real)]=============================================
+11:48:06,124  INFO |testLoadsAll_whenInitialLoaderNodeRemovedWhileLoading| - [MapKeyLoader] hz._hzInstance_13_MapLoaderFailoverTest.partition-operation.thread-7 - -> trackLoading on partitionId=7 on [127.0.0.1]:5021 role=StateMachine{state=NONE} state=StateMachine{state=LOADING} on partition 7
+11:48:06,124  INFO |testLoadsAll_whenInitialLoaderNodeRemovedWhileLoading| - [MapKeyLoader$LoadFinishedFuture] hz._hzInstance_13_MapLoaderFailoverTest.partition-operation.thread-7 - Loading result has been set from true to true on partition 7
+11:48:06,124  INFO |testLoadsAll_whenInitialLoaderNodeRemovedWhileLoading| - [MapKeyLoader] hz._hzInstance_13_MapLoaderFailoverTest.partition-operation.thread-7 - <- trackLoading on partitionId=7 on [127.0.0.1]:5021 role=StateMachine{state=NONE} state=StateMachine{state=LOADED} on partition 7
+11:48:06,124 TRACE |testLoadsAll_whenInitialLoaderNodeRemovedWhileLoading| - [DefaultRecordStore] hz._hzInstance_13_MapLoaderFailoverTest.partition-operation.thread-7 - [127.0.0.1]:5021 [MapLoaderFailoverTest] [3.10-SNAPSHOT] Completed loading map ea8376fd-2523-4d80-9f71-3075a3f8d40f on partitionId=7
+
+===[Backing structure of the map has been created on the new replica node]===================================
+11:48:06,134  INFO |testLoadsAll_whenInitialLoaderNodeRemovedWhileLoading| - [DefaultRecordStore] hz._hzInstance_14_MapLoaderFailoverTest.partition-operation.thread-7 - [127.0.0.1]:5022 [MapLoaderFailoverTest] [3.10-SNAPSHOT] New RecordStore has been created on replica node for partition 7
+```
+
+### Details
+`GetOperation` waits for `DefaultRecordStore#loadingFutures` to complete before it executes. But these futures are maintained only on the owner node, and because of this `DefaultRecordStore#checkIfLoaded()` doesn't fail the operation, hence the observed issue in edge cases. 
+
+`DefaultRecordStore` also has a `MapKeyLoader`, which tracks the progress of loading, but that's not checked at all in `DefaultRecordStore#checkIfLoaded()`, therefore not failing `GetOperation`.  
+
+Triggered by #5257 

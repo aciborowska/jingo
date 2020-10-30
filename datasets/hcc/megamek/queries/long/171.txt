@@ -1,0 +1,38 @@
+This issue was initially reported here: http://bg.battletech.com/forums/index.php?topic=52278.msg1207282#msg1207282
+
+Saved game is at: http://bg.battletech.com/forums/index.php?topic=52278.msg1207720#msg1207720
+
+If you load the saved game as reinforcements and click done, you'll get the following stack trace:
+
+```
+Exception in thread "Packet Pump" java.lang.ClassCastException: megamek.common.actions.WeaponAttackAction cannot be cast to megamek.common.actions.ArtilleryAttackAction
+    at megamek.common.weapons.ArtilleryWeaponIndirectFireHandler.handle(ArtilleryWeaponIndirectFireHandler.java:105)
+    at megamek.server.Server.handleAttacks(Server.java:33517)
+    at megamek.server.Server.endCurrentPhase(Server.java:2868)
+    at megamek.server.Server.changeToNextTurn(Server.java:3182)
+    at megamek.server.Server.endCurrentTurn(Server.java:2268)
+    at megamek.server.Server.receiveAttack(Server.java:12444)
+    at megamek.server.Server.handle(Server.java:29452)
+    at megamek.server.Server$PacketPump.run(Server.java:348)
+```
+
+The attack was added by Princess, so it looks like ultimately the problem lies with Princess.  `Princess` line 338 is where the Princess sends the attack actions.  `FiringPlan.getEntityActionVector()` returns the actions to send, where the actions ultimately come from `WeaponFireInfo`.  While `WeaponFireInfo` could foreseeably return an `ArtilleryDirectFireHandler`, from what I can tell, it never returns anything but a `WeaponAttackAction`.
+
+The `ISThumper` weapon is a subclass of `ArtilleryWeapon` which overrides `getCorrectHandler(4)` and during the firing phase will either return `ArtilleryWeaponDirectFireHandler` or `ArtilleryWeaponDirectHomingHandler`.
+
+Ultimately, it looks like the problem is that princess is creating a `WeaponAttackAction` for firing  the thumper when it should be creating an `ArtilleryAttackAction`.  The question is, how does this happen?  I haven't been able to answer this yet.  I feel like it should come down to `FireControl` line 1624.  Here is a relevant stack trace for Princess determining what to fire:
+
+```
+Thread [Test Turn 1 Calc Thread] (Suspended)    
+    owns: Princess  (id=158)    
+    FireControl.getFullFiringPlan(Entity, Targetable, Map<Mounted,Double>, IGame) line: 1624    
+    FireControl.getBestFiringPlan(Entity, Targetable, IGame, Map<Mounted,Double>) line: 1791    
+    FireControl.getBestFiringPlanWithTwists(Entity, Targetable, IGame, Map<Mounted,Double>) line: 1933  
+    FireControl.getBestFiringPlan(Entity, IHonorUtil, IGame, Map<Mounted,Double>) line: 2162    
+    Princess.calculateFiringTurn() line: 324    
+    Princess(BotClient).calculateMyTurn() line: 385 
+    BotClient$CalculateBotTurn.run() line: 99   
+    Thread.run() line: 745  
+```
+
+From what I can tell, if this condition holds true `(shoot.getProbabilityToHit() > toHitThreshold)` then the `WeaponFireInfo` will get added to the plan for further consideration.  However, in the case of direct-fire artillery, this condition should never get met.  Lines 376 and 391 determine the value for `toHitThreshold`, which has a minimum value of 0.  The hit probability will have been set in line 474 of `WeaponFireInfo`, and this should end up being 0, since the to hit for the `WeaponAttackAction` will be `TargetRoll.IMPOSSIBLE`, which is above 12, so `Compute.oddsAbove` returns 0.

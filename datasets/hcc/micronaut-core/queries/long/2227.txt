@@ -1,0 +1,122 @@
+In `1.2.4`.
+
+I have a bean which in its `@PostConstruct` refers to some `@Transactional` bean and calls its method. Because the main bean is non-transactional the transaction should be created each time the transactional bean method is called, what means also getting the connection from the Hikari pool.
+
+This, however, doesn't work properly in Micronaut `1.2.4` because after exit from the transactional method the connection doesn't seem to be returned to the pool, and the pool soon exceeds what finally results in a deadlock.
+
+I have prepared an isolated test for this problem [here](https://github.com/l0co/micronaut-playground/tree/hikari-lock):
+
+```java
+@Transactional @Singleton
+public class TransactionalBean {
+
+	public void doSomethingTransactionally() {
+	}
+
+}
+
+@Singleton
+public class AutoStartingBean {
+
+	public static final Logger logger = LoggerFactory.getLogger(AutoStartingBean.class);
+
+	@Inject protected TransactionalBean transactionalBean;
+
+	@PostConstruct
+	public void lockHikari() {
+		logger.debug("Post-construct starts");
+		for (int i=0; i<20; i++)
+			transactionalBean.doSomethingTransactionally();
+		logger.debug("Post-construct finishes");
+	}
+
+}
+```
+
+When you downgrade in `gradle.properties` to Micronaut `1.2.3`, the `@PostConstruct` method above finishes properly (you can see the *Post-construct finishes* log line). In `1.2.4` it never finishes and hangs.
+
+During this problem debugging I've discovered the hikari pool exceeds and waits for the connection from the pool to be released, what never happens:
+
+```java
+public final class HikariPool extends PoolBase implements HikariPoolMXBean, IBagStateListener {
+
+   public Connection getConnection(final long hardTimeout) throws SQLException
+   {
+      suspendResumeLock.acquire();
+      final long startTime = currentTime();
+
+      try {
+         long timeout = hardTimeout;
+         do {
+            PoolEntry poolEntry = connectionBag.borrow(timeout, MILLISECONDS); // (*)
+
+}
+```
+
+In **(*)** line you can check the pool with the following expressions: `connectionBag.getCount(IConcurrentBagEntry.STATE_IN_USE)` / `connectionBag.getCount(IConcurrentBagEntry.STATE_NOT_IN_USE)`.
+
+Here are logs from the execution for `1.2.3` with these statements logged (the process is finished properly):
+
+```
+Connected to the target VM, address: '127.0.0.1:58113', transport: 'socket'
+09:41:47.505 [main] INFO  com.zaxxer.hikari.HikariDataSource - HikariPool-1 - Starting...
+09:41:47.653 [main] INFO  com.zaxxer.hikari.HikariDataSource - HikariPool-1 - Start completed.
+09:41:47.669 [main] INFO  org.hibernate.Version - HHH000412: Hibernate Core {5.4.3.Final}
+09:41:47.862 [main] INFO  o.h.annotations.common.Version - HCANN000001: Hibernate Commons Annotations {5.1.0.Final}
+--------- IN USE 0 not in use: 10
+09:41:47.965 [main] INFO  org.hibernate.dialect.Dialect - HHH000400: Using dialect: org.hibernate.dialect.H2Dialect
+--------- IN USE 0 not in use: 10
+Hibernate: create table MyEntity (id bigint not null, primary key (id))
+09:41:48.467 [main] INFO  o.h.e.t.j.p.i.JtaPlatformInitiator - HHH000490: Using JtaPlatform implementation: [org.hibernate.engine.transaction.jta.platform.internal.NoJtaPlatform]
+09:41:48.541 [main] DEBUG micronaut.general.AutoStartingBean - Post-construct starts
+--------- IN USE 0 not in use: 10
+--------- IN USE 0 not in use: 10
+--------- IN USE 0 not in use: 10
+--------- IN USE 0 not in use: 10
+--------- IN USE 0 not in use: 10
+--------- IN USE 0 not in use: 10
+--------- IN USE 0 not in use: 10
+--------- IN USE 0 not in use: 10
+--------- IN USE 0 not in use: 10
+--------- IN USE 0 not in use: 10
+--------- IN USE 0 not in use: 10
+--------- IN USE 0 not in use: 10
+--------- IN USE 0 not in use: 10
+--------- IN USE 0 not in use: 10
+--------- IN USE 0 not in use: 10
+--------- IN USE 0 not in use: 10
+--------- IN USE 0 not in use: 10
+--------- IN USE 0 not in use: 10
+--------- IN USE 0 not in use: 10
+--------- IN USE 0 not in use: 10
+09:41:48.660 [main] DEBUG micronaut.general.AutoStartingBean - Post-construct finishes
+09:41:48.661 [main] DEBUG micronaut.general.AutoStartingBean - Starting...
+09:41:48.942 [main] INFO  io.micronaut.runtime.Micronaut - Startup completed in 2545ms. Server Running: http://localhost:8080
+```
+
+The same for `1.2.4` (deadlock):
+
+```
+Connected to the target VM, address: '127.0.0.1:46276', transport: 'socket'
+09:45:20.035 [main] INFO  com.zaxxer.hikari.HikariDataSource - HikariPool-1 - Starting...
+09:45:20.182 [main] INFO  com.zaxxer.hikari.HikariDataSource - HikariPool-1 - Start completed.
+09:45:20.197 [main] INFO  org.hibernate.Version - HHH000412: Hibernate Core {5.4.6.Final}
+09:45:20.362 [main] INFO  o.h.annotations.common.Version - HCANN000001: Hibernate Commons Annotations {5.1.0.Final}
+--------- IN USE 0 not in use: 10
+09:45:20.478 [main] INFO  org.hibernate.dialect.Dialect - HHH000400: Using dialect: org.hibernate.dialect.H2Dialect
+--------- IN USE 0 not in use: 10
+Hibernate: create table MyEntity (id bigint not null, primary key (id))
+09:45:21.031 [main] INFO  o.h.e.t.j.p.i.JtaPlatformInitiator - HHH000490: Using JtaPlatform implementation: [org.hibernate.engine.transaction.jta.platform.internal.NoJtaPlatform]
+09:45:21.107 [main] DEBUG micronaut.general.AutoStartingBean - Post-construct starts
+--------- IN USE 0 not in use: 10
+--------- IN USE 1 not in use: 9
+--------- IN USE 2 not in use: 8
+--------- IN USE 3 not in use: 7
+--------- IN USE 4 not in use: 6
+--------- IN USE 5 not in use: 5
+--------- IN USE 6 not in use: 4
+--------- IN USE 7 not in use: 3
+--------- IN USE 8 not in use: 2
+--------- IN USE 9 not in use: 1
+--------- IN USE 10 not in use: 0
+```

@@ -1,0 +1,56 @@
+ZD6284
+  
+Customers are seeing a serialisation error when performing `get()/set()` operations _from a Hazelcast client_ on an _IAtomicReference_ retrieved from CP subsystem. The problem does not occur when using the old _AP_ API `client.getAtomicReference()`. The problem occurs both in HZ v3 and v4 (v3 example provided below)
+According to the documentation [here](https://docs.hazelcast.org/docs/latest/manual/html-single/#using-iatomicreference) no class definition is required on the receiving side. This does not seem to be the case. 
+ 
+To reproduce, run the following code at the client side:
+
+```      
+        HazelcastInstance client = HazelcastClient.newHazelcastClient();
+        IAtomicReference<Employee> ref = client.getCPSubsystem().getAtomicReference("reference"); //  #### WILL CAUSE EXCEPTION BELOW 
+//        IAtomicReference<Employee> ref = client.getAtomicReference("reference"); // #### WILL WORK 
+        ref.set(new Employee());
+        System.out.println(ref.get().toString()); // EXCEPTION point
+```
+
+`Employee` can be any user class _implementing Serializable_.
+The following error is generated at the member side: 
+
+> Jun 05, 2020 8:13:07 AM com.hazelcast.spi.impl.operationservice.impl.Invocation
+SEVERE: [192.168.1.115]:5701 [dev] [3.12.4] Failed asynchronous execution of execution callback: com.hazelcast.cp.internal.datastructures.atomicref.client.GetMessageTask@5dc4feaafor call Invocation{op=com.hazelcast.cp.internal.operation.DefaultRaftReplicateOp{serviceName='hz:core:raft', identityHash=1509650890, partitionId=92, replicaIndex=0, callId=-23, invocationTime=1591308787291 (2020-06-05 08:13:07.291), waitTimeout=-1, callTimeout=60000, groupId=CPGroupId{name='default', seed=0, commitIndex=7}, op=com.hazelcast.cp.internal.datastructures.atomicref.operation.GetOp{serviceName='hz:raft:atomicRefService', name=reference}}, tryCount=250, tryPauseMillis=500, invokeCount=2, callTimeoutMillis=60000, firstInvocationTimeMs=1591308787288, firstInvocationTime='2020-06-05 08:13:07.288', lastHeartbeatMillis=0, lastHeartbeatTime='1970-01-01 10:00:00.000', target=[192.168.1.115]:5703, pendingResponse={VOID}, backupsAcksExpected=0, backupsAcksReceived=0, connection=Connection[id=2, /192.168.1.115:5701->/192.168.1.115:50286, qualifier=null, endpoint=[192.168.1.115]:5703, alive=true, type=MEMBER]}
+com.hazelcast.nio.serialization.HazelcastSerializationException: java.lang.ClassNotFoundException: Employee
+	at com.hazelcast.internal.serialization.impl.JavaDefaultSerializers$JavaSerializer.read(JavaDefaultSerializers.java:88)
+	at com.hazelcast.internal.serialization.impl.JavaDefaultSerializers$JavaSerializer.read(JavaDefaultSerializers.java:77)
+	at com.hazelcast.internal.serialization.impl.StreamSerializerAdapter.read(StreamSerializerAdapter.java:48)
+	at com.hazelcast.internal.serialization.impl.AbstractSerializationService.toObject(AbstractSerializationService.java:187)
+	at com.hazelcast.spi.impl.operationservice.impl.InvocationFuture.resolve(InvocationFuture.java:114)
+	at com.hazelcast.spi.impl.AbstractInvocationFuture$1.run(AbstractInvocationFuture.java:251)
+	at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1149)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:624)
+	at java.lang.Thread.run(Thread.java:748)
+	at com.hazelcast.util.executor.HazelcastManagedThread.executeRun(HazelcastManagedThread.java:64)
+	at com.hazelcast.util.executor.HazelcastManagedThread.run(HazelcastManagedThread.java:80)
+Caused by: java.lang.ClassNotFoundException: Employee
+	at java.net.URLClassLoader.findClass(URLClassLoader.java:382)
+	at java.lang.ClassLoader.loadClass(ClassLoader.java:418)
+	at sun.misc.Launcher$AppClassLoader.loadClass(Launcher.java:355)
+	at java.lang.ClassLoader.loadClass(ClassLoader.java:351)
+	at com.hazelcast.nio.ClassLoaderUtil.tryLoadClass(ClassLoaderUtil.java:288)
+	at com.hazelcast.nio.ClassLoaderUtil.loadClass(ClassLoaderUtil.java:252)
+	at com.hazelcast.nio.IOUtil$ClassLoaderAwareObjectInputStream.resolveClass(IOUtil.java:699)
+	at java.io.ObjectInputStream.readNonProxyDesc(ObjectInputStream.java:1924)
+	at java.io.ObjectInputStream.readClassDesc(ObjectInputStream.java:1807)
+	at java.io.ObjectInputStream.readOrdinaryObject(ObjectInputStream.java:2098)
+	at java.io.ObjectInputStream.readObject0(ObjectInputStream.java:1624)
+	at java.io.ObjectInputStream.readObject(ObjectInputStream.java:464)
+	at java.io.ObjectInputStream.readObject(ObjectInputStream.java:422)
+	at com.hazelcast.internal.serialization.impl.JavaDefaultSerializers$JavaSerializer.read(JavaDefaultSerializers.java:84)
+	... 10 more
+
+
+Given that the old API, `client.getAtomicReference()` is no longer supported in v4, customers are now seeing a serialization error by simply converting old code  to the new API. 
+Problem is obviously fixed by providing `Employee` (user class) in the member's classpath.
+
+If this not considered a bug, documentation should at least be updated to reflect the new requirement (or other workaround)
+
+Thank you. F.

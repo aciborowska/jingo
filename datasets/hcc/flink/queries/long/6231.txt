@@ -1,0 +1,71 @@
+My cluster got one jobmanager and one taskmanager. jobmanager oom repeately , with jobmanager.heap.mb setting to 256 and 1024. 
+
+oom  triggered at same scene: check point completed quickly,  while these completed check points still in task queue in CheckpointCoordinator.timer without taskstate being disposed.
+
+one of my checkpoint with taskstate is about 10m, so about 90 completed checkpoint  caused oom with heap size 1024m. hprof file proved this, can provide if needed.
+
+I have checked PendingCheckpoint.finalizeCheckpoint, not sure if it should be dispose(null, true) instead of dispose(null, false).
+
+I have no idea about how to make my taskstate much less
+
+2017-03-30 10:15:52,260 INFO  org.apache.flink.runtime.checkpoint.CheckpointCoordinator     - Triggering checkpoint 47 @ 1490840152260
+2017-03-30 10:16:11,781 INFO  org.apache.flink.runtime.checkpoint.CheckpointCoordinator     - Completed checkpoint 47 (in 19516 ms).
+2017-03-30 10:16:11,781 INFO  org.apache.flink.runtime.checkpoint.CheckpointCoordinator     - Triggering checkpoint 48 @ 1490840171781
+2017-03-30 10:26:11,781 INFO  org.apache.flink.runtime.checkpoint.CheckpointCoordinator     - Checkpoint 48 expired before completing.
+2017-03-30 10:26:11,782 INFO  org.apache.flink.runtime.checkpoint.CheckpointCoordinator     - Triggering checkpoint 49 @ 1490840771782
+2017-03-30 10:36:11,782 INFO  org.apache.flink.runtime.checkpoint.CheckpointCoordinator     - Checkpoint 49 expired before completing.
+....... all expired
+2017-03-31 00:46:11,826 INFO  org.apache.flink.runtime.checkpoint.CheckpointCoordinator     - Checkpoint 134 expired before completing.
+2017-03-31 00:46:11,826 INFO  org.apache.flink.runtime.checkpoint.CheckpointCoordinator     - Triggering checkpoint 135 @ 1490892371826
+2017-03-31 00:56:11,827 INFO  org.apache.flink.runtime.checkpoint.CheckpointCoordinator     - Checkpoint 135 expired before completing.
+2017-03-31 00:56:11,827 INFO  org.apache.flink.runtime.checkpoint.CheckpointCoordinator     - Triggering checkpoint 136 @ 1490892971827
+2017-03-31 01:06:11,827 INFO  org.apache.flink.runtime.checkpoint.CheckpointCoordinator     - Checkpoint 136 expired before completing.
+2017-03-31 01:06:11,827 INFO  org.apache.flink.runtime.checkpoint.CheckpointCoordinator     - Triggering checkpoint 137 @ 1490893571827
+2017-03-31 01:06:12,215 INFO  org.apache.flink.runtime.checkpoint.CheckpointCoordinator     - Completed checkpoint 137 (in 384 ms).
+2017-03-31 01:06:16,827 INFO  org.apache.flink.runtime.checkpoint.CheckpointCoordinator     - Triggering checkpoint 138 @ 1490893576827
+2017-03-31 01:06:17,454 INFO  org.apache.flink.runtime.checkpoint.CheckpointCoordinator     - Completed checkpoint 138 (in 624 ms).
+2017-03-31 01:06:21,827 INFO  org.apache.flink.runtime.checkpoint.CheckpointCoordinator     - Triggering checkpoint 139 @ 1490893581827
+2017-03-31 01:06:22,189 INFO  org.apache.flink.runtime.checkpoint.CheckpointCoordinator     - Completed checkpoint 139 (in 357 ms).
+...... all completed in less than 1s
+2017-03-31 01:13:51,827 INFO  org.apache.flink.runtime.checkpoint.CheckpointCoordinator     - Triggering checkpoint 229 @ 1490894031827
+2017-03-31 01:13:52,533 INFO  org.apache.flink.runtime.checkpoint.CheckpointCoordinator     - Completed checkpoint 229 (in 643 ms).
+2017-03-31 01:13:56,827 INFO  org.apache.flink.runtime.checkpoint.CheckpointCoordinator     - Triggering checkpoint 230 @ 1490894036827
+2017-03-31 01:13:58,963 ERROR akka.actor.ActorSystemImpl                                    - Uncaught error from thread [flink-akka.remote.default-remote-dispatcher-5] shutting down JVM since 'akka.jvm-exit-on-fatal-error' is enabled
+java.lang.OutOfMemoryError: Java heap space
+	at java.lang.reflect.Array.newInstance(Array.java:70)
+	at java.io.ObjectInputStream.readArray(ObjectInputStream.java:1670)
+	at java.io.ObjectInputStream.readObject0(ObjectInputStream.java:1344)
+	at java.io.ObjectInputStream.defaultReadFields(ObjectInputStream.java:1990)
+	at java.io.ObjectInputStream.readSerialData(ObjectInputStream.java:1915)
+	at java.io.ObjectInputStream.readOrdinaryObject(ObjectInputStream.java:1798)
+	at java.io.ObjectInputStream.readObject0(ObjectInputStream.java:1350)
+	at java.io.ObjectInputStream.defaultReadFields(ObjectInputStream.java:1990)
+	at java.io.ObjectInputStream.readSerialData(ObjectInputStream.java:1915)
+	at java.io.ObjectInputStream.readOrdinaryObject(ObjectInputStream.java:1798)
+	at java.io.ObjectInputStream.readObject0(ObjectInputStream.java:1350)
+	at java.io.ObjectInputStream.readObject(ObjectInputStream.java:370)
+	at akka.serialization.JavaSerializer$$anonfun$1.apply(Serializer.scala:136)
+	at scala.util.DynamicVariable.withValue(DynamicVariable.scala:58)
+	at akka.serialization.JavaSerializer.fromBinary(Serializer.scala:136)
+	at akka.serialization.Serialization$$anonfun$deserialize$1.apply(Serialization.scala:104)
+	at scala.util.Try$.apply(Try.scala:192)
+	at akka.serialization.Serialization.deserialize(Serialization.scala:98)
+	at akka.remote.MessageSerializer$.deserialize(MessageSerializer.scala:23)
+	at akka.remote.DefaultMessageDispatcher.payload$lzycompute$1(Endpoint.scala:58)
+	at akka.remote.DefaultMessageDispatcher.payload$1(Endpoint.scala:58)
+	at akka.remote.DefaultMessageDispatcher.dispatch(Endpoint.scala:76)
+	at akka.remote.EndpointReader$$anonfun$receive$2.applyOrElse(Endpoint.scala:937)
+	at akka.actor.Actor$class.aroundReceive(Actor.scala:465)
+	at akka.remote.EndpointActor.aroundReceive(Endpoint.scala:415)
+	at akka.actor.ActorCell.receiveMessage(ActorCell.scala:516)
+	at akka.actor.ActorCell.invoke(ActorCell.scala:487)
+	at akka.dispatch.Mailbox.processMailbox(Mailbox.scala:254)
+	at akka.dispatch.Mailbox.run(Mailbox.scala:221)
+	at akka.dispatch.Mailbox.exec(Mailbox.scala:231)
+	at scala.concurrent.forkjoin.ForkJoinTask.doExec(ForkJoinTask.java:260)
+	at scala.concurrent.forkjoin.ForkJoinPool$WorkQueue.runTask(ForkJoinPool.java:1339)
+2017-03-31 01:13:59,195 INFO  org.apache.flink.runtime.checkpoint.CheckpointCoordinator     - Stopping checkpoint coordinator for job 489ece0f75fe046bca646f1d19b6b766
+2017-03-31 01:13:59,197 INFO  org.apache.flink.runtime.webmonitor.WebRuntimeMonitor         - Removing web dashboard root cache directory /tmp/flink-web-4a631231-cdd4-40d4-850e-00ad7f7936ec
+2017-03-31 01:13:59,197 INFO  org.apache.flink.runtime.checkpoint.CheckpointCoordinator     - Stopping checkpoint coordinator for job 489ece0f75fe046bca646f1d19b6b766
+2017-03-31 01:13:59,200 INFO  org.apache.flink.runtime.blob.BlobServer                      - Stopped BLOB server at 0.0.0.0:12984
+2017-03-31 01:13:59,203 INFO  org.apache.flink.runtime.webmonitor.WebRuntimeMonitor         - Removing web dashboard jar upload directory /tmp/flink-web-upload-3ad03fcb-b920-45ec-bdc6-befae0a98c08

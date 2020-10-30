@@ -1,0 +1,93 @@
+This is both for 1.1.0 and 1.1.1. And this time I have a nice and clean example.
+
+This is the dummy "around" interceptor with annotation:
+
+```java
+@Documented
+@Retention(RetentionPolicy.RUNTIME)
+@Target({ElementType.METHOD, ElementType.PARAMETER})
+@Around
+@Type(SomeInterceptor.class)
+public @interface SomeAnnot {}
+
+@Singleton
+public class SomeInterceptor implements MethodInterceptor<Object, Object>, Ordered {
+	@Override
+	public Object intercept(MethodInvocationContext<Object, Object> context) {
+		return context.proceed();
+	}
+}
+```
+
+And here's the code:
+
+```java
+public abstract class BaseService {
+	public void baseServiceMethod() {}
+}
+
+@Singleton
+public class Service extends BaseService {
+	@SomeAnnot
+	public void serviceMethod() {}
+}
+```
+
+Finally let's display all `BaseService` services in the app:
+
+```java
+@Singleton
+public class Logger {
+	@Inject BaseService[] services;
+
+	@EventListener
+	protected void init(StartupEvent event) {
+		Arrays.stream(services).
+			forEach(it -> System.out.println(it.getClass().getSimpleName()));
+	}
+}
+```
+
+What gives the result:
+
+```
+$ServiceDefinition$Intercepted
+```
+
+But now after this modification:
+
+```java
+public abstract class BaseService {
+	@SomeAnnot
+	public void baseServiceMethod() {}
+}
+```
+
+We get:
+
+```
+$BaseServiceDefinition$Intercepted
+$ServiceDefinition$Intercepted
+```
+
+So the extra bean is created here from `abstract BaseService` class...
+
+I believe this is a bug. In such scenario I expect only one bean of `BaseService` class to be available in the app, while there are two of them. I can't `@Inject` by the `BaseService` class because of non-unique bean exception. If I had some interfaces on `BaseService` class I couldn't inject using these interfaces as well.
+
+The other problems are with the scenarios, where `BaseService` is supposed to produce many concrete beans, and uses generics:
+
+```java
+class BaseRepository {}
+class Entity1Repository extends BaseRepository {}
+class Entity2Repository extends BaseRepository {}
+
+class BaseService<R extends BaseRepository> {
+    @Inject R repository;
+}
+class Entity1Service<Entity1Repository> {}
+class Entity2Service<Entity2Repository> {}
+```
+
+This works as expected, i.e. `Entity1Service` gets injected `Entity1Repository` and so forth. However when the unexpected abstract bean is created for `BaseService` it ends with injection exceptions, because container doesn't know which exactly class should inject into `R repository`.
+
+In such scenario I believe the `$BaseServiceDefinition$Intercepted` class should be introduced, but no `$BaseServiceDefinition$Intercepted` bean should be created. This class should only be used as the superclass for `$ServiceDefinition$Intercepted`.

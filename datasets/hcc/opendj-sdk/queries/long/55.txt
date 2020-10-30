@@ -1,0 +1,14 @@
+A system running OpenDS 2.2.1 was experiencing problems that required the OpenDS server to be restarted at least every two days. OpenDS log suggested memory leak related issue because the system kept slowing down until everything eventually started failing with OutOfMemoryException. The OpenDS server was allocated 2 gigabytes of memory, which should have been well enough given the amount of data in the system and the number of requests the server needed to handle.
+
+In order to track down the cause of the problem, histograms showing the allocated objects were created. These histograms showed that org.opends.server.types.ByteString (and the contained byte arrays) were taking the most memory. Based on object counts, the ByteString objects were referenced from org.opends.server.types.AttributeValues$DelayedNormalizationValue and org.opends.server.types.AttributeValues$PreNormalizedValue objects, which were referenced from org.opends.server.types.AttributeBuilder$RealAttributeNoOptions. These in turn were presumed to be referenced from org.opends.server.types.AttributeBuilder$RealAttributeNoOptions and this to be referenced from org.opends.server.types.Entry, and finally this from org.opends.server.workflowelement.localbackend.LocalBackendModifyOperation.
+
+Access log indicated that there were a lot of failing modify operations. The operations were failing because of unique constraint violation, as shown in the log extract below. These repeated failures were apparently causing the memory leak: comparing the number of allocated LocalBackendModifyOperation objects and the number of failed modify operations indicated that there had been nearly exactly the same number of failing modify operations as there were LocalBackendModifyOperation objects.
+
+[14/Feb/2011:04:21:24 +0200] MODIFY REQ conn=13707 op=328 msgID=329 dn="uid=xxx.xxx@xxx,ou=users,dc=xxx,dc=fi"
+[14/Feb/2011:04:21:24 +0200] MODIFY RES conn=13707 op=328 msgID=329 result=19 message="A unique attribute conflict was detected for attribute wpSsnHash:  value 6c09...76e already exists in entry uid=xxx.xxx@xxx,ou=users,dc=xxx,dc=fi" etime=0
+
+Quick look at the code shows that LocalBackendModifyOperation references ModifyOperation (though parent class) and ModifyOperation references LocalBackendModifyOperation (through attachments), which might be related to the leak. No analysis beyond this point was performed.
+
+The problem seems to only affect modify operations. There were also lot of modifydn and add operations that were failing due to the same reason but those did not cause any objects to get leaked.
+
+This was reproduced using OpenDJ 2.4.0 in a test environment. The server run out of memory in a matter of minutes when bombarded with modify requests that violated unique constraint. Log files showing heap summary and histograms from one test run are attached to this ticket.

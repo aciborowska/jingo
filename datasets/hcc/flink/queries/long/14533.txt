@@ -1,0 +1,47 @@
+When Flink attempts to perform predicate pushdown via `PushFilterIntoTableSourceScanRule`, it first checks the RexNodes to see if they can actually be pushed down to the source. It does that via `RexNodeToExpressionConverter.visitCall`, which traverses the nodes and eventually checks to see if it's a condition it knows:
+
+
+call.getOperator match { 
+  case SqlStdOperatorTable.OR => Option(operands.reduceLeft { (l, r) => Or(l.asInstanceOf[PlannerExpression], r.asInstanceOf[PlannerExpression]) }) 
+  case SqlStdOperatorTable.AND => Option(operands.reduceLeft { (l, r) => And(l.asInstanceOf[PlannerExpression], r.asInstanceOf[PlannerExpression]) }) 
+  case function: SqlFunction => lookupFunction(replace(function.getName), operands)  
+  case postfix: SqlPostfixOperator => lookupFunction(replace(postfix.getName), operands) 
+  case operator@_ => lookupFunction(replace(s"${operator.getKind}"), operands) 
+}
+
+
+If we take as an example the following query:
+
+
+SELECT a, b, c 
+FROM d 
+WHERE LOWER(a) LIKE '%%foo%%' AND LOWER(b) LIKE '%%python%%'
+
+
+When we hit the above pattern match, we fall to the case matching `SqlFunction`, as `LOWER` is of that type. Inside `lookupFunction`, we have a call to `functionCatalog.lookupFunction(name)` which looks up the given function in the function catalog. Eventually, we reach a static class called `BuiltInFunctionDefinitions`, which defines all of Flink's built in functions. When we iterate the list of built in functions as follows:
+
+
+foundDefinition = BuiltInFunctionDefinitions.getDefinitions()
+				.stream()
+				.filter(f -> functionName.equals(normalizeName(f.getName())))
+				.findFirst()
+				.map(Function.identity());
+
+
+ This doesn't yield a result, because `LOWER`, inside `BuiltInFunctionDefinitions`, is defined as follows:
+
+
+
+
+public static final BuiltInFunctionDefinition LOWER =
+		new BuiltInFunctionDefinition.Builder()
+			.name("lowerCase")
+			.kind(SCALAR)
+			.outputTypeStrategy(TypeStrategies.MISSING)
+			.build();
+
+
+ 
+And since we're using String to do the lookups, this fails to match, hence returning `null` and causing the entire pushdown to fail.
+
+ 

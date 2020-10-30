@@ -1,0 +1,173 @@
+CC @graemerocher 
+MultipleInvocationInstrumenter randomly gets into infinite loops with never ending warn logs when using rxJava with kotlin coroutines under certain circumstances
+
+
+### Steps to Reproduce
+
+1. Create a micronaut kotlin application using 
+  - kotlin 1.3.0
+  - kotlinCoroutines 1.3.5
+  - micronaut 1.3.5
+2. enable tracing and include micronaut-tracing dependency as in https://github.com/vijayender/rx-instrumentation-micronaut-issue/blob/master/build.gradle
+3. Create a controller 
+4. Create GET endpoint that subscribes to a single replay rxobservable via multiple async requests
+5. fire concurrent requests to that get endpoint
+
+**Or**
+
+- Clone the repo https://github.com/vijayender/rx-instrumentation-micronaut-issue
+   - This repo has a 50 line controller that triggers the issue
+- Run the application
+- https://github.com/vijayender/rx-instrumentation-micronaut-issue/blob/master/src/main/kotlin/example/micronaut/Controller.kt#L43 Invoke the said controller via http://localhost:8080/tryout/100 .  You could play with different values of concurrency. The issue happens on first call typically
+- The endpoint is to simulate concurrency
+- It has a variable `current()` that is a lazy val constructed off of a replayObservable on top of an observable with an initial delay of 5 seconds 
+
+
+
+### Expected Behaviour
+
+The rxobservables should return appropriate value and the endpoint finishes successfully
+
+### Actual Behaviour
+
+MultipleInvocationInstrumenter gets into an infinite loop spewing the following traceback forever, leaving all cpus busy.
+```
+11:31:40.427 [pool-1-thread-17] WARN  i.m.s.i.InvocationInstrumenter - After instrumentation invocation error: null
+java.util.NoSuchElementException: null
+	at java.base/java.util.ArrayDeque.removeFirst(ArrayDeque.java:363)
+	at java.base/java.util.ArrayDeque.pop(ArrayDeque.java:594)
+	at io.micronaut.scheduling.instrument.MultipleInvocationInstrumenter.afterInvocation(MultipleInvocationInstrumenter.java:68)
+	at io.micronaut.reactive.rxjava2.RxInstrumentedObservable.subscribeActual(RxInstrumentedObservable.java:55)
+	at io.reactivex.Observable.subscribe(Observable.java:12267)
+	at io.reactivex.internal.operators.observable.ObservableTake.subscribeActual(ObservableTake.java:30)
+	at io.reactivex.Observable.subscribe(Observable.java:12267)
+	at io.micronaut.reactive.rxjava2.RxInstrumentedObservable.subscribeActual(RxInstrumentedObservable.java:53)
+	at io.reactivex.Observable.subscribe(Observable.java:12267)
+	at io.reactivex.internal.operators.observable.ObservableSingleSingle.subscribeActual(ObservableSingleSingle.java:35)
+	at io.reactivex.Single.subscribe(Single.java:3603)
+	at io.micronaut.reactive.rxjava2.RxInstrumentedSingle.subscribeActual(RxInstrumentedSingle.java:52)
+	at io.reactivex.Single.subscribe(Single.java:3603)
+	at kotlinx.coroutines.rx2.RxAwaitKt.await(RxAwait.kt:75)
+	at example.micronaut.Controller$tryout$1$invokeSuspend$$inlined$map$lambda$1.invokeSuspend(Controller.kt:45)
+	at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:33)
+	at kotlinx.coroutines.DispatchedTask.run(DispatchedTask.kt:56)
+	at io.micronaut.scheduling.instrument.InvocationInstrumenterWrappedRunnable.run(InvocationInstrumenterWrappedRunnable.java:48)
+	at java.base/java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1128)
+	at java.base/java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:628)
+	at io.micronaut.scheduling.instrument.InvocationInstrumenterWrappedRunnable.run(InvocationInstrumenterWrappedRunnable.java:48)
+	at java.base/java.lang.Thread.run(Thread.java:834)
+
+Process finished with exit code 130 (interrupted by signal 2: SIGINT)
+```
+
+### Environment Information
+
+- **Operating System**: Mac / Alpine linux
+- **Micronaut Version:** 1.3.5
+- **JDK Version:** OpenJDK Runtime Environment AdoptOpenJDK (build 11.0.5+10)
+
+### Example Application
+
+https://github.com/vijayender/rx-instrumentation-micronaut-issue/blob/master/src/main/kotlin/example/micronaut/Controller.kt#L43
+
+----
+
+Few more tracebacks observed in other scenarios in our systems.
+
+```
+java.util.NoSuchElementException: null
+    at java.base/java.util.ArrayDeque.removeFirst(Unknown Source)
+    at java.base/java.util.ArrayDeque.pop(Unknown Source)
+    at io.micronaut.scheduling.instrument.MultipleInvocationInstrumenter.afterInvocation(MultipleInvocationInstrumenter.java:68)
+    at io.micronaut.reactive.rxjava2.RxInstrumentedSubscriber.onNext(RxInstrumentedSubscriber.java:70)
+    at io.micronaut.core.async.publisher.CompletableFuturePublisher$CompletableFutureSubscription.lambda$request$0(CompletableFuturePublisher.java:87)
+    at java.base/java.util.concurrent.CompletableFuture.uniWhenComplete(Unknown Source)
+    at java.base/java.util.concurrent.CompletableFuture$UniWhenComplete.tryFire(Unknown Source)
+    at java.base/java.util.concurrent.CompletableFuture.postComplete(Unknown Source)
+    at java.base/java.util.concurrent.CompletableFuture.complete(Unknown Source)
+    at kotlinx.coroutines.future.FutureKt$asCompletableFuture$1.invoke(Future.kt:77)
+    at kotlinx.coroutines.future.FutureKt$asCompletableFuture$1.invoke(Future.kt)
+    at kotlinx.coroutines.InvokeOnCompletion.invoke(JobSupport.kt:1286)
+    at kotlinx.coroutines.JobSupport.notifyCompletion(JobSupport.kt:1422)
+    at kotlinx.coroutines.JobSupport.completeStateFinalization(JobSupport.kt:303)
+    at kotlinx.coroutines.JobSupport.tryFinalizeFinishingState(JobSupport.kt:235)
+    at kotlinx.coroutines.JobSupport.tryMakeCompleting(JobSupport.kt:821)
+    at kotlinx.coroutines.JobSupport.makeCompletingOnce$kotlinx_coroutines_core(JobSupport.kt:764)
+    at kotlinx.coroutines.AbstractCoroutine.resumeWith(AbstractCoroutine.kt:111)
+    at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:46)
+    at kotlinx.coroutines.DispatchedTask.run(Dispatched.kt:238)
+    at io.micronaut.scheduling.instrument.InvocationInstrumenterWrappedRunnable.run(	.java:48)
+    at io.micrometer.core.instrument.composite.CompositeTimer.record(CompositeTimer.java:79)
+    at io.micrometer.core.instrument.Timer.lambda$wrap$0(Timer.java:144)
+    at java.base/java.util.concurrent.ThreadPoolExecutor.runWorker(Unknown Source)
+    at java.base/java.util.concurrent.ThreadPoolExecutor$Worker.run(Unknown Source)
+    at io.micronaut.scheduling.instrument.InvocationInstrumenterWrappedRunnable.run(InvocationInstrumenterWrappedRunnable.java:48)
+    at java.base/java.lang.Thread.run(Unknown Source)
+
+```
+
+```
+java.util.NoSuchElementException: null
+    at java.base/java.util.ArrayDeque.removeFirst(Unknown Source)
+    at java.base/java.util.ArrayDeque.pop(Unknown Source)
+    at io.micronaut.scheduling.instrument.MultipleInvocationInstrumenter.afterInvocation(MultipleInvocationInstrumenter.java:68)
+    at io.micronaut.reactive.rxjava2.RxInstrumentedSubscriber.onSubscribe(RxInstrumentedSubscriber.java:56)
+    at io.micronaut.core.async.publisher.CompletableFuturePublisher.subscribe(CompletableFuturePublisher.java:48)
+    at io.reactivex.internal.operators.flowable.FlowableDefer.subscribeActual(FlowableDefer.java:42)
+    at io.reactivex.Flowable.subscribe(Flowable.java:14918)
+    at io.reactivex.Flowable.subscribe(Flowable.java:14865)
+    at io.micronaut.reactive.rxjava2.RxInstrumentedFlowable.subscribeActual(RxInstrumentedFlowable.java:58)
+    at io.reactivex.Flowable.subscribe(Flowable.java:14918)
+    at io.reactivex.internal.operators.flowable.FlowableMap.subscribeActual(FlowableMap.java:37)
+    at io.reactivex.Flowable.subscribe(Flowable.java:14918)
+    at io.reactivex.Flowable.subscribe(Flowable.java:14865)
+    at io.micronaut.reactive.rxjava2.RxInstrumentedFlowable.subscribeActual(RxInstrumentedFlowable.java:58)
+    at io.reactivex.Flowable.subscribe(Flowable.java:14918)
+    at io.reactivex.internal.operators.flowable.FlowableSwitchIfEmpty.subscribeActual(FlowableSwitchIfEmpty.java:32)
+    at io.reactivex.Flowable.subscribe(Flowable.java:14918)
+    at io.reactivex.Flowable.subscribe(Flowable.java:14865)
+    at io.micronaut.reactive.rxjava2.RxInstrumentedFlowable.subscribeActual(RxInstrumentedFlowable.java:58)
+    at io.reactivex.Flowable.subscribe(Flowable.java:14918)
+    at io.reactivex.Flowable.subscribe(Flowable.java:14868)
+    at io.micronaut.configuration.metrics.binder.web.WebMetricsPublisher.subscribe(WebMetricsPublisher.java:153)
+    at io.reactivex.internal.operators.flowable.FlowableFromPublisher.subscribeActual(FlowableFromPublisher.java:29)
+    at io.reactivex.Flowable.subscribe(Flowable.java:14918)
+    at io.reactivex.Flowable.subscribe(Flowable.java:14865)
+    at io.micronaut.reactive.rxjava2.RxInstrumentedFlowable.subscribeActual(RxInstrumentedFlowable.java:58)
+    at io.reactivex.Flowable.subscribe(Flowable.java:14918)
+    at io.reactivex.internal.operators.flowable.FlowableMap.subscribeActual(FlowableMap.java:37)
+    at io.reactivex.Flowable.subscribe(Flowable.java:14918)
+    at io.reactivex.Flowable.subscribe(Flowable.java:14865)
+    at io.micronaut.reactive.rxjava2.RxInstrumentedFlowable.subscribeActual(RxInstrumentedFlowable.java:58)
+    at io.reactivex.Flowable.subscribe(Flowable.java:14918)
+    at io.reactivex.Flowable.subscribe(Flowable.java:14868)
+    at io.micronaut.http.context.ServerRequestTracingPublisher.lambda$subscribe$0(ServerRequestTracingPublisher.java:52)
+    at io.micronaut.http.context.ServerRequestContext.with(ServerRequestContext.java:68)
+    at io.micronaut.http.context.ServerRequestTracingPublisher.subscribe(ServerRequestTracingPublisher.java:52)
+    at io.reactivex.internal.operators.flowable.FlowableFromPublisher.subscribeActual(FlowableFromPublisher.java:29)
+    at io.reactivex.Flowable.subscribe(Flowable.java:14918)
+    at io.reactivex.Flowable.subscribe(Flowable.java:14865)
+    at io.micronaut.reactive.rxjava2.RxInstrumentedFlowable.subscribeActual(RxInstrumentedFlowable.java:58)
+    at io.reactivex.Flowable.subscribe(Flowable.java:14918)
+    at io.reactivex.internal.operators.flowable.FlowableDoOnEach.subscribeActual(FlowableDoOnEach.java:50)
+    at io.reactivex.Flowable.subscribe(Flowable.java:14918)
+    at io.reactivex.Flowable.subscribe(Flowable.java:14865)
+    at io.micronaut.reactive.rxjava2.RxInstrumentedFlowable.subscribeActual(RxInstrumentedFlowable.java:58)
+    at io.reactivex.Flowable.subscribe(Flowable.java:14918)
+    at io.reactivex.internal.operators.flowable.FlowableMap.subscribeActual(FlowableMap.java:37)
+    at io.reactivex.Flowable.subscribe(Flowable.java:14918)
+    at io.reactivex.Flowable.subscribe(Flowable.java:14865)
+    at io.micronaut.reactive.rxjava2.RxInstrumentedFlowable.subscribeActual(RxInstrumentedFlowable.java:58)
+    at io.reactivex.Flowable.subscribe(Flowable.java:14918)
+    at io.reactivex.Flowable.subscribe(Flowable.java:14865)
+    at io.reactivex.internal.operators.flowable.FlowableSubscribeOn$SubscribeOnSubscriber.run(FlowableSubscribeOn.java:82)
+    at io.reactivex.internal.schedulers.ExecutorScheduler$ExecutorWorker$BooleanRunnable.run(ExecutorScheduler.java:288)
+    at io.reactivex.internal.schedulers.ExecutorScheduler$ExecutorWorker.run(ExecutorScheduler.java:253)
+    at io.netty.util.concurrent.AbstractEventExecutor.safeExecute(AbstractEventExecutor.java:164)
+    at io.netty.util.concurrent.SingleThreadEventExecutor.runAllTasks(SingleThreadEventExecutor.java:472)
+    at io.netty.channel.nio.NioEventLoop.run(NioEventLoop.java:497)
+    at io.netty.util.concurrent.SingleThreadEventExecutor$4.run(SingleThreadEventExecutor.java:989)
+    at io.netty.util.internal.ThreadExecutorMap$2.run(ThreadExecutorMap.java:74)
+    at io.netty.util.concurrent.FastThreadLocalRunnable.run(FastThreadLocalRunnable.java:30)
+    at java.base/java.lang.Thread.run(Unknown Source)
+```

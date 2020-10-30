@@ -1,0 +1,75 @@
+Hi,
+
+I have a simple test which queues 10 items in a transactional queue (backup count of 2). The items are then dequeued one at a time by a single thread within a transaction. The transaction is then either committed or rolled-back randomly. On a setup with 2 member nodes and a single client which does all the queue operations, I see SEVERE log messages like the one below for one of the members. This is for version 3.5.2 of Hazelcast.
+
+```
+SEVERE: [x.x.x.x]:5701 [dev] [3.5.2] No reserve for itemId: 6
+com.hazelcast.transaction.TransactionException: No reserve for itemId: 6
+    at com.hazelcast.collection.impl.queue.QueueContainer.txnEnsureReserve(QueueContainer.java:115)
+    at com.hazelcast.collection.impl.txnqueue.operations.TxnPrepareBackupOperation.run(TxnPrepareBackupOperation.java:50)
+    at com.hazelcast.spi.impl.operationservice.impl.operations.Backup.run(Backup.java:101)
+    at com.hazelcast.spi.impl.operationservice.impl.OperationRunnerImpl.run(OperationRunnerImpl.java:137)
+    at com.hazelcast.spi.impl.operationservice.impl.OperationRunnerImpl.run(OperationRunnerImpl.java:315)
+    at com.hazelcast.spi.impl.operationexecutor.classic.OperationThread.processPacket(OperationThread.java:142)
+    at com.hazelcast.spi.impl.operationexecutor.classic.OperationThread.process(OperationThread.java:115)
+    at com.hazelcast.spi.impl.operationexecutor.classic.OperationThread.doRun(OperationThread.java:101)
+    at com.hazelcast.spi.impl.operationexecutor.classic.OperationThread.run(OperationThread.java:76)
+```
+
+Test code to reproduce the problem.
+
+```
+    public void runTest()
+    {
+        String qName = "testQueue";
+
+        Config cfg = new Config();
+        cfg.getQueueConfig(qName).setBackupCount(2);
+        HazelcastInstance member = Hazelcast.newHazelcastInstance(cfg);
+        HazelcastInstance member2 = Hazelcast.newHazelcastInstance(cfg);
+        HazelcastInstance client = HazelcastClient.newHazelcastClient();
+
+        int count = 0;
+        // dump 10 strings into the queue
+        while(count < 10)
+        {
+            TransactionContext offerCtx = client.newTransactionContext();
+            offerCtx.beginTransaction();
+            try
+            {
+                TransactionalQueue<String> queue = offerCtx.getQueue(qName);
+                queue.offer("TestString_"+(count++));
+                offerCtx.commitTransaction();
+            }
+            catch (Exception e)
+            {
+                offerCtx.rollbackTransaction();
+            }
+        }
+
+        // drain the queue, counting down from 10
+        while (count > 0)
+        {
+            TransactionContext pollCtx = client.newTransactionContext();
+            pollCtx.beginTransaction();
+            try
+            {
+                TransactionalQueue<String> queue = pollCtx.getQueue(qName);
+                String item = queue.poll();
+                if (new Random().nextInt(3) == 0)
+                {
+                    throw new Exception("Test exeception item " +item);
+                }
+                pollCtx.commitTransaction();
+                System.out.println("Processed item " +item);
+                count--;
+            }
+            catch (Exception e)
+            {
+                pollCtx.rollbackTransaction();
+                System.out.println("Exception caught... " +e);
+            }
+        }
+        System.out.println("Completed draining queue.");
+    }
+```

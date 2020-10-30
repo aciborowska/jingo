@@ -1,0 +1,11 @@
+Occasionally, after forming a cluster, certain members do not contain `EventService` registrations for some other members. Normally, all members should have the same set of registrations.
+
+After some investigation, I figured out what the problem is:
+
+Suppose there are (at least) three members: `A`, `B`, `C`, joining the cluster in this order. When `B` joins the cluster, the master (`A`) generates the `FinalizeJoinOp` and executes it on `B`. `B` then executes the `preJoin` operations (which, among others, include a snapshot of `A`’s event registrations to be propagated to `B`) and when done, it sends its `postJoin` operations back to the other cluster members (only `A` in this case). The purpose of these operations is, among others, to propagate `B`’s event registrations to the rest of the cluster.
+
+Now, suppose `C` joins the cluster before `B`’s `postJoin` operations reach `A`. In such scenario (which `ClusterJoinManager.startJoin()` is not protected against), `A`’s snapshot of event registrations does not include `B`’s registrations (which include `B` itself) yet, therefore the `preJoin` operations sent to `C` do not contain any mention of `B`. If `C` is the last member to join the cluster, there is no other member that can fix this at a later point (by sending their `postJoin` operation to `C` that would add `B` to the list of event registrations).
+
+It is quite possible that the above problem applies not only to `EventService`, but also to other `PreJoinAwareService`/`PostJoinAwareService` services.
+
+I encountered this while working on an unrelated issue on 3.12.x. It (occasionally) occurs in Hot Restart tests where we start all members at once, in parallel. In many real situations, I believe the issue is quite unlikely to occur.

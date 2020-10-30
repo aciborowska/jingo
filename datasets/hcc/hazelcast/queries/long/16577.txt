@@ -1,0 +1,40 @@
+**Describe the bug**
+When using a transactional map from a cache with a near cache, the cache invalidation event occurs when the transactionalMap.put is called. As a result, the entry gets invalidated BEFORE the change is committed to the map.  Any readers calling get on the entry cause the old entry to be stored in the near cache, even though the correct entry gets stored in the underlying map.
+
+**Expected behaviour**
+I would expect that during the call to TransactionContext.commitTransaction();, after the entries have been committed to the underlying map, only then does the cache invalidation message get sent.
+
+**To Reproduce**
+Run the following code, and notice the last System.out does not output the expected value.  This is a simple test case after we found the issue in our code as soon as we enabled near cache for one of the caches.
+
+```
+public static void main(String[] args) {
+        Config cfg = new Config("one");
+        MapConfig cacheConfig = cfg.getMapConfig("cache");
+        NearCacheConfig nearCacheConfig = new NearCacheConfig(1000, 1000, true, InMemoryFormat.OBJECT);
+        cacheConfig.setNearCacheConfig(nearCacheConfig);
+        nearCacheConfig.setCacheLocalEntries(true);
+
+        // create Hazelcast instance
+        final HazelcastInstance hcInstance = Hazelcast.newHazelcastInstance(cfg);
+        IMap map = hcInstance.getMap("cache");
+        map.put("key", "value"); // Initialise with a value
+        System.out.println("Value prior (should be 'value') was " + map.get("key"));
+
+        TransactionOptions opts = new TransactionOptions();
+        opts.setTransactionType(TransactionOptions.TransactionType.TWO_PHASE);
+        TransactionContext ctx = hcInstance.newTransactionContext(opts);
+        ctx.beginTransaction(); // being the transaction
+        TransactionalMap transactionalMap = ctx.getMap("cache");
+        System.out.println("Value prior in transaction map (should be 'value') was " + transactionalMap.get("key"));
+        transactionalMap.put("key", "newValue");
+        System.out.println("Value post put in transaction map (should be 'newValue') was " + transactionalMap.get("key"));
+        System.out.println("Value post put in map (should be 'value') was " + map.get("key"));
+        ctx.commitTransaction();
+        System.out.println("Value post commit in map (should be 'newValue') was " + map.get("key"));
+        System.exit(0);
+    }
+```
+
+**Additional context**
+This has been tested on 3.11.6 and 3.12.5 - both exhibit the same behaviour.

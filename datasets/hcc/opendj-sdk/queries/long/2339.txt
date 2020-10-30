@@ -1,0 +1,18 @@
+If you add an entry with an RDN AVA that contains a single space, a search returns the entry with a different DN.
+
+This is awkward to reproduce, because ldapmodify transforms the DN from the input LDIF. Attached is a small perl script using Net::LDAP to perform the ADD of 'uid=" ",dc=example,dc=com', which can be verified by inspecting the PDUs dumped to stdout.
+
+The debugger reveals the server correctly parses the first RDN - the attributeValues array has one element which is a byte[1] containing a space character.
+
+However when you perform an ldapsearch, the entry returned from EntryContainer.getEntry(id) (from id2entry) has a first RDN with an attributeValues array with one element which is a byte[2] containing a backslash and a space. This mangled value is then escaped correctly and returned:
+
+
+bin/ldapsearch -h localhost -p 1389 -D "cn=Directory Manager" -w password -b dc=example,dc=com -s one "(&)" uid
+dn: uid=\\\ ,dc=example,dc=com
+uid:: IA==
+
+
+
+Trying to delete the entry is difficult with our ldap clients.
+
+This is due to a problem in RDN.getDNValue(ByteString) in opendj-server-legacy. It escapes the space because it is at the start of the string, and then escapes it again because it is at the end of the string. The RDN.escapeAttributeValue(String,StringBuilder) method in opendj-core does not have this problem.

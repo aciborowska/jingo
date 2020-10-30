@@ -1,0 +1,116 @@
+Hi,
+
+it looks as if IAtomicLong.compareAndSet() does not properly backup its updated state. In a two node cluster, if you use IAtomicLong.compareAndSet() and then shutdown the owner of the IAtomicLong, the remaining node no longer sees the updated value.
+
+Here is a test to reproduce the issue.
+
+I tested this on 3.5.5-SNAPSHOT of 2015-12-17.
+
+``` java
+package com.nm.test.hazelcast.atomiclong;
+
+import com.hazelcast.config.Config;
+import com.hazelcast.config.XmlConfigBuilder;
+import com.hazelcast.core.Hazelcast;
+import com.hazelcast.core.HazelcastInstance;
+import com.hazelcast.core.IAtomicLong;
+import com.nm.test.hazelcast.TestHazelcast;
+import org.apache.log4j.BasicConfigurator;
+import org.apache.log4j.Logger;
+import junit.framework.TestCase;
+
+/**
+ * A test to ensure IAtomicLong keeps its state (using compareAndSet()) during node shutdown.
+ */
+public class TestAtomicLong5 extends TestCase {
+
+    private static final Logger logger = Logger.getLogger(TestAtomicLong5.class);
+
+    private static final String atomicLongName = "test" + TestAtomicLong5.class.getSimpleName();
+
+    @Override
+    protected void setUp() throws Exception {
+
+        // configure logging
+        if (!TestHazelcast.loggingInitialized) {
+            TestHazelcast.loggingInitialized = true;
+            BasicConfigurator.configure();
+        }
+    }
+
+    public void testCompareAndSetShutdownOwner() {
+        testInternal(true);
+    }
+
+    public void testCompareAndSetShutdownNotOwner() {
+        testInternal(false);
+    }
+
+    private void testInternal(boolean restartOwner) {
+
+        // try-finally to terminate hazelcast instances
+        HazelcastInstance hcInstance1 = null;
+        HazelcastInstance hcInstance2 = null;
+        try {
+
+            // start a two node cluster
+            hcInstance1 = createHzInstance();
+            hcInstance2 = createHzInstance();
+
+            // set value to 7 and then to 13 on node 1
+            IAtomicLong atomicLong1 = hcInstance1.getAtomicLong(atomicLongName);
+            atomicLong1.set(7L);
+            atomicLong1.compareAndSet(7L, 13L);
+            assertTrue(atomicLong1.get() == 13L);
+            logger.info("Value set to 13.");
+
+            // ensure node 2 sees the update to 13
+            IAtomicLong atomicLong2 = hcInstance2.getAtomicLong(atomicLongName);
+            assertTrue(atomicLong2.get() == 13L);
+            logger.info("Node 2 sees the value 13.");
+
+            // shutdown owner (or not-owner)
+            HazelcastInstance hcInstanceToShutdown = null;
+            HazelcastInstance hcInstanceRunning = null;
+            if (hcInstance1.getPartitionService().getPartition(atomicLongName).getOwner().localMember()) {
+                hcInstanceToShutdown = restartOwner ? hcInstance1 : hcInstance2;
+                hcInstanceRunning = restartOwner ? hcInstance2 : hcInstance1;
+            } else {
+                hcInstanceToShutdown = restartOwner ? hcInstance2 : hcInstance1;
+                hcInstanceRunning = restartOwner ? hcInstance1 : hcInstance2;
+            }
+            hcInstanceToShutdown.getLifecycleService().shutdown();
+
+            // ensure running node still sees the update to 13
+            IAtomicLong atomicLongR = hcInstanceRunning.getAtomicLong(atomicLongName);
+            long valueR = atomicLongR.get();
+            assertTrue("Running node does *not* see the value 13 (after shutdown), but " + valueR + " instead!", valueR == 13L);
+            logger.info("Running node sees the value 13 (after shutdown).");
+
+        } finally {
+            if (hcInstance1 != null) {
+                hcInstance1.getLifecycleService().terminate();
+            }
+            if (hcInstance2 != null) {
+                hcInstance2.getLifecycleService().terminate();
+            }
+        }
+    }
+
+    private HazelcastInstance createHzInstance() {
+
+        // create config
+        Config config = new XmlConfigBuilder().build();
+        config.setProperty("hazelcast.logging.type", "log4j");
+        config.setProperty("hazelcast.version.check.enabled", "false");
+
+        // create Hazelcast instance
+        HazelcastInstance hcInstance = Hazelcast.newHazelcastInstance(config);
+        return hcInstance;
+    }
+
+}
+```
+
+Best,
+Lukas

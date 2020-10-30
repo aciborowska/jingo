@@ -1,0 +1,12 @@
+After FLINK-13985, managed memory is allocated from UNSAFE, not as direct nio buffers as before 1.10.
+
+in FLINK-14894, there was an attempt to release this memory only when all Java handles of the unsafe memory are about to be GC'ed. It is similar to how it was with direct nio buffers before 1.10 but the unsafe memory is not tracked by direct memory limit (-XX:MaxDirectMemorySize). The problem is that over-allocating of unsafe memory will not hit the direct limit and will not cause GC immediately which will be the only way to release it. In this case, it causes out-of-memory failures w/o triggering GC to release a lot of potentially already unused memory.
+
+We have to investigate further optimisations, like:
+
+	directly monitoring phantom reference queue of the cleaner (if JVM detects quickly that there are no more reference to the memory) and explicitly release memory ready for GC asap, e.g. after Task exit
+	monitor allocated memory amount and block allocation until GC releases occupied memory instead of failing with out-of-memory immediately
+
+
+
+cc Stephan Ewen Till Rohrmann

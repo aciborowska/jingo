@@ -1,0 +1,213 @@
+See zendesk ticket 471.
+
+Following test reproduces this issue:
+- Producer thread adds a UUID to a queue (queue.offer(uuid)) and an entry to a map with the same UUID as key (map.put(uuid, value)) under transaction.
+- Consumer side polls queue without transaction and calls map.get() with polled UUID.
+- map.get(uuid) should not return null if queue.poll() returns a non-null uuid, since queue.offer(uuid) and map.put(uuid, value) should be atomic under the same transaction
+- DummyTransactionalService here is used to add latency to tx.commit()
+
+``` java
+@Test
+public void testTransactionAtomicity_whenMapGetIsUsed() throws InterruptedException {
+    Config config = new Config();
+    ServicesConfig servicesConfig = config.getServicesConfig();
+
+    final String dummyTxService = "dummy-tx-service";
+    servicesConfig.addServiceConfig(new ServiceConfig().setName(dummyTxService)
+            .setEnabled(true).setServiceImpl(new DummyTransactionalService(dummyTxService)));
+
+    final HazelcastInstance hz = Hazelcast.newHazelcastInstance(config);
+
+    final String name = HazelcastTestSupport.generateRandomString(5);
+
+    Thread producerThread = new ProducerThread(hz, name, dummyTxService);
+    producerThread.start();
+
+    try {
+        IQueue<String> q = hz.getQueue(name);
+        for (int i = 0; i < 1000; i++) {
+            String id = q.poll();
+            if (id != null) {
+                TransactionContext tx = hz.newTransactionContext();
+                try {
+                    tx.beginTransaction();
+                    TransactionalMap<String, Object> map = tx.getMap(name);
+                    Object value = map.get(id);
+                    Assert.assertNotNull(value);
+
+                    map.delete(id);
+                    tx.commitTransaction();
+                } catch (TransactionException e) {
+                    tx.rollbackTransaction();
+                    e.printStackTrace();
+                }
+            } else {
+                LockSupport.parkNanos(100);
+            }
+        }
+    } finally {
+        producerThread.interrupt();
+        producerThread.join(10000);
+    }
+}
+
+private static class ProducerThread extends Thread {
+    private final HazelcastInstance hz;
+    private final String name;
+    private final String dummyServiceName;
+
+    public ProducerThread(HazelcastInstance hz, String name, String dummyServiceName) {
+        this.hz = hz;
+        this.name = name;
+        this.dummyServiceName = dummyServiceName;
+    }
+
+    public void run() {
+        while (!isInterrupted()) {
+            TransactionContext tx = hz.newTransactionContext();
+            try {
+                tx.beginTransaction();
+                String id = UUID.randomUUID().toString();
+
+                TransactionalQueue<String> q = tx.getQueue(name);
+                q.offer(id);
+
+                DummyTransactionalObject slowTxObject = tx.getTransactionalObject(dummyServiceName, name);
+                slowTxObject.doSomethingTxnal();
+
+                TransactionalMap<String, Object> map = tx.getMap(name);
+                map.put(id, "some-value");
+
+                tx.commitTransaction();
+            } catch (TransactionException e) {
+                tx.rollbackTransaction();
+                e.printStackTrace();
+            }
+        }
+    }
+}
+
+private static class DummyTransactionalService implements TransactionalService, RemoteService {
+
+    final String serviceName;
+
+    DummyTransactionalService(String name) {
+        this.serviceName = name;
+    }
+
+    @Override
+    public TransactionalObject createTransactionalObject(String name,
+            TransactionSupport transaction) {
+        return new DummyTransactionalObject(serviceName, name, transaction);
+    }
+
+    @Override
+    public void rollbackTransaction(String transactionId) {
+    }
+
+    @Override
+    public DistributedObject createDistributedObject(String objectName) {
+        return new DummyTransactionalObject(serviceName, objectName, null);
+    }
+
+    @Override
+    public void destroyDistributedObject(String objectName) {
+    }
+}
+
+private static class DummyTransactionalObject implements TransactionalObject {
+
+    final String serviceName;
+    final String name;
+    final TransactionSupport transaction;
+
+    DummyTransactionalObject(String serviceName, String name, TransactionSupport transaction) {
+        this.serviceName = serviceName;
+        this.name = name;
+        this.transaction = transaction;
+    }
+
+    public void doSomethingTxnal() {
+        transaction.addTransactionLog(new SleepyTransactionLog());
+    }
+
+    @Override
+    public Object getId() {
+        return name;
+    }
+
+    @Override
+    public String getPartitionKey() {
+        return null;
+    }
+
+    @Override
+    public String getName() {
+        return name;
+    }
+
+    @Override
+    public String getServiceName() {
+        return serviceName;
+    }
+
+    @Override
+    public void destroy() {
+
+    }
+}
+
+private static class SleepyTransactionLog implements TransactionLog {
+    @Override
+    public Future prepare(NodeEngine nodeEngine) {
+        return new EmptyFuture();
+    }
+
+    @Override
+    public Future commit(NodeEngine nodeEngine) {
+        LockSupport.parkNanos(10000);
+        return new EmptyFuture();
+    }
+
+    @Override
+    public Future rollback(NodeEngine nodeEngine) {
+        return new EmptyFuture();
+    }
+
+    @Override
+    public void writeData(ObjectDataOutput out) throws IOException {
+    }
+
+    @Override
+    public void readData(ObjectDataInput in) throws IOException {
+    }
+}
+
+private static class EmptyFuture implements Future {
+    @Override
+    public boolean cancel(boolean mayInterruptIfRunning) {
+        return false;
+    }
+
+    @Override
+    public boolean isCancelled() {
+        return false;
+    }
+
+    @Override
+    public boolean isDone() {
+        return true;
+    }
+
+    @Override
+    public Object get() throws InterruptedException, ExecutionException {
+        return null;
+    }
+
+    @Override
+    public Object get(long timeout, TimeUnit unit)
+            throws InterruptedException, ExecutionException, TimeoutException {
+        return null;
+    }
+}
+```

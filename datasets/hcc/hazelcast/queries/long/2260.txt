@@ -1,0 +1,58 @@
+When using a predicate inside a transaction the values returned by the predicate do not take in account any changes that were already made in the same transaction.
+
+``` java
+    public static void main(String[] args) {
+        HazelcastInstance hazelcastInstance = Hazelcast.newHazelcastInstance();
+
+        IMap<Integer, Employee> testMap = hazelcastInstance.getMap("testMap");
+
+        for (int i = 0; i < 5; i++) {
+            testMap.put(i, new Employee("Employee"+i, 20+i, true));
+        }
+
+        TransactionContext transactionContext = hazelcastInstance.newTransactionContext();
+        transactionContext.beginTransaction();
+
+        TransactionalMap<Integer, Employee> transactionalTestMap = transactionContext.getMap("testMap");
+        System.out.println("Start transaction map value size : "+transactionalTestMap.size());
+        //5
+
+        transactionalTestMap.remove(2);
+        System.out.println("transaction map value size after remove from 2 : "+transactionalTestMap.size());
+        //4
+
+        Collection<Employee> employeesThatMeetPredicate = transactionalTestMap.values(new SqlPredicate("active AND age < 30"));     
+        System.out.println("transaction value size after remove and predicate : "+employeesThatMeetPredicate.size());
+        //5 - I would've expected 4.    
+
+        transactionContext.commitTransaction();
+
+        Collection<Object> employeesThatMeetPredicateAfterTransaction = hazelcastInstance.getMap("testMap").values(new SqlPredicate("active AND age < 30"));
+        System.out.println("transaction value size after remove and predicate : "+employeesThatMeetPredicateAfterTransaction.size());
+        //4
+    }
+//Employee class for reference
+public class Employee implements Serializable {
+
+    private static final long serialVersionUID = -7999552885309889248L;
+
+    private String name;
+    private int age;
+    private boolean active; 
+
+    public Employee(String name, int age, boolean active) {
+        super();
+        this.name = name;
+        this.age = age;
+        this.active = active;
+    }
+}
+
+```
+
+The test shows that at first a Hazelcastmap is set up with 5 key value pairs.
+Then during a transaction which is active on the TransactionContext there is a remove call on the same map thats removes 1 of the key value pairs. This is visible by checking the size of the map before and after the remove call.
+
+The problem arises when after the remove I query the map using a predicate. The predicate then totally disregards anything thats done on the map during the transaction and gives me the results I would expect as if it was not active in the transaction.
+
+Is this normal behaviour? Or are we (as I first assumed) able to use predicates in a transaction and is this just a defect?

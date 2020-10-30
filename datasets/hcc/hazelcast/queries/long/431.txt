@@ -1,0 +1,29 @@
+The issue is due to wrong exception handling in method `Set<Long> getValueKeys(String name, Data item)` in class `com.hazelcast.impl.BlockingQueueManager`.
+
+If something goes wrong in subsequent method `doGetValueKeys()`, the `ExecutionException` is silently ignored in `getValueKeys()`, so if exception is recurring `getValueKeys()` sleeps for 500ms and retries without any logging.
+
+This issue was found while using nested classloader to load some beans that be stored in hazelcast list (example code):
+
+``` java
+...
+//hzInstance is created in JBoss-service, via JBoss' module classloader
+//"this" class is loaded via custom (nested) classloader
+//"ConnectionData" class is loaded via custom (nested) classloader
+IList<ConnectionData> allConnectionDataList = hzInstance.getList(LIST_PRFX +
+poolName + ALL + PSTFX);
+
+List<ConnectionData> newItems = new ArrayList<ConnectionData>();
+//dbPool contains newly created ConnectionData entries, created using nested classloader
+newItems.addAll(dbPool);
+//next line hangs HZ infinitely:
+newItems.removeAll(allConnectionDataList);
+...
+```
+
+What's going on under the hood:
+
+ArrayList's `removeAll()` method invokes `contains()` on `allConnectionDataList` for each of `newItems`, and because each `newItem`'s ConnectionData object was loaded via nested classloader, it causes `ClassNotFoundException` while hazelcast tries to submit `DistributedTask` for operation in `BlockingQueueManager`'s `doGetValueKeys()` method, this exception is rethrown in `Future.get()` (BlockingQueueManager, line 366), then swallowed in `getValueKeys()` (BlockingQueueManager, line 348) and then retried forever.
+
+Suggestion:
+
+add logging to `getValueKeys()` if the same exception is thrown X times in a row.

@@ -1,0 +1,46 @@
+### Which version of ShardingSphere did you use?
+5.0.0-RC1-SNAPSHOT
+
+### Which project did you use? Sharding-JDBC or Sharding-Proxy?
+Sharding-JDBC
+
+### Expected behavior
+When I use the following configuration.
+```
+spring.shardingsphere.sharding.default-database-strategy.standard.sharding-column=user_id
+spring.shardingsphere.sharding.default-database-strategy.standard.shardingAlgorithm.type=INLINE
+spring.shardingsphere.sharding.default-database-strategy.standard.shardingAlgorithm.props.algorithm.expression=ds_$->{user_id % 2}
+spring.shardingsphere.sharding.binding-tables=t_order,t_order_item
+spring.shardingsphere.sharding.broadcast-tables=t_address
+```
+
+### Actual behavior
+The following error will occur.
+```
+Exception in thread "main" org.codehaus.groovy.control.MultipleCompilationErrorsException: startup failed:
+Script5.groovy: 1: illegal string body character after dollar sign;
+   solution: either escape a literal dollar sign "\$5" or bracket the value expression "${5}" @ line 1, column 5.
+   {it -> "t_order_$->{order_id % 2}"}
+```
+
+### Reason analyze (If you can)
+I tracked the source code and compared to version  4.x,  found `InlineShardingAlgorithm` in version 5.x not calls `InlineExpressionParser.handlePlaceHolder` method, so cause above error.
+
+4.x version source code of `InlineShardingStrategy` class.
+```
+Preconditions.checkNotNull(inlineShardingStrategyConfig.getShardingColumn(), "Sharding column cannot be null.");
+Preconditions.checkNotNull(inlineShardingStrategyConfig.getAlgorithmExpression(), "Sharding algorithm expression cannot be null.");
+shardingColumn = inlineShardingStrategyConfig.getShardingColumn();
+String algorithmExpression = InlineExpressionParser.handlePlaceHolder(inlineShardingStrategyConfig.getAlgorithmExpression().trim());
+closure = new InlineExpressionParser(algorithmExpression).evaluateClosure();
+```
+
+5.x version source code of `InlineShardingAlgorithm` class.
+``` 
+Preconditions.checkNotNull(properties.get(ALGORITHM_EXPRESSION), "Inline sharding algorithm expression cannot be null.");
+Closure<?> closure = new InlineExpressionParser(properties.get(ALGORITHM_EXPRESSION).toString()).evaluateClosure();
+Closure<?> result = closure.rehydrate(new Expando(), null, null);
+result.setResolveStrategy(Closure.DELEGATE_ONLY);
+result.setProperty(shardingValue.getColumnName(), shardingValue.getValue());
+return result.call().toString();
+```

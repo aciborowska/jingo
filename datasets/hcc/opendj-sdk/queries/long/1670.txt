@@ -1,0 +1,56 @@
+Online backups of all backends successfully backup the tasks.ldif file.
+
+However an online restore always fails. The only output is this:
+
+
+Restore task 20141203111356595 scheduled to start immediately
+
+
+
+A jstack of the server reveals one task thread in an interesting state:
+
+
+"Task Thread 1" #81 prio=5 os_prio=31 tid=0x00007fa93e009800 nid=0x380b in Object.wait() [0x00000001217c4000]
+   java.lang.Thread.State: WAITING (on object monitor)
+	at java.lang.Object.wait(Native Method)
+	at java.lang.Thread.join(Thread.java:1245)
+	- locked <0x0000000772183e20> (a org.opends.server.backends.task.TaskThread)
+	at java.lang.Thread.join(Thread.java:1319)
+	at org.opends.server.backends.task.TaskScheduler.interruptRunningTasks(TaskScheduler.java:817)
+	at org.opends.server.backends.task.TaskBackend.finalizeBackend(TaskBackend.java:310)
+	at org.opends.server.core.BackendConfigManager.applyConfigurationChange(BackendConfigManager.java:537)
+	at org.opends.server.core.BackendConfigManager.applyConfigurationChange(BackendConfigManager.java:69)
+	at org.opends.server.admin.server.ServerManagedObjectChangeListenerAdaptor.applyConfigurationChange(ServerManagedObjectChangeListenerAdaptor.java:74)
+	at org.opends.server.admin.server.ConfigChangeListenerAdaptor.applyConfigurationChange(ConfigChangeListenerAdaptor.java:342)
+	at org.opends.server.extensions.ConfigFileHandler.replaceEntry(ConfigFileHandler.java:1759)
+	- locked <0x00000006c2d39ce0> (a java.lang.Object)
+	at org.opends.server.workflowelement.localbackend.LocalBackendModifyOperation.processLocalModify(LocalBackendModifyOperation.java:594)
+	at org.opends.server.workflowelement.localbackend.LocalBackendWorkflowElement.execute(LocalBackendWorkflowElement.java:562)
+	at org.opends.server.core.WorkflowImpl.execute(WorkflowImpl.java:197)
+	at org.opends.server.core.WorkflowTopologyNode.execute(WorkflowTopologyNode.java:100)
+	at org.opends.server.core.ModifyOperationBasis.run(ModifyOperationBasis.java:520)
+	at org.opends.server.protocols.internal.InternalClientConnection.processModify(InternalClientConnection.java:1640)
+	at org.opends.server.protocols.internal.InternalClientConnection.processModify(InternalClientConnection.java:1611)
+	at org.opends.server.tasks.TaskUtils.disableBackend(TaskUtils.java:321)
+	at org.opends.server.tasks.RestoreTask.runTask(RestoreTask.java:354)
+	at org.opends.server.backends.task.Task.execute(Task.java:1152)
+	at org.opends.server.backends.task.TaskThread.run(TaskThread.java:207)
+
+
+
+Sending a SIGINT (Ctrl-C) to the restore program causes the tasks backend to remain disabled. Attempting to re-enable it via dsconfig fails:
+
+
+The Task Backend could not be modified due to a communications problem: A
+communication problem occurred while contacting the server: [LDAP: error code
+51 - Entry ds-cfg-backend-id=tasks,cn=Backends,cn=config cannot be modified
+because the server failed to obtain a write lock for this entry after multiple
+attempts]
+
+
+
+The server needs to be restarted before the tasks backend can be re-enabled.
+
+There is a workaround. With the server online: manually disable the backend, restore the tasks.ldif, and then manually enable the backend.
+
+Some analysis with the debugger suggests what the underlying problem is. The RestoreTask is run, which needs to disable the tasks backend before starting work. However disabling the tasks backend results in all the active tasks (including the RestoreTask!) being interrupted and stopped.

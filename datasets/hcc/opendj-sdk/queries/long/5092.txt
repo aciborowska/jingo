@@ -1,0 +1,47 @@
+According to documentation the sequential tag should be also a reference for a first integer number:
+https://ea.forgerock.com/docs/ds/reference/index.html#makeldif-template-5 : "The Sequential tag is replaced by a sequentially increasing generated integer. The first optional integer argument specifies the starting number. The second optional boolean argument specifies whether to start over when generating entries for a new parent entry. For example, <Sequential>:42:true starts counting from 42, and starts over when the parent entry changes from o=Engineering to o=Marketing."
+For addrate if I change the original line in addrate.template `employeeNumber: <sequential:0>` to `employeeNumber: <sequential:999>` it starts to add users from 0 like `uid=user.0,...` and so on.
+
+To reproduce the issue:
+
+1. Setup a server with following command:
+
+
+./setup directory-server -h pyforge.example.com -p 1389 -D "cn=Directory Manager" -w password --adminConnectorPort 4444 -Z 1636 -b dc=example,dc=com -d 1 -O --monitorUserDn uid=Monitor --monitorUserPassword password
+
+It will addd one user (uid=user.0) to the server.
+
+2. Change the line in addrate.template (/path/to/opendj/confic/MakeLDIF/addrate.template).
+
+3. Run an addrate:
+
+
+./addrate -D "cn=directory manager" -w password -p 1389 -f -c 10 -C fifo -i 1 -a 200 addrate.template
+
+ 
+
+Current output is:
+
+
+--------------------------------------------------------------------------------------
+| Throughput | Response Time | Additional | 
+| (ops/second) | (milliseconds) | Statistics | 
+| recent average | recent average 99.9% 99.99% 99.999% | err/sec Add% | 
+--------------------------------------------------------------------------------------
+| 288.0 288.0 | 9.741 9.741 19.79 19.79 19.79 | 1.0 100.00 | 
+| 319.0 303.5 | 9.189 9.451 19.79 25.82 25.82 | 0.0 100.00 | 
+| 325.0 310.7 | 8.936 9.271 25.82 25.95 25.95 | 0.0 100.00 |
+
+The first line in results table contains 1.0 error this is, because `user.0` already exists and addrate tool generates this user, however it should start from `user.999`.
+
+This can be also verified by checking server logs with following command:
+
+
+cat /path/to/opendj/logs/ldap-access.audit.json | grep ADD | grep user.0, 
+
+and the output now:
+
+
+{"eventName":"DJ-LDAP","client":{"ip":"127.0.0.1","port":46276},"server":{"ip":"127.0.1.1","port":1389},"request":{"protocol":"LDAP","operation":"ADD","connId":83,"msgId":3,"dn":"uid=user.0,ou=People,dc=example,dc=com"},"transactionId":"4f8199ce-756d-4b0a-890a-102de02589e0-1182903","response":{"status":"FAILED","statusCode":"68","elapsedTime":12,"elapsedTimeUnits":"MILLISECONDS","detail":"The entry uid=user.0,ou=People,dc=example,dc=com cannot be added because an entry with that name already exists"},"timestamp":"2018-05-17T06:42:00.859Z","_id":"4f8199ce-756d-4b0a-890a-102de02589e0-1182919"}
+
+ 

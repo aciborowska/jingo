@@ -1,0 +1,47 @@
+## Problem
+
+This issue is almost identical to https://github.com/hazelcast/hazelcast/issues/1826 except that I might have a bit more information:
+
+The stacktrace is very similar:
+
+```java
+Caused by: java.lang.IllegalArgumentException: PortableFactory[-22] is already registered! com.hazelcast.concurrent.countdownlatch.CountDownLatchPortableHook$1@1ed6352 -> 
+com.hazelcast.concurrent.countdownlatch.client.CountDownLatchPortableHook$1@13dc0e
+at com.hazelcast.nio.serialization.PortableHookLoader.register(PortableHookLoader.java:84)
+at com.hazelcast.nio.serialization.PortableHookLoader.load(PortableHookLoader.java:51)
+at com.hazelcast.nio.serialization.PortableHookLoader.(PortableHookLoader.java:41)
+at com.hazelcast.nio.serialization.SerializationServiceImpl.(SerializationServiceImpl.java:85)
+at com.hazelcast.nio.serialization.SerializationServiceBuilder.build(SerializationServiceBuilder.java:174)
+at com.hazelcast.instance.Node.(Node.java:130)
+at com.hazelcast.instance.HazelcastInstanceImpl.(HazelcastInstanceImpl.java:92)
+at com.hazelcast.instance.HazelcastInstanceFactory.newHazelcastInstance(HazelcastInstanceFactory.java:92)
+at com.hazelcast.instance.HazelcastInstanceFactory.newHazelcastInstance(HazelcastInstanceFactory.java:72)
+at sun.reflect.NativeMethodAccessorImpl.invoke0(Native Method)
+at sun.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:57)
+at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)
+at java.lang.reflect.Method.invoke(Method.java:606)
+at org.springframework.beans.factory.support.SimpleInstantiationStrategy.instantiate(SimpleInstantiationStrategy.java:166)
+```
+
+
+## Reproduce
+
+The issue was originally reported here:
+https://github.com/apereo/cas/issues/2559
+
+A sample project that demonstrates the issue is also available here:
+https://github.com/apereo/cas/files/952931/cas505.zip
+
+To duplicate, you want to `mvn clean package` and then run the generated war with `java -jar target/cas.war`.
+
+The main difference between this issue and https://github.com/hazelcast/hazelcast/issues/1826 besides version numbers is that this time the application at fault is *an executable war*. The issue does not present itself with using `bootRun` sort of tasks or when deploying the application inside an external Tomcat instance. 
+
+## Diagnosis
+
+Tracking this down, I realized that Hazelcast's `ServiceLoader` component deals with multiple ClassLoaders. See the screenshot below:
+
+![image](https://cloud.githubusercontent.com/assets/1205228/25439205/a76bffac-2a50-11e7-8474-abea6fbc0dd9.png)
+
+As you can see, there are two classloaders here: one that is used to launch the WAR, and another that deals with the embedded tomcat web application. They both attempt to load the same sort of resource/service and as a result, run into conflicts. The URIs used seem identical except that protocol perhaps. 
+
+This is way too deep for me to go any further, but perhaps, could hazelcast ignore duplicate resources/services such as `c.h.i.NodeExtension` if they have already been loaded? 

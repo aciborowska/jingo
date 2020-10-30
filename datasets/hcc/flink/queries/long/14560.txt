@@ -1,0 +1,53 @@
+If you accidentally  set taskmanager.memory.size: 0 in flink-conf.yaml, flink should take a fixed ratio with respect to the size of the task manager JVM. The relateted codes are in TaskManagerServicesConfiguration.fromConfiguration
+
+
+//代码占位符
+// extract memory settings
+long configuredMemory;
+String managedMemorySizeDefaultVal = TaskManagerOptions.MANAGED_MEMORY_SIZE.defaultValue();
+if (!configuration.getString(TaskManagerOptions.MANAGED_MEMORY_SIZE).equals(managedMemorySizeDefaultVal)) {
+   try {
+      configuredMemory = MemorySize.parse(configuration.getString(TaskManagerOptions.MANAGED_MEMORY_SIZE), MEGA_BYTES).getMebiBytes();
+   } catch (IllegalArgumentException e) {
+      throw new IllegalConfigurationException(
+         "Could not read " + TaskManagerOptions.MANAGED_MEMORY_SIZE.key(), e);
+   }
+} else {
+   configuredMemory = Long.valueOf(managedMemorySizeDefaultVal);
+}
+
+However, in ActiveResourceManagerFactory.java, flink will translate the value to byte.
+
+
+//代码占位符
+public static Configuration createActiveResourceManagerConfiguration(Configuration originalConfiguration) {
+   final int taskManagerMemoryMB = ConfigurationUtils.getTaskManagerHeapMemory(originalConfiguration).getMebiBytes();
+   final long cutoffMB = ContaineredTaskManagerParameters.calculateCutoffMB(originalConfiguration, taskManagerMemoryMB);
+   final long processMemoryBytes = (taskManagerMemoryMB - cutoffMB) << 20; // megabytes to bytes
+   final long managedMemoryBytes = TaskManagerServices.getManagedMemoryFromProcessMemory(originalConfiguration, processMemoryBytes);
+
+   final Configuration resourceManagerConfig = new Configuration(originalConfiguration);
+   resourceManagerConfig.setString(TaskManagerOptions.MANAGED_MEMORY_SIZE, managedMemoryBytes + "b");
+
+   return resourceManagerConfig;
+}
+
+
+ 
+
+As a result, 0 will translate to 0 b and is different from default value.  0 b will cause a error in following check code
+
+
+//代码占位符
+checkConfigParameter(
+   configuration.getString(TaskManagerOptions.MANAGED_MEMORY_SIZE).equals(TaskManagerOptions.MANAGED_MEMORY_SIZE.defaultValue()) ||
+      configuredMemory > 0, configuredMemory,
+   TaskManagerOptions.MANAGED_MEMORY_SIZE.key(),
+   "MemoryManager needs at least one MB of memory. " +
+      "If you leave this config parameter empty, the system automatically " +
+      "pick a fraction of the available memory.");
+
+
+ 
+
+ 

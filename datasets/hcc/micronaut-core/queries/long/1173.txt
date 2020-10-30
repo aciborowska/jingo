@@ -1,0 +1,444 @@
+It seems that `RxHttpClient` fails to release reference counted Netty `ByteBuf` and can cause OOME
+when run in a resource-constrained setting.
+
+### Task List
+
+- [x] Steps to reproduce provided
+- [x] Stacktrace (if present) provided
+- [x] Example that reproduces the problem uploaded to Github
+- [x] Full description of the issue provided (see below)
+
+### Steps to Reproduce
+
+1. Clone `git@github.com:jjteo74/micronaut-async-http-client-leak-test.git`
+2. Run the script `run-jar.sh` in project root
+
+       ./run-jar.sh --test retrieve --delay 50ms --worker-count 1
+
+    This uses the code below to perform async GET: -
+    ```java
+    client.retrieve("/hello/retrieve")
+    ```
+    results in Netty reporting leaks and OOME after around 5 minutes.
+
+3. Test using `exchange` method
+
+        ./run-jar.sh --test exchange --delay 50ms --worker-count 1
+
+    which uses
+    ```java
+    client
+        .exchange("/hello/exchange", String.class)
+        .map(r -> r.getBody().orElse(null));
+    ```
+    results in Netty reporting leaks and OOME after around 5 minutes.
+
+4. Test using `exchange` method but releasing `ByteBuf`
+
+        ./run-jar.sh --test exchange_release --delay 50ms --worker-count 1
+
+    which uses
+    ```java
+    client
+        .exchange("/hello/exchange_release", String.class)
+        .doOnNext(res -> res
+                .getBody(ByteBuf.class)
+                .ifPresent(bb -> {
+                    if (bb.refCnt() > 0) {
+                        LOGGER.debug("Releasing {}", bb);
+                        ReferenceCountUtil.release(bb);
+                    }
+                }))
+        .map(r -> r.getBody().orElse(null));
+    ```
+    and runs fine for 12 hours.
+
+Relevant java options used: -
+```
+  -Xms24m \
+  -Xmx32m \
+  -XX:MaxDirectMemorySize=4m \
+  -XX:MaxMetaspaceSize=64m \
+  -XX:NativeMemoryTracking=detail \
+  -Dio.netty.leakDetectionLevel=paranoid \
+```
+
+### Expected Behaviour
+
+The application is able to make async GET to its own URL at 50ms interval indefinitely.
+
+### Actual Behaviour
+
+Netty logs `LEAK: ByteBuf.release()` error messages and the application starts to generate
+out-of-memory errors after about 5 minutes.
+
+Netty reports leak: -
+```
+BUILD SUCCESSFUL in 0s
+3 actionable tasks: 3 up-to-date
+09:55:29.149 [main] INFO  buffer.leak.app.HelloController - Starting test of RETRIEVE with 1 worker(s) and delay PT0.05S
+09:55:29.307 [main] INFO  io.micronaut.runtime.Micronaut - Startup completed in 1574ms. Server Running: http://localhost:8080
+09:55:30.243 [pool-1-thread-2] ERROR io.netty.util.ResourceLeakDetector - LEAK: ByteBuf.release() was not called before it's garbage-collected. See http://netty.io/wiki/reference-counted-objects.html for more information.
+Recent access records: 
+#1:
+	io.netty.handler.codec.http.HttpObjectAggregator$AggregatedFullHttpMessage.release(HttpObjectAggregator.java:386)
+	io.netty.util.ReferenceCountUtil.release(ReferenceCountUtil.java:88)
+	io.micronaut.http.client.DefaultHttpClient$10.channelRead0(DefaultHttpClient.java:1778)
+	io.micronaut.http.client.DefaultHttpClient$10.channelRead0(DefaultHttpClient.java:1701)
+	io.netty.channel.SimpleChannelInboundHandler.channelRead(SimpleChannelInboundHandler.java:105)
+	io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:362)
+	io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:348)
+	io.netty.channel.AbstractChannelHandlerContext.fireChannelRead(AbstractChannelHandlerContext.java:340)
+	io.micronaut.http.netty.stream.HttpStreamsHandler.channelRead(HttpStreamsHandler.java:189)
+	io.micronaut.http.netty.stream.HttpStreamsClientHandler.channelRead(HttpStreamsClientHandler.java:181)
+	io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:362)
+	io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:348)
+	io.netty.channel.AbstractChannelHandlerContext.fireChannelRead(AbstractChannelHandlerContext.java:340)
+	io.netty.handler.codec.MessageToMessageDecoder.channelRead(MessageToMessageDecoder.java:102)
+	io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:362)
+	io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:348)
+	io.netty.channel.AbstractChannelHandlerContext.fireChannelRead(AbstractChannelHandlerContext.java:340)
+	io.netty.handler.codec.MessageToMessageDecoder.channelRead(MessageToMessageDecoder.java:102)
+	io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:362)
+	io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:348)
+	io.netty.channel.AbstractChannelHandlerContext.fireChannelRead(AbstractChannelHandlerContext.java:340)
+	io.netty.channel.CombinedChannelDuplexHandler$DelegatingChannelHandlerContext.fireChannelRead(CombinedChannelDuplexHandler.java:438)
+	io.netty.handler.codec.ByteToMessageDecoder.fireChannelRead(ByteToMessageDecoder.java:323)
+	io.netty.handler.codec.ByteToMessageDecoder.channelRead(ByteToMessageDecoder.java:297)
+	io.netty.channel.CombinedChannelDuplexHandler.channelRead(CombinedChannelDuplexHandler.java:253)
+	io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:362)
+	io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:348)
+	io.netty.channel.AbstractChannelHandlerContext.fireChannelRead(AbstractChannelHandlerContext.java:340)
+	io.netty.handler.timeout.IdleStateHandler.channelRead(IdleStateHandler.java:286)
+	io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:362)
+	io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:348)
+	io.netty.channel.AbstractChannelHandlerContext.fireChannelRead(AbstractChannelHandlerContext.java:340)
+	io.netty.channel.DefaultChannelPipeline$HeadContext.channelRead(DefaultChannelPipeline.java:1434)
+	io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:362)
+	io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:348)
+	io.netty.channel.DefaultChannelPipeline.fireChannelRead(DefaultChannelPipeline.java:965)
+	io.netty.channel.nio.AbstractNioByteChannel$NioByteUnsafe.read(AbstractNioByteChannel.java:163)
+	io.netty.channel.nio.NioEventLoop.processSelectedKey(NioEventLoop.java:644)
+	io.netty.channel.nio.NioEventLoop.processSelectedKeysOptimized(NioEventLoop.java:579)
+	io.netty.channel.nio.NioEventLoop.processSelectedKeys(NioEventLoop.java:496)
+	io.netty.channel.nio.NioEventLoop.run(NioEventLoop.java:458)
+	io.netty.util.concurrent.SingleThreadEventExecutor$5.run(SingleThreadEventExecutor.java:897)
+	io.netty.util.concurrent.FastThreadLocalRunnable.run(FastThreadLocalRunnable.java:30)
+	java.lang.Thread.run(Thread.java:748)
+#2:
+	Hint: 'handler-micronaut-full-http-response' will handle the message from this point.
+	io.netty.buffer.AdvancedLeakAwareCompositeByteBuf.touch(AdvancedLeakAwareCompositeByteBuf.java:36)
+	io.netty.handler.codec.http.HttpObjectAggregator$AggregatedFullHttpMessage.touch(HttpObjectAggregator.java:374)
+	io.netty.handler.codec.http.HttpObjectAggregator$AggregatedFullHttpResponse.touch(HttpObjectAggregator.java:567)
+	io.netty.handler.codec.http.HttpObjectAggregator$AggregatedFullHttpResponse.touch(HttpObjectAggregator.java:501)
+	io.netty.channel.DefaultChannelPipeline.touch(DefaultChannelPipeline.java:116)
+	io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:345)
+	io.netty.channel.AbstractChannelHandlerContext.fireChannelRead(AbstractChannelHandlerContext.java:340)
+	io.micronaut.http.netty.stream.HttpStreamsHandler.channelRead(HttpStreamsHandler.java:189)
+	io.micronaut.http.netty.stream.HttpStreamsClientHandler.channelRead(HttpStreamsClientHandler.java:181)
+	io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:362)
+	io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:348)
+	io.netty.channel.AbstractChannelHandlerContext.fireChannelRead(AbstractChannelHandlerContext.java:340)
+	io.netty.handler.codec.MessageToMessageDecoder.channelRead(MessageToMessageDecoder.java:102)
+	io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:362)
+	io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:348)
+	io.netty.channel.AbstractChannelHandlerContext.fireChannelRead(AbstractChannelHandlerContext.java:340)
+	io.netty.handler.codec.MessageToMessageDecoder.channelRead(MessageToMessageDecoder.java:102)
+	io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:362)
+	io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:348)
+	io.netty.channel.AbstractChannelHandlerContext.fireChannelRead(AbstractChannelHandlerContext.java:340)
+	io.netty.channel.CombinedChannelDuplexHandler$DelegatingChannelHandlerContext.fireChannelRead(CombinedChannelDuplexHandler.java:438)
+	io.netty.handler.codec.ByteToMessageDecoder.fireChannelRead(ByteToMessageDecoder.java:323)
+	io.netty.handler.codec.ByteToMessageDecoder.channelRead(ByteToMessageDecoder.java:297)
+	io.netty.channel.CombinedChannelDuplexHandler.channelRead(CombinedChannelDuplexHandler.java:253)
+	io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:362)
+	io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:348)
+	io.netty.channel.AbstractChannelHandlerContext.fireChannelRead(AbstractChannelHandlerContext.java:340)
+	io.netty.handler.timeout.IdleStateHandler.channelRead(IdleStateHandler.java:286)
+	io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:362)
+	io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:348)
+	io.netty.channel.AbstractChannelHandlerContext.fireChannelRead(AbstractChannelHandlerContext.java:340)
+	io.netty.channel.DefaultChannelPipeline$HeadContext.channelRead(DefaultChannelPipeline.java:1434)
+	io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:362)
+	io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:348)
+	io.netty.channel.DefaultChannelPipeline.fireChannelRead(DefaultChannelPipeline.java:965)
+	io.netty.channel.nio.AbstractNioByteChannel$NioByteUnsafe.read(AbstractNioByteChannel.java:163)
+	io.netty.channel.nio.NioEventLoop.processSelectedKey(NioEventLoop.java:644)
+	io.netty.channel.nio.NioEventLoop.processSelectedKeysOptimized(NioEventLoop.java:579)
+	io.netty.channel.nio.NioEventLoop.processSelectedKeys(NioEventLoop.java:496)
+	io.netty.channel.nio.NioEventLoop.run(NioEventLoop.java:458)
+	io.netty.util.concurrent.SingleThreadEventExecutor$5.run(SingleThreadEventExecutor.java:897)
+	io.netty.util.concurrent.FastThreadLocalRunnable.run(FastThreadLocalRunnable.java:30)
+	java.lang.Thread.run(Thread.java:748)
+#3:
+	io.netty.buffer.AdvancedLeakAwareCompositeByteBuf.retain(AdvancedLeakAwareCompositeByteBuf.java:36)
+	io.netty.handler.codec.http.HttpObjectAggregator$AggregatedFullHttpMessage.retain(HttpObjectAggregator.java:362)
+	io.netty.handler.codec.http.HttpObjectAggregator$AggregatedFullHttpResponse.retain(HttpObjectAggregator.java:561)
+	io.netty.handler.codec.http.HttpObjectAggregator$AggregatedFullHttpResponse.retain(HttpObjectAggregator.java:501)
+	io.micronaut.http.netty.stream.HttpStreamsHandler.channelRead(HttpStreamsHandler.java:188)
+	io.micronaut.http.netty.stream.HttpStreamsClientHandler.channelRead(HttpStreamsClientHandler.java:181)
+	io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:362)
+	io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:348)
+	io.netty.channel.AbstractChannelHandlerContext.fireChannelRead(AbstractChannelHandlerContext.java:340)
+	io.netty.handler.codec.MessageToMessageDecoder.channelRead(MessageToMessageDecoder.java:102)
+	io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:362)
+	io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:348)
+	io.netty.channel.AbstractChannelHandlerContext.fireChannelRead(AbstractChannelHandlerContext.java:340)
+	io.netty.handler.codec.MessageToMessageDecoder.channelRead(MessageToMessageDecoder.java:102)
+	io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:362)
+	io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:348)
+	io.netty.channel.AbstractChannelHandlerContext.fireChannelRead(AbstractChannelHandlerContext.java:340)
+	io.netty.channel.CombinedChannelDuplexHandler$DelegatingChannelHandlerContext.fireChannelRead(CombinedChannelDuplexHandler.java:438)
+	io.netty.handler.codec.ByteToMessageDecoder.fireChannelRead(ByteToMessageDecoder.java:323)
+	io.netty.handler.codec.ByteToMessageDecoder.channelRead(ByteToMessageDecoder.java:297)
+	io.netty.channel.CombinedChannelDuplexHandler.channelRead(CombinedChannelDuplexHandler.java:253)
+	io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:362)
+	io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:348)
+	io.netty.channel.AbstractChannelHandlerContext.fireChannelRead(AbstractChannelHandlerContext.java:340)
+	io.netty.handler.timeout.IdleStateHandler.channelRead(IdleStateHandler.java:286)
+	io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:362)
+	io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:348)
+	io.netty.channel.AbstractChannelHandlerContext.fireChannelRead(AbstractChannelHandlerContext.java:340)
+	io.netty.channel.DefaultChannelPipeline$HeadContext.channelRead(DefaultChannelPipeline.java:1434)
+	io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:362)
+	io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:348)
+	io.netty.channel.DefaultChannelPipeline.fireChannelRead(DefaultChannelPipeline.java:965)
+	io.netty.channel.nio.AbstractNioByteChannel$NioByteUnsafe.read(AbstractNioByteChannel.java:163)
+	io.netty.channel.nio.NioEventLoop.processSelectedKey(NioEventLoop.java:644)
+	io.netty.channel.nio.NioEventLoop.processSelectedKeysOptimized(NioEventLoop.java:579)
+	io.netty.channel.nio.NioEventLoop.processSelectedKeys(NioEventLoop.java:496)
+	io.netty.channel.nio.NioEventLoop.run(NioEventLoop.java:458)
+	io.netty.util.concurrent.SingleThreadEventExecutor$5.run(SingleThreadEventExecutor.java:897)
+	io.netty.util.concurrent.FastThreadLocalRunnable.run(FastThreadLocalRunnable.java:30)
+	java.lang.Thread.run(Thread.java:748)
+#4:
+	Hint: 'stream-handler' will handle the message from this point.
+	io.netty.buffer.AdvancedLeakAwareCompositeByteBuf.touch(AdvancedLeakAwareCompositeByteBuf.java:36)
+	io.netty.handler.codec.http.HttpObjectAggregator$AggregatedFullHttpMessage.touch(HttpObjectAggregator.java:374)
+	io.netty.handler.codec.http.HttpObjectAggregator$AggregatedFullHttpResponse.touch(HttpObjectAggregator.java:567)
+	io.netty.handler.codec.http.HttpObjectAggregator$AggregatedFullHttpResponse.touch(HttpObjectAggregator.java:501)
+	io.netty.channel.DefaultChannelPipeline.touch(DefaultChannelPipeline.java:116)
+	io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:345)
+	io.netty.channel.AbstractChannelHandlerContext.fireChannelRead(AbstractChannelHandlerContext.java:340)
+	io.netty.handler.codec.MessageToMessageDecoder.channelRead(MessageToMessageDecoder.java:102)
+	io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:362)
+	io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:348)
+	io.netty.channel.AbstractChannelHandlerContext.fireChannelRead(AbstractChannelHandlerContext.java:340)
+	io.netty.handler.codec.MessageToMessageDecoder.channelRead(MessageToMessageDecoder.java:102)
+	io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:362)
+	io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:348)
+	io.netty.channel.AbstractChannelHandlerContext.fireChannelRead(AbstractChannelHandlerContext.java:340)
+	io.netty.channel.CombinedChannelDuplexHandler$DelegatingChannelHandlerContext.fireChannelRead(CombinedChannelDuplexHandler.java:438)
+	io.netty.handler.codec.ByteToMessageDecoder.fireChannelRead(ByteToMessageDecoder.java:323)
+	io.netty.handler.codec.ByteToMessageDecoder.channelRead(ByteToMessageDecoder.java:297)
+	io.netty.channel.CombinedChannelDuplexHandler.channelRead(CombinedChannelDuplexHandler.java:253)
+	io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:362)
+	io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:348)
+	io.netty.channel.AbstractChannelHandlerContext.fireChannelRead(AbstractChannelHandlerContext.java:340)
+	io.netty.handler.timeout.IdleStateHandler.channelRead(IdleStateHandler.java:286)
+	io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:362)
+	io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:348)
+	io.netty.channel.AbstractChannelHandlerContext.fireChannelRead(AbstractChannelHandlerContext.java:340)
+	io.netty.channel.DefaultChannelPipeline$HeadContext.channelRead(DefaultChannelPipeline.java:1434)
+	io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:362)
+	io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:348)
+	io.netty.channel.DefaultChannelPipeline.fireChannelRead(DefaultChannelPipeline.java:965)
+	io.netty.channel.nio.AbstractNioByteChannel$NioByteUnsafe.read(AbstractNioByteChannel.java:163)
+	io.netty.channel.nio.NioEventLoop.processSelectedKey(NioEventLoop.java:644)
+	io.netty.channel.nio.NioEventLoop.processSelectedKeysOptimized(NioEventLoop.java:579)
+	io.netty.channel.nio.NioEventLoop.processSelectedKeys(NioEventLoop.java:496)
+	io.netty.channel.nio.NioEventLoop.run(NioEventLoop.java:458)
+	io.netty.util.concurrent.SingleThreadEventExecutor$5.run(SingleThreadEventExecutor.java:897)
+	io.netty.util.concurrent.FastThreadLocalRunnable.run(FastThreadLocalRunnable.java:30)
+	java.lang.Thread.run(Thread.java:748)
+#5:
+	io.netty.buffer.AdvancedLeakAwareCompositeByteBuf.addComponent(AdvancedLeakAwareCompositeByteBuf.java:920)
+	io.netty.handler.codec.MessageAggregator.appendPartialContent(MessageAggregator.java:317)
+	io.netty.handler.codec.MessageAggregator.decode(MessageAggregator.java:282)
+	io.netty.handler.codec.MessageToMessageDecoder.channelRead(MessageToMessageDecoder.java:88)
+	io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:362)
+	io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:348)
+	io.netty.channel.AbstractChannelHandlerContext.fireChannelRead(AbstractChannelHandlerContext.java:340)
+	io.netty.handler.codec.MessageToMessageDecoder.channelRead(MessageToMessageDecoder.java:102)
+	io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:362)
+	io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:348)
+	io.netty.channel.AbstractChannelHandlerContext.fireChannelRead(AbstractChannelHandlerContext.java:340)
+	io.netty.channel.CombinedChannelDuplexHandler$DelegatingChannelHandlerContext.fireChannelRead(CombinedChannelDuplexHandler.java:438)
+	io.netty.handler.codec.ByteToMessageDecoder.fireChannelRead(ByteToMessageDecoder.java:323)
+	io.netty.handler.codec.ByteToMessageDecoder.channelRead(ByteToMessageDecoder.java:297)
+	io.netty.channel.CombinedChannelDuplexHandler.channelRead(CombinedChannelDuplexHandler.java:253)
+	io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:362)
+	io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:348)
+	io.netty.channel.AbstractChannelHandlerContext.fireChannelRead(AbstractChannelHandlerContext.java:340)
+	io.netty.handler.timeout.IdleStateHandler.channelRead(IdleStateHandler.java:286)
+	io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:362)
+	io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:348)
+	io.netty.channel.AbstractChannelHandlerContext.fireChannelRead(AbstractChannelHandlerContext.java:340)
+	io.netty.channel.DefaultChannelPipeline$HeadContext.channelRead(DefaultChannelPipeline.java:1434)
+	io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:362)
+	io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:348)
+	io.netty.channel.DefaultChannelPipeline.fireChannelRead(DefaultChannelPipeline.java:965)
+	io.netty.channel.nio.AbstractNioByteChannel$NioByteUnsafe.read(AbstractNioByteChannel.java:163)
+	io.netty.channel.nio.NioEventLoop.processSelectedKey(NioEventLoop.java:644)
+	io.netty.channel.nio.NioEventLoop.processSelectedKeysOptimized(NioEventLoop.java:579)
+	io.netty.channel.nio.NioEventLoop.processSelectedKeys(NioEventLoop.java:496)
+	io.netty.channel.nio.NioEventLoop.run(NioEventLoop.java:458)
+	io.netty.util.concurrent.SingleThreadEventExecutor$5.run(SingleThreadEventExecutor.java:897)
+	io.netty.util.concurrent.FastThreadLocalRunnable.run(FastThreadLocalRunnable.java:30)
+	java.lang.Thread.run(Thread.java:748)
+Created at:
+	io.netty.buffer.AbstractByteBufAllocator.compositeDirectBuffer(AbstractByteBufAllocator.java:221)
+	io.netty.buffer.AbstractByteBufAllocator.compositeBuffer(AbstractByteBufAllocator.java:199)
+	io.netty.handler.codec.MessageAggregator.decode(MessageAggregator.java:255)
+	io.netty.handler.codec.MessageToMessageDecoder.channelRead(MessageToMessageDecoder.java:88)
+	io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:362)
+	io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:348)
+	io.netty.channel.AbstractChannelHandlerContext.fireChannelRead(AbstractChannelHandlerContext.java:340)
+	io.netty.handler.codec.MessageToMessageDecoder.channelRead(MessageToMessageDecoder.java:102)
+	io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:362)
+	io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:348)
+	io.netty.channel.AbstractChannelHandlerContext.fireChannelRead(AbstractChannelHandlerContext.java:340)
+	io.netty.channel.CombinedChannelDuplexHandler$DelegatingChannelHandlerContext.fireChannelRead(CombinedChannelDuplexHandler.java:438)
+	io.netty.handler.codec.ByteToMessageDecoder.fireChannelRead(ByteToMessageDecoder.java:323)
+	io.netty.handler.codec.ByteToMessageDecoder.fireChannelRead(ByteToMessageDecoder.java:310)
+	io.netty.handler.codec.ByteToMessageDecoder.callDecode(ByteToMessageDecoder.java:426)
+	io.netty.handler.codec.ByteToMessageDecoder.channelRead(ByteToMessageDecoder.java:278)
+	io.netty.channel.CombinedChannelDuplexHandler.channelRead(CombinedChannelDuplexHandler.java:253)
+	io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:362)
+	io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:348)
+	io.netty.channel.AbstractChannelHandlerContext.fireChannelRead(AbstractChannelHandlerContext.java:340)
+	io.netty.handler.timeout.IdleStateHandler.channelRead(IdleStateHandler.java:286)
+	io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:362)
+	io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:348)
+	io.netty.channel.AbstractChannelHandlerContext.fireChannelRead(AbstractChannelHandlerContext.java:340)
+	io.netty.channel.DefaultChannelPipeline$HeadContext.channelRead(DefaultChannelPipeline.java:1434)
+	io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:362)
+	io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:348)
+	io.netty.channel.DefaultChannelPipeline.fireChannelRead(DefaultChannelPipeline.java:965)
+	io.netty.channel.nio.AbstractNioByteChannel$NioByteUnsafe.read(AbstractNioByteChannel.java:163)
+	io.netty.channel.nio.NioEventLoop.processSelectedKey(NioEventLoop.java:644)
+	io.netty.channel.nio.NioEventLoop.processSelectedKeysOptimized(NioEventLoop.java:579)
+	io.netty.channel.nio.NioEventLoop.processSelectedKeys(NioEventLoop.java:496)
+	io.netty.channel.nio.NioEventLoop.run(NioEventLoop.java:458)
+	io.netty.util.concurrent.SingleThreadEventExecutor$5.run(SingleThreadEventExecutor.java:897)
+	io.netty.util.concurrent.FastThreadLocalRunnable.run(FastThreadLocalRunnable.java:30)
+	java.lang.Thread.run(Thread.java:748)
+: 1 leak records were discarded because the leak record count is targeted to 4. Use system property io.netty.leakDetection.targetRecords to increase the limit.
+```
+
+The OOME error: -
+```
+Exception in thread "nioEventLoopGroup-1-22" io.reactivex.exceptions.OnErrorNotImplementedException: The exception was not handled due to missing onError handler in the subscribe() method call. Further reading: https://github.com/ReactiveX/RxJava/wiki/Error-Handling | java.lang.OutOfMemoryError: GC overhead limit exceeded
+	at io.reactivex.internal.functions.Functions$OnErrorMissingConsumer.accept(Functions.java:704)
+	at io.reactivex.internal.functions.Functions$OnErrorMissingConsumer.accept(Functions.java:701)
+	at io.reactivex.internal.subscribers.LambdaSubscriber.onError(LambdaSubscriber.java:79)
+	at io.reactivex.subscribers.SerializedSubscriber.onError(SerializedSubscriber.java:142)
+	at io.reactivex.internal.operators.flowable.FlowableRepeatWhen$RepeatWhenSubscriber.onError(FlowableRepeatWhen.java:191)
+	at io.reactivex.internal.subscribers.BasicFuseableSubscriber.onError(BasicFuseableSubscriber.java:101)
+	at io.reactivex.internal.operators.flowable.FlowableSwitchMap$SwitchMapSubscriber.drain(FlowableSwitchMap.java:221)
+	at io.reactivex.internal.operators.flowable.FlowableSwitchMap$SwitchMapInnerSubscriber.onError(FlowableSwitchMap.java:403)
+	at io.reactivex.internal.operators.flowable.FlowableSubscribeOn$SubscribeOnSubscriber.onError(FlowableSubscribeOn.java:102)
+	at io.reactivex.internal.operators.flowable.FlowableOnErrorNext$OnErrorNextSubscriber.onError(FlowableOnErrorNext.java:89)
+	at io.reactivex.internal.subscriptions.EmptySubscription.error(EmptySubscription.java:55)
+	at io.reactivex.internal.operators.flowable.FlowableError.subscribeActual(FlowableError.java:40)
+	at io.reactivex.Flowable.subscribe(Flowable.java:14479)
+	at io.reactivex.Flowable.subscribe(Flowable.java:14426)
+	at io.reactivex.internal.operators.flowable.FlowableOnErrorNext$OnErrorNextSubscriber.onError(FlowableOnErrorNext.java:114)
+	at io.reactivex.internal.operators.flowable.FlowableTimeoutTimed$TimeoutSubscriber.onError(FlowableTimeoutTimed.java:113)
+	at io.reactivex.internal.operators.flowable.FlowableCreate$BaseEmitter.error(FlowableCreate.java:292)
+	at io.reactivex.internal.operators.flowable.FlowableCreate$BaseEmitter.tryOnError(FlowableCreate.java:281)
+	at io.reactivex.internal.operators.flowable.FlowableCreate$BaseEmitter.onError(FlowableCreate.java:274)
+	at io.micronaut.http.client.DefaultHttpClient$NettyRequestWriter.lambda$closeChannel$0(DefaultHttpClient.java:2250)
+	at io.netty.util.concurrent.DefaultPromise.notifyListener0(DefaultPromise.java:511)
+	at io.netty.util.concurrent.DefaultPromise.notifyListenersNow(DefaultPromise.java:485)
+	at io.netty.util.concurrent.DefaultPromise.notifyListeners(DefaultPromise.java:424)
+	at io.netty.util.concurrent.DefaultPromise.addListener(DefaultPromise.java:162)
+	at io.netty.channel.DefaultChannelPromise.addListener(DefaultChannelPromise.java:95)
+	at io.netty.channel.DefaultChannelPromise.addListener(DefaultChannelPromise.java:30)
+	at io.micronaut.http.client.DefaultHttpClient$NettyRequestWriter.closeChannel(DefaultHttpClient.java:2247)
+	at io.micronaut.http.client.DefaultHttpClient$NettyRequestWriter.writeAndClose(DefaultHttpClient.java:2238)
+	at io.micronaut.http.client.DefaultHttpClient.sendRequestThroughChannel(DefaultHttpClient.java:1549)
+	at io.micronaut.http.client.DefaultHttpClient.lambda$null$23(DefaultHttpClient.java:1015)
+	at io.netty.util.concurrent.DefaultPromise.notifyListener0(DefaultPromise.java:511)
+	at io.netty.util.concurrent.DefaultPromise.notifyListeners0(DefaultPromise.java:504)
+	at io.netty.util.concurrent.DefaultPromise.notifyListenersNow(DefaultPromise.java:483)
+	at io.netty.util.concurrent.DefaultPromise.notifyListeners(DefaultPromise.java:424)
+	at io.netty.util.concurrent.DefaultPromise.trySuccess(DefaultPromise.java:103)
+	at io.netty.channel.DefaultChannelPromise.trySuccess(DefaultChannelPromise.java:84)
+	at io.netty.channel.nio.AbstractNioChannel$AbstractNioUnsafe.fulfillConnectPromise(AbstractNioChannel.java:306)
+	at io.netty.channel.nio.AbstractNioChannel$AbstractNioUnsafe.finishConnect(AbstractNioChannel.java:341)
+	at io.netty.channel.nio.NioEventLoop.processSelectedKey(NioEventLoop.java:632)
+	at io.netty.channel.nio.NioEventLoop.processSelectedKeysOptimized(NioEventLoop.java:579)
+	at io.netty.channel.nio.NioEventLoop.processSelectedKeys(NioEventLoop.java:496)
+	at io.netty.channel.nio.NioEventLoop.run(NioEventLoop.java:458)
+	at io.netty.util.concurrent.SingleThreadEventExecutor$5.run(SingleThreadEventExecutor.java:897)
+	at io.netty.util.concurrent.FastThreadLocalRunnable.run(FastThreadLocalRunnable.java:30)
+	at java.lang.Thread.run(Thread.java:748)
+Caused by: io.netty.handler.codec.EncoderException: java.lang.OutOfMemoryError: GC overhead limit exceeded
+	at io.netty.handler.codec.MessageToMessageEncoder.write(MessageToMessageEncoder.java:106)
+	at io.netty.channel.CombinedChannelDuplexHandler.write(CombinedChannelDuplexHandler.java:348)
+	at io.netty.channel.AbstractChannelHandlerContext.invokeWrite0(AbstractChannelHandlerContext.java:738)
+	at io.netty.channel.AbstractChannelHandlerContext.invokeWriteAndFlush(AbstractChannelHandlerContext.java:801)
+	at io.netty.channel.AbstractChannelHandlerContext.write(AbstractChannelHandlerContext.java:814)
+	at io.netty.channel.AbstractChannelHandlerContext.writeAndFlush(AbstractChannelHandlerContext.java:794)
+	at io.micronaut.http.netty.stream.HttpStreamsHandler.unbufferedWrite(HttpStreamsHandler.java:314)
+	at io.micronaut.http.netty.stream.HttpStreamsHandler.flushNext(HttpStreamsHandler.java:395)
+	at io.micronaut.http.netty.stream.HttpStreamsHandler.write(HttpStreamsHandler.java:291)
+	at io.micronaut.http.netty.stream.HttpStreamsClientHandler.write(HttpStreamsClientHandler.java:58)
+	at io.netty.channel.AbstractChannelHandlerContext.invokeWrite0(AbstractChannelHandlerContext.java:738)
+	at io.netty.channel.AbstractChannelHandlerContext.invokeWriteAndFlush(AbstractChannelHandlerContext.java:801)
+	at io.netty.channel.AbstractChannelHandlerContext.write(AbstractChannelHandlerContext.java:814)
+	at io.netty.channel.AbstractChannelHandlerContext.writeAndFlush(AbstractChannelHandlerContext.java:794)
+	at io.netty.channel.AbstractChannelHandlerContext.writeAndFlush(AbstractChannelHandlerContext.java:831)
+	at io.netty.channel.DefaultChannelPipeline.writeAndFlush(DefaultChannelPipeline.java:1071)
+	at io.netty.channel.AbstractChannel.writeAndFlush(AbstractChannel.java:300)
+	at io.micronaut.http.client.DefaultHttpClient$NettyRequestWriter.writeAndClose(DefaultHttpClient.java:2233)
+	... 17 more
+Caused by: java.lang.OutOfMemoryError: GC overhead limit exceeded
+	at java.util.Arrays.copyOfRange(Arrays.java:3664)
+	at java.lang.String.<init>(String.java:207)
+	at java.lang.StringBuilder.toString(StringBuilder.java:407)
+	at io.netty.util.ResourceLeakDetector$DefaultResourceLeak.toString(ResourceLeakDetector.java:521)
+	at io.netty.util.ResourceLeakDetector.reportLeak(ResourceLeakDetector.java:295)
+	at io.netty.util.ResourceLeakDetector.track0(ResourceLeakDetector.java:262)
+	at io.netty.util.ResourceLeakDetector.track(ResourceLeakDetector.java:245)
+	at io.netty.buffer.AbstractByteBufAllocator.toLeakAwareBuffer(AbstractByteBufAllocator.java:48)
+	at io.netty.buffer.PooledByteBufAllocator.newDirectBuffer(PooledByteBufAllocator.java:331)
+	at io.netty.buffer.AbstractByteBufAllocator.directBuffer(AbstractByteBufAllocator.java:185)
+	at io.netty.buffer.AbstractByteBufAllocator.directBuffer(AbstractByteBufAllocator.java:176)
+	at io.netty.buffer.AbstractByteBufAllocator.buffer(AbstractByteBufAllocator.java:113)
+	at io.netty.handler.codec.http.HttpObjectEncoder.encode(HttpObjectEncoder.java:93)
+	at io.netty.handler.codec.http.HttpClientCodec$Encoder.encode(HttpClientCodec.java:167)
+	at io.netty.handler.codec.MessageToMessageEncoder.write(MessageToMessageEncoder.java:88)
+	at io.netty.channel.CombinedChannelDuplexHandler.write(CombinedChannelDuplexHandler.java:348)
+	at io.netty.channel.AbstractChannelHandlerContext.invokeWrite0(AbstractChannelHandlerContext.java:738)
+	at io.netty.channel.AbstractChannelHandlerContext.invokeWriteAndFlush(AbstractChannelHandlerContext.java:801)
+	at io.netty.channel.AbstractChannelHandlerContext.write(AbstractChannelHandlerContext.java:814)
+	at io.netty.channel.AbstractChannelHandlerContext.writeAndFlush(AbstractChannelHandlerContext.java:794)
+	at io.micronaut.http.netty.stream.HttpStreamsHandler.unbufferedWrite(HttpStreamsHandler.java:314)
+	at io.micronaut.http.netty.stream.HttpStreamsHandler.flushNext(HttpStreamsHandler.java:395)
+	at io.micronaut.http.netty.stream.HttpStreamsHandler.write(HttpStreamsHandler.java:291)
+	at io.micronaut.http.netty.stream.HttpStreamsClientHandler.write(HttpStreamsClientHandler.java:58)
+	at io.netty.channel.AbstractChannelHandlerContext.invokeWrite0(AbstractChannelHandlerContext.java:738)
+	at io.netty.channel.AbstractChannelHandlerContext.invokeWriteAndFlush(AbstractChannelHandlerContext.java:801)
+	at io.netty.channel.AbstractChannelHandlerContext.write(AbstractChannelHandlerContext.java:814)
+	at io.netty.channel.AbstractChannelHandlerContext.writeAndFlush(AbstractChannelHandlerContext.java:794)
+	at io.netty.channel.AbstractChannelHandlerContext.writeAndFlush(AbstractChannelHandlerContext.java:831)
+	at io.netty.channel.DefaultChannelPipeline.writeAndFlush(DefaultChannelPipeline.java:1071)
+	at io.netty.channel.AbstractChannel.writeAndFlush(AbstractChannel.java:300)
+	at io.micronaut.http.client.DefaultHttpClient$NettyRequestWriter.writeAndClose(DefaultHttpClient.java:2233)
+```
+
+### Environment Information
+
+- **Operating System**: MacOS 10.14.2
+- **Micronaut Version:** 1.0.3
+- **JDK Version:** 
+    java version "1.8.0_191"
+    Java(TM) SE Runtime Environment (build 1.8.0_191-b12)
+    Java HotSpot(TM) 64-Bit Server VM (build 25.191-b12, mixed mode)
+
+### Example Application
+
+- git@github.com:jjteo74/micronaut-async-http-client-leak-test.git
+

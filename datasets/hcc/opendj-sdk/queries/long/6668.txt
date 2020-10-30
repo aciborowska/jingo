@@ -1,0 +1,32 @@
+A worker thread could be blocked for a significant amount of time (default: DEFAULT_WRITE_TIME_LIMIT_MS=2 min) into BlockingBackpressureOperator) after the client closed the connection. The following error will be found in the servers.out:
+
+io.reactivex.exceptions.UndeliverableException: Canceled: Client Disconnect
+	at io.reactivex.plugins.RxJavaPlugins.onError(RxJavaPlugins.java:349)
+	at io.reactivex.internal.operators.flowable.FlowableCreate$SerializedEmitter.onError(FlowableCreate.java:133)
+	at org.opends.server.protocols.ReactiveHandlersUtils.emitResult(ReactiveHandlersUtils.java:403)
+	at org.opends.server.protocols.ldap.LdapClientConnection.sendResponse(LdapClientConnection.java:340)
+	at org.opends.server.core.SearchOperation.sendSearchResultDone(SearchOperation.java:711)
+	at org.opends.server.core.SearchOperation.run(SearchOperation.java:861)
+	at org.opends.server.extensions.TraditionalWorkerThread.run(TraditionalWorkerThread.java:93)
+Caused by: Canceled: Client Disconnect
+	at org.forgerock.opendj.ldap.LdapException.newLdapException(LdapException.java:199)
+	... 5 more
+
+
+The problem could easily be reproduced using a full db search piped to more and hitting Ctrl-C after some time.
+
+ldapsearch -h localhost -p 1389 -D cn=Directory Manager -w password -b dc=example,dc=com "(&)" | more
+
+ The problem occurs when the client was too slow at reading response sent by the server.
+ At some point, the server is blocking the emitter thread so that the message stop to be sent (without stopping, these message will be buffered at the network layer possibly causing OOME).
+
+When the client connection is closed, the backpressure system will stop requesting message to be sent. Because requesting message is the only way to unblock the BlockingBackpressureOperator, the thread will remains blocked until reaching the times out.
+
+There are two ways to solve that issue:
+
+	When the client connection is closed, the writer side of the server's socket could request(infinity) so that the thread will never block on write anymore.
+	The writer side of the server's socket could invoke cancel() on its upstream.
+
+
+
+2. seems preferable but requires more work as cancel() could interfere with the close notification on the reader() side. (see -OPENDJ-4336-)

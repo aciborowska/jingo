@@ -1,0 +1,88 @@
+Summary
+
+I have a streaming job with async checkpointing enabled. The job is crashing the JVM with a SIGSEGV error coinciding with checkpoint completion.
+
+Workarounds are noted below. I thought this was worth documenting in case someone runs into similar issues or if a fix is possible.
+
+Job Overview & Observations
+
+The job itself stores a large quantity of `case class` objects in `valueState`s contained within a `RichFilterFunction`. This data is used for deduplicating events.
+
+The crash stops by:
+
+	moving the case class outside of the anonymous RichFilterFunction class.
+	reducing the number of objects stored in the valueState.
+	reducing the size of the objects stored in the valueState.
+	disabling async snapshots.
+
+
+
+I can provide additional crash data as needed (core dumps, error logs, etc).  The StateBackend implementation doesn't matter; the job fails using the Memory, Fs, and RocksDb backends.
+
+From what I understand anonymous classes should be avoided with checkpointing as the name isn't stable, so that seems like the best route for me.
+
+Reproduction case
+
+The attached a `StreamingJob.scala` file that contains a minimal repo case, which closely aligns with my actual job configuration.  Running it consistently crashes the JVM upon completion of the first checkpoint.
+
+My tests runs set only two JVM options => -Xms4g -Xmx4g
+
+Crash output
+
+Here's a crash captured from Ubuntu:
+
+
+
+[info] #
+[info] # A fatal error has been detected by the Java Runtime Environment:
+[info] #
+[info] #  SIGSEGV (0xb) at pc=0x00007fd192b92c1c, pid=7191, tid=0x00007fd0873f3700
+[info] #
+[info] # JRE version: OpenJDK Runtime Environment (8.0_151-b12) (build 1.8.0_151-8u151-b12-0ubuntu0.16.04.2-b12)
+[info] # Java VM: OpenJDK 64-Bit Server VM (25.151-b12 mixed mode linux-amd64 compressed oops)
+[info] # Problematic frame:
+[info] # C  [libzip.so+0x5c1c]
+[info] #
+[info] # Core dump written. Default location: /home/ubuntu/flink-project/core or core.7191
+[info] #
+[info] # An error report file with more information is saved as:
+[info] # /home/XXX/flink-project/hs_err_pid7191.log
+[info] Compiled method (nm)   71547   81     n 0       java.util.zip.ZipFile::getEntry (native)
+[info]  total in heap  [0x00007fd17d12e290,0x00007fd17d12e600] = 880
+[info]  relocation     [0x00007fd17d12e3b8,0x00007fd17d12e400] = 72
+[info]  main code      [0x00007fd17d12e400,0x00007fd17d12e600] = 512
+[info] #
+[info] # If you would like to submit a bug report, please visit:
+[info] #   http://bugreport.java.com/bugreport/crash.jsp
+[info] #
+
+
+
+And one from macOS:
+
+
+
+#
+# A fatal error has been detected by the Java Runtime Environment:
+#
+#  SIGSEGV (0xb) at pc=0x0000000105264c48, pid=30848, tid=0x0000000000003403
+#
+# JRE version: Java(TM) SE Runtime Environment (8.0_151-b12) (build 1.8.0_151-b12)
+# Java VM: Java HotSpot(TM) 64-Bit Server VM (25.151-b12 mixed mode bsd-amd64 compressed oops)
+# Problematic frame:
+# V  [libjvm.dylib+0x464c48]
+#
+# Failed to write core dump. Core dumps have been disabled. To enable core dumping, try "ulimit -c unlimited" before starting Java again
+#
+# An error report file with more information is saved as:
+# /Users/XXX/src/etc_flink_mwx/hs_err_pid30848.log
+[thread 30211 also had an error]
+#
+# If you would like to submit a bug report, please visit:
+#   http://bugreport.java.com/bugreport/crash.jsp
+# The crash happened outside the Java Virtual Machine in native code.
+# See problematic frame for where to report the bug.
+#
+
+Process finished with exit code 134 (interrupted by signal 6: SIGABRT)
+

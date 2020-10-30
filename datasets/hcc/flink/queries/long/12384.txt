@@ -1,0 +1,67 @@
+
+
+[tm] 2019-05-01 13:30:53,316 INFO  org.apache.flink.shaded.zookeeper.org.apache.zookeeper.ZooKeeper  - Initiating client connection, connectString=analytics-zetcd:2181 sessionTimeout=60000 watcher=org.apache.flink.shaded.curator.org.apache.curator.ConnectionState@5c8eee0f
+[tm] 2019-05-01 13:30:53,384 WARN  org.apache.flink.shaded.zookeeper.org.apache.zookeeper.ClientCnxn  - SASL configuration failed: javax.security.auth.login.LoginException: No JAAS configuration section named 'Client' was found in specified JAAS configuration file: '/tmp/jaas-3674237213070587877.conf'. Will continue connection to Zookeeper server without SASL authentication, if Zookeeper server allows it.
+[tm] 2019-05-01 13:30:53,395 INFO  org.apache.flink.shaded.zookeeper.org.apache.zookeeper.ClientCnxn  - Opening socket connection to server analytics-zetcd.default.svc.cluster.local/10.108.52.97:2181
+[tm] 2019-05-01 13:30:53,395 INFO  org.apache.flink.runtime.taskexecutor.TaskManagerRunner       - Using configured hostname/address for TaskManager: 10.1.2.173.
+[tm] 2019-05-01 13:30:53,401 ERROR org.apache.flink.shaded.curator.org.apache.curator.ConnectionState  - Authentication failed
+[tm] 2019-05-01 13:30:53,418 INFO  org.apache.flink.runtime.rpc.akka.AkkaRpcServiceUtils         - Trying to start actor system at 10.1.2.173:0
+[tm] 2019-05-01 13:30:53,420 INFO  org.apache.flink.shaded.zookeeper.org.apache.zookeeper.ClientCnxn  - Socket connection established to analytics-zetcd.default.svc.cluster.local/10.108.52.97:2181, initiating session
+[tm] 2019-05-01 13:30:53,500 WARN  org.apache.flink.shaded.zookeeper.org.apache.zookeeper.ClientCnxnSocket  - Connected to an old server; r-o mode will be unavailable
+[tm] 2019-05-01 13:30:53,500 INFO  org.apache.flink.shaded.zookeeper.org.apache.zookeeper.ClientCnxn  - Session establishment complete on server analytics-zetcd.default.svc.cluster.local/10.108.52.97:2181, sessionid = 0xbf06a739001d446, negotiated timeout = 60000
+[tm] 2019-05-01 13:30:53,525 INFO  org.apache.flink.shaded.curator.org.apache.curator.framework.state.ConnectionStateManager  - State change: CONNECTED
+
+Repro:
+
+Start an etcd-cluster, with e.g. etcd-operator, with three members. Start zetcd in front. Configure the sesssion cluster to go against zetcd.
+
+Ensure the job can start successfully.
+
+Now, kill the etcd pods one by one, letting the quorum re-establish in between, so that the cluster is still OK.
+
+Now restart the job/tm pods. You'll end up in this no-mans-land.
+
+ 
+
+—
+
+Workaround: clean out the etcd cluster and remove all its data, however, this resets all time windows and state, despite having that saved in GCS, so it's a crappy workaround.
+
+ 
+
+–
+
+ 
+
+flink-conf.yaml
+
+
+parallelism.default: 1
+rest.address: analytics-job
+jobmanager.rpc.address: analytics-job # = resource manager's address too
+jobmanager.heap.size: 1024m
+jobmanager.rpc.port: 6123
+jobmanager.slot.request.timeout: 30000
+resourcemanager.rpc.port: 6123
+high-availability.jobmanager.port: 6123
+blob.server.port: 6124
+queryable-state.server.ports: 6125
+taskmanager.heap.size: 1024m
+taskmanager.numberOfTaskSlots: 1
+web.log.path: /var/lib/log/flink/jobmanager.log
+rest.port: 8081
+rest.bind-address: 0.0.0.0
+web.submit.enable: false
+high-availability: zookeeper
+high-availability.storageDir: gs://example_analytics/flink/zetcd/
+high-availability.zookeeper.quorum: analytics-zetcd:2181
+high-availability.zookeeper.path.root: /flink
+high-availability.zookeeper.client.acl: open
+state.backend: rocksdb
+state.checkpoints.num-retained: 3
+state.checkpoints.dir: gs://example_analytics/flink/checkpoints
+state.savepoints.dir: gs://example_analytics/flink/savepoints
+state.backend.incremental: true
+state.backend.async: true
+fs.hdfs.hadoopconf: /opt/flink/hadoop
+log.file: /var/lib/log/flink/jobmanager.log

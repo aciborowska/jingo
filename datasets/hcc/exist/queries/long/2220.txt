@@ -1,0 +1,14 @@
+The Symbols Table (`symbols.dbx`) does not use the WAL (Write Ahead Journal), because each entry added to it is immediately written to its `FileOutputStream`. I imagine that the thinking was:
+
+1. the symbols are written before they are used in the DOM store (`dom.dbx`)
+2. the DOM store has crash recovery via the WAL
+3. if a crash occurs, when recovering the DOM, the symbols would always be there because they were *written before* the WAL entries for any DOM modifications.
+
+However, the `symbols.dbx` does not flush with `SYNC` to disk. Therefore it is at the discretion of the operating system's page manager, and disk caches etc, as to when those entries written to the `symbols.dbx` will actually be physically persisted to disk. This means that WAL entries for the dom.dbx could be persisted to disk before the symbols, or that the symbols may never be persisted to disk (in the event of a crash).
+
+With the current design we can experience an inconsistency between the `symbols.dbx` and the WAL for the `dom.dbx` during crash recovery. Such an inconsistency would make full recovery impossible as the symbol ids would be unavailable, meaning that any affected XML documents would never be retrievable from the database.
+
+Options for fixes:
+1. Change the `SymbolTable` class to use a `RandomAccessFile` and we use the force `SYNC`/`D_SYNC` mechanisms after every new entry to ensure it is always written by the OS.
+2. We stick with the `FileOutputStream` but add WAL support and crash recovery to the `SymbolTable`
+3. We design a better `SymbolTable` that both uses the WAL to support crash recovery and does not need to write its data to disk on every entry... potentially saving IOPS.

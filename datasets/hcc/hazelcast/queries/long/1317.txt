@@ -1,0 +1,92 @@
+This test recreates a customer issue ticket121:
+
+A cluster of 2 nodes, has map with 1 second write-behind delay.
+1,000 entries written to map from node 1
+Hazelcast calls the MapStore storeAll across both nodes.
+Node 2 fails
+map entries are lost.
+
+It's possible the problem/(s) are make worse by adding an Index for the TestObj attribute.
+
+the test will frequently fail,  map size < 1000  and mapStore.store.size() < 1000
+
+however in a small % of times the test will pass 
+where map.size == mapStore.size == 1000
+
+@Test
+    public void test_Ticket121_WriteBehindBackup() throws InterruptedException {
+
+```
+    String name = "testTicket121";
+    int size = 1000;
+
+    Config config = new Config();
+
+
+    MapConfig writeBehindBackup = config.getMapConfig(name);
+    //writeBehindBackup.setReadBackupData(true);
+    //writeBehindBackup.setInMemoryFormat(InMemoryFormat.OBJECT);
+
+    MapIndexConfig idxConf = new MapIndexConfig("ID", false);
+    List<MapIndexConfig> l = new ArrayList<MapIndexConfig>();
+    l.add(idxConf);
+    //writeBehindBackup.setMapIndexConfigs(l);
+
+
+    MapStoreWithStoreCount mapStore = new MapStoreWithStoreCount(size, 60);
+    MapStoreConfig mapStoreConfig = new MapStoreConfig();
+    mapStoreConfig.setWriteDelaySeconds(1);
+    mapStoreConfig.setImplementation(mapStore);
+
+    writeBehindBackup.setMapStoreConfig(mapStoreConfig);
+
+    TestHazelcastInstanceFactory factory = createHazelcastInstanceFactory(2);
+    HazelcastInstance instance = factory.newHazelcastInstance(config);
+    HazelcastInstance instance2 = null;
+
+    final IMap map = instance.getMap(name);
+    for (int i = 0; i < size; i++) {
+        map.put(i, new TestObj(i));
+        if(i==250){
+            instance2 = factory.newHazelcastInstance(config);
+        }
+        if(i==750){
+            //instance2.getLifecycleService().shutdown();
+            instance2.getLifecycleService().terminate();
+        }
+    }
+
+    //mapStore.awaitStores();
+    while (true) {
+        System.out.println(map.size() + " - " + mapStore.store.size());
+        Thread.sleep(1000);
+    }
+}
+
+static public class TestObj implements Serializable {
+
+    public int ID;
+    public String name;
+
+    public TestObj(int id){
+        ID = id;
+        name = String.valueOf(id);
+    }
+
+    public int getID() {
+        return ID;
+    }
+
+    public void setID(int ID) {
+        this.ID = ID;
+    }
+
+    public String getName() {
+        return name;
+    }
+
+    public void setName(String name) {
+        this.name = name;
+    }
+}
+```

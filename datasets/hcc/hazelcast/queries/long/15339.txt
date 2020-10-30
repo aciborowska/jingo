@@ -1,0 +1,40 @@
+I'm running a 5-node Hazelcast cluster at version 3.6.6 in AWS. I'm using it as a workload distributor and I'm using
+
+```
+IExecutorService
+<T> void submit(Runnable  task,
+              MemberSelector memberSelector,
+              ExecutionCallback<T> callback)
+```
+API to execute tasks on a member of my choice. 
+After I start the cluster it works well for several days and then submitting members start to receive OperationTimeoutException. Once it starts, all members start to receive this timeout and it happens quite sporadically, there maybe a short period when all works smooth and then this exception starts happening again. The target member does receive the task within less than a second and executes it correctly. 
+
+An example of time flow of the exception looks as follows:
+July 21st 2019, 14:10:08.270 - job submitted for execution on source node
+July 21st 2019, 14:10:08.408 - job started executing on the target node
+July 21st 2019, 14:12:19.474 - the exception is received on source node
+
+The exception itself looks like this:
+`No response for 560000 ms. Aborting invocation! Invocation{serviceName='hz:impl:executorService', op=com.hazelcast.executor.impl.operations.MemberCallableTaskOperation{identityHash=1092596122, serviceName='hz:impl:executorService', partitionId=-1, replicaIndex=0, callId=619587, invocationTime=1563706978176 (Sun Jul 21 14:02:58 UTC 2019), waitTimeout=-1, callTimeout=500000, name=exec_service_12}, partitionId=-1, replicaIndex=0, tryCount=250, tryPauseMillis=500, invokeCount=1, callTimeout=500000, target=Address[x.x.x.x]:5701, backupsExpected=0, backupsCompleted=0, connection=Connection [/x.x.x.x:50381 -> /x.x.x.x:5701], endpoint=Address[x.x.x.x]:5701, alive=true, type=MEMBER} No response has been received!  backups-expected:0 backups-completed: 0, execution took: 131225 milliseconds`
+
+The stacktrace:
+```
+com.hazelcast.core.OperationTimeoutException: No response for 560000 ms. Aborting invocation! Invocation{serviceName='hz:impl:executorService', op=com.hazelcast.executor.impl.operations.MemberCallableTaskOperation{identityHash=1092596122, serviceName='hz:impl:executorService', partitionId=-1, replicaIndex=0, callId=619587, invocationTime=1563706978176 (Sun Jul 21 14:02:58 UTC 2019), waitTimeout=-1, callTimeout=500000, name=exec_service_12}, partitionId=-1, replicaIndex=0, tryCount=250, tryPauseMillis=500, invokeCount=1, callTimeout=500000, target=Address[x.x.x.x]:5701, backupsExpected=0, backupsCompleted=0, connection=Connection [/x.x.x.x:50381 -> /x.x.x.x:5701], endpoint=Address[x.x.x.x]:5701, alive=true, type=MEMBER} No response has been received!  backups-expected:0 backups-completed: 0
+	at com.hazelcast.spi.impl.operationservice.impl.Invocation.newOperationTimeoutException(Invocation.java:536) ~[anodot-arnorld-1.0-SNAPSHOT.jar:na]
+	at com.hazelcast.spi.impl.operationservice.impl.IsStillRunningService$IsOperationStillRunningCallback.setOperationTimeout(IsStillRunningService.java:241)
+	at com.hazelcast.spi.impl.operationservice.impl.IsStillRunningService$IsOperationStillRunningCallback.onResponse(IsStillRunningService.java:229)
+	at com.hazelcast.spi.impl.operationservice.impl.InvocationFuture$1.run(InvocationFuture.java:127)
+	at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1142) [na:1.8.0_121]
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:617)
+	at java.lang.Thread.run(Thread.java:745)
+	at com.hazelcast.util.executor.HazelcastManagedThread.executeRun(HazelcastManagedThread.java:76) [anodot-arnorld-1.0-SNAPSHOT.jar:na]
+	at com.hazelcast.util.executor.HazelcastManagedThread.run(HazelcastManagedThread.java:92)
+	at ------ End remote and begin local stack-trace ------.(Unknown Source) ~[na:na]
+	... 8 frames truncated
+
+```
+Please note that the exception reports the 'invocationTime' to be Sun Jul 21 14:02:58 UTC 2019, which is around 9 minutes before the job is actually submitted. The execution time reported by the exception, though quite long, is still below the configured timeout of 500000  + 60000 milliseconds. 
+
+After tackling with this exception for some time and looking through the Hazelcast source code I started suspecting that the problem arises when the cluster time gets adrift from the actual system time so I started to monitor this delta in my deployment. And indeed, after some time I've seen that the difference between the cluster time and the system time increased. The difference is accumulated during the GC cycles, which I guess is perfectly normal. While the difference was quite small I didn't see my problem occurring but once it reached 430K milliseconds I saw a job failing with the OperationTimeoutException and the delta reported by the exception (131K milliseconds)  is precisely the difference between the timeout (560K milliseconds) and the cluster time drift which at that moment stood at 430K milliseconds.
+
+Which leads me to think that there is a place in the code (which I didn't find) where the cluster time is compared with system time to check for timeout which is incorrect since a considerable drift is accumulated through time. Maybe the operation start time is taken as system time minus the time drift?...

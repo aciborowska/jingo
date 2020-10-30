@@ -1,0 +1,47 @@
+Hi all,
+
+We are using Hazelcast as a JCache provider. As JSR 107 Javadoc states, _an update should not reset expiry time_ for CreatedExpiryPolicy. However, if we update a cache entry, it does not expire.
+
+Here is a test case: 
+
+```
+@Test
+public void testExpiryWithUpdate() throws InterruptedException {
+    final int expiry = 2000;
+    Duration duration = new Duration(TimeUnit.MILLISECONDS, expiry);
+    Configuration<Integer, String> config = new MutableConfiguration<Integer, String>()
+            .setExpiryPolicyFactory(CreatedExpiryPolicy.factoryOf(duration));
+
+    try (Cache<Integer, String> cache = Caching.getCachingProvider().getCacheManager()
+            .createCache("testCache", config)) {
+        cache.put(1, "value");
+        //cache.put(1, "value");
+        Assert.assertNotNull(cache.get(1));
+        Thread.sleep(expiry);
+        Assert.assertNull(cache.get(1));
+    }
+}
+```
+
+The entries expire as expected after 2 seconds, if we did not update them (via put or replace methods), so above test succeeds. 
+
+But if we update the entry (ie: uncomment out second put call) then the entry doesn't expire and test fails. Moreover, an update does not update expire time (ie: expiry time is not extended), but cache behaves as if expiry policy is eternal. That is, the following code block prints out "...still not expired" forever (using same config as above one, with CreatedExpiry policy with 2 second expiry time).
+
+```
+try (Cache<Integer, String> cache = Caching.getCachingProvider().getCacheManager()
+                .createCache("testCache", config)) {
+    cache.put(1, "value");
+    cache.put(1, "value");
+    Assert.assertNotNull(cache.get(1));
+    String value;
+    while((value = cache.get(1)) != null) {
+        System.out.println("...still not expired");
+        Thread.sleep(1000);
+    }
+    System.out.println("Entry expired!");
+}
+```
+
+I tried this with hazelcast versions 3.4.6, 3.5.4, and 3.6-EA3. 
+
+I can confirm that only Apache Ignite runs as expected (an update does not change/reset expiry time for CreatedExpiryPolicy). Hazelcast and Infinispan fails as I summarized above.

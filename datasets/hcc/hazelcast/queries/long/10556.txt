@@ -1,0 +1,79 @@
+I originally found this issue because I was unknowingly setting a value twice.  After hours of debugging I was able to determine the cause of the issue.  The error should not be a NPE, it should be something that actually indicates what the problem is. 
+
+> Hazelcast version **3.8.1**
+> Cluster size 1-4 members
+> Number of the clients. (2 - 6 clients)
+> Version of Java. openjdk version "1.8.0_121"
+> Operating system. Linux and Windows
+ 
+
+MapConfiguration:
+```java 
+QueryCacheConfig revocationQueryCacheConfig = new QueryCacheConfig(revocationTokenCacheName);
+revocationQueryCacheConfig.getPredicateConfig().setImplementation((Predicate) entry -> true);
+
+MapConfig revocationMapConfig = new MapConfig(revocationTokenMapName);
+revocationMapConfig.addQueryCacheConfig(revocationQueryCacheConfig);
+revocationMapConfig.setEvictionPolicy(EvictionPolicy.LRU);
+revocationMapConfig.setTimeToLiveSeconds(revocationMapTimeToLive);
+revocationMapConfig.setMaxIdleSeconds(revocationMapMaxIdle);
+
+NearCacheConfig nearCacheConfig = new NearCacheConfig();
+nearCacheConfig.setTimeToLiveSeconds(revocationCacheTimeToLive);
+nearCacheConfig.setMaxIdleSeconds(revocationCacheMaxIdle);
+revocationMapConfig.setNearCacheConfig(nearCacheConfig);
+
+return revocationMapConfig;
+```
+
+
+Code to reproduce exception:
+```java 
+IEnterpriseMap<String, CacheToken> map = (IEnterpriseMap) instance.getMap(revocationMapName);
+CacheToken cacheToken = new CacheToken();
+cacheToken.setValue("abcd123");
+
+map.set("abcd123", cacheToken);
+map.set("abcd123", cacheToken);
+```
+
+
+Results in the exception in the member log:
+```java
+java.lang.NullPointerException: null
+        at com.hazelcast.query.impl.CachedQueryEntry.getTargetObject(CachedQueryEntry.java:100) ~[hazelcast-enterprise-all-3.8.1.jar:3.8.1]
+        at com.hazelcast.query.impl.QueryableEntry.extractAttributeValue(QueryableEntry.java:81) ~[hazelcast-enterprise-all-3.8.1.jar:3.8.1]
+        at com.hazelcast.query.impl.QueryableEntry.getAttributeValue(QueryableEntry.java:48) ~[hazelcast-enterprise-all-3.8.1.jar:3.8.1]
+        at com.hazelcast.query.impl.predicates.AbstractPredicate.readAttributeValue(AbstractPredicate.java:132) ~[hazelcast-enterprise-all-3.8.1.jar:3.8.1]
+        at com.hazelcast.query.impl.predicates.AbstractPredicate.apply(AbstractPredicate.java:57) ~[hazelcast-enterprise-all-3.8.1.jar:3.8.1]
+        at com.hazelcast.query.SqlPredicate.apply(SqlPredicate.java:74) ~[hazelcast-enterprise-all-3.8.1.jar:3.8.1]
+        at com.hazelcast.map.impl.query.QueryEventFilter.eval(QueryEventFilter.java:50) ~[hazelcast-enterprise-all-3.8.1.jar:3.8.1]
+        at com.hazelcast.map.impl.event.AbstractFilteringStrategy.evaluateQueryEventFilter(AbstractFilteringStrategy.java:60) ~[hazelcast-enterprise-all-3.8.1.jar:3.8.1]
+        at com.hazelcast.map.impl.event.DefaultEntryEventFilteringStrategy.processQueryEventFilter(DefaultEntryEventFilteringStrategy.java:107) ~[hazelcast-enterprise-all-3.8.1.jar:3.8.1]
+        at com.hazelcast.map.impl.event.DefaultEntryEventFilteringStrategy.doFilter(DefaultEntryEventFilteringStrategy.java:79) ~[hazelcast-enterprise-all-3.8.1.jar:3.8.1]
+        at com.hazelcast.map.impl.event.QueryCacheEventPublisher.getCQCEventTypeOrNull(QueryCacheEventPublisher.java:164) ~[hazelcast-enterprise-all-3.8.1.jar:3.8.1]
+        at com.hazelcast.map.impl.event.QueryCacheEventPublisher.convertQueryCacheEventDataOrNull(QueryCacheEventPublisher.java:129) ~[hazelcast-enterprise-all-3.8.1.jar:3.8.1]
+        at com.hazelcast.map.impl.event.QueryCacheEventPublisher.addEventToQueryCache(QueryCacheEventPublisher.java:92) ~[hazelcast-enterprise-all-3.8.1.jar:3.8.1]
+        at com.hazelcast.map.impl.event.MapEventPublisherImpl.postPublishEvent(MapEventPublisherImpl.java:205) ~[hazelcast-enterprise-all-3.8.1.jar:3.8.1]
+        at com.hazelcast.map.impl.event.MapEventPublisherImpl.publishEvent(MapEventPublisherImpl.java:187) ~[hazelcast-enterprise-all-3.8.1.jar:3.8.1]
+        at com.hazelcast.map.impl.event.MapEventPublisherImpl.publishEvent(MapEventPublisherImpl.java:160) ~[hazelcast-enterprise-all-3.8.1.jar:3.8.1]
+        at com.hazelcast.map.impl.event.EnterpriseMapEventPublisherImpl.publishEvent(EnterpriseMapEventPublisherImpl.java:49) ~[hazelcast-enterprise-all-3.8.1.jar:3.8.1]
+        at com.hazelcast.map.impl.event.MapEventPublisherImpl.publishEvent(MapEventPublisherImpl.java:148) ~[hazelcast-enterprise-all-3.8.1.jar:3.8.1]
+        at com.hazelcast.map.impl.operation.BasePutOperation.afterRun(BasePutOperation.java:53) ~[hazelcast-enterprise-all-3.8.1.jar:3.8.1]
+        at com.hazelcast.map.impl.operation.SetOperation.afterRun(SetOperation.java:40) ~[hazelcast-enterprise-all-3.8.1.jar:3.8.1]
+        at com.hazelcast.spi.impl.operationservice.impl.OperationRunnerImpl.afterRun(OperationRunnerImpl.java:287) [hazelcast-enterprise-all-3.8.1.jar:3.8.1]
+        at com.hazelcast.spi.impl.operationservice.impl.OperationRunnerImpl.run(OperationRunnerImpl.java:188) [hazelcast-enterprise-all-3.8.1.jar:3.8.1]
+        at com.hazelcast.spi.impl.operationexecutor.impl.OperationExecutorImpl.run(OperationExecutorImpl.java:382) [hazelcast-enterprise-all-3.8.1.jar:3.8.1]
+        at com.hazelcast.spi.impl.operationexecutor.impl.OperationExecutorImpl.runOrExecute(OperationExecutorImpl.java:409) [hazelcast-enterprise-all-3.8.1.jar:3.8.1]
+        at com.hazelcast.spi.impl.operationservice.impl.Invocation.doInvokeLocal(Invocation.java:534) [hazelcast-enterprise-all-3.8.1.jar:3.8.1]
+        at com.hazelcast.spi.impl.operationservice.impl.Invocation.doInvoke(Invocation.java:519) [hazelcast-enterprise-all-3.8.1.jar:3.8.1]
+        at com.hazelcast.spi.impl.operationservice.impl.Invocation.invoke0(Invocation.java:490) [hazelcast-enterprise-all-3.8.1.jar:3.8.1]
+        at com.hazelcast.spi.impl.operationservice.impl.Invocation.invoke(Invocation.java:200) [hazelcast-enterprise-all-3.8.1.jar:3.8.1]
+        at com.hazelcast.spi.impl.operationservice.impl.InvocationBuilderImpl.invoke(InvocationBuilderImpl.java:59) [hazelcast-enterprise-all-3.8.1.jar:3.8.1]
+        at com.hazelcast.client.impl.protocol.task.AbstractPartitionMessageTask.processMessage(AbstractPartitionMessageTask.java:67) [hazelcast-enterprise-all-3.8.1.jar:3.8.1]
+        at com.hazelcast.client.impl.protocol.task.AbstractMessageTask.initializeAndProcessMessage(AbstractMessageTask.java:123) [hazelcast-enterprise-all-3.8.1.jar:3.8.1]
+        at com.hazelcast.client.impl.protocol.task.AbstractMessageTask.run(AbstractMessageTask.java:103) [hazelcast-enterprise-all-3.8.1.jar:3.8.1]
+        at com.hazelcast.spi.impl.operationservice.impl.OperationRunnerImpl.run(OperationRunnerImpl.java:142) [hazelcast-enterprise-all-3.8.1.jar:3.8.1]
+        at com.hazelcast.spi.impl.operationexecutor.impl.OperationThread.process(OperationThread.java:127) [hazelcast-enterprise-all-3.8.1.jar:3.8.1]
+        at com.hazelcast.spi.impl.operationexecutor.impl.OperationThread.run(OperationThread.java:102) [hazelcast-enterprise-all-3.8.1.jar:3.8.1]
+```

@@ -1,0 +1,24 @@
+We recently found this stack trace in our logs, using 3.3-RC1 (although I can see the same code on master):
+
+```
+Exception in thread "hz.qqq.cached.thread-3" java.lang.IllegalArgumentException: Comparison method violates its general contract!
+at java.util.TimSort.mergeHi(TimSort.java:868)
+at java.util.TimSort.mergeAt(TimSort.java:485)
+at java.util.TimSort.mergeCollapse(TimSort.java:410)
+at java.util.TimSort.sort(TimSort.java:214)
+at java.util.TimSort.sort(TimSort.java:173)
+at java.util.Arrays.sort(Arrays.java:659)
+at java.util.Collections.sort(Collections.java:217)
+at com.hazelcast.map.eviction.ExpirationManager$ClearExpiredRecordsTask.run(ExpirationManager.java:100)
+at com.hazelcast.util.executor.CachedExecutorServiceDelegate$Worker.run(CachedExecutorServiceDelegate.java:209)
+at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1145)
+at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:615)
+at java.lang.Thread.run(Thread.java:744)
+at com.hazelcast.util.executor.PoolExecutorThreadFactory$ManagedThread.run(PoolExecutorThreadFactory.java:59)
+```
+
+This would appear to happen because the comparator used by `ExpirationManager` is comparing the `lastCleanupTime` properties of `PartitionContainer` objects, and those times can changes during the sorting process. `java.util.TimSort` can fail if the sorted objects do not consistently return the same comparison result during the search algorithm's process.
+
+We're concerned that this will block expiration and result in a memory leak.
+
+The fix could be to produce an immutable version of `PartitionContainer` and then sort those.

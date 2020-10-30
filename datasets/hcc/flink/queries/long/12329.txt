@@ -1,0 +1,17 @@
+The Netty thread may be blocked when using the blocking batch mode of FLINK. In my opinion, the combination of several designs, including request buffer blocking, zero coy (the buffer is recycled only after it is sent out to network), limited number of buffers (only two buffers and not configurable) and backlog data is not ready (must request buffer and read, pipeline mode dose not have the problem), leads to this bug.
+
+The flowing processing flow of Netty thread can block itself (note that writeAndFlush dose not mean the buffer is send out to the network).
+
+1. request and read the first buffer -> write and flush the first buffer -> send the first buffer to network -> request and read the second buffer ->  write and flush the first buffer  -> no credit -> add credit -> request and read buffer -> blocking (the second buffer is not sent out)
+
+2. no credit -> add credit -> request and read buffer -> write and flush the buffer -> no credit -> add credit ->  request and read buffer -> blocking (the previous read buffer is not sent out)
+
+How to reproduce?
+
+The bug is easy to be reproduced, two vertices with a blocking edge can reproduce it. Large parallelism, small number of slots per TM and large data volume make it easy to reproduce the bug.Setting the parallelism to 100, the number of slots per TM to 1 and more than 10M data per subpartition will be ok.
+
+How to fix?
+
+The new mmappartition implementation can fix this problem because the number of buffers is not limited and the data is not loaded until sent.
+
+The bug can be also fixed based on the old implementation. Firstly, the buffer request should not be blocking. Besides, the NetworkSequenceViewReader should enqueue as available reader when it is available for read and is not registered currently.

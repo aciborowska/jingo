@@ -1,0 +1,31 @@
+<!--
+Thanks for reporting your issue. Please share with us the following information, to help us resolve your issue quickly and efficiently.
+-->
+  
+**Description**
+When using the Ringbuffer.readManyAsync method to read at least one element from an inactive ringbuffer and not waiting for the result, blocking operations that reserve memory to serve the read operation are forever queued, ending in heap exhaustion.
+
+**Expected behavior**
+The [Hazelcast Documentation](https://docs.hazelcast.org/docs/4.0.1/manual/html-single/index.html#using-async-methods) suggests that you should use get() or join() on the CompleteableFuture. Other than mentioning that these are blocking operations, there are no warnings to suggest that when a thread gives up waiting for a Future, the read operation is still carried out regardless and the instruction to fulfill the request remains indefinitely (at least for operations issued on the Hazelcast member).
+
+Stating the expected behaviour is difficult in this instance, but if I were to pick, it would be that a Future that had exceeded a timed get for a ringbuffer read operation should be discarded at a convenient moment, rather than waiting for a client or member disconnect.
+
+**To Reproduce**
+Run the attached example [hzmemoryleak.zip](https://github.com/hazelcast/hazelcast/files/4742256/hzmemoryleak.zip).
+
+It will create a Hazelcast instance (not  a client) and invoke the following on the Ringbuffer repeatedly:
+
+```
+CompletableFuture<ReadResultSet<Object>> future = ringbuffer
+                            .readManyAsync(0, 1, 1000, null)
+                            .toCompletableFuture();
+ReadResultSet<Object> resultSet = future.get(50, TimeUnit.MILLISECONDS);
+```
+
+When the read operation is requested, a new ReadResultSetImpl is created that allocates some data structures, including two fairly large arrays that are based on the maxSize (1000 in this case). This operation is queued in a WaitSet with a Long.MAX_VALUE call timeout. Since the minimum requested item count is 1, this request cannot be satisfied by the Ringbuffer (right now/ever). When the thread 'disconnects' from the CompleteableFuture by exceeding the time limit, the operations queue builds up until the heap is full.
+
+I know that part of the reason this issue is happening is that a minimum count of 1 is being requested, which cannot be served by the Ringbuffer. However, setting this to 0 would cause the thread to spin, while removing the timeout would block the thread.
+
+**Additional context**
+OpenJDK 14.0.1
+Hazelcast 4.0.1

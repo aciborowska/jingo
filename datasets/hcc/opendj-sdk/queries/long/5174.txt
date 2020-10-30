@@ -1,0 +1,94 @@
+Randomly appears with rev 570618e297c, running:
+
+
+./run-pybot.py -v -n -s replication_group1.GroupIdAsString opendj
+
+
+
+We set up 4 dj servers with data on DJ1. We want to use 2 as DSs and 2 as RSs.
+We configure replication between DJ1 and RS2.
+
+./DJ1/opendj/bin/dsreplication configure --host1 nameserver.example.com --port1 4444 --bindDN1 "cn=Directory Manager" --bindPassword1 "password" --noReplicationServer1 --host2 nameserver.example.com --port2 4447 --bindDN2 "cn=Directory Manager" --bindPassword2 "password" --replicationPort2 8992 --onlyReplicationServer2 -b dc=com -I admin -w password  -X -n
+
+ 
+
+Then between DJ1 and RS1:
+
+
+./DJ1/opendj/bin/dsreplication configure --host1 nameserver.example.com --port1 4444 --bindDN1 "cn=Directory Manager" --bindPassword1 "password" --noReplicationServer1 --host2 nameserver.example.com --port2 4445 --bindDN2 "cn=Directory Manager" --bindPassword2 "password" --replicationPort2 8990 --onlyReplicationServer2 -b uid=Monitor -I admin -w password  -X -n
+
+
+
+Then between DJ1 and DJ2:
+
+./DJ1/opendj/bin/dsreplication configure --host1 nameserver.example.com --port1 4444 --bindDN1 "cn=Directory Manager" --bindPassword1 "password" --noReplicationServer1 --host2 nameserver.example.com --port2 4446 --bindDN2 "cn=Directory Manager" --bindPassword2 "password" --noReplicationServer2 -b dc=com -I admin -w password  -X -n
+
+
+
+Then we set group ids to have DJ1 and RS1 in one group and DJ2/RS2 in another group:
+
+
+./DJ1/opendj/bin/dsconfig -h nameserver.example.com -p 4444 -D "cn=Directory Manager" -w password -X set-replication-domain-prop --provider-name "Multimaster Synchronization" --domain-name "dc=com" --set group-id:"my group 1" -n
+
+./RS1/opendj/bin/dsconfig -h nameserver.example.com -p 4445 -D "cn=Directory Manager" -w password -X set-replication-server-prop --provider-name "Multimaster Synchronization" --set group-id:"my group 1" -n
+
+./DJ2/opendj/bin/dsconfig -h nameserver.example.com -p 4446 -D "cn=Directory Manager" -w password -X set-replication-domain-prop --provider-name "Multimaster Synchronization" --domain-name "dc=com" --set group-id:"my group 2" -n
+
+./RS2/opendj/bin/dsconfig -h nameserver.example.com -p 4447 -D "cn=Directory Manager" -w password -X set-replication-server-prop --provider-name "Multimaster Synchronization" --set group-id:"my group 2" -n
+
+
+
+
+Then we initialize replication:
+
+
+./DJ1/opendj/bin/dsreplication initialize-all -h nameserver.example.com -p 4444 -b dc=com -I admin -w password  -X -n
+
+
+WARN - ERROR:
+-- rc --
+returned 12, expected 0
+-- stdout --
+
+Initializing base DN dc=com with the contents from nameserver.example.com:4444:
+
+-- stderr --
+
+Error during the initialization with contents from server
+nameserver.example.com:4444. Last log details: [05/Jun/2018:14:17:24 +0200]
+severity="NOTICE" msgCount=0 msgID=org.opends.messages.backend-413
+message="Initialize Backend task dsreplication-initialize-1 started
+execution". Task state: STOPPED_BY_ERROR. Check the error logs of
+nameserver.example.com:4444 for more information.
+See /tmp/opendj-replication-5049070232954476984.log for a detailed log of this
+operation.
+Details: com.forgerock.opendj.cli.ClientException: Error during the
+initialization with contents from server nameserver.example.com:4444. Last log
+details: [05/Jun/2018:14:17:24 +0200] severity="NOTICE" msgCount=0
+msgID=org.opends.messages.backend-413 message="Initialize Backend task
+dsreplication-initialize-1 started execution". Task state: STOPPED_BY_ERROR.
+Check the error logs of nameserver.example.com:4444 for more information.
+20180605 14:17:25.154 - FAIL - CmdException: ERROR:
+-- rc --
+returned 12, expected 0
+
+
+
+in error logs of servers:
+
+
+
+DJ1/opendj/logs/errors:[05/Jun/2018:14:17:24 +0200] category=BACKEND severity=ERROR msgID=99 msg=An error occurred while executing the task defined in entry ds-task-id=dsreplication-initialize-1,cn=Scheduled Tasks,cn=Tasks:  LdapException: Unwilling to Perform: Cannot start total update in domain "dc=com" from this directory server DS(1): no remote directory servers exist (LdapException.java:231 LdapException.java:144 LdapException.java:113 LdapException.java:71 ReplicationDomain.java:1438 LDAPReplicationDomain.java:1228 ReplicationDomain.java:1404 InitializeTargetTask.java:86 Task.java:778 TaskThread.java:137)
+
+
+DJ2/opendj/logs/errors:[05/Jun/2018:14:17:26 +0200] category=SYNC severity=ERROR msgID=212 msg=Directory server DS(2) timed out while connecting to replication server nameserver.example.com:8992 for domain "dc=com"
+
+
+RS1/opendj/logs/errors:[05/Jun/2018:14:17:26 +0200] category=SYNC severity=ERROR msgID=178 msg=Directory server 2 was attempting to connect to replication server 3 but has disconnected in handshake phase. Error: SocketException(Broken pipe (Write failed))
+
+RS2/opendj/logs/errors:[05/Jun/2018:14:17:26 +0200] category=SYNC severity=ERROR msgID=178 msg=Directory server 2 was attempting to connect to replication server 4 but has disconnected in handshake phase. Error: SocketException(Broken pipe (Write failed))
+
+
+
+
+This is not reproducible 100% of the time but I could reproduce it 1 time out of 3 on my laptop.

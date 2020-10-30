@@ -1,0 +1,30 @@
+I've just been playing around (baby steps) with forgeops by increasing the number of DJ replicas from 1 to 2. I can immediately see the DNS problem that you encountered, namely that a DNS name is not assigned to a pod until it is fully up. This has the unfortunate side-effect that a DS cannot connect to its own RS until the pod is up and running:
+
+
+[25/Jan/2019:18:08:58 +0000] category=SYNC severity=ERROR msgID=51 msg=The hostname userstore-0.userstore could not be resolved as an IP address
+[25/Jan/2019:18:08:58 +0000] category=SYNC severity=ERROR msgID=51 msg=The hostname userstore-1.userstore could not be resolved as an IP address
+[25/Jan/2019:18:08:58 +0000] category=SYNC severity=WARNING msgID=208 msg=Directory server DS(10) was unable to connect to any replication servers for domain "ou=tokens"
+
+
+Eventually the first server (userstore-0) recovers and manages to connect to itself. However, the second server (userstore-1) gets stuck. The userstore-1 RS manages to connect to userstore-0 RS fine, but then userstore-1 DS connects to userstore-0 RS as well, because the userstore-1 RS hostname cannot be resolved. Unfortunately, the DS part never recovers and it remains connected to userstore-0 RS:
+
+
+$   ./bin/ldapsearch -h userstore-0.userstore -p 1389 -D cn=directory\ manager -w password -s sub -b cn=connected\ replicas,ds-mon-domain-name=ou=tokens,cn=changelog,cn=replication,cn=monitor "(objectclass=*)" 1.1
+dn: cn=connected replicas,ds-mon-domain-name=ou=tokens,cn=changelog,cn=replication,cn=monitor
+
+dn: ds-mon-server-id=10,cn=connected replicas,ds-mon-domain-name=ou=tokens,cn=changelog,cn=replication,cn=monitor
+
+dn: ds-mon-server-id=11,cn=connected replicas,ds-mon-domain-name=ou=tokens,cn=changelog,cn=replication,cn=monitor
+
+
+Compared with userstore-1:
+
+
+$   ./bin/ldapsearch -h userstore-1.userstore -p 1389 -D cn=directory\ manager -w password -s sub -b cn=connected\ replicas,ds-mon-domain-name=ou=tokens,cn=changelog,cn=replication,cn=monitor "(objectclass=*)" 1.1
+# The LDAP search request failed: 32 (No Such Entry)
+# Additional Information:  Entry cn=connected replicas,ds-mon-domain-name=ou=tokens,cn=changelog,cn=replication,cn=monitor does not exist in the "monitor" backend
+# Matched DN:  ds-mon-domain-name=ou=tokens,cn=changelog,cn=replication,cn=monitor
+
+
+
+Expected behavior: DS in userstore-1 should fail-back to its local RS.

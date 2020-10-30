@@ -1,0 +1,49 @@
+I have created a very simple Flink topology consisting of a streaming Source (the outputs the timestamp a few times per second) and a Sink (that puts that timestamp into a single record in HBase).
+Running this on a non-secure Yarn cluster works fine.
+
+To run it on a secured Yarn cluster my main routine now looks like this:
+
+public static void main(String[] args) throws Exception {
+    System.setProperty("java.security.krb5.conf", "/etc/krb5.conf");
+    UserGroupInformation.loginUserFromKeytab("nbasjes@xxxxxx.NET", "/home/nbasjes/.krb/nbasjes.keytab");
+
+    final StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+    env.setParallelism(1);
+
+    DataStream<String> stream = env.addSource(new TimerTicksSource());
+    stream.addSink(new SetHBaseRowSink());
+    env.execute("Long running Flink application");
+}
+
+
+
+When I run this 
+     flink run -m yarn-cluster -yn 1 -yjm 1024 -ytm 4096 ./kerberos-1.0-SNAPSHOT.jar
+
+I see after the startup messages:
+
+
+17:13:24,466 INFO  org.apache.hadoop.security.UserGroupInformation               - Login successful for user nbasjes@xxxxxx.NET using keytab file /home/nbasjes/.krb/nbasjes.keytab
+11/03/2015 17:13:25	Job execution switched to status RUNNING.
+11/03/2015 17:13:25	Custom Source -> Stream Sink(1/1) switched to SCHEDULED 
+11/03/2015 17:13:25	Custom Source -> Stream Sink(1/1) switched to DEPLOYING 
+11/03/2015 17:13:25	Custom Source -> Stream Sink(1/1) switched to RUNNING 
+Which looks good.
+
+However ... no data goes into HBase.
+After some digging I found this error in the task managers log:
+
+
+17:13:42,677 WARN  org.apache.hadoop.hbase.ipc.RpcClient                         - Exception encountered while connecting to the server : javax.security.sasl.SaslException: GSS initiate failed [Caused by GSSException: No valid credentials provided (Mechanism level: Failed to find any Kerberos tgt)]
+17:13:42,677 FATAL org.apache.hadoop.hbase.ipc.RpcClient                         - SASL authentication failed. The most likely cause is missing or invalid credentials. Consider 'kinit'.
+javax.security.sasl.SaslException: GSS initiate failed [Caused by GSSException: No valid credentials provided (Mechanism level: Failed to find any Kerberos tgt)]
+	at com.sun.security.sasl.gsskerb.GssKrb5Client.evaluateChallenge(GssKrb5Client.java:212)
+	at org.apache.hadoop.hbase.security.HBaseSaslRpcClient.saslConnect(HBaseSaslRpcClient.java:177)
+	at org.apache.hadoop.hbase.ipc.RpcClient$Connection.setupSaslConnection(RpcClient.java:815)
+	at org.apache.hadoop.hbase.ipc.RpcClient$Connection.access$800(RpcClient.java:349)
+
+First starting a yarn-session and then loading my job gives the same error.
+
+My best guess at this point is that Flink needs the same fix as described here:
+
+https://issues.apache.org/jira/browse/SPARK-6918   ( https://github.com/apache/spark/pull/5586 )

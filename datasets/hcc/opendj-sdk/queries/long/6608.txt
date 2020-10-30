@@ -1,0 +1,57 @@
+Steps to reproduce on some systems:
+
+
+
+# curl  -v --cacert /path/to/ca-cert.pem https://dj.https.endpoint
+* About to connect() to dj.http.endpoint (#0)
+*   Trying 172.17.0.2...
+* Connected to dj.http.endpoint (172.17.0.2) port 8443 (#0)
+* Initializing NSS with certpath: sql:/etc/pki/nssdb
+*   CAfile: /path/to/ca-cert.pem
+  CApath: none
+* NSS error -8054 (SEC_ERROR_REUSED_ISSUER_AND_SERIAL)
+* You are attempting to import a cert with the same issuer/serial as an existing cert, but that is not the same cert.
+* Closing connection 0
+curl: (35) You are attempting to import a cert with the same issuer/serial as an existing cert, but that is not the same cert.
+
+
+
+There's some confusion in the original bug report, but regardless, it looks like the server is sending the CA cert in the SSL handshake:
+
+
+
+$  openssl s_client -connect localhost:8443
+CONNECTED(00000003)
+Can't use SSL_get_servername
+depth=1 O = ForgeRock.com, CN = Deployment key
+verify error:num=19:self signed certificate in certificate chain
+verify return:1
+depth=1 O = ForgeRock.com, CN = Deployment key
+verify return:1
+depth=0 O = ForgeRock.com, CN = DS
+verify return:1
+---
+Certificate chain
+ 0 s:O = ForgeRock.com, CN = DS
+   i:O = ForgeRock.com, CN = Deployment key
+ 1 s:O = ForgeRock.com, CN = Deployment key
+   i:O = ForgeRock.com, CN = Deployment key
+---
+Server certificate
+...
+
+
+
+We know that the deployment key tool will generate very slightly different CA certs due to random values used when computing the signature. It is therefore risky to send the CA cert back to the client because the client may do a byte-for-byte comparison with its copy of the CA certificate.
+
+It looks like DJ is sending the CA cert because it is in the same keystore as the associated SSL cert. The PKCS#12 KeyStore implementation automatically fills in the certificate chains for SSL certs if it finds their CA certs in the same keystore. This automatic behavior only occurs when the keystore is loaded from file, so it is not immediately obvious in many tests which create temporary in memory keystores.
+
+Suggested fixes:
+
+
+	split out the CA cert from the keystore and put it in a separate truststore. This is a bit of a step backwards in terms of simplicity unfortunately
+	load the PKCS#12 keystore and copy the contents into a temporary in memory keystore, thus avoiding the clever certificate chain logic. This is a bit of a hack which could break one day if the inconsistent behavior is fixed in the PKCS#12 implementation.
+
+
+
+I suggest we take the first approach.

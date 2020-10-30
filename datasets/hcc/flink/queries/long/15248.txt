@@ -1,0 +1,45 @@
+FileUtils#compressDirectory behaves buggy when processing relative directory path. If the path of target directory is a relative path, the relative path inside the target zip file can not be constructed correctly:
+
+ 
+
+
+public static Path compressDirectory(Path directory, Path target) throws IOException {
+   FileSystem sourceFs = directory.getFileSystem();
+   FileSystem targetFs = target.getFileSystem();
+
+   try (ZipOutputStream out = new ZipOutputStream(targetFs.create(target, FileSystem.WriteMode.NO_OVERWRITE))) {
+      addToZip(directory, sourceFs, directory.getParent(), out);
+   }
+   return target;
+}
+
+private static void addToZip(Path fileOrDirectory, FileSystem fs, Path rootDir, ZipOutputStream out) throws IOException {
+   String relativePath = fileOrDirectory.getPath().replace(rootDir.getPath() + '/', "");
+   if (fs.getFileStatus(fileOrDirectory).isDir()) {
+      out.putNextEntry(new ZipEntry(relativePath + '/'));
+      
+      // The containedFile.getPath() returns an absolute path but the rootDir
+      // could be a relative path or an empty string (if user only specify the 
+      // directory name as the relative path). In this case when calling this 
+      // method recursively the string replacement at the beginning of it will
+      // return a wrong result.
+      for (FileStatus containedFile : fs.listStatus(fileOrDirectory)) {
+         addToZip(containedFile.getPath(), fs, rootDir, out);
+      }
+
+   } else {
+      ZipEntry entry = new ZipEntry(relativePath);
+      out.putNextEntry(entry);
+
+      try (FSDataInputStream in = fs.open(fileOrDirectory)) {
+         IOUtils.copyBytes(in, out, false);
+      }
+      out.closeEntry();
+   }
+}
+
+ 
+
+Currently PyFlink allows users to upload python library directories and requirements cached directory, which will be compressed by FileUtils#compressDirectory eventually. If users specify them via relative paths, this bug will be triggered and causes those features unavailable.
+
+we can fix this bug by converting the directory path to absolute path in FileUtils#compressDirectory before calling addToZip method.

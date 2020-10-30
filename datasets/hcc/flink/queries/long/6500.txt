@@ -1,0 +1,91 @@
+Relying on implicit types in scala can lead to errors when the arity of the input is different than the output (for Row)
+
+Bar.java
+ /** test row stream registered table **/
+  @Test
+  def testRowRegisterWithNames(): Unit = {
+
+    val env = StreamExecutionEnvironment.getExecutionEnvironment
+    val tEnv = TableEnvironment.getTableEnvironment(env)
+    StreamITCase.clear
+
+    val sqlQuery = "SELECT a,c FROM MyTableRow WHERE c < 3"
+
+    val data = List(
+      Row.of("Hello", "Worlds", Int.box(1)),
+      Row.of("Hello", "Hiden", Int.box(5)),
+      Row.of("Hello again", "Worlds", Int.box(2)))
+    
+    val types = Array[TypeInformation[_]](
+      BasicTypeInfo.STRING_TYPE_INFO,
+      BasicTypeInfo.STRING_TYPE_INFO,
+      BasicTypeInfo.INT_TYPE_INFO).toArray
+    val names =  Array("a","b","c").toArray
+
+    implicit val tpe: TypeInformation[Row] = new RowTypeInfo(types, names) // tpe is automatically 
+      
+    val ds = env.fromCollection(data)
+    
+    val t = ds.toTable(tEnv).as('a, 'b, 'c)
+    tEnv.registerTable("MyTableRow", t)
+
+    val result = tEnv.sql(sqlQuery).toDataStream[Row]
+    result.addSink(new StreamITCase.StringSink)
+    env.execute()
+
+     val expected = List("Hello,1","Hello again,2")
+    assertEquals(expected.sorted, StreamITCase.testResults.sorted)
+  }
+
+
+
+
+
+will throw a runtime exception:
+
+
+testRowRegisterWithNames(org.apache.flink.table.api.scala.stream.sql.SqlITCase)  Time elapsed: 0.619 sec  <<< ERROR!
+org.apache.flink.runtime.client.JobExecutionException: Job execution failed.
+	at org.apache.flink.runtime.jobmanager.JobManager$$anonfun$handleMessage$1$$anonfun$applyOrElse$7.apply$mcV$sp(JobManager.scala:933)
+	at org.apache.flink.runtime.jobmanager.JobManager$$anonfun$handleMessage$1$$anonfun$applyOrElse$7.apply(JobManager.scala:876)
+	at org.apache.flink.runtime.jobmanager.JobManager$$anonfun$handleMessage$1$$anonfun$applyOrElse$7.apply(JobManager.scala:876)
+	at scala.concurrent.impl.Future$PromiseCompletingRunnable.liftedTree1$1(Future.scala:24)
+	at scala.concurrent.impl.Future$PromiseCompletingRunnable.run(Future.scala:24)
+	at akka.dispatch.TaskInvocation.run(AbstractDispatcher.scala:40)
+	at akka.dispatch.ForkJoinExecutorConfigurator$AkkaForkJoinTask.exec(AbstractDispatcher.scala:397)
+	at scala.concurrent.forkjoin.ForkJoinTask.doExec(ForkJoinTask.java:260)
+	at scala.concurrent.forkjoin.ForkJoinPool$WorkQueue.runTask(ForkJoinPool.java:1339)
+	at scala.concurrent.forkjoin.ForkJoinPool.runWorker(ForkJoinPool.java:1979)
+	at scala.concurrent.forkjoin.ForkJoinWorkerThread.run(ForkJoinWorkerThread.java:107)
+Caused by: java.lang.RuntimeException: Row arity of from does not match serializers.
+	at org.apache.flink.api.java.typeutils.runtime.RowSerializer.copy(RowSerializer.java:82)
+	at org.apache.flink.api.java.typeutils.runtime.RowSerializer.copy(RowSerializer.java:43)
+	at org.apache.flink.streaming.runtime.tasks.OperatorChain$CopyingChainingOutput.pushToOperator(OperatorChain.java:526)
+	at org.apache.flink.streaming.runtime.tasks.OperatorChain$CopyingChainingOutput.collect(OperatorChain.java:503)
+	at org.apache.flink.streaming.runtime.tasks.OperatorChain$CopyingChainingOutput.collect(OperatorChain.java:483)
+	at org.apache.flink.streaming.api.operators.AbstractStreamOperator$CountingOutput.collect(AbstractStreamOperator.java:891)
+	at org.apache.flink.streaming.api.operators.AbstractStreamOperator$CountingOutput.collect(AbstractStreamOperator.java:869)
+	at org.apache.flink.streaming.api.operators.StreamMap.processElement(StreamMap.java:41)
+	at org.apache.flink.streaming.runtime.tasks.OperatorChain$CopyingChainingOutput.pushToOperator(OperatorChain.java:528)
+	at org.apache.flink.streaming.runtime.tasks.OperatorChain$CopyingChainingOutput.collect(OperatorChain.java:503)
+	at org.apache.flink.streaming.runtime.tasks.OperatorChain$CopyingChainingOutput.collect(OperatorChain.java:483)
+	at org.apache.flink.streaming.api.operators.AbstractStreamOperator$CountingOutput.collect(AbstractStreamOperator.java:891)
+	at org.apache.flink.streaming.api.operators.AbstractStreamOperator$CountingOutput.collect(AbstractStreamOperator.java:869)
+	at org.apache.flink.streaming.api.operators.TimestampedCollector.collect(TimestampedCollector.java:51)
+	at org.apache.flink.table.runtime.CRowWrappingCollector.collect(CRowWrappingCollector.scala:37)
+	at org.apache.flink.table.runtime.CRowWrappingCollector.collect(CRowWrappingCollector.scala:28)
+	at DataStreamCalcRule$198.flatMap(Unknown Source)
+	at org.apache.flink.table.runtime.CRowFlatMapRunner.flatMap(CRowFlatMapRunner.scala:62)
+	at org.apache.flink.table.runtime.CRowFlatMapRunner.flatMap(CRowFlatMapRunner.scala:35)
+	at org.apache.flink.streaming.api.operators.StreamFlatMap.processElement(StreamFlatMap.java:50)
+	at org.apache.flink.streaming.runtime.tasks.OperatorChain$CopyingChainingOutput.pushToOperator(OperatorChain.java:528)
+	at org.apache.flink.streaming.runtime.tasks.OperatorChain$CopyingChainingOutput.collect(OperatorChain.java:503)
+	at org.apache.flink.streaming.runtime.tasks.OperatorChain$CopyingChainingOutput.collect(OperatorChain.java:483)
+	at org.apache.flink.streaming.api.operators.AbstractStreamOperator$CountingOutput.collect(AbstractStreamOperator.java:891)
+	at org.apache.flink.streaming.api.operators.AbstractStreamOperator$CountingOutput.collect(AbstractStreamOperator.java:869)
+	at org.apache.flink.streaming.api.operators.StreamMap.processElement(StreamMap.java:41)
+	at org.apache.flink.streaming.runtime.io.StreamInputProcessor.processInput(StreamInputProcessor.java:206)
+	at org.apache.flink.streaming.runtime.tasks.OneInputStreamTask.run(OneInputStreamTask.java:69)
+	at org.apache.flink.streaming.runtime.tasks.StreamTask.invoke(StreamTask.java:262)
+	at org.apache.flink.runtime.taskmanager.Task.run(Task.java:702)
+	at java.lang.Thread.run(Thread.java:745)

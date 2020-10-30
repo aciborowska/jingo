@@ -1,0 +1,51 @@
+This controller uses an reactive client to consume streaming JSON data.
+
+This variant doesn't work, *one has to use* `HttpRequest.GET("/2/rsvps")` with an absolute path, as the URI resolution somewhere internally seems to fail.
+
+```
+@Controller("/rsvp")
+public class RsvpController {
+
+    private final RxStreamingHttpClient rxClient;
+
+    public RsvpController(@Client("https://stream.meetup.com/2/") RxStreamingHttpClient rxClient) {
+        this.rxClient = rxClient;
+    }
+
+    @Get(value = "/", produces = MediaType.APPLICATION_JSON_STREAM)
+    public org.reactivestreams.Publisher<Rsvp> index() throws MalformedURLException {
+        return rxClient.
+                jsonStream(HttpRequest.GET("rsvps"), Rsvp.class)
+                .doOnEach(System.out::println)
+                .take(5);
+    }
+```
+
+This method seems to be the culprit. The correctly resolved `requestURI` is only used for the `prepareHttpHeaders` method and there also only to set the host.
+
+But all the "Request" instances:`request`, `clientHttpRequest`, `requestWriter`, `nettyRequest` all have only the relative-path `"rsvps"` as URI variable set, 
+
+not `requestUri.getPath()` or such (which means it also misses query parameters, fragments etc.)
+
+```
+    private <I> NettyRequestWriter DefaultHttpClient.prepareRequest(io.micronaut.http.HttpRequest<I> request, URI requestURI) throws HttpPostRequestEncoder.ErrorDataEncoderException {
+        MediaType requestContentType = request
+            .getContentType()
+            .orElse(MediaType.APPLICATION_JSON_TYPE);
+
+        boolean permitsBody = io.micronaut.http.HttpMethod.permitsRequestBody(request.getMethod());
+        NettyClientHttpRequest clientHttpRequest = (NettyClientHttpRequest) request;
+        NettyRequestWriter requestWriter = buildNettyRequest(clientHttpRequest, requestContentType, permitsBody);
+        io.netty.handler.codec.http.HttpRequest nettyRequest = requestWriter.getNettyRequest();
+        prepareHttpHeaders(requestURI, request, nettyRequest, permitsBody);
+        return requestWriter;
+    }
+```
+
+The URL resolution in Java works like this:
+
+```
+new URI("https://stream.meetup.com/2/").resolve("rsvps") -> https://stream.meetup.com/2/rsvps
+
+new URI("https://stream.meetup.com/2").resolve("rsvps") -> https://stream.meetup.com/rsvps
+```

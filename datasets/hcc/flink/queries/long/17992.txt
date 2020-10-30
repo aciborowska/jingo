@@ -1,0 +1,7 @@
+RemoteInputChannel#onBuffer is invoked by CreditBasedPartitionRequestClientHandler while receiving and decoding the network data. #onBuffer can throw exceptions which would tag the error in client handler and fail all the added input channels inside handler. Then it would cause a tricky potential issue as following.
+
+If the RemoteInputChannel is canceling by canceler thread, then the task thread might exit early than canceler thread terminate. That means the PartitionRequestClient might not be closed (triggered by canceler thread) while the new task attempt is already deployed into this TaskManger. Therefore the new task might reuse the previous PartitionRequestClient while requesting partitions, but note that the respective client handler was already tagged an error before during above RemoteInputChannel#onBuffer. It will cause the next round unnecessary failover.
+
+It is hard to find this potential issue in production because it can be restored normal finally after one or more additional failover. We find this potential problem from UnalignedCheckpointITCase because it will define the precise restart times within configured failures.
+
+The solution is to only fail the respective task when its internal RemoteInputChannel#onBuffer throws any exceptions instead of failing the whole channels inside client handler, then the client is still health and can also be reused by other input channels as long as it is not released yet.

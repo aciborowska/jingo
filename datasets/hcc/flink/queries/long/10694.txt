@@ -1,0 +1,57 @@
+When a streaming job with Zookeeper-HA enabled gets cancelled all the job-related Zookeeper nodes are not removed. Is there a reason behind that? 
+ I noticed that Zookeeper paths are created of type "Container Node" (an Ephemeral node that can have nested nodes) and fall back to Persistent node type in case Zookeeper doesn't support this sort of nodes. 
+ But anyway, it is worth removing the job Zookeeper node when a job is cancelled, isn't it?
+
+zookeeper version 3.4.10
+ flink version 1.6.1
+
+	The job is deployed as a YARN cluster with the following properties set
+
+ high-availability: zookeeper
+ high-availability.zookeeper.quorum: <a list of zookeeper hosts>
+ high-availability.zookeeper.storageDir: hdfs:///<recovery-folder-path>
+ high-availability.zookeeper.path.root: <flink-root-path>
+ high-availability.zookeeper.path.namespace: <flink-job-name>
+
+
+
+
+
+
+	The job is cancelled via flink cancel <job-id> command.
+
+
+
+What I've noticed:
+ when the job is running the following directory structure is created in zookeeper
+
+/<flink-root-path>/<flink-job-name>/leader/resource_manager_lock
+/<flink-root-path>/<flink-job-name>/leader/rest_server_lock
+/<flink-root-path>/<flink-job-name>/leader/dispatcher_lock
+/<flink-root-path>/<flink-job-name>/leader/5c21f00b9162becf5ce25a1cf0e67cde/job_manager_lock
+/<flink-root-path>/<flink-job-name>/leaderlatch/resource_manager_lock
+/<flink-root-path>/<flink-job-name>/leaderlatch/rest_server_lock
+/<flink-root-path>/<flink-job-name>/leaderlatch/dispatcher_lock
+/<flink-root-path>/<flink-job-name>/leaderlatch/5c21f00b9162becf5ce25a1cf0e67cde/job_manager_lock
+/<flink-root-path>/<flink-job-name>/checkpoints/5c21f00b9162becf5ce25a1cf0e67cde/0000000000000000041
+/<flink-root-path>/<flink-job-name>/checkpoint-counter/5c21f00b9162becf5ce25a1cf0e67cde
+/<flink-root-path>/<flink-job-name>/running_job_registry/5c21f00b9162becf5ce25a1cf0e67cde
+
+
+when the job is cancelled some ephemeral nodes disappear, but most of them are still there:
+
+/<flink-root-path>/<flink-job-name>/leader/5c21f00b9162becf5ce25a1cf0e67cde
+/<flink-root-path>/<flink-job-name>/leaderlatch/resource_manager_lock
+/<flink-root-path>/<flink-job-name>/leaderlatch/rest_server_lock
+/<flink-root-path>/<flink-job-name>/leaderlatch/dispatcher_lock
+/<flink-root-path>/<flink-job-name>/leaderlatch/5c21f00b9162becf5ce25a1cf0e67cde/job_manager_lock
+/<flink-root-path>/<flink-job-name>/checkpoints/
+/<flink-root-path>/<flink-job-name>/checkpoint-counter/
+/<flink-root-path>/<flink-job-name>/running_job_registry/
+
+
+Here is the method [1] responsible for cleaning zookeeper folders up [1] which is called when a job manager has stopped [2]. 
+ And it seems it only cleans up the running_job_registry folder, other folders stay untouched. I suppose that everything under the /<flink-root-path>/<flink-job-name>/ folder should be cleaned up when the job is cancelled.
+
+[1] https://github.com/apache/flink/blob/8674b69964eae50cad024f2c5caf92a71bf21a09/flink-runtime/src/main/java/org/apache/flink/runtime/highavailability/zookeeper/ZooKeeperRunningJobsRegistry.java#L107
+ [2] https://github.com/apache/flink/blob/f087f57749004790b6f5b823d66822c36ae09927/flink-runtime/src/main/java/org/apache/flink/runtime/dispatcher/Dispatcher.java#L332

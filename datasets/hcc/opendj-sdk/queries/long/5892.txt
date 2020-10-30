@@ -1,0 +1,180 @@
+I found this issue when developing new tests for server id as string feature.
+
+Version 7.0.0-SNAPSHOT | Revision: (cd031467a88)
+
+Steps: 
+
+	Setup 2 servers with base-dn dc=example,dc=com and few entries
+	Set server-id to each server with "/"
+	
+		
+./bin/dsconfig -h pyforge.example.com -p 4444 -D "cn=Directory Manager" -w password -X set-global-configuration-prop --set "server-id:serverID/DJ1" -n
+
+	
+	
+
+
+
+
+	
+	
+		
+./bin/dsconfig -h pyforge.example.com -p 4445 -D "cn=Directory Manager" -w password -X set-global-configuration-prop --set "server-id:serverID/DJ2" -n	
+
+
+	
+	
+
+
+
+
+	Enable replication between DJ1 and DJ2
+	
+		
+./bin/dsreplication configure --host1 pyforge.example.com --port1 4444 --bindDN1 "cn=Directory Manager" --bindPassword1 "password" --replicationPort1 8989 --host2 pyforge.example.com --port2 4445 --bindDN2 "cn=Directory Manager" --bindPassword2 "password" --replicationPort2 8990 -b dc=example,dc=com -I admin -w password -X -n
+
+	
+	
+
+
+
+
+	Initialize DJ2 from DJ1
+	
+		
+./bin/dsreplication initialize -h pyforge.example.com -p 4444 --hostDestination pyforge.example.com --portDestination 4445 -b dc=example,dc=com -I admin -w password -X -n
+
+	
+	
+
+
+
+
+	
+	
+		
+
+OUTPUT:
+Initializing base DN dc=example,dc=com with the contents from pyforge.example.com:4444: 12 entries processed (100 % complete). Base DN initialized successfully. See /tmp/opendj-replication-7696558181622470406.log for a detailed log of this operation.
+
+	
+	
+
+
+
+
+	Add an entry to DJ1
+	
+		
+./bin/ldapmodify -h pyforge.example.com -p 1389 -D "cn=Directory Manager" -w password
+dn: cn=testuser.3,dc=example,dc=com 
+objectclass: top 
+objectclass: person 
+cn: testuser.3 
+sn: testuser.3 
+description: olddescription
+
+	
+	
+
+
+
+
+	
+	
+		
+OUTPUT:
+* ADD operation successful for DN cn=testuser.3,dc=example,dc=com
+
+	
+	
+
+
+
+
+	Check the entry exists in DJ1
+	
+		
+./bin/ldapsearch -h pyforge.example.com -p 1389 -D "cn=Directory Manager" -w password -b "cn=testuser.3,dc=example,dc=com" "(objectclass=*)" "*"
+
+	
+	
+
+
+
+
+	
+	
+		
+OUTPUT:
+dn: cn=testuser.3,dc=example,dc=com 
+objectClass: top 
+objectClass: person 
+cn: testuser.3 
+description: olddescription 
+sn: testuser.3
+
+	
+	
+
+
+
+
+	Check the entry is replicated to DJ2
+	
+		
+./bin/ldapsearch -h pyforge.example.com -p 1390 -D "cn=Directory Manager" -w password -b "cn=testuser.3,dc=example,dc=com" "(objectclass=*)" "*"
+
+	
+	
+
+
+
+Current behaviour:
+
+The last point returns: 
+
+
+-- rc -- returned 32, expected to be in [0] -- stdout -- # The LDAP search request failed: 32 (No Such Entry) # Additional Information: The search base entry 'cn=testuser.3,dc=example,dc=com' does not exist # Matched DN: dc=example,dc=com
+
+
+ 
+
+Expected behaviour:
+
+The last step should return:
+
+
+dn: cn=testuser.3,dc=example,dc=com 
+objectClass: top 
+objectClass: person 
+cn: testuser.3 
+description: olddescription 
+sn: testuser.3
+
+
+
+ 
+
+This scenario is reproducible with:
+
+
+python3 run-pybot.py -v -s replication_group1.replicationServerId -t test_10 dj
+
+
+ 
+
+ NOTE: The support of forward slash is from property config description (SYNTAX part)
+
+>>>> Configuring the "server-id" property
+Specifies a unique identifier for the directory server which will identify
+the server within a replication topology.
+Each directory server within the same replication topology must have a
+different server identifier. If no server identifier is specified then one
+must be provided in each replication server and replication domain
+configuration.
+Syntax: STRING - An alphanumeric string, may also contain forward slash,
+underscore and hyphen characters
+
+
+ 

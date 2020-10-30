@@ -1,0 +1,60 @@
+We have the following stack trace:  (version 3.7.1)
+
+```
+java.util.concurrent.TimeoutException
+com.hazelcast.transaction.TransactionTimedOutException: java.util.concurrent.TimeoutException
+	at com.hazelcast.util.FutureUtil$5.handleException(FutureUtil.java:120)
+	at com.hazelcast.util.FutureUtil.waitWithDeadline(FutureUtil.java:312)
+	at com.hazelcast.util.FutureUtil.waitWithDeadline(FutureUtil.java:284)
+	at com.hazelcast.transaction.impl.TransactionImpl.commit(TransactionImpl.java:292)
+	at com.hazelcast.transaction.impl.TransactionContextImpl.commitTransaction(TransactionContextImpl.java:74)
+	at ...
+....
+....
+Caused by: java.util.concurrent.TimeoutException
+	at com.hazelcast.util.FutureUtil.executeWithDeadline(FutureUtil.java:323)
+	at com.hazelcast.util.FutureUtil.waitWithDeadline(FutureUtil.java:310)
+	... 39 more
+```
+
+According to this stack trace, the following calculations are performed that I have extracted below:
+(Please follow the stack trace with version 3.7.1 and you will see what I mean) 
+
+```java
+    public static void main(String[] args) {
+
+        long timeout = Long.MAX_VALUE;
+        TimeUnit timeUnit = MILLISECONDS;
+
+        long overallTimeoutNanos = calculateTimeout(timeout, timeUnit);
+        long perFutureTimeoutNanos = calculateTimeout(timeout, timeUnit);
+
+        long deadline = System.nanoTime() + overallTimeoutNanos;
+
+        long timeoutNanos = calculateFutureTimeout(perFutureTimeoutNanos, deadline);
+
+        assert (timeoutNanos <= 0)
+    }
+
+    private static long calculateTimeout(long timeout, TimeUnit timeUnit) {
+        timeUnit = timeUnit == null ? TimeUnit.SECONDS : timeUnit;
+        return timeUnit.toNanos(timeout);
+    }
+
+
+    private static long calculateFutureTimeout(long perFutureTimeoutNanos, long deadline) {
+        long remainingNanos = deadline - System.nanoTime();
+        return Math.min(remainingNanos, perFutureTimeoutNanos);
+    }
+```
+
+According to these calculations, we should never have the above stack trace. 
+There are two possible causes for these unexpected calculations: 
+1. Misbehaviour in `System.nanoTime()` result
+2. Two consecutive overflow operations on `long` types: 
+
+ `long deadline = System.nanoTime() + overallTimeoutNanos;`  Here, `overallTimeoutNanos` is `Long.MAX_VALUE`. 
+
+`long remainingNanos = deadline - System.nanoTime();`  This is also an overflow operation. 
+
+The unexpected calculation repeated multiple times and the behavior was fixed only after restarting the JVM ( Oracle JDK 1.8.91 on VMWare) 

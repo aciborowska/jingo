@@ -1,0 +1,162 @@
+Hi,
+
+If you have a map with NearCache enabled and a MapStore and your store implementation is a little bit clunky (or you have reasonable write delay) then you will get stale reads inside a transaction with simple condition: if you ever try to GET this key outside of transaction first.
+
+Disabling NearCache solves the issue.
+
+It looks fixed in master branch already but this could be reproduced in current 3.7.3 branch.
+Is it possible to have a backport fix for 3.7x?
+
+Test:
+```
+import com.hazelcast.config.Config;
+import com.hazelcast.config.InMemoryFormat;
+import com.hazelcast.config.MapStoreConfig;
+import com.hazelcast.config.NearCacheConfig;
+import com.hazelcast.core.Hazelcast;
+import com.hazelcast.core.HazelcastInstance;
+import com.hazelcast.core.MapStore;
+import com.hazelcast.transaction.TransactionException;
+import com.hazelcast.transaction.TransactionalTask;
+import com.hazelcast.transaction.TransactionalTaskContext;
+import org.junit.Assert;
+import org.junit.Test;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+
+public class HazelcastTransactionsTest {
+	private static final Logger LOGGER = LoggerFactory.getLogger(HazelcastTransactionsTest.class);
+
+	private static final String MAP = "SAMPLE";
+
+	static class SlowMapStore implements MapStore<Long, String> {
+		private final Map<Long, String> backend = new ConcurrentHashMap<Long, String>();
+
+		private final long saveSleep;
+
+		public SlowMapStore() {
+			this(100);
+		}
+
+		SlowMapStore(long saveSleep) {
+			this.saveSleep = saveSleep;
+		}
+
+		private void sleep() {
+			try {
+				Thread.sleep(saveSleep);
+			} catch (InterruptedException e) {
+				e.printStackTrace();
+			}
+		}
+
+		@Override
+		public void store(Long key, String value) {
+			sleep();
+			LOGGER.info("Store {} = {}", key, value);
+			backend.put(key, value);
+		}
+
+		@Override
+		public void storeAll(Map<Long, String> map) {
+			sleep();
+			LOGGER.info("Store all {}", map.keySet());
+			backend.putAll(map);
+		}
+
+		@Override
+		public void delete(Long key) {
+			sleep();
+			LOGGER.info("Delete {}", key);
+			backend.remove(key);
+		}
+
+		@Override
+		public void deleteAll(Collection<Long> keys) {
+			sleep();
+			LOGGER.info("Delete all {}", keys);
+			for (Long key : keys) {
+				backend.remove(key);
+			}
+		}
+
+		@Override
+		public String load(Long key) {
+			final String value = backend.get(key);
+			LOGGER.info("Load {} = {}", key, value);
+			return value;
+		}
+
+		@Override
+		public Map<Long, String> loadAll(Collection<Long> keys) {
+			LOGGER.info("Load all {}", keys);
+			final Map<Long, String> result = new HashMap<Long, String>();
+			for (Long key : keys) {
+				final String value = backend.get(key);
+				if (value != null) {
+					result.put(key, value);
+				}
+			}
+			return result;
+		}
+
+		@Override
+		public Iterable<Long> loadAllKeys() {
+			return new ArrayList<Long>(backend.keySet());
+		}
+	}
+
+	@Test
+	public void testTransactionInconsistentRead() throws InterruptedException {
+		final Config config = new Config();
+
+		config.getMapConfig(MAP)
+				.setMapStoreConfig(new MapStoreConfig()
+						.setClassName(SlowMapStore.class.getName())
+						.setWriteBatchSize(512)
+						.setInitialLoadMode(MapStoreConfig.InitialLoadMode.EAGER)
+						.setWriteDelaySeconds(2))
+				.setBackupCount(1)
+				.setAsyncBackupCount(0)
+				.setNearCacheConfig(new NearCacheConfig()
+						.setInMemoryFormat(InMemoryFormat.OBJECT)
+						.setCacheLocalEntries(true));
+
+		final HazelcastInstance hz1 = Hazelcast.newHazelcastInstance(config);
+		try {
+
+			LOGGER.info("Transaction 1");
+
+			Assert.assertNull(hz1.getMap(MAP).get(1L)); // This operation outside of transaction ruins everything
+
+			hz1.executeTransaction(new TransactionalTask<Object>() {
+
+				@Override
+				public Object execute(TransactionalTaskContext context) throws TransactionException {
+					context.getMap(MAP).set(1L, "Test1-1");
+					return null;
+				}
+			});
+
+			LOGGER.info("Transaction 2");
+			hz1.executeTransaction(new TransactionalTask<Object>() {
+				@Override
+				public Object execute(TransactionalTaskContext context) throws TransactionException {
+					Assert.assertEquals("Test1-1", context.getMap(MAP).get(1L)); // Find nothing!
+					return null;
+				}
+			});
+
+			LOGGER.info("Complete");
+		} finally {
+			hz1.shutdown();
+		}
+	}
+}
+```

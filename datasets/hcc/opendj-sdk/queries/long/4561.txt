@@ -1,0 +1,131 @@
+This was reported on OpenDJ 3.5.2. Reproducible on DS 5.5.0.
+
+A REST call to PATCH a resource, to remove a reference from it, never returns if:
+
+	there is one or more "required" attribute (in addition to the attribute that is the "primaryKey"),
+and
+	only the primaryKey is specified.
+
+
+
+If the primaryKey and the required attribute are specified in the PATCH request, the REST call completes successfully.
+
+E.g.
+
+                "frapi:opendj:rest2ldap:personRole:1.0": {
+                        "objectClasses": [
+                                "groupofnames", "top"
+                        ],
+                        "properties": {
+                                "id": {
+                                        "type": "simple",
+                                        "ldapAttribute": "cn",
+                                        "isRequired": true,
+                                        "isSingleValued": true,
+                                        "writability": "createOnly"
+                                },
+                                "users": {
+                                        "type": "reference",
+                                        "ldapAttribute": "member",
+                                        "baseDn": "ou=people,dc=example,dc=com",
+                                        "primaryKey": "uid",    <------
+                                        "isMultiValued": true,
+                                        "searchFilter": "(objectClass=inetorgperson)",
+                                        "writability": "readWrite",
+                                        "mapper": {
+                                                "type": "object",
+                                                "properties": {
+                                                "id": {
+                                                        "type": "simple",
+                                                        "ldapAttribute": "uid",
+                                                        "isRequired": true,
+                                                        "isSingleValued": true,
+                                                        "writability": "readWrite"
+                                                        },
+                                                "surname": {
+                                                        "type": "simple",
+                                                        "ldapAttribute": "sn",
+                                                        "isRequired": true,    <------
+                                                        "isSingleValued": true,
+...
+
+ 
+
+TEST CASE:
+~~~~~~~~~
+1. DS 5.5.0 with backend userRoot, "dc=example,dc=com".
+
+2. Import attached "sample.ldif", which has a group "cn=group1" with members "uid=user.0" and "uid=user.1".
+
+# import-ldif -n userRoot -l ldif/sample.ldif -h ... -p ... -D "cn=directory manager" -w password -X --start 0
+
+
+3. Create HTTP endpoint directory and copy in attached "test.json":
+
+# cd opendj/config/rest2ldap/endpoints
+# mkdir test
+# copy test.json test
+
+
+4. Create HTTP endpoint:
+
+# dsconfig create-http-endpoint \
+          --set authorization-mechanism:HTTP\ Basic \
+          --set config-directory:config/rest2ldap/endpoints/test \
+          --set enabled:true \
+          --type rest2ldap-endpoint \
+          --endpoint-name test \
+          --hostname ... --port ... \
+          --bindDn ... --bindPassword ... --trustAll --no-prompt
+
+
+5. REST GET to verify endpoint is working:
+
+
+
+# curl -u admin1:password "http://host1:8080/test/personRole/group1" | jq .
+{
+  "_id": "group1",
+  "_rev": "000000007b9339e0",
+  "id": "group1",
+  "users": [
+    {
+      "id": "user.0",
+      "surname": "user.0-sn"
+    },
+    {
+      "id": "user.1",
+      "surname": "user.1-sn"
+    }
+  ]
+}
+
+
+6. REST PATCH, specifying only "id" (the primary key).
+
+This never returns:
+
+# curl -u admin1:password --header "Content-Type: application/json" --request PATCH --data '[{"field":"users","operation":"remove","value":[{"id":"user.0"}]}]' "http://host1:8080/test/personRole/group1" | jq .
+
+
+DS access log shows a BIND, and nothing else.
+
+
+7. REST PATCH, specifying the "id" (primary key) and the "surname" (required attribute). 
+
+NOTE: the "surname" does not have to match the actual surname in the existing entry.
+
+This succeeds:
+
+# curl -u admin1:password --header "Content-Type: application/json" --request PATCH --data '[{"field":"users","operation":"remove","value":[{"id":"user.0","surname":"user.0"}]}]' "http://host1:8080/test/personRole/group1" | jq .
+{
+  "_id": "group1",
+  "_rev": "000000004174489c",
+  "id": "group1",
+  "users": [
+    {
+      "id": "user.1",
+      "surname": "user.1-sn"
+    }
+  ]
+}

@@ -1,0 +1,92 @@
+On latest 3.2.1-SNAPSHOT the following configuration:
+
+```
+<?xml version="1.0" encoding="UTF-8"?>
+<hazelcast
+        xsi:schemaLocation="http://www.hazelcast.com/schema/config https://raw.githubusercontent.com/hazelcast/hazelcast/master/hazelcast/src/main/resources/hazelcast-config-3.2.xsd"
+        xmlns="http://www.hazelcast.com/schema/config"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+    <group>
+        <name>hazelcast-test</name>
+        <password>hazelcast-test</password>
+    </group>
+    <properties>
+        <property name="hazelcast.heartbeat.interval.seconds">2</property>
+        <property name="hazelcast.max.no.heartbeat.seconds">30</property>
+        <property name="hazelcast.master.confirmation.interval.seconds">5</property>
+        <property name="hazelcast.max.no.master.confirmation.seconds">60</property>
+        <property name="hazelcast.member.list.publish.interval.seconds">60</property>
+        <property name="hazelcast.merge.first.run.delay.seconds">5</property>
+        <property name="hazelcast.merge.next.run.delay.seconds">6</property>
+        <property name="hazelcast.max.wait.seconds.before.join">60</property>
+        <property name="hazelcast.wait.seconds.before.join">5</property>
+        <property name="hazelcast.connection.monitor.max.faults">10</property>
+        <property name="hazelcast.partition.migration.zip.enabled">false</property>
+    </properties>
+
+    <network>
+        <port auto-increment="true" port-count="100">5701</port>
+        <join>
+            <multicast enabled="true">
+            </multicast>
+            <tcp-ip enabled="false">
+            </tcp-ip>
+        </join>
+        <interfaces>
+            <interface>127.0.0.1</interface>
+        </interfaces>
+    </network>
+    <queue name="queue">
+        <backup-count>1</backup-count>
+        <async-backup-count>1</async-backup-count>
+    </queue>        
+</hazelcast>
+```
+
+with the following code:
+
+```
+public static void main(String[] args) throws InterruptedException {
+    int THREADS_NUMBER = 1;
+
+    HazelcastInstance instance = Hazelcast.newHazelcastInstance();
+    List<Thread> threads =
+            Stream.iterate(0, i -> i + 1).limit(THREADS_NUMBER).map(i -> processingThread(instance)).collect(Collectors.toList());
+
+    threads.forEach(Thread::start);
+    threads.forEach(Uninterruptibles::joinUninterruptibly);
+    Hazelcast.shutdownAll();
+}
+
+private static Thread processingThread(HazelcastInstance instance) {
+    return new Thread(() -> {
+        ILock lock = instance.getLock("lock");
+        while (true) {
+            lock.lock();
+            try {
+                TransactionOptions options = new TransactionOptions().setTransactionType(TransactionOptions.TransactionType.LOCAL);
+                TransactionContext transactionContext = instance.newTransactionContext(options);
+                transactionContext.beginTransaction();
+
+                TransactionalQueue<Integer> queue = transactionContext.getQueue("queue");
+                Stream.iterate(0, i -> i + 1).limit(100).forEach(queue::offer);
+                Stream.iterate(0, i -> i + 1).limit(50).forEach(i -> queue.poll());
+
+                transactionContext.commitTransaction();
+            } finally {
+                lock.unlock();
+            }
+            Uninterruptibles.sleepUninterruptibly(1, TimeUnit.MILLISECONDS);
+        }
+    });
+}
+```
+
+creates a lot of messages like:
+
+```
+апр 25, 2014 4:34:43 PM com.hazelcast.queue.QueueContainer
+WARNING: [192.168.1.4]:5702 [hazelcast-test] [3.2.1-SNAPSHOT] txnCommitPoll operation-> No txn item for itemId: 100751
+```
+
+if more than 1 one instance started.

@@ -1,0 +1,93 @@
+I ran into this issue when investigating the changes required to fix #2600 
+
+When an item is put (via `offer(..)`) into a `TransactionalQueue` and then a `poll(non-zero-timeout, units)` is done on that queue within the same transaction then the poll returns null (after a timeout) rather than returning the item that is within the queue.
+
+Note that `poll(..)` does find items placed into the queue outside of the transaction, and it also works if the timeout is zero.
+
+Here is a test case:
+
+```
+import com.hazelcast.client.HazelcastClient;
+import com.hazelcast.core.Hazelcast;
+import com.hazelcast.core.HazelcastInstance;
+import com.hazelcast.core.IQueue;
+import com.hazelcast.core.TransactionalQueue;
+import com.hazelcast.transaction.TransactionContext;
+import org.junit.AfterClass;
+import org.junit.BeforeClass;
+import org.junit.Test;
+
+import java.util.concurrent.TimeUnit;
+
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertTrue;
+
+public class HazelcastTxnOfferPollTest {
+
+    static HazelcastInstance client;
+    static HazelcastInstance server;
+
+    @BeforeClass
+    public static void init(){
+        server = Hazelcast.newHazelcastInstance();
+        client = HazelcastClient.newHazelcastClient();
+    }
+
+    @AfterClass
+    public static void destroy() {
+        HazelcastClient.shutdownAll();
+        Hazelcast.shutdownAll();
+    }
+
+
+    @Test
+    public void testTransactionalOfferTake() throws InterruptedException {
+        final String item = "offered";
+        final String queueName = "my_queue";
+        final IQueue queue = client.getQueue(queueName);
+
+        final TransactionContext context = client.newTransactionContext();
+        context.beginTransaction();
+        TransactionalQueue<String> txnQueue = context.getQueue(queueName);
+        assertTrue(txnQueue.offer(item));
+        assertEquals(1, txnQueue.size());
+        assertEquals(item, txnQueue.poll(5, TimeUnit.SECONDS));
+        context.commitTransaction();
+    }
+
+}
+```
+
+Here is an extract from the output of the test case that shows the failure:
+
+```
+java.lang.AssertionError: 
+Expected :offered
+Actual   :null
+ <Click to see difference>
+    at org.junit.Assert.fail(Assert.java:88)
+    at org.junit.Assert.failNotEquals(Assert.java:743)
+    at org.junit.Assert.assertEquals(Assert.java:118)
+    at org.junit.Assert.assertEquals(Assert.java:144)
+    at HazelcastTxnOfferPollTest.testTransactionalOfferTake(HazelcastTxnOfferPollTest.java:49)
+    at sun.reflect.NativeMethodAccessorImpl.invoke0(Native Method)
+    at sun.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:57)
+    at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)
+    at org.junit.runners.model.FrameworkMethod$1.runReflectiveCall(FrameworkMethod.java:47)
+    at org.junit.internal.runners.model.ReflectiveCallable.run(ReflectiveCallable.java:12)
+    at org.junit.runners.model.FrameworkMethod.invokeExplosively(FrameworkMethod.java:44)
+    at org.junit.internal.runners.statements.InvokeMethod.evaluate(InvokeMethod.java:17)
+    at org.junit.runners.ParentRunner.runLeaf(ParentRunner.java:271)
+    at org.junit.runners.BlockJUnit4ClassRunner.runChild(BlockJUnit4ClassRunner.java:70)
+    at org.junit.runners.BlockJUnit4ClassRunner.runChild(BlockJUnit4ClassRunner.java:50)
+    at org.junit.runners.ParentRunner$3.run(ParentRunner.java:238)
+    at org.junit.runners.ParentRunner$1.schedule(ParentRunner.java:63)
+    at org.junit.runners.ParentRunner.runChildren(ParentRunner.java:236)
+    at org.junit.runners.ParentRunner.access$000(ParentRunner.java:53)
+    at org.junit.runners.ParentRunner$2.evaluate(ParentRunner.java:229)
+    at org.junit.internal.runners.statements.RunBefores.evaluate(RunBefores.java:26)
+    at org.junit.internal.runners.statements.RunAfters.evaluate(RunAfters.java:27)
+    at org.junit.runners.ParentRunner.run(ParentRunner.java:309)
+    at org.junit.runner.JUnitCore.run(JUnitCore.java:160)
+    at com.intellij.rt.execution.junit.JUnitStarter.main(JUnitStarter.java:67)
+```

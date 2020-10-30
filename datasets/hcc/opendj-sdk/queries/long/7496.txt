@@ -1,0 +1,74 @@
+While doing a series of delete requests on IDM managed users (with dj as repo)  IDM requests start to fail (error=500) on ldap operations to ds-idrepo and eventually IDM becomes blocked. The container live check fails and IDM restarts. At this point see lots of operations cancelled (ldap code=118) in the access logs.
+
+Example:
+
+[03/Mar/2020:11:46:04.035 +0000] SEARCH conn=153 msgID=22447 transactionId=f6abc105-b718-4bc2-ab75-ff496828f3d7-29542 base="" scope=base filter="(objectClass=*)" attrs="1.1" result=118 nentries=0 etime=86982
+[03/Mar/2020:11:46:04.035 +0000] SEARCH conn=167 msgID=21817 transactionId=f6abc105-b718-4bc2-ab75-ff496828f3d7-29545 base="" scope=base filter="(objectClass=*)" attrs="1.1" result=118 nentries=0 etime=86982
+[03/Mar/2020:11:46:04.035 +0000] SEARCH conn=145 msgID=22807 transactionId=f6abc105-b718-4bc2-ab75-ff496828f3d7-29546 base="" scope=base filter="(objectClass=*)" attrs="1.1" result=118 nentries=0 etime=86982
+[03/Mar/2020:11:46:04.035 +0000] SEARCH conn=143 msgID=22695 transactionId=f6abc105-b718-4bc2-ab75-ff496828f3d7-29547 base="" scope=base filter="(objectClass=*)" attrs="1.1" result=118 nentries=0 etime=86982
+[03/Mar/2020:11:46:04.035 +0000] SEARCH conn=122 msgID=22881 transactionId=f6abc105-b718-4bc2-ab75-ff496828f3d7-29548 base="" scope=base filter="(objectClass=*)" attrs="1.1" result=118 nentries=0 etime=86982
+
+
+
+looking at the jstack for ds-idrepo DS  5 "Worker Threads" are blocked or timed waiting on psearch.
+
+
+grep -A5 "Worker Thread" /tmp/jstack/b
+"Worker Thread 0" #145 prio=5 os_prio=0 cpu=95546.29ms elapsed=5982.88s tid=0x00007f6a9d818800 nid=0x2a9 waiting for monitor entry  [0x00007f69412d3000]
+   java.lang.Thread.State: BLOCKED (on object monitor)
+	at org.opends.server.protocols.ldap.SynchronizedEmitter.onNext(SynchronizedEmitter.java:42)
+	- waiting to lock <0x00000005f3ec7f80> (a org.opends.server.protocols.ldap.SynchronizedEmitter)
+	at org.opends.server.protocols.ldap.LdapClientConnection.sendSearchEntry(LdapClientConnection.java:306)
+	at org.opends.server.core.SearchOperation.sendSearchEntry(SearchOperation.java:715)
+--
+"Worker Thread 1" #146 prio=5 os_prio=0 cpu=96048.59ms elapsed=5982.88s tid=0x00007f6a9d81a000 nid=0x2aa waiting for monitor entry  [0x00007f69411d2000]
+   java.lang.Thread.State: BLOCKED (on object monitor)
+	at org.opends.server.protocols.ldap.SynchronizedEmitter.onNext(SynchronizedEmitter.java:42)
+	- waiting to lock <0x00000005f3ec7f80> (a org.opends.server.protocols.ldap.SynchronizedEmitter)
+	at org.opends.server.protocols.ldap.LdapClientConnection.sendSearchEntry(LdapClientConnection.java:306)
+	at org.opends.server.core.SearchOperation.sendSearchEntry(SearchOperation.java:715)
+--
+"Worker Thread 2" #147 prio=5 os_prio=0 cpu=96001.04ms elapsed=5982.88s tid=0x00007f6a9d81c000 nid=0x2ab waiting for monitor entry  [0x00007f69410d1000]
+   java.lang.Thread.State: BLOCKED (on object monitor)
+	at org.opends.server.protocols.ldap.SynchronizedEmitter.onNext(SynchronizedEmitter.java:42)
+	- waiting to lock <0x00000005f3ec7f80> (a org.opends.server.protocols.ldap.SynchronizedEmitter)
+	at org.opends.server.protocols.ldap.LdapClientConnection.sendSearchEntry(LdapClientConnection.java:306)
+	at org.opends.server.core.SearchOperation.sendSearchEntry(SearchOperation.java:715)
+--
+"Worker Thread 3" #148 prio=5 os_prio=0 cpu=95525.58ms elapsed=5982.88s tid=0x00007f6a9d81d800 nid=0x2ac waiting on condition  [0x00007f6940fd0000]
+   java.lang.Thread.State: TIMED_WAITING (parking)
+	at jdk.internal.misc.Unsafe.park(java.base@11.0.6/Native Method)
+	- parking to wait for  <0x00000005f43d27b0> (a org.opends.server.protocols.BlockingBackpressureOperator$BackpressureSemaphore)
+	at java.util.concurrent.locks.LockSupport.parkNanos(java.base@11.0.6/Unknown Source)
+	at java.util.concurrent.locks.AbstractQueuedLongSynchronizer.doAcquireSharedNanos(java.base@11.0.6/Unknown Source)
+--
+"Worker Thread 4" #149 prio=5 os_prio=0 cpu=95523.28ms elapsed=5982.88s tid=0x00007f6a9d81f800 nid=0x2ad waiting on condition  [0x00007f6940ece000]
+   java.lang.Thread.State: TIMED_WAITING (parking)
+	at jdk.internal.misc.Unsafe.park(java.base@11.0.6/Native Method)
+	- parking to wait for  <0x00000005f3ec7178> (a org.opends.server.protocols.BlockingBackpressureOperator$BackpressureSemaphore)
+	at java.util.concurrent.locks.LockSupport.parkNanos(java.base@11.0.6/Unknown Source)
+	at java.util.concurrent.locks.AbstractQueuedLongSynchronizer.doAcquireSharedNanos(java.base@11.0.6/Unknown Source)
+
+
+
+Example "Worker Thread 0"
+
+"Worker Thread 0" #145 prio=5 os_prio=0 cpu=95546.29ms elapsed=6008.52s tid=0x00007f6a9d818800 nid=0x2a9 waiting for monitor entry  [0x00007f69412d3000]^M
+   java.lang.Thread.State: BLOCKED (on object monitor)^M
+        at org.opends.server.protocols.ldap.SynchronizedEmitter.onNext(SynchronizedEmitter.java:42)^M
+        - waiting to lock <0x00000005f3ec7f80> (a org.opends.server.protocols.ldap.SynchronizedEmitter)^M
+        at org.opends.server.protocols.ldap.LdapClientConnection.sendSearchEntry(LdapClientConnection.java:306)^M
+        at org.opends.server.core.SearchOperation.sendSearchEntry(SearchOperation.java:715)^M
+        at org.opends.server.core.SearchOperation.returnEntry(SearchOperation.java:505)^M
+        at org.opends.server.core.PersistentSearch.sendEntry0(PersistentSearch.java:312)^M
+        at org.opends.server.core.PersistentSearch.sendEntry(PersistentSearch.java:305)^M
+        at org.opends.server.core.PersistentSearch.processDelete(PersistentSearch.java:254)^M
+        at org.opends.server.core.DeleteOperation.lambda$processLocalDelete$0(DeleteOperation.java:250)^M
+        at org.opends.server.core.DeleteOperation$$Lambda$736/0x00000008006d4840.run(Unknown Source)^M
+        at org.opends.server.types.Operation.invokePostResponseCallbacks(Operation.java:637)^M
+        at org.opends.server.core.DeleteOperation.run(DeleteOperation.java:210)^M
+        at org.opends.server.extensions.TraditionalWorkQueue$WorkerThread.run(TraditionalWorkQueue.java:473)^M
+
+
+
+Full jstack is attached.

@@ -1,0 +1,136 @@
+### What is the problem
+
+The `fn:collection` function returns binary resources as `document-node`.
+
+### What did you expect
+
+I expected that `fn:collection` would either (1) exclude binary resources from its results (as the XQuery 1.0-3.0 specs suggest) or (2) return them with the correct datatype of `xs:base64Binary` (as the XQuery 3.1 spec suggests). 
+
+For context, see https://www.w3.org/TR/xpath-functions/#func-collection, which lists the following function signature for `fn:collection`:
+
+> `fn:collection($arg as xs:string?) as item()*`
+
+Also, see this note:
+
+> In earlier releases, the primary use for the `fn:collection` function was to retrieve a collection of XML documents, perhaps held as lexical XML in operating system filestore, or perhaps held in an XML database. In this release the concept has been generalised to allow other resources to be retrieved: for example JSON documents might be returned as arrays or maps, non-XML text files might be returned as strings, and binary files might be returned as instances of `xs:base64Binary`...
+
+In XQuery 3.0 and earlier, the return type for `fn:collection` was `node()*`.
+
+Thus, if eXist conforms to XQuery 1.0-3.0, `fn:collection` **should not** include binary resources at all in the results. 
+
+However, if eXist is following XQuery 3.1, `fn:collection` **could** return binary resources as `xs:base64Binary`. 
+
+I think we should adopt the XQuery 3.1 behavior.
+
+### Describe how to reproduce or add a test
+
+A simple test:
+
+```xquery
+xquery version "3.1";
+
+(: pick a collection that contains only binary resources, like dashboard's module collection:)
+let $collection-name := "/db/apps/dashboard/modules"
+let $collection := collection($collection-name)
+let $binary-docs := 
+    for $resource-name in xmldb:get-child-resources($collection-name) 
+    return
+        util:binary-doc($collection-name || "/" || $resource-name)
+return
+    (
+        every $bin in $collection satisfies $bin instance of xs:base64Binary,
+        every $bin in $collection satisfies $bin instance of document-node(),
+        every $bin in $binary-docs satisfies $bin instance of xs:base64Binary,
+        every $bin in $binary-docs satisfies $bin instance of document-node()
+    )
+```
+
+The results, `false, true, true, false` shows that eXist's `fn:collection` function is returning binary resources as `document-node`, not as `xs:base64Binary`. On the other hand, using `util:binary-doc` to retrieve the same resources shows that `util:binary-doc` correctly returns these resources as `xs:base64Binary`, not as `document-node`.
+
+An XQSuite demonstrating this:
+
+```xquery
+xquery version "3.1";
+
+module namespace ct="http://exist-db.org/xquery/fn/collection/test";
+
+declare namespace test="http://exist-db.org/xquery/xqsuite";
+
+declare variable $ct:text := "foo";
+declare variable $ct:xml := <x>{$ct:text}</x>;
+
+declare
+    %test:setUp
+function ct:setup() {
+    let $testCol := xmldb:create-collection("/db", "test")
+    return 
+        (
+            xmldb:store($testCol, "test.txt", $ct:text),
+            xmldb:store($testCol, "test.xml", $ct:xml)
+        )
+};
+
+(: Both documents and binary resources should be returned by fn:collection :)
+declare
+    %test:assertEquals(2)
+function ct:count-collection-contents() {
+    count(collection("/db/test"))
+};
+
+(: fn:collection should return the correct type of resources :)
+declare
+    %test:assertFalse
+function ct:binary-resources-are-not-document-nodes() {
+    every $x in collection("/db/test") satisfies $x instance of document-node()
+};
+
+(: fn:collection should return the correct type of resources :)
+declare
+    %test:assertTrue
+function ct:binary-resources-are-binary() {
+    some $x in collection("/db/test") satisfies $x instance of xs:base64Binary
+};
+
+(: fn:collection should return the correct type of resources :)
+declare
+    %test:assertTrue
+function ct:documents-are-document-nodes() {
+    some $x in collection("/db/test") satisfies $x instance of document-node()
+};
+
+declare
+    %test:tearDown
+function ct:tearDown() {
+    xmldb:remove("/db/test")
+};
+```
+
+This test currently returns:
+
+```xml
+<testsuites>
+    <testsuite package="http://exist-db.org/xquery/fn/collection/test"
+        timestamp="2018-06-23T20:49:27.073+02:00" failures="2" pending="0" tests="4" time="PT0.019S">
+        <testcase name="binary-resources-are-binary" class="ct:binary-resources-are-binary">
+            <failure message="assertTrue failed." type="failure-error-code-1"/>
+            <output>false</output>
+        </testcase>
+        <testcase name="binary-resources-are-not-document-nodes"
+            class="ct:binary-resources-are-not-document-nodes">
+            <failure message="assertFalse failed." type="failure-error-code-1"/>
+            <output>true</output>
+        </testcase>
+        <testcase name="count-collection-contents" class="ct:count-collection-contents"/>
+        <testcase name="documents-are-document-nodes" class="ct:documents-are-document-nodes"/>
+    </testsuite>
+</testsuites>
+```
+
+### Context information
+
+- eXist-db version + Git Revision hash: eXist 5.0.0-SNAPSHOT+201806200044 develop dc35967f5
+- Java version: 1.8.0_172
+- Operating system: macOS 10.13.5
+- 32 or 64 bit: 64 bit
+- How is eXist-db installed: clone from GitHub
+- Any custom changes in e.g. conf.xml: none

@@ -1,0 +1,284 @@
+The problem usually occurs when I'm running a PACT plan on large input file and I use a single input contract (extending SingleInputContract<T>, eg. Map, Reduce) with two inputs (according to the documentation, public Builder input(Contract ...inputs) lets us to use the union of the multiple input parameters).
+
+In many cases, but not always, stubs are running, but nothing happens - they reach a deadlock waiting for each other. No errors are reported, CPU is not used, no I/O activity. There is no output of the Reduce stub. We can observe output of the Map - Reduce must wait for all of the input data, but Map is able to produce output without collecting all of the input.
+
+I set the DOP to 1, Stratosphere was running in local mode.
+The word counter example code reproduces the problematic behavior on a multiplied "hamlet" input file:
+for i in 
+{1..100}
+; do  cat ./hamlet.txt>>hamlet100.txt ; done
+
+ 1) The original example code works well on the original hamlet.txt file both with Cogroup and Reduce.
+ 2) The code runs using Cogroup, no apparent problems.
+ 3) We usually reach the deadlock using Reduce with 2 inputs.
+ 4) We also tested Map with two inputs with a slightly different test code, and reached the deadlock.
+
+We experienced the same behaviour with both Stratosphere 2.0 and 4.0 Ozone standalone installs, and also on many different machines (Ubuntu, Fedora; Sun Java 7, OpenJDK 7).
+
+The source code is the variation of WordCounter example to demonstration the bug:
+(In the comment: Cogroup and Map test.)
+
+<pre><code>
+package hu.sztaki.ilab.er.stratosphere;
+
+import eu.stratosphere.pact.common.contract.CoGroupContract;
+import java.util.Iterator;
+
+import eu.stratosphere.pact.common.contract.FileDataSink;
+import eu.stratosphere.pact.common.contract.FileDataSource;
+import eu.stratosphere.pact.common.contract.GenericDataSink;
+import eu.stratosphere.pact.common.contract.MapContract;
+import eu.stratosphere.pact.common.contract.ReduceContract;
+import eu.stratosphere.pact.common.io.RecordOutputFormat;
+import eu.stratosphere.pact.common.io.TextInputFormat;
+import eu.stratosphere.pact.common.plan.Plan;
+import eu.stratosphere.pact.common.plan.PlanAssembler;
+import eu.stratosphere.pact.common.plan.PlanAssemblerDescription;
+import eu.stratosphere.pact.common.stubs.CoGroupStub;
+import eu.stratosphere.pact.common.stubs.Collector;
+import eu.stratosphere.pact.common.stubs.MapStub;
+import eu.stratosphere.pact.common.stubs.ReduceStub;
+//import eu.stratosphere.pact.common.stubs.StubAnnotation.ConstantFields;
+//import eu.stratosphere.pact.common.stubs.StubAnnotation.OutCardBounds;
+import eu.stratosphere.pact.common.type.PactRecord;
+import eu.stratosphere.pact.common.type.base.PactInteger;
+import eu.stratosphere.pact.common.type.base.PactString;
+import java.io.Serializable;
+import java.util.Arrays;
+import java.util.List;
+import org.apache.log4j.Logger;
+
+
+/**
+ *
+
+	@author lukacsg
+ */
+public class TestDoubleInput4 implements PlanAssembler, PlanAssemblerDescription {
+     private static Logger log = Logger.getLogger(TestDoubleInput.class);
+
+
+
+//	@ConstantFields(fields={})
+//	@OutCardBounds(lowerBound=0, upperBound=OutCardBounds.UNBOUNDED)
+    public static class Map1 extends MapStub implements Serializable {
+        private static final long serialVersionUID = 1L;
+        // initialize reusable mutable objects
+		private final PactRecord outputRecord = new PactRecord();
+		private final PactString word = new PactString();
+		private final PactInteger one = new PactInteger(1);
+
+		private final AsciiUtils.WhitespaceTokenizer tokenizer =
+				new AsciiUtils.WhitespaceTokenizer();
+
+		@Override
+		public void map(PactRecord record, Collector<PactRecord> collector) {
+			// get the first field (as type PactString) from the record
+			PactString line = record.getField(0, PactString.class);
+
+			// normalize the line
+			AsciiUtils.replaceNonWordChars(line, ' ');
+			AsciiUtils.toLowerCase(line);
+
+			// tokenize the line
+			this.tokenizer.setStringToTokenize(line);
+			while (tokenizer.next(this.word))
+			{
+				// we emit a (word, 1) pair 
+				this.outputRecord.setField(0, this.word);
+				this.outputRecord.setField(1, this.one);
+				collector.collect(this.outputRecord);
+			}
+		}
+    }
+
+//	@ConstantFields(fields={})
+//	@OutCardBounds(lowerBound=0, upperBound=OutCardBounds.UNBOUNDED)
+    public static class Map2 extends MapStub implements Serializable {
+        private static final long serialVersionUID = 1L;
+        // initialize reusable mutable objects
+		private final PactRecord outputRecord = new PactRecord();
+		private final PactString word = new PactString();
+		private final PactInteger one = new PactInteger(1);
+		
+		private final AsciiUtils.WhitespaceTokenizer tokenizer =
+				new AsciiUtils.WhitespaceTokenizer();
+		
+		@Override
+		public void map(PactRecord record, Collector<PactRecord> collector) {
+			// get the first field (as type PactString) from the record
+			PactString line = record.getField(0, PactString.class);
+			
+			// normalize the line
+			AsciiUtils.replaceNonWordChars(line, ' ');
+			AsciiUtils.toLowerCase(line);
+			
+			// tokenize the line
+			this.tokenizer.setStringToTokenize(line);
+			while (tokenizer.next(this.word))
+			{				// we emit a (word, 1) pair 				this.outputRecord.setField(0, this.word);				this.outputRecord.setField(1, this.one);				collector.collect(this.outputRecord);			}
+		}
+    }
+
+//	@ConstantFields(fields=
+{0})
+//	@OutCardBounds(lowerBound=1, upperBound=1)
+//	@Combinable
+    public static class CogroupSolution extends CoGroupStub implements Serializable {
+        private static final long serialVersionUID = 1L;
+        private final PactInteger cnt = new PactInteger();
+        
+        @Override
+        public void coGroup(Iterator<PactRecord> records1, Iterator<PactRecord> records2, Collector<PactRecord> out) throws Exception {
+            PactRecord element = null;
+			int sum = 0;
+			while (records1.hasNext()) {
+				element = records1.next();
+				PactInteger i = element.getField(1, PactInteger.class);
+				sum += i.getValue();
+			}
+			while (records2.hasNext()) {
+				element = records2.next();
+				PactInteger i = element.getField(1, PactInteger.class);
+				sum += i.getValue();
+			}
+
+			this.cnt.setValue(sum);
+			element.setField(1, this.cnt);
+			out.collect(element);
+        }
+        
+        
+    }
+
+ //	@ConstantFields(fields={0}
+)
+//	@OutCardBounds(lowerBound=1, upperBound=1)
+//	@Combinable
+    public static class ReduceSolution extends ReduceStub implements Serializable {
+        private static final long serialVersionUID = 1L;
+        private final PactInteger cnt = new PactInteger();
+
+		@Override
+		public void reduce(Iterator<PactRecord> records, Collector<PactRecord> out) throws Exception {
+			PactRecord element = null;
+			int sum = 0;
+			while (records.hasNext()) 
+{
+				element = records.next();
+				PactInteger i = element.getField(1, PactInteger.class);
+				sum += i.getValue();
+			}
+
+			this.cnt.setValue(sum);
+			element.setField(1, this.cnt);
+			out.collect(element);
+		}
+    }
+
+    //	@ConstantFields(fields={})
+//	@OutCardBounds(lowerBound=0, upperBound=OutCardBounds.UNBOUNDED)
+    public static class MapTest extends MapStub  implements Serializable {
+        private static final long serialVersionUID = 1L;
+        @Override
+        public void map(PactRecord record, Collector<PactRecord> collector) 
+{
+                collector.collect(record);
+        }
+    }
+
+
+
+    /**
+
+	{@inheritDoc}
+     */
+    @Override
+    public Plan getPlan(String... args) {
+        // parse job parameters
+        int noSubTasks = (args.length > 0 ? Integer.parseInt(args[0]) : 1);
+        String dataInput = (args.length > 1 ? args[1] : "");
+        String output = (args.length > 2 ? args[2] : "");
+
+        FileDataSource source = new FileDataSource(TextInputFormat.class, dataInput, "Input Records");
+		//source.setParameter(TextInputFormat.CHARSET_NAME, "ASCII");		// comment out this line for UTF-8 inputs
+        MapContract map1 = MapContract.builder(Map1.class)
+                .input(source)
+                .name("MAP1")
+                .build();
+        MapContract map2 = MapContract.builder(Map2.class)
+                .input(source)
+                .name("MAP2")
+                .build();
+        
+        /////////////////// REDUCER part
+        ReduceContract reducer = ReduceContract.builder(ReduceSolution.class, PactString.class, 0)
+                .input(map1, map2)
+                .name("REDUCER")
+                .build();
+        FileDataSink out = new FileDataSink(RecordOutputFormat.class, output+"reduce", reducer, "REDUCEROUT");
+        RecordOutputFormat.configureRecordFormat(out)
+                .recordDelimiter('\n')
+                .fieldDelimiter('#')
+                .lenient(true)
+                .field(PactString.class, 0)
+                .field(PactInteger.class, 1);
+        
+        //////////////////// COGROUP part
+//        CoGroupContract cogroup = CoGroupContract.builder(CogroupSolution.class, PactString.class, 0, 0)
+//                .input1(map1)
+//                .input2(map2)
+//                .name("COGROUP")
+//                .build();
+//        FileDataSink out2 = new FileDataSink(RecordOutputFormat.class, output+"cogroup", cogroup, "COGROUP");
+//        RecordOutputFormat.configureRecordFormat(out2)
+//                .recordDelimiter('\n')
+//                .fieldDelimiter('#')
+//                .lenient(true)
+//                .field(PactString.class, 0)
+//                .field(PactInteger.class, 1);
+        
+        /////////////////// MAP part
+//        MapContract maptest = MapContract.builder(MapTest.class)
+//                .input(map1, map2)
+//                .name("MAP TEST")
+//                .build();
+//        FileDataSink out3 = new FileDataSink(RecordOutputFormat.class, output + "map", maptest, "MAP");
+//        RecordOutputFormat.configureRecordFormat(out3)
+//                .recordDelimiter('\n')
+//                .fieldDelimiter('#')
+//                .lenient(true)
+//                .field(PactString.class, 0)
+//                .field(PactInteger.class, 1);
+        
+       
+//        List<GenericDataSink> outlist = Arrays.asList((GenericDataSink) out, (GenericDataSink) out2);
+       
+//        Plan plan = new Plan(outlist, "TestDoubleInput");
+//        Plan plan = new Plan(out2, "TestDoubleInput");
+        Plan plan = new Plan(out, "TestDoubleInput");
+//        Plan plan = new Plan(out3, "TestDoubleInput");
+        plan.setDefaultParallelism(noSubTasks);
+        return plan;
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    @Override
+    public String getDescription() 
+{
+        return "Parameters: [noSubStasks] [input] [output]";
+    }
+}
+
+
+
+</code></pre>
+
+---------------- Imported from GitHub ----------------
+Url: https://github.com/stratosphere/stratosphere/issues/192
+Created by: lukacsg
+Labels: bug, 
+Created at: Tue Oct 22 13:51:21 CEST 2013
+State: closed

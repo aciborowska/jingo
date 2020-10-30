@@ -1,0 +1,257 @@
+This deadlock was reported by a user on the OpenDJ mailing list while he was stress testing replication conflict resolution:
+
+
+Hi,
+
+We are fans of OpenDS and now OpenDJ.  It's a great directory.
+
+Recently I've been doing some testing with OpenDJ replication and I've been testing some of the conflict resolution scenarios.  Unfortunately, as part of that testing, I've encountered a hang condition that sometimes occurs while replaying replicated changes. To reproduce the hang appears to require at least 3 servers, sometimes 4. 
+
+The test setup: I've installed four instances of OpenDJ 2.4.4, and configured them for replication.  I stop all but one server and apply a set of LDAP modifications to that server, and then stop it.  Then I start a second server and apply a set of LDAP modifications that conflict with the first set of changes.  An example of such a conflict is deleting an entry on one server while adding a subordinate to it on the other server. While the second server is running, I start the first server, then the third, and finally the fourth.  After each server starts, I issue a set of ldapsearch requests.  Sometimes, after the third server (or the fourth server) starts, the ldapsearch requests will hang.  The hang does not seem to be temporary. 
+
+Stopping the hung server and restarting it will sometimes resolve the hang, but not always.  And, sometimes, while stopping the hung server the database is reported as being corrupted.   A sample message portion: "msg=JE Database Environment corresponding to backend id userRoot is corrupt. Restart the Directory Server to reopen the Environment"
+
+Some sample threads from a hung instance are shown below.  I'd be glad to provide the scripts and ldif files I've been using for testing, as well as full sets of thread dumps, if that would help.  On my Linux test system, the script often reproduces the problem, but not every time.
+
+Thanks much for your help,
+
+Regards,
+   -Tom
+
+— Some selected threads from a hung instance: —
+
+"Worker Thread 0" prio=10 tid=0x0000002a9bb11000 nid=0x4b8d in Object.wait() [0x0000000047198000]
+   java.lang.Thread.State: WAITING (on object monitor)
+        at java.lang.Object.wait(Native Method)
+
+	waiting on <0x00000000dd0603d0> (a com.sleepycat.je.txn.ThreadLocker)
+        at com.sleepycat.je.txn.LockManager.lockInternal(LockManager.java:346)
+        at com.sleepycat.je.txn.LockManager.lock(LockManager.java:272)
+	locked <0x00000000dd0603d0> (a com.sleepycat.je.txn.ThreadLocker)
+        at com.sleepycat.je.txn.BasicLocker.lockInternal(BasicLocker.java:134)
+        at com.sleepycat.je.txn.Locker.lock(Locker.java:453)
+        at com.sleepycat.je.dbi.CursorImpl.lockLNDeletedAllowed(CursorImpl.java:2696)
+        at com.sleepycat.je.dbi.CursorImpl.lockLN(CursorImpl.java:2615)
+        at com.sleepycat.je.dbi.CursorImpl.searchAndPosition(CursorImpl.java:2267)
+        at com.sleepycat.je.Cursor.searchInternal(Cursor.java:2097)
+        at com.sleepycat.je.Cursor.searchAllowPhantoms(Cursor.java:2067)
+        at com.sleepycat.je.Cursor.search(Cursor.java:1935)
+        at com.sleepycat.je.Database.get(Database.java:905)
+        at org.opends.server.backends.jeb.DatabaseContainer.read(DatabaseContainer.java:200)
+        at org.opends.server.backends.jeb.ID2Entry.get(ID2Entry.java:429)
+        at org.opends.server.backends.jeb.EntryContainer.searchIndexed(EntryContainer.java:1564)
+        at org.opends.server.backends.jeb.EntryContainer.search(EntryContainer.java:1138)
+        at org.opends.server.backends.jeb.BackendImpl.search(BackendImpl.java:973)
+        at org.opends.server.workflowelement.localbackend.LocalBackendSearchOperation.processLocalSearch(LocalBackendSearchOperation.java:273)
+        at org.opends.server.workflowelement.localbackend.LocalBackendWorkflowElement.execute(LocalBackendWorkflowElement.java:547)
+        at org.opends.server.core.WorkflowImpl.execute(WorkflowImpl.java:197)
+        at org.opends.server.core.WorkflowTopologyNode.execute(WorkflowTopologyNode.java:100)
+        at org.opends.server.core.SearchOperationBasis.run(SearchOperationBasis.java:1385)
+        at org.opends.server.extensions.TraditionalWorkerThread.run(TraditionalWorkerThread.java:163)
+
+
+
+"Replica replay thread 8" prio=10 tid=0x0000002a9b180800 nid=0x4b69 in Object.wait() [0x000000004537a000]
+   java.lang.Thread.State: WAITING (on object monitor)
+        at java.lang.Object.wait(Native Method)
+
+	waiting on <0x00000000dd060800> (a com.sleepycat.je.txn.ReadCommittedLocker)
+        at com.sleepycat.je.txn.LockManager.lockInternal(LockManager.java:346)
+        at com.sleepycat.je.txn.LockManager.lock(LockManager.java:272)
+	locked <0x00000000dd060800> (a com.sleepycat.je.txn.ReadCommittedLocker)
+        at com.sleepycat.je.txn.BasicLocker.lockInternal(BasicLocker.java:134)
+        at com.sleepycat.je.txn.ReadCommittedLocker.lockInternal(ReadCommittedLocker.java:90)
+        at com.sleepycat.je.txn.Locker.lock(Locker.java:453)
+        at com.sleepycat.je.dbi.CursorImpl.lockLNDeletedAllowed(CursorImpl.java:2696)
+        at com.sleepycat.je.dbi.CursorImpl.lockLN(CursorImpl.java:2615)
+        at com.sleepycat.je.dbi.CursorImpl.searchAndPosition(CursorImpl.java:2267)
+        at com.sleepycat.je.Cursor.searchInternal(Cursor.java:2097)
+        at com.sleepycat.je.Cursor.searchAllowPhantoms(Cursor.java:2067)
+        at com.sleepycat.je.Cursor.search(Cursor.java:1935)
+        at com.sleepycat.je.Database.get(Database.java:905)
+        at org.opends.server.backends.jeb.DatabaseContainer.read(DatabaseContainer.java:200)
+        at org.opends.server.backends.jeb.Index.removeID(Index.java:773)
+        at org.opends.server.backends.jeb.Index.removeEntry(Index.java:1304)
+        at org.opends.server.backends.jeb.AttributeIndex.removeEntry(AttributeIndex.java:632)
+        at org.opends.server.backends.jeb.EntryContainer.indexRemoveEntry(EntryContainer.java:3122)
+        at org.opends.server.backends.jeb.EntryContainer.deleteEntry(EntryContainer.java:2166)
+        at org.opends.server.backends.jeb.EntryContainer.deleteEntry(EntryContainer.java:2037)
+        at org.opends.server.backends.jeb.BackendImpl.deleteEntry(BackendImpl.java:827)
+        at org.opends.server.workflowelement.localbackend.LocalBackendDeleteOperation.processLocalDelete(LocalBackendDeleteOperation.java:407)
+        at org.opends.server.workflowelement.localbackend.LocalBackendWorkflowElement.execute(LocalBackendWorkflowElement.java:559)
+        at org.opends.server.core.WorkflowImpl.execute(WorkflowImpl.java:197)
+        at org.opends.server.core.WorkflowTopologyNode.execute(WorkflowTopologyNode.java:100)
+        at org.opends.server.core.DeleteOperationBasis.run(DeleteOperationBasis.java:417)
+        at org.opends.server.replication.plugin.LDAPReplicationDomain.replay(LDAPReplicationDomain.java:2699)
+        at org.opends.server.replication.plugin.ReplayThread.run(ReplayThread.java:109)
+
+
+
+"Replica replay thread 7" prio=10 tid=0x0000002a99e98800 nid=0x4b68 in Object.wait() [0x0000000045279000]
+   java.lang.Thread.State: WAITING (on object monitor)
+        at java.lang.Object.wait(Native Method)
+
+	waiting on <0x00000000dd060dc0> (a com.sleepycat.je.txn.Txn)
+        at com.sleepycat.je.txn.LockManager.lockInternal(LockManager.java:346)
+        at com.sleepycat.je.txn.LockManager.lock(LockManager.java:272)
+	locked <0x00000000dd060dc0> (a com.sleepycat.je.txn.Txn)
+        at com.sleepycat.je.txn.Txn.lockInternal(Txn.java:474)
+        at com.sleepycat.je.txn.Locker.lock(Locker.java:453)
+        at com.sleepycat.je.dbi.CursorImpl.lockLNDeletedAllowed(CursorImpl.java:2696)
+        at com.sleepycat.je.dbi.CursorImpl.lockLN(CursorImpl.java:2615)
+        at com.sleepycat.je.dbi.CursorImpl.searchAndPosition(CursorImpl.java:2267)
+        at com.sleepycat.je.Cursor.searchInternal(Cursor.java:2097)
+        at com.sleepycat.je.Cursor.searchAllowPhantoms(Cursor.java:2067)
+        at com.sleepycat.je.Cursor.search(Cursor.java:1935)
+        at com.sleepycat.je.Database.deleteInternal(Database.java:782)
+        at com.sleepycat.je.Database.delete(Database.java:714)
+        at org.opends.server.backends.jeb.DatabaseContainer.delete(DatabaseContainer.java:243)
+        at org.opends.server.backends.jeb.DN2ID.delete(DN2ID.java:208)
+        at org.opends.server.backends.jeb.DN2ID.remove(DN2ID.java:193)
+        at org.opends.server.backends.jeb.EntryContainer.removeSubordinateEntry(EntryContainer.java:2926)
+        at org.opends.server.backends.jeb.EntryContainer.renameEntry(EntryContainer.java:2659)
+        at org.opends.server.backends.jeb.BackendImpl.renameEntry(BackendImpl.java:930)
+        at org.opends.server.workflowelement.localbackend.LocalBackendModifyDNOperation.processLocalModifyDN(LocalBackendModifyDNOperation.java:625)
+        at org.opends.server.workflowelement.localbackend.LocalBackendWorkflowElement.execute(LocalBackendWorkflowElement.java:571)
+        at org.opends.server.core.WorkflowImpl.execute(WorkflowImpl.java:197)
+        at org.opends.server.core.WorkflowTopologyNode.execute(WorkflowTopologyNode.java:100)
+        at org.opends.server.core.ModifyDNOperationBasis.run(ModifyDNOperationBasis.java:634)
+        at org.opends.server.replication.plugin.LDAPReplicationDomain.replay(LDAPReplicationDomain.java:2699)
+        at org.opends.server.replication.plugin.ReplayThread.run(ReplayThread.java:109)
+
+
+
+"Replica replay thread 6" prio=10 tid=0x0000002a99e96000 nid=0x4b67 in Object.wait() [0x0000000045178000]
+   java.lang.Thread.State: WAITING (on object monitor)
+        at java.lang.Object.wait(Native Method)
+
+	waiting on <0x00000000dd0614e8> (a com.sleepycat.je.txn.Txn)
+        at com.sleepycat.je.txn.LockManager.lockInternal(LockManager.java:346)
+        at com.sleepycat.je.txn.LockManager.lock(LockManager.java:272)
+	locked <0x00000000dd0614e8> (a com.sleepycat.je.txn.Txn)
+        at com.sleepycat.je.txn.Txn.lockInternal(Txn.java:474)
+        at com.sleepycat.je.txn.Locker.lock(Locker.java:453)
+        at com.sleepycat.je.dbi.CursorImpl.lockLNDeletedAllowed(CursorImpl.java:2696)
+        at com.sleepycat.je.dbi.CursorImpl.lockLN(CursorImpl.java:2615)
+        at com.sleepycat.je.dbi.CursorImpl.searchAndPosition(CursorImpl.java:2267)
+        at com.sleepycat.je.Cursor.searchInternal(Cursor.java:2097)
+        at com.sleepycat.je.Cursor.searchAllowPhantoms(Cursor.java:2067)
+        at com.sleepycat.je.Cursor.search(Cursor.java:1935)
+        at com.sleepycat.je.Database.get(Database.java:905)
+        at org.opends.server.backends.jeb.DatabaseContainer.read(DatabaseContainer.java:200)
+        at org.opends.server.backends.jeb.Index.insertIDWithRMW(Index.java:437)
+        at org.opends.server.backends.jeb.Index.insertID(Index.java:277)
+        at org.opends.server.backends.jeb.Index.addEntry(Index.java:1253)
+        at org.opends.server.backends.jeb.AttributeIndex.addEntry(AttributeIndex.java:519)
+        at org.opends.server.backends.jeb.EntryContainer.indexInsertEntry(EntryContainer.java:3074)
+        at org.opends.server.backends.jeb.EntryContainer.addEntry(EntryContainer.java:1805)
+        at org.opends.server.backends.jeb.BackendImpl.addEntry(BackendImpl.java:783)
+        at org.opends.server.workflowelement.localbackend.LocalBackendAddOperation.processLocalAdd(LocalBackendAddOperation.java:676)
+        at org.opends.server.workflowelement.localbackend.LocalBackendWorkflowElement.execute(LocalBackendWorkflowElement.java:553)
+        at org.opends.server.core.WorkflowImpl.execute(WorkflowImpl.java:197)
+        at org.opends.server.core.WorkflowTopologyNode.execute(WorkflowTopologyNode.java:100)
+        at org.opends.server.core.AddOperationBasis.run(AddOperationBasis.java:764)
+        at org.opends.server.replication.plugin.LDAPReplicationDomain.replay(LDAPReplicationDomain.java:2699)
+        at org.opends.server.replication.plugin.ReplayThread.run(ReplayThread.java:109)
+
+
+
+"Replica replay thread 4" prio=10 tid=0x0000002a99e91800 nid=0x4b65 in Object.wait() [0x0000000044f76000]
+   java.lang.Thread.State: WAITING (on object monitor)
+        at java.lang.Object.wait(Native Method)
+
+	waiting on <0x00000000dd061958> (a com.sleepycat.je.txn.Txn)
+        at com.sleepycat.je.txn.LockManager.lockInternal(LockManager.java:346)
+        at com.sleepycat.je.txn.LockManager.lock(LockManager.java:272)
+	locked <0x00000000dd061958> (a com.sleepycat.je.txn.Txn)
+        at com.sleepycat.je.txn.Txn.lockInternal(Txn.java:474)
+        at com.sleepycat.je.txn.Locker.lock(Locker.java:453)
+        at com.sleepycat.je.dbi.CursorImpl.lockLNDeletedAllowed(CursorImpl.java:2696)
+        at com.sleepycat.je.dbi.CursorImpl.lockLN(CursorImpl.java:2615)
+        at com.sleepycat.je.dbi.CursorImpl.searchAndPosition(CursorImpl.java:2267)
+        at com.sleepycat.je.Cursor.searchInternal(Cursor.java:2097)
+        at com.sleepycat.je.Cursor.searchAllowPhantoms(Cursor.java:2067)
+        at com.sleepycat.je.Cursor.search(Cursor.java:1935)
+        at com.sleepycat.je.Database.get(Database.java:905)
+        at org.opends.server.backends.jeb.DatabaseContainer.read(DatabaseContainer.java:200)
+        at org.opends.server.backends.jeb.DN2ID.read(DN2ID.java:245)
+        at org.opends.server.backends.jeb.DN2ID.get(DN2ID.java:229)
+        at org.opends.server.backends.jeb.EntryContainer.addEntry(EntryContainer.java:1824)
+        at org.opends.server.backends.jeb.BackendImpl.addEntry(BackendImpl.java:783)
+        at org.opends.server.workflowelement.localbackend.LocalBackendAddOperation.processLocalAdd(LocalBackendAddOperation.java:676)
+        at org.opends.server.workflowelement.localbackend.LocalBackendWorkflowElement.execute(LocalBackendWorkflowElement.java:553)
+        at org.opends.server.core.WorkflowImpl.execute(WorkflowImpl.java:197)
+        at org.opends.server.core.WorkflowTopologyNode.execute(WorkflowTopologyNode.java:100)
+        at org.opends.server.core.AddOperationBasis.run(AddOperationBasis.java:764)
+        at org.opends.server.replication.plugin.LDAPReplicationDomain.replay(LDAPReplicationDomain.java:2699)
+        at org.opends.server.replication.plugin.ReplayThread.run(ReplayThread.java:109)
+
+
+
+"Replica replay thread 2" prio=10 tid=0x0000002a9b18c800 nid=0x4b63 in Object.wait() [0x0000000044d74000]
+   java.lang.Thread.State: WAITING (on object monitor)
+        at java.lang.Object.wait(Native Method)
+
+	waiting on <0x00000000dd061e48> (a com.sleepycat.je.txn.Txn)
+        at com.sleepycat.je.txn.LockManager.lockInternal(LockManager.java:346)
+        at com.sleepycat.je.txn.LockManager.lock(LockManager.java:272)
+	locked <0x00000000dd061e48> (a com.sleepycat.je.txn.Txn)
+        at com.sleepycat.je.txn.Txn.lockInternal(Txn.java:474)
+        at com.sleepycat.je.txn.Locker.lock(Locker.java:453)
+        at com.sleepycat.je.dbi.CursorImpl.lockLNDeletedAllowed(CursorImpl.java:2696)
+        at com.sleepycat.je.dbi.CursorImpl.lockLN(CursorImpl.java:2615)
+        at com.sleepycat.je.dbi.CursorImpl.searchAndPosition(CursorImpl.java:2267)
+        at com.sleepycat.je.Cursor.searchInternal(Cursor.java:2097)
+        at com.sleepycat.je.Cursor.searchAllowPhantoms(Cursor.java:2067)
+        at com.sleepycat.je.Cursor.search(Cursor.java:1935)
+        at com.sleepycat.je.Database.deleteInternal(Database.java:782)
+        at com.sleepycat.je.Database.delete(Database.java:714)
+        at org.opends.server.backends.jeb.DatabaseContainer.delete(DatabaseContainer.java:243)
+        at org.opends.server.backends.jeb.DN2ID.delete(DN2ID.java:208)
+        at org.opends.server.backends.jeb.DN2ID.remove(DN2ID.java:193)
+        at org.opends.server.backends.jeb.EntryContainer.removeSubordinateEntry(EntryContainer.java:2926)
+        at org.opends.server.backends.jeb.EntryContainer.renameEntry(EntryContainer.java:2659)
+        at org.opends.server.backends.jeb.BackendImpl.renameEntry(BackendImpl.java:930)
+        at org.opends.server.workflowelement.localbackend.LocalBackendModifyDNOperation.processLocalModifyDN(LocalBackendModifyDNOperation.java:625)
+        at org.opends.server.workflowelement.localbackend.LocalBackendWorkflowElement.execute(LocalBackendWorkflowElement.java:571)
+        at org.opends.server.core.WorkflowImpl.execute(WorkflowImpl.java:197)
+        at org.opends.server.core.WorkflowTopologyNode.execute(WorkflowTopologyNode.java:100)
+        at org.opends.server.core.ModifyDNOperationBasis.run(ModifyDNOperationBasis.java:634)
+        at org.opends.server.replication.plugin.LDAPReplicationDomain.replay(LDAPReplicationDomain.java:2699)
+        at org.opends.server.replication.plugin.ReplayThread.run(ReplayThread.java:109)
+
+
+
+"Replica replay thread 0" prio=10 tid=0x0000002a9b189800 nid=0x4b61 in Object.wait() [0x0000000044b72000]
+   java.lang.Thread.State: WAITING (on object monitor)
+        at java.lang.Object.wait(Native Method)
+
+	waiting on <0x00000000dd062590> (a com.sleepycat.je.txn.Txn)
+        at com.sleepycat.je.txn.LockManager.lockInternal(LockManager.java:346)
+        at com.sleepycat.je.txn.LockManager.lock(LockManager.java:272)
+	locked <0x00000000dd062590> (a com.sleepycat.je.txn.Txn)
+        at com.sleepycat.je.txn.Txn.lockInternal(Txn.java:474)
+        at com.sleepycat.je.txn.Locker.lock(Locker.java:453)
+        at com.sleepycat.je.dbi.CursorImpl.lockLNDeletedAllowed(CursorImpl.java:2696)
+        at com.sleepycat.je.dbi.CursorImpl.lockLN(CursorImpl.java:2615)
+        at com.sleepycat.je.dbi.CursorImpl.searchAndPosition(CursorImpl.java:2267)
+        at com.sleepycat.je.Cursor.searchInternal(Cursor.java:2097)
+        at com.sleepycat.je.Cursor.searchAllowPhantoms(Cursor.java:2067)
+        at com.sleepycat.je.Cursor.search(Cursor.java:1935)
+        at com.sleepycat.je.Database.get(Database.java:905)
+        at org.opends.server.backends.jeb.DatabaseContainer.read(DatabaseContainer.java:200)
+        at org.opends.server.backends.jeb.Index.insertIDWithRMW(Index.java:437)
+        at org.opends.server.backends.jeb.Index.insertID(Index.java:277)
+        at org.opends.server.backends.jeb.Index.addEntry(Index.java:1253)
+        at org.opends.server.backends.jeb.AttributeIndex.addEntry(AttributeIndex.java:519)
+        at org.opends.server.backends.jeb.EntryContainer.indexInsertEntry(EntryContainer.java:3074)
+        at org.opends.server.backends.jeb.EntryContainer.addEntry(EntryContainer.java:1805)
+        at org.opends.server.backends.jeb.BackendImpl.addEntry(BackendImpl.java:783)
+        at org.opends.server.workflowelement.localbackend.LocalBackendAddOperation.processLocalAdd(LocalBackendAddOperation.java:676)
+        at org.opends.server.workflowelement.localbackend.LocalBackendWorkflowElement.execute(LocalBackendWorkflowElement.java:553)
+        at org.opends.server.core.WorkflowImpl.execute(WorkflowImpl.java:197)
+        at org.opends.server.core.WorkflowTopologyNode.execute(WorkflowTopologyNode.java:100)
+        at org.opends.server.core.AddOperationBasis.run(AddOperationBasis.java:764)
+        at org.opends.server.replication.plugin.LDAPReplicationDomain.replay(LDAPReplicationDomain.java:2699)
+        at org.opends.server.replication.plugin.ReplayThread.run(ReplayThread.java:109)
+

@@ -1,0 +1,40 @@
+Hi
+
+We are seeing a problem with the client hanging during a split scenario if the split is cause by a network problem and the client was connected to the node that looses network connection.
+
+I believe I have found the cause of it but not quite sure about the solution.
+
+How to reproduce:
+- Start 2 nodes on different computers (VMs) 
+- Start one client and have it connect to a node.
+- Disconnect the network cable from the server which the client is connected to (or disconnect the network device on the VM).
+
+Result:
+A ClientReadHandler instance will detect the problem with the connection and handle the IOException using handleSocketException, which in turn will close the connection and call connectionManager.destroyConnection. This is all fine.
+
+The problem is this: The ownerConnection is still waiting in a int readBytes = socketChannelWrapper.read(readBuffer); call and will not return until the TCP keep alive timout kicks in and closes the socket (which could take up to a few hours depending on OS configuration). 
+
+I have tried to force the ownerConnection to be closed in the destroyConnection method but I am unsure whether it is the right place to do it.
+
+The heartbeat is unfortunately not handling the problem even though it has the connectionMarkedAsNotResponsive. The problem is that the connection no longer is in the connection list and hence will not try to "ping" it and hence will not mark the ownerConnection as not responsive.
+
+My destroyConnection - probably not the right way to handle the problem 
+The following is my current destroyConnection method:
+
+``` Java
+    public void destroyConnection(ClientConnection clientConnection) {
+        Address endpoint = clientConnection.getRemoteEndpoint();
+        if (endpoint != null) {
+            connections.remove(clientConnection.getRemoteEndpoint());
+            // If we don't have an owner connection - never mind then
+            if(ownerConnection == null || !ownerConnection.live()) return;
+            if(endpoint.equals(ownerConnection.getRemoteEndpoint())) {
+                try {
+                    ownerConnection.close();
+                } catch (Exception ignored) {
+                    EmptyStatement.ignore(ignored);
+                }
+            }
+        }
+    }
+```

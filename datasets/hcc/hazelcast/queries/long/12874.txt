@@ -1,0 +1,424 @@
+Hello,
+
+We discovered recently that if we use a MapStore implementation for an IMap,
+Hazelcast will not wait for all the dirty entries to be written when it's shutting down.
+
+We have a setup where the data is stored in different types of storage which
+can become unavailable for short periods of time.
+
+Is there a way to configure Hazelcast such that data is not lost during shutdown?
+
+I have a test here that reproduces the issue in Hazelcast 3.8.7 and 3.9.3 and 3.10-BETA-2:
+
+```java
+package test4;
+
+import com.hazelcast.config.Config;
+import com.hazelcast.config.MapConfig;
+import com.hazelcast.config.MapStoreConfig;
+import com.hazelcast.config.XmlConfigBuilder;
+import com.hazelcast.core.*;
+import com.hazelcast.spi.properties.GroupProperty;
+import org.apache.log4j.BasicConfigurator;
+import org.apache.log4j.Logger;
+import org.junit.Before;
+import org.junit.Test;
+import static org.junit.Assert.assertNotSame;
+
+/**
+ * Test to check that Hazelcast does not shutdown immediately if there are dirty entries which
+ * cannot be written at the moment.
+ */
+public class TestShutDown4 {
+
+	private static final Logger logger = Logger.getLogger(TestShutDown4.class);
+
+	private static final int WRITE_DELAY_SECONDS = 2;
+
+	private static final int WRITE_BATCH_SIZE = 2;
+
+	private final String mapName = "testMap" + getClass().getSimpleName();
+
+	private LifecycleEvent.LifecycleState hazelcastLifecycleState = null;
+
+	@Before
+	public void setUp() {
+
+		// configure logging
+		BasicConfigurator.configure();
+	}
+
+	@Test
+	public void testShutDown_OneNode() {
+
+		HazelcastInstance hcInstance = Hazelcast.newHazelcastInstance(getHazelcastConfig());
+
+		// register a listener that records the Hazelcast state
+		hcInstance.getLifecycleService().addLifecycleListener(event -> hazelcastLifecycleState = event.getState());
+
+		// add an entry which cannot be written to the distributed map
+		IMap<String, FailableTestValue> iMap = hcInstance.getMap(mapName);
+		iMap.put("k1", new FailableTestValue("v1", false, true));
+		logger.info("Map entry put.");
+
+		// shutdown
+		hcInstance.shutdown();
+
+		// wait for 1 minute to make sure that Hazelcast does not shutdown if the entry cannot be written
+		long t0 = System.currentTimeMillis();
+		while (System.currentTimeMillis() - t0 < 60 * 1000) {
+			assertNotSame(LifecycleEvent.LifecycleState.SHUTDOWN, hazelcastLifecycleState);
+		}
+
+		// ok - Hazelcast waited for the entry to be written
+	}
+
+	@Test
+	public void testShutDown_Cluster() {
+
+		HazelcastInstance hcInstance1 = Hazelcast.newHazelcastInstance(getHazelcastConfig());
+		Hazelcast.newHazelcastInstance(getHazelcastConfig());
+
+		// register a listener that records the Hazelcast state
+		hcInstance1.getLifecycleService().addLifecycleListener(event -> hazelcastLifecycleState = event.getState());
+
+		// add an entry which cannot be written to the distributed map
+		IMap<String, FailableTestValue> iMap = hcInstance1.getMap(mapName);
+		iMap.put("k1", new FailableTestValue("v1", false, true));
+
+		// shutdown
+		hcInstance1.getCluster().shutdown();
+
+		// wait for 1 minute to make sure that Hazelcast does not shutdown if the entry cannot be written
+		long t0 = System.currentTimeMillis();
+		while (System.currentTimeMillis() - t0 < 60 * 1000) {
+			assertNotSame(LifecycleEvent.LifecycleState.SHUTDOWN, hazelcastLifecycleState);
+		}
+
+		// ok - Hazelcast waited for the entry to be written
+	}
+
+	private Config getHazelcastConfig() {
+
+		// create hazelcast config
+		Config config = new XmlConfigBuilder().build();
+		config.setProperty(GroupProperty.LOGGING_TYPE.getName(), "log4j");
+		config.setProperty(GroupProperty.PHONE_HOME_ENABLED.getName(), "false");
+
+		// create map store config
+		MapStoreConfig mapStoreConfig = new MapStoreConfig();
+		mapStoreConfig.setEnabled(true);
+		mapStoreConfig.setWriteDelaySeconds(WRITE_DELAY_SECONDS);
+		mapStoreConfig.setImplementation(new RecordingMapStore());
+		mapStoreConfig.setWriteBatchSize(WRITE_BATCH_SIZE);
+
+		// configure map store
+		MapConfig mapConfig = config.getMapConfig(mapName);
+		mapConfig.setMapStoreConfig(mapStoreConfig);
+		return config;
+	}
+
+}
+
+package test4;
+
+import com.hazelcast.core.MapStore;
+import org.apache.log4j.Logger;
+import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
+
+/**
+ * A map store which counts the number of load/store/delete operations.
+ */
+public class RecordingMapStore implements MapStore<String, String> {
+
+	private static final Logger logger = Logger.getLogger(RecordingMapStore.class);
+
+	private final boolean warnOnUpdate;
+
+	private final boolean infoOnLoad;
+
+	private ConcurrentHashMap<String, String> store = new ConcurrentHashMap<String, String>();
+
+	/**
+	 * Load counts per key.
+	 * <p>
+	 * A map from key to its load count.
+	 */
+	private ConcurrentHashMap<String, AtomicInteger> loadCounts = new ConcurrentHashMap<String, AtomicInteger>();
+
+	/**
+	 * Store counts per key.
+	 * <p>
+	 * A map from key to its store count.
+	 */
+	private ConcurrentHashMap<String, AtomicInteger> storeCounts = new ConcurrentHashMap<String, AtomicInteger>();
+
+	/**
+	 * Delete counts per key.
+	 * <p>
+	 * A map from key to its delete count.
+	 */
+	private ConcurrentHashMap<String, AtomicInteger> deleteCounts = new ConcurrentHashMap<String, AtomicInteger>();
+
+	/**
+	 * Default constructor.
+	 * <p>
+	 * This will log a INFO message upon every operation.
+	 */
+	public RecordingMapStore() {
+		this.warnOnUpdate = false;
+		this.infoOnLoad = true;
+	}
+
+	/**
+	 * Constructor.
+	 *
+	 * @param warnOnUpdate if set to true, a WARN message is printed if a single store() call
+	 *            resulted in updating a existing value.
+	 * @param infoOnLoad if set to true, a INFO message is printed on load().
+	 */
+	public RecordingMapStore(boolean warnOnUpdate, boolean infoOnLoad) {
+		this.warnOnUpdate = warnOnUpdate;
+		this.infoOnLoad = infoOnLoad;
+	}
+
+	public ConcurrentHashMap<String, String> getStore() {
+		return store;
+	}
+
+	public ConcurrentHashMap<String, AtomicInteger> getLoadCounts() {
+		return loadCounts;
+	}
+
+	public int getTotalLoadCounts() {
+		return getTotalCount(loadCounts);
+	}
+
+	public ConcurrentHashMap<String, AtomicInteger> getStoreCounts() {
+		return storeCounts;
+	}
+
+	public int getTotalStoreCounts() {
+		return getTotalCount(storeCounts);
+	}
+
+	public ConcurrentHashMap<String, AtomicInteger> getDeleteCounts() {
+		return deleteCounts;
+	}
+
+	public int getTotalDeleteCounts() {
+		return getTotalCount(deleteCounts);
+	}
+
+	@Override
+	public String load(String key) {
+		if (infoOnLoad) {
+			logger.info("load(" + key + ") called.");
+		}
+		String result = store.get(key);
+		incrementCount(loadCounts, key);
+		return result;
+	}
+
+	@Override
+	public Map<String, String> loadAll(Collection<String> keys) {
+		List<String> keysList = new ArrayList<String>(keys);
+		Collections.sort(keysList);
+		logger.info("loadAll(" + keysList + ") called.");
+		Map<String, String> result = new HashMap<String, String>();
+		for (String key : keys) {
+			String value = store.get(key);
+			incrementCount(loadCounts, key);
+			if (value != null) {
+				result.put(key, value);
+			}
+		}
+		return result;
+	}
+
+	@Override
+	public Set<String> loadAllKeys() {
+		logger.info("loadAllKeys() called.");
+		Set<String> result = new HashSet<String>(store.keySet());
+		logger.info("loadAllKeys result = " + result);
+		return result;
+	}
+
+	@Override
+	public void store(String key, String value) {
+		logger.info("store(" + key + ") called.");
+		String valuePrev = store.put(key, value);
+		if (warnOnUpdate && valuePrev != null) {
+			logger.warn("- Unexpected Update (operations reordered?): " + key);
+		}
+		incrementCount(storeCounts, key);
+	}
+
+	@Override
+	public void storeAll(Map<String, String> map) {
+		TreeSet<String> setSorted = new TreeSet<String>(map.keySet());
+		logger.info("storeAll(" + setSorted + ") called.");
+		store.putAll(map);
+		for (String key : map.keySet()) {
+			incrementCount(storeCounts, key);
+		}
+	}
+
+	@Override
+	public void delete(String key) {
+		logger.info("delete(" + key + ") called.");
+		String valuePrev = store.remove(key);
+		incrementCount(deleteCounts, key);
+		if (valuePrev == null) {
+			logger.warn("- Unnecessary delete (operations reordered?): " + key);
+		}
+	}
+
+	@Override
+	public void deleteAll(Collection<String> keys) {
+		List<String> keysList = new ArrayList<String>(keys);
+		Collections.sort(keysList);
+		logger.info("deleteAll(" + keysList + ") called.");
+		for (String key : keys) {
+			String valuePrev = store.remove(key);
+			incrementCount(deleteCounts, key);
+			if (valuePrev == null) {
+				logger.warn("- Unnecessary delete (operations reordered?): " + key);
+			}
+		}
+	}
+
+	// -------------------------------------------------------- private methods
+
+	/**
+	 * Increment count for given key in given map.
+	 *
+	 * @param counts map to count.
+	 * @param key key to increment count for.
+	 */
+	private void incrementCount(ConcurrentHashMap<String, AtomicInteger> counts, String key) {
+		AtomicInteger count = counts.get(key);
+		if (count == null) {
+			count = new AtomicInteger(0);
+			AtomicInteger prev = counts.putIfAbsent(key, count);
+			if (prev != null) {
+				count = prev;
+			}
+		}
+		count.incrementAndGet();
+	}
+
+	/**
+	 * Get sum of all individual key counts from given map.
+	 *
+	 * @param counts the map to build the sum on.
+	 * @return total increment count on given map.
+	 */
+	private int getTotalCount(ConcurrentHashMap<String, AtomicInteger> counts) {
+		int result = 0;
+		for (AtomicInteger value : counts.values()) {
+			result += value.get();
+		}
+		return result;
+	}
+
+}
+
+package test4;
+
+import com.hazelcast.nio.ObjectDataInput;
+import com.hazelcast.nio.ObjectDataOutput;
+import com.hazelcast.nio.serialization.DataSerializable;
+import java.io.IOException;
+import java.util.concurrent.atomic.AtomicInteger;
+
+/**
+ * A test value which can be configured to fail during serialize or deserialize.
+ */
+public class FailableTestValue implements DataSerializable {
+
+	private String value;
+
+	private boolean failInSerialize;
+
+	private boolean failInDeserialize;
+
+	private AtomicInteger numSerializationAttempts = new AtomicInteger(0);
+
+	private AtomicInteger numDeserializationAttempts = new AtomicInteger(0);
+
+	/*
+	 * protected constructor for deserialization
+	 */
+	FailableTestValue() {
+	}
+
+	public FailableTestValue(String value) {
+		this.value = value;
+	}
+
+	public FailableTestValue(String value, boolean failInSerialize, boolean failInDeserialize) {
+		this.value = value;
+		this.failInSerialize = failInSerialize;
+		this.failInDeserialize = failInDeserialize;
+	}
+
+	public String getValue() {
+		return value;
+	}
+
+	public void setFailInSerialize(boolean failInSerialize) {
+		this.failInSerialize = failInSerialize;
+	}
+
+	public void setFailInDeserialize(boolean failInDeserialize) {
+		this.failInDeserialize = failInDeserialize;
+	}
+
+	public int getNumSerializationAttempts() {
+		return numSerializationAttempts.get();
+	}
+
+	public int getNumDeserializationAttempts() {
+		return numDeserializationAttempts.get();
+	}
+
+	// ---------------------------------------------------------- serialization
+
+	@Override
+	public void writeData(ObjectDataOutput out) throws IOException {
+		numSerializationAttempts.incrementAndGet();
+		if (failInSerialize) {
+			throw new IOException("Intended failure during serialize for '" + value + "'.");
+		}
+		out.writeUTF(value);
+		out.writeBoolean(failInSerialize);
+		out.writeBoolean(failInDeserialize);
+	}
+
+	@Override
+	public void readData(ObjectDataInput in) throws IOException {
+		numDeserializationAttempts.incrementAndGet();
+		value = in.readUTF();
+		failInSerialize = in.readBoolean();
+		failInDeserialize = in.readBoolean();
+		if (failInDeserialize) {
+			throw new IOException("Intended failure during deserialize for '" + value + "'.");
+		}
+	}
+
+	// ------------------------------------------------------- Object overrides
+
+	@Override
+	public String toString() {
+		return "[" + (failInSerialize ? "-" : "+") + "," + (failInDeserialize ? "-" : "+") + "] " + value;
+	}
+
+}
+
+```
+
+Thank you,
+Ruxandra

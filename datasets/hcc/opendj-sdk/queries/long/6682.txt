@@ -1,0 +1,94 @@
+Found with rev (d7c1991a9f8).
+
+To check the upgrade task that does the ecl configuration migration, we have added a test that does the following:
+
+	it sets up 2 replicated servers, with 2.6.4 version, configured to replicate on dc=com.
+	it configures a new backend on each of these servers and replicate the new suffix dc=othersuffix, including some specific attributes for the changelog and check this works as expected by adding a user:
+
+
+
+
+DJ_TASKS2/opendj/bin/dsconfig -h mytest.upgrade.com -p 4454 -D "cn=Directory Manager" -w password -X set-external-changelog-domain-prop --provider-name "Multimaster Synchronization" --domain-name dc=othersuffix --set ecl-include:sn --set enabled:true -n
+
+DJ_TASKS2/opendj/bin/ldapmodify -h mytest.upgrade.com -p 1399 -D "cn=Directory Manager" -w password 	
+dn: uid=user_ecl,dc=othersuffix
+changetype: add
+objectclass: top
+objectclass: person
+objectclass: inetorgperson
+street: Test Lane
+uid: user_ecl
+cn: toto
+sn: Second Suffix 	
+
+Processing ADD request for uid=user_ecl,dc=othersuffix
+ADD operation successful for DN uid=user_ecl,dc=othersuffix
+
+DJ_TASKS2/opendj/bin/ldapsearch -h mytest.upgrade.com -p 1399 -D "cn=Directory Manager" -w password -T -b "changeNumber=2,cn=changelog"  "(&)" includedAttributes 	
+
+dn: changeNumber=2,cn=changelog
+includedAttributes:: c246IFNlY29uZCBTdWZmaXgK
+
+
+
+Then both servers are stopped and upgraded one after the other, successfully.
+ We check the property has migrated:
+
+DJ_TASKS2/opendj/bin/dsconfig -h mytest.upgrade.com -p 4454 -D "cn=Directory Manager" -w password -X get-replication-domain-prop --provider-name "Multimaster Synchronization" --domain-name dc=othersuffix --property ecl-include --script-friendly -n 	
+
+ecl-include	sn
+
+
+and add an entry on this suffix and check the changelog:
+
+DJ_TASKS2/opendj/bin/ldapmodify -h mytest.upgrade.com -p 1399 -D "cn=Directory Manager" -w password 	
+dn: uid=user_ecl2,dc=othersuffix
+changetype: add
+objectclass: top
+objectclass: person
+objectclass: inetorgperson
+street: Test Lane
+uid: user_ecl2
+cn: titi
+sn: Second Suffix2 	
+
+# ADD operation successful for DN uid=user_ecl2,dc=othersuffix
+
+DJ_TASKS2/opendj/bin/ldapsearch -h mytest.upgrade.com -p 1399 -D "cn=Directory Manager" -w password -b "changeNumber=2,cn=changelog"  "(&)" includedAttributes 	
+
+# The LDAP search request failed: 32 (No Such Entry)
+# Additional Information:  The entry changeNumber=2,cn=changelog specified as the search base does not exist in the Directory Server
+
+
+Even if we wait for a bit, nothing for dc=othersuffix appears in the changelog:
+
+DJ_TASKS2/opendj/bin/ldapsearch -h mytest.upgrade.com -p 1399 -D "cn=Directory Manager" -w password -b "cn=changelog"  objectclass=*
+dn: cn=changelog
+objectclass: top
+objectclass: container
+cn: changelog
+
+dn: changeNumber=1,cn=changelog
+objectclass: top
+objectclass: changeLogEntry
+changeNumber: 1
+changes:: b2JqZWN0Q2xhc3M6IHRvcApvYmplY3RDbGFzczogaW5ldG9yZ3BlcnNvbgpvYmplY3RDbGFzczogb3JnYW5pemF0aW9uYWxQZXJzb24Kb2JqZWN0Q2xhc3M6IHBlcnNvbgpzbjogNQpjbjogSm9obnkgNQpnaXZlbk5hbWU6IEpvaG55CnVpZDogam9obnk1CmNyZWF0ZVRpbWVzdGFtcDogMjAxOTA5MjcwOTUzMjlaCmNyZWF0b3JzTmFtZTogY249RGlyZWN0b3J5IE1hbmFnZXIsY249Um9vdCBETnMsY249Y29uZmlnCmVudHJ5VVVJRDogMzgxOWI4MDctNmUyMy00OTBmLWEwNTQtNWYwODYyNGIzOTIxCg==
+changeTime: 20190927095329Z
+changeType: add
+targetDN: uid=johny5,o=subtreedelete,ou=People,dc=com
+
+
+
+To reproduce the issue:
+ in config.cfg:
+
+[OpenDJ]
+version = 7.0.0-SNAPSHOT
+previous_version = 2.6.4
+...
+
+
+Then:
+
+./run-pybot.py -nvs upgrade_group.UpgradeTasksPart1 opendj
+

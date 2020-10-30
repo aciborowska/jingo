@@ -1,0 +1,36 @@
+When scheduling tasks with ***multiple*** executors, calling `getAllScheduled` on one of them returns tasks scheduled per member but for ***all*** executors rather than for the one we called the `getAllScheduled` from.
+
+Reproducer:
+```
+@Test
+public void wrongTaskCount()
+    throws ExecutionException, InterruptedException {
+
+    String runsCounterName = "runs";
+    HazelcastInstance instance = Hazelcast.newHazelcastInstance(null);
+    ICountDownLatch runsLatch = instance.getCountDownLatch(runsCounterName);
+
+    int numOfSchedulers = 10;
+    int numOfTasks = 10;
+    int expectedTotal = numOfSchedulers * numOfTasks;
+
+    runsLatch.trySetCount(expectedTotal);
+
+    for (int i = 0; i < numOfSchedulers; i++) {
+        IScheduledExecutorService s = instance.getScheduledExecutorService("scheduler_" + i);
+
+        for (int k = 0; k < numOfTasks; k++) {
+            s.scheduleAtFixedRate(new ICountdownLatchRunnableTask(runsCounterName), 0, 2, SECONDS);
+        }
+    }
+
+    runsLatch.await(10, SECONDS);
+
+    int actualTotal = 0;
+    for (int i = 0; i < numOfSchedulers; i++) {
+        actualTotal += countScheduledTasksOn(instance.getScheduledExecutorService("scheduler_" + i));
+    }
+
+    assertEquals(expectedTotal, actualTotal, 0);
+}
+```

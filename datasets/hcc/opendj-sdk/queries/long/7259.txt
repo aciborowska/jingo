@@ -1,0 +1,142 @@
+Flagging as a blocker until we get a better understanding of the bug, and specifically how frequently it occurs.
+
+Steps to reproduce:
+
+	installed a 7.0.0 (6096983f58fae4d73fc29b8de7bcfe51db8f0833) with the dsEvaluation profile and 100000 sample entries (the default)
+	performed a couple of searches and monitored them under the debugger
+	stopped the searches
+	observed that the server is still consuming 200% CPU, i.e. two threads are spinning at 100% each
+
+
+
+No update operations have been performed, yet the server is spinning in replication changetime heartbeat threads which seem to have got into a bad state. In other words, I don't think the searches or debugging had anything to do with the spin:
+
+
+top - 13:21:00 up  3:09,  1 user,  load average: 3.31, 1.54, 1.72
+Tasks: 328 total,   1 running, 327 sleeping,   0 stopped,   0 zombie
+%Cpu(s): 40.8 us,  0.9 sy,  0.0 ni, 55.8 id,  0.0 wa,  0.0 hi,  2.4 si,  0.0 st
+MiB Mem :  15916.1 total,    345.2 free,   7135.5 used,   8435.4 buff/cache
+MiB Swap:   2048.0 total,   2046.2 free,      1.8 used.   7638.6 avail Mem 
+
+    PID USER      PR  NI    VIRT    RES    SHR S  %CPU  %MEM     TIME+ COMMAND                                                                                                                                    
+  20336 matt      20   0 9819.0m 723588  21836 S 254.5   4.4  42:41.17 /usr/lib/jvm/java-11-openjdk-amd64/bin/java -agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=*:5005 -Dorg.opends.server.scri+ 
+  22547 matt      20   0 5709996 535200  49284 S  61.1   3.3   2:14.19 /usr/lib/jvm/java-11-openjdk-amd64/bin/java -Djdk.home=/usr/lib/jvm/java-11-openjdk-amd64 -classpath /usr/share/visualvm/platform/lib/boo+ 
+   6331 matt      20   0 1311256  77312  51704 S   8.0   0.5   1:37.58 /usr/bin/tilix --gapplication-service       
+...
+
+
+Threads:
+
+
+"Replica change time heartbeat publisher(Wandie_Vandergeest, cn=schema) to RS(Wandie_Vandergeest) at 127.0.1.1:8989" #57 prio=5 os_prio=0 cpu=718719.78ms elapsed=1388.66s tid=0x00007efecd22c000 nid=0x4fd3 runnable  [0x00007efe05fe8000]
+   java.lang.Thread.State: RUNNABLE
+	at org.opends.server.replication.service.ReplicationBroker.publish(ReplicationBroker.java:1847)
+	at org.opends.server.replication.service.ReplicationBroker.publish(ReplicationBroker.java:1768)
+	at org.opends.server.replication.service.ReplicationDomain.publish(ReplicationDomain.java:2231)
+	at org.opends.server.replication.plugin.PendingChanges.pushCommittedChanges(PendingChanges.java:181)
+	- locked <0x000000070aa418b0> (a org.opends.server.replication.plugin.PendingChanges)
+	at org.opends.server.replication.plugin.PendingChanges.putHeartbeatMsg(PendingChanges.java:169)
+	- locked <0x000000070aa418b0> (a org.opends.server.replication.plugin.PendingChanges)
+	at org.opends.server.replication.plugin.LDAPReplicationDomain.publishHeartbeatMsg(LDAPReplicationDomain.java:1530)
+	at org.opends.server.replication.service.CTHeartbeatPublisherThread.run(CTHeartbeatPublisherThread.java:58)
+"Replica change time heartbeat publisher(Wandie_Vandergeest, dc=example,dc=com) to RS(Wandie_Vandergeest) at 127.0.1.1:8989" #65 prio=5 os_prio=0 cpu=718774.02ms elapsed=1388.44s tid=0x00007efecd229800 nid=0x4fd9 runnable  [0x00007efe05ae3000]
+   java.lang.Thread.State: RUNNABLE
+	at org.opends.server.replication.service.ReplicationBroker.publish(ReplicationBroker.java:1847)
+	at org.opends.server.replication.service.ReplicationBroker.publish(ReplicationBroker.java:1768)
+	at org.opends.server.replication.service.ReplicationDomain.publish(ReplicationDomain.java:2231)
+	at org.opends.server.replication.plugin.PendingChanges.pushCommittedChanges(PendingChanges.java:181)
+	- locked <0x000000070aaec250> (a org.opends.server.replication.plugin.PendingChanges)
+	at org.opends.server.replication.plugin.PendingChanges.putHeartbeatMsg(PendingChanges.java:169)
+	- locked <0x000000070aaec250> (a org.opends.server.replication.plugin.PendingChanges)
+	at org.opends.server.replication.plugin.LDAPReplicationDomain.publishHeartbeatMsg(LDAPReplicationDomain.java:1530)
+	at org.opends.server.replication.service.CTHeartbeatPublisherThread.run(CTHeartbeatPublisherThread.java:58)
+"DS(Wandie_Vandergeest, dc=example,dc=com) listener for domain" #66 prio=5 os_prio=0 cpu=195.55ms elapsed=1388.43s tid=0x00007efeccf97000 nid=0x4fda in Object.wait()  [0x00007efe059e3000]
+   java.lang.Thread.State: WAITING (on object monitor)
+	at java.lang.Object.wait(java.base@11.0.7/Native Method)
+	- waiting on <no object reference available>
+	at java.lang.Thread.join(java.base@11.0.7/Thread.java:1305)
+	- waiting to re-lock in wait() <0x000000070a9abff0> (a org.opends.server.replication.service.CTHeartbeatPublisherThread)
+	at java.lang.Thread.join(java.base@11.0.7/Thread.java:1379)
+	at org.opends.server.replication.service.CTHeartbeatPublisherThread.shutdown(CTHeartbeatPublisherThread.java:87)
+	at org.opends.server.replication.service.ReplicationBroker.stopChangeTimeHeartBeatPublishing(ReplicationBroker.java:2361)
+	- locked <0x000000070aae2f78> (a org.opends.server.replication.service.ReplicationBroker)
+	at org.opends.server.replication.service.ReplicationBroker.connectAsDataServer(ReplicationBroker.java:676)
+	at org.opends.server.replication.service.ReplicationBroker.reStart(ReplicationBroker.java:1742)
+	- locked <0x000000070aae2fd0> (a java.lang.Object)
+	at org.opends.server.replication.service.ReplicationBroker.receive(ReplicationBroker.java:1943)
+	at org.opends.server.replication.service.ReplicationDomain.receiveAndProcessUpdates(ReplicationDomain.java:783)
+	at org.opends.server.replication.service.ReplicationDomain.runReplicationListener(ReplicationDomain.java:2067)
+	at org.opends.server.replication.service.ReplicationDomain$$Lambda$535/0x00000008005a2040.run(Unknown Source)
+	at java.lang.Thread.run(java.base@11.0.7/Thread.java:834)
+"DS(Wandie_Vandergeest, cn=schema) listener for domain" #67 prio=5 os_prio=0 cpu=194.79ms elapsed=1388.43s tid=0x00007efeccf99800 nid=0x4fdb in Object.wait()  [0x00007efe058e2000]
+   java.lang.Thread.State: WAITING (on object monitor)
+	at java.lang.Object.wait(java.base@11.0.7/Native Method)
+	- waiting on <no object reference available>
+	at java.lang.Thread.join(java.base@11.0.7/Thread.java:1305)
+	- waiting to re-lock in wait() <0x000000070a8f7550> (a org.opends.server.replication.service.CTHeartbeatPublisherThread)
+	at java.lang.Thread.join(java.base@11.0.7/Thread.java:1379)
+	at org.opends.server.replication.service.CTHeartbeatPublisherThread.shutdown(CTHeartbeatPublisherThread.java:87)
+	at org.opends.server.replication.service.ReplicationBroker.stopChangeTimeHeartBeatPublishing(ReplicationBroker.java:2361)
+	- locked <0x000000070a998f08> (a org.opends.server.replication.service.ReplicationBroker)
+	at org.opends.server.replication.service.ReplicationBroker.connectAsDataServer(ReplicationBroker.java:676)
+	at org.opends.server.replication.service.ReplicationBroker.reStart(ReplicationBroker.java:1742)
+	- locked <0x000000070a999728> (a java.lang.Object)
+	at org.opends.server.replication.service.ReplicationBroker.receive(ReplicationBroker.java:1943)
+	at org.opends.server.replication.service.ReplicationDomain.receiveAndProcessUpdates(ReplicationDomain.java:783)
+	at org.opends.server.replication.service.ReplicationDomain.runReplicationListener(ReplicationDomain.java:2067)
+	at org.opends.server.replication.service.ReplicationDomain$$Lambda$535/0x00000008005a2040.run(Unknown Source)
+	at java.lang.Thread.run(java.base@11.0.7/Thread.java:834)
+
+
+The listener threads have signalled that the changetime heartbeat threads should shutdown. Attaching the debugger I can see that the heartbeat thread is spinning and unable to act on the notification. In particular, org.opends.server.replication.service.CTHeartbeatPublisherThread#shutdown is set true, but the thread is stuck inside org.opends.server.replication.service.ReplicationBroker.publish(ReplicationBroker.java:1847):
+
+
+    private boolean publish(ReplicationMsg msg, boolean recoveryInProgress, boolean retryOnFailure) {
+        while (!shutdown) {
+            if (connectionError) {
+                // It was not possible to connect to any replication server.
+                // Since the operation was already processed
+                // we have no other choice but to return without sending the ReplicationMsg
+                // and relying on the resend procedure of the connect phase to fix the problem when we finally connect.
+                trace("publish is not possible due to existing connection error");
+                return false;
+            } else if (recoveryInProgress) {
+                // The Replication domain is currently recovering some changes.
+                // It is not allowed to send this change now: the recovery thread will do it.
+                return false;
+            }
+
+            try {
+                synchronized (connectPhaseLock) {
+                    /*
+                     * session may have been set to null in the connection phase when restarting the broker for
+                     * example. Check the session. If it has changed, some disconnection or reconnection happened
+                     * and we need to restart from scratch.
+                     */
+                    final Session session = connectedRS.get().session;
+                    if (session != null) {
+                        session.publish(msg);
+                        return true;
+                    }
+                }
+            } catch (IOException e) {
+                trace("publish failed due to error=%s", stackTraceToSingleLineString(e));
+                if (!retryOnFailure) {
+                    return false;
+                }
+
+                // The receive threads should handle reconnection or mark this broker in error. Just retry.
+                synchronized (connectPhaseLock) {
+                    try {
+                        connectPhaseLock.wait(100);
+                    } catch (InterruptedException ie) {
+                        trace("publish got an InterruptedException=%s", stackTraceToSingleLineString(ie));
+                    }
+                }
+            }
+        }
+        return true;
+    }
+
+
+In the above method shutdown, connectionError and recoveryInProgress are false and connectedRS.get().session is null. As a result the method goes into an infinite loop.

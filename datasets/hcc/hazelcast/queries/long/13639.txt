@@ -1,0 +1,82 @@
+- Hazelcast 3.10
+- One node 
+- One client
+- java version "1.8.0_181"
+  Java(TM) SE Runtime Environment (build 1.8.0_181-b13)
+  Java HotSpot(TM) 64-Bit Server VM (build 25.181-b13, mixed mode)
+- Ubuntu 16.04
+
+Hi. onFailure() is never called if result can't be serialized.
+
+```java
+import com.hazelcast.client.*;
+import com.hazelcast.core.*;
+
+import java.io.*;
+import java.util.concurrent.*;
+
+public class TestFailedCallback {
+
+    public static void main(String[] args) {
+        Hazelcast.newHazelcastInstance();
+        final HazelcastInstance hazelcastClientInstance = HazelcastClient.newHazelcastClient();
+        final IExecutorService executorService = hazelcastClientInstance.getExecutorService("any");
+
+        CompletableFuture<Object> future = new CompletableFuture<>();
+
+        try{
+            executorService
+                    .submit(new FailedTask(), new ExecutionCallback<Object>() {
+                        @Override
+                        public void onResponse(Object response) {
+                            System.out.println("TestFailedCallback.onResponse IS NEVER CALLED");
+                            future.complete(response);
+                        }
+
+                        @Override
+                        public void onFailure(Throwable t) {
+                            System.out.println("TestFailedCallback.onFailure IS NEVER CALLED");
+                            future.completeExceptionally(t);
+                        }
+                    });
+
+            try {
+                future.get();
+            } catch (Exception e) {
+                System.out.println(e.toString());
+            }
+        } catch (Exception e){
+            System.out.println(e.toString());
+        }
+
+        System.out.println("This is never called");
+    }
+
+    private static class FailedTask implements Callable, Serializable {
+        @Override
+        public Object call() throws Exception {
+            System.out.println("FailedTask is started on :" + Thread.currentThread().getName());
+            return new Object();
+        }
+    }
+}
+```
+
+```
+Exception in thread "hz._hzInstance_1_dev.cached.thread-2" com.hazelcast.nio.serialization.HazelcastSerializationException: Failed to serialize 'java.lang.Object'
+        at com.hazelcast.internal.serialization.impl.SerializationUtil.handleSerializeException(SerializationUtil.java:75)
+        at com.hazelcast.internal.serialization.impl.AbstractSerializationService.toBytes(AbstractSerializationService.java:161)
+        at com.hazelcast.internal.serialization.impl.AbstractSerializationService.toBytes(AbstractSerializationService.java:133)
+        at com.hazelcast.spi.impl.operationservice.impl.OutboundResponseHandler.toNormalResponsePacket(OutboundResponseHandler.java:156)
+        at com.hazelcast.spi.impl.operationservice.impl.OutboundResponseHandler.sendNormalResponse(OutboundResponseHandler.java:128)
+        at com.hazelcast.spi.impl.operationservice.impl.OutboundResponseHandler.sendResponse(OutboundResponseHandler.java:103)
+        at com.hazelcast.spi.Operation.sendResponse(Operation.java:416)
+        at com.hazelcast.executor.impl.DistributedExecutorService$CallableProcessor.sendResponse(DistributedExecutorService.java:312)
+        at com.hazelcast.executor.impl.DistributedExecutorService$CallableProcessor.run(DistributedExecutorService.java:296)
+        at com.hazelcast.util.executor.CachedExecutorServiceDelegate$Worker.run(CachedExecutorServiceDelegate.java:227)
+        at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1149)
+        at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:624)
+        at java.lang.Thread.run(Thread.java:748)
+        at com.hazelcast.util.executor.HazelcastManagedThread.executeRun(HazelcastManagedThread.java:64)
+        at com.hazelcast.util.executor.HazelcastManagedThread.run(HazelcastManagedThread.java:80)
+```

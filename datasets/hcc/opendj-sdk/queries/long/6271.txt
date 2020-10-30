@@ -1,0 +1,117 @@
+Create two replicating servers:
+
+
+dj1/setup directory-server \
+	--rootUserDn cn=Directory\ Manager \
+	--rootUserPassword password \
+	--hostname acheron.local \
+	--adminConnectorPort 4444 \
+	--ldapPort 389 \
+	--enableStartTls \
+	--sampleData 2000 \
+	--baseDn dc=example,dc=com \
+	--acceptLicense
+dj2/setup directory-server \
+	--rootUserDn cn=Directory\ Manager \
+	--rootUserPassword password \
+	--hostname acheron.local \
+	--adminConnectorPort 5444 \
+	--ldapPort 1389 \
+	--enableStartTls \
+	--sampleData 2000 \
+	--baseDn dc=example,dc=com \
+	--acceptLicense
+dj1/bin/dsreplication configure \
+	--host1 acheron.local --port1 4444 \
+	--bindDN1 "cn=directory manager" --bindPassword1 password \
+	--replicationPort1 8989 \
+	--host2 acheron.local --port2 5444 \
+	--bindDN2 "cn=directory manager" --bindPassword2 password \
+	--replicationPort2 9989 \
+	--adminUID admin --adminPassword password123 \
+	--baseDN dc=example,dc=com -X -n
+dj1/bin/dsreplication initialize-all \
+	-h acheron.local -p 4444 --adminUid admin --adminPassword password123 \
+	-b dc=example,dc=com -X -n
+
+
+
+Modify a test entry, and read it back:
+
+
+dj1/bin/ldapmodify -h acheron.local -p 389 -D "cn=Directory Manager" -w password <<LDIF
+dn: ou=people,dc=example,dc=com
+changetype: modify
+replace: description
+description: replicated description
+-
+
+LDIF
+dj1/bin/ldapsearch -h acheron.local -p 389 -D "cn=directory manager" -w password \
+	-b ou=people,dc=example,dc=com -s base "(&)" \* \+
+dn: ou=People,dc=example,dc=com
+objectClass: top
+objectClass: organizationalUnit
+description: replicated description
+ou: People
+ds-sync-hist: description:0104016a59bbc763000000ea4640:repl:replicated description
+ds-sync-hist: modifiersName:0104016a59bbc763000000ea4640:repl:cn=Directory Manager
+ds-sync-hist: modifyTimestamp:0104016a59bbc763000000ea4640:repl:20190426130039Z
+entryDN: ou=People,dc=example,dc=com
+entryUUID: eb8f50dc-6283-3541-a1b3-d0ac3cae9e28
+etag: 0000000090214181
+hasSubordinates: true
+modifiersName: cn=Directory Manager
+modifyTimestamp: 20190426130039Z
+numSubordinates: 2000
+pwdPolicySubentry: cn=Default Password Policy,cn=Password Policies,cn=config
+structuralObjectClass: organizationalUnit
+subschemaSubentry: cn=schema
+
+
+
+Unconfigure replication.
+
+
+dj1/bin/dsreplication unconfigure --unconfigureAll \
+	-h localhost -p 4444 -D "cn=Directory Manager" -w password -X -n
+
+
+
+Make another change to the test entry, and read it back:
+
+
+dj1/bin/ldapmodify -h acheron.local -p 389 -D "cn=Directory Manager" -w password <<LDIF
+dn: ou=people,dc=example,dc=com
+changetype: modify
+replace: description
+description: non-replicated description
+-
+
+LDIF
+dj1/bin/ldapsearch -h acheron.local -p 389 -D "cn=directory manager" -w password \
+	-b ou=people,dc=example,dc=com -s base "(&)" \* \+
+dn: ou=People,dc=example,dc=com
+objectClass: top
+objectClass: organizationalUnit
+description: non-replicated description
+description: replicated description
+ou: People
+ds-sync-hist: description:0104016a59bbc763000000ea4640:repl:replicated description
+ds-sync-hist: modifiersName:0104016a59bbc763000000ea4640:repl:cn=Directory Manager
+ds-sync-hist: modifyTimestamp:0104016a59bbc763000000ea4640:repl:20190426130039Z
+entryDN: ou=People,dc=example,dc=com
+entryUUID: eb8f50dc-6283-3541-a1b3-d0ac3cae9e28
+etag: 0000000009984efa
+hasSubordinates: true
+modifiersName: cn=Directory Manager
+modifyTimestamp: 20190426130406Z
+modifyTimestamp: 20190426130039Z
+numSubordinates: 2000
+pwdPolicySubentry: cn=Default Password Policy,cn=Password Policies,cn=config
+structuralObjectClass: organizationalUnit
+subschemaSubentry: cn=schema
+
+
+
+Note the modifyTimestamp attribute now has two values. The theory is that the old value is being re-added to the entry when the ds-sync-hist attribute is being decoded from id2entry.

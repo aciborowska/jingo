@@ -1,0 +1,412 @@
+Hi,
+
+we discovered a timeout exception in 3.5.3-SNAPSHOT during system startup when our distributed maps with attached MapStore are initialized.
+
+``` java
+Sep 30, 2015 2:08:56 PM com.hazelcast.util.FutureUtil
+WARNING: Exception occurred
+java.util.concurrent.TimeoutException: Call Invocation{ serviceName='hz:impl:mapService', op=com.hazelcast.map.impl.operation.PartitionCheckIfLoadedOperation{serviceName='null', partitionId=228, callId=9223372036854775807, invocationTime=1443614935053, waitTimeout=-1, callTimeout=60000}, partitionId=228, replicaIndex=0, tryCount=250, tryPauseMillis=500, invokeCount=1, callTimeout=60000, target=Address[10.0.1.154]:5701, backupsExpected=0, backupsCompleted=0} encountered a timeout
+    at com.hazelcast.spi.impl.operationservice.impl.InvocationFuture.resolveApplicationResponse(InvocationFuture.java:366)
+    at com.hazelcast.spi.impl.operationservice.impl.InvocationFuture.resolveApplicationResponseOrThrowException(InvocationFuture.java:334)
+    at com.hazelcast.spi.impl.operationservice.impl.InvocationFuture.get(InvocationFuture.java:225)
+    at com.hazelcast.util.FutureUtil.executeWithDeadline(FutureUtil.java:294)
+    at com.hazelcast.util.FutureUtil.waitWithDeadline(FutureUtil.java:278)
+    at com.hazelcast.util.FutureUtil.waitWithDeadline(FutureUtil.java:252)
+    at com.hazelcast.map.impl.proxy.MapProxySupport.waitUntilLoaded(MapProxySupport.java:675)
+    at com.hazelcast.map.impl.proxy.MapProxyImpl.waitUntilLoaded(MapProxyImpl.java:71)
+    at com.hazelcast.map.impl.proxy.MapProxySupport.initializeMapStoreLoad(MapProxySupport.java:179)
+    at com.hazelcast.map.impl.proxy.MapProxySupport.initialize(MapProxySupport.java:171)
+    at com.hazelcast.map.impl.proxy.MapProxyImpl.initialize(MapProxyImpl.java:71)
+    at com.hazelcast.spi.impl.proxyservice.impl.ProxyRegistry.doCreateProxy(ProxyRegistry.java:194)
+    at com.hazelcast.spi.impl.proxyservice.impl.ProxyRegistry.createProxy(ProxyRegistry.java:184)
+    at com.hazelcast.spi.impl.proxyservice.impl.ProxyRegistry.getOrCreateProxy(ProxyRegistry.java:153)
+    at com.hazelcast.spi.impl.proxyservice.impl.ProxyServiceImpl.getDistributedObject(ProxyServiceImpl.java:119)
+    at com.hazelcast.instance.HazelcastInstanceImpl.getDistributedObject(HazelcastInstanceImpl.java:390)
+    at com.hazelcast.instance.HazelcastInstanceImpl.getMap(HazelcastInstanceImpl.java:192)
+    at com.hazelcast.instance.HazelcastInstanceProxy.getMap(HazelcastInstanceProxy.java:75)
+    at com.nm.test.hazelcast.mapstore.TestMapStore25$MapRunnable.run(TestMapStore25.java:128)
+    at java.lang.Thread.run(Thread.java:662)
+```
+
+The exception occurs if the system has only very limited CPU resources available or is under load otherwise.
+
+An exception is thrown and printed as a warning, however the maps are fully loaded anyway.
+
+Note also, that the timeout occurs already after about 1-2 seconds after hazelcast is started - which seams very strange given that the "callTimeout" is set to 60000 (see stacktrace above).
+
+Here is a test to reproduce the issue, however I don't know how to make the test actually fail.
+
+``` java
+package com.nm.test.hazelcast.mapstore;
+
+import com.hazelcast.config.*;
+import com.hazelcast.config.MapStoreConfig.InitialLoadMode;
+import com.hazelcast.core.Hazelcast;
+import com.hazelcast.core.HazelcastInstance;
+import com.nm.test.hazelcast.TestHazelcast;
+import com.nm.test.hazelcast.utils.SlowMapStore;
+import com.nm.test.hazelcast.utils.Spin;
+import org.apache.log4j.BasicConfigurator;
+import org.apache.log4j.Logger;
+import java.util.ArrayList;
+import java.util.List;
+import junit.framework.TestCase;
+
+/**
+ * A test to reproduce a timeout exception while initializing the distributed maps.
+ */
+public class TestMapStore25 extends TestCase {
+
+    private static final Logger logger = Logger.getLogger(TestMapStore25.class);
+
+    private static final String mapName = "testMap" + TestMapStore25.class.getSimpleName();
+
+    @Override
+    protected void setUp() throws Exception {
+
+        // configure logging
+        if (!TestHazelcast.loggingInitialized) {
+            TestHazelcast.loggingInitialized = true;
+            BasicConfigurator.configure();
+        }
+    }
+
+    public void testLoad() throws Exception {
+
+        // create hazelcast config
+        Config config = new XmlConfigBuilder().build();
+        config.setProperty("hazelcast.logging.type", "log4j");
+        config.setProperty("hazelcast.version.check.enabled", "false");
+
+        // disable multicast for faster startup
+        config.getNetworkConfig().getJoin().getMulticastConfig().setEnabled(false);
+
+        // prepare maps
+        final int numMaps = 20;
+        for (int i = 0; i < numMaps; i++) {
+            String mapNameCur = mapName + i;
+
+            // create map store
+            // 10, 0, 0, 0 -> timeout occurs very seldom
+            // 10, 0, 0, 1 -> timeout occurs 2.5 times per run
+            //  0, 0, 0, 1 -> timeout occurs 2.5 times per run
+            SlowMapStore store = new SlowMapStore();
+            store.setSleepMsLoadAllKeys(0);
+            store.setSleepMsLoadAll(0);
+            store.setSleepMsLoadAllPerKey(0);
+            store.preload(1); // 0 -> very seldom
+
+            // create map store config
+            MapStoreConfig mapStoreConfig = new MapStoreConfig();
+            mapStoreConfig.setEnabled(true);
+            mapStoreConfig.setInitialLoadMode(InitialLoadMode.EAGER);
+            mapStoreConfig.setWriteDelaySeconds(5);
+            mapStoreConfig.setClassName(null);
+            mapStoreConfig.setImplementation(store);
+
+            // configure map store
+            MapConfig mapConfig = config.getMapConfig(mapNameCur);
+            mapConfig.setMapStoreConfig(mapStoreConfig);
+        }
+
+        // start hazelcast instance
+        HazelcastInstance hcInstance = Hazelcast.newHazelcastInstance(config);
+
+        // start spinning to make race conditions more likely
+        for (int i = 0; i < 8; i++) {
+            Spin.startSpinning(10000);
+        }
+
+        // start threads which initialize maps
+        List<Thread> threads = new ArrayList<Thread>();
+        for (int i = 0; i < numMaps; i++) {
+            threads.add(new Thread(new MapRunnable(hcInstance, mapName + i)));
+        }
+        for (Thread thread : threads) {
+            thread.start();
+        }
+
+        // wait for init threads to finish
+        logger.info("Waiting for init threads to finish...");
+        for (Thread thread : threads) {
+            thread.join();
+        }
+
+        // try-finally to ensure hc shutdown
+        try {
+
+            // print and check map sizes
+            for (int i = 0; i < numMaps; i++) {
+                String mapNameCur = mapName + i;
+                int size = hcInstance.getMap(mapNameCur).size();
+                String msg = "Size of '" + mapNameCur + "' map = " + size;
+                assertTrue(msg, size == 1);
+            }
+        } finally {
+
+            // shutdown hazelcast instance
+            hcInstance.getLifecycleService().terminate();
+        }
+    }
+
+    private static final class MapRunnable implements Runnable {
+
+        private static final Logger logger = Logger.getLogger(MapRunnable.class);
+
+        private final HazelcastInstance hcInstance;
+
+        private final String mapName;
+
+        public MapRunnable(HazelcastInstance hcInstance, String mapName) {
+            this.hcInstance = hcInstance;
+            this.mapName = mapName;
+        }
+
+        public void run() {
+            logger.info("accessing map '" + mapName + "'...");
+            hcInstance.getMap(mapName);
+            logger.info("accessing map '" + mapName + "' done.");
+        }
+    }
+
+}
+
+package com.nm.test.hazelcast.utils;
+
+import org.apache.log4j.Logger;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+
+/**
+ * A class to consume CPU resources to make race condition testing easier.
+ */
+public class Spin {
+
+    private static final Logger logger = Logger.getLogger(Spin.class);
+
+    private static final AtomicInteger globalSpinIndex = new AtomicInteger(0);
+
+    /**
+     * Start spinning in the background with a single core for the given amout of time.
+     * 
+     * @param spinTimeMs time to spin.
+     */
+    public static void startSpinning(int spinTimeMs) {
+        final int spinIndex = globalSpinIndex.getAndIncrement();
+        SpinAwaitRunnable spinAwaitRunnable = new SpinAwaitRunnable(spinIndex, spinTimeMs);
+        Thread spinAwaitThread = new Thread(spinAwaitRunnable, "spin-await-thread-" + spinIndex);
+        spinAwaitThread.start();
+    }
+
+    /**
+     * The spin await runnable spawns a spin runnable, sleeps for a specified amount of time, and
+     * then stops the spin runnable again.
+     */
+    private static class SpinAwaitRunnable implements Runnable {
+
+        private final int spinIndex;
+
+        private final int spinTimeMs;
+
+        public SpinAwaitRunnable(int spinIndex, int spinTimeMs) {
+            this.spinIndex = spinIndex;
+            this.spinTimeMs = spinTimeMs;
+        }
+
+        @Override
+        public void run() {
+
+            // start spin thread
+            SpinRunnable spinRunnable = new SpinRunnable();
+            Thread spinThread = new Thread(spinRunnable, "spin-thread-" + spinIndex);
+            spinThread.start();
+
+            // sleep
+            long time0 = System.currentTimeMillis();
+            try {
+                Thread.sleep(spinTimeMs);
+            } catch (InterruptedException e) {
+                logger.error("Spin thread was interrupted while spinning: " + e.getMessage());
+            }
+            long time1 = System.currentTimeMillis();
+
+            // stop spin thread
+            spinRunnable.stop();
+            try {
+                spinThread.join();
+            } catch (InterruptedException e) {
+                logger.error("Spin thread was interrupted while stopping: " + e.getMessage());
+            }
+
+            logger.info(Thread.currentThread().getName() + " slept for " + (time1 - time0) + "ms.");
+        }
+
+    }
+
+    /**
+     * The spin runnable performs the actual spinning and consumes CPU resources.
+     */
+    private static class SpinRunnable implements Runnable {
+
+        private AtomicBoolean stop = new AtomicBoolean(false);
+
+        public void stop() {
+            stop.set(true);
+        }
+
+        @Override
+        public void run() {
+            logger.info(Thread.currentThread().getName() + " starting to spin...");
+            long count = 0;
+            double product = 1.13;
+            while (!stop.get()) {
+                product *= product;
+                count++;
+            }
+            logger.info(Thread.currentThread().getName() + " looped " + count + " times.");
+        }
+
+    }
+
+}
+
+package com.nm.test.hazelcast.utils;
+
+import com.hazelcast.core.MapStore;
+import org.apache.log4j.Logger;
+import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+
+/**
+ * A map store implementation which allows to wait in operations if configured.
+ */
+public class SlowMapStore implements MapStore<String, String> {
+
+    private static final Logger logger = Logger.getLogger(SlowMapStore.class);
+
+    // ----------------------------------------------------------------- config
+
+    private int sleepMsLoad;
+
+    private int sleepMsLoadAll;
+
+    private int sleepMsLoadAllPerKey;
+
+    private int sleepMsLoadAllKeys;
+
+    // ------------------------------------------------------------------ state
+
+    private final ConcurrentHashMap<String, String> store = new ConcurrentHashMap<String, String>();
+
+    // ----------------------------------------------------------- construction
+
+    public SlowMapStore() {
+        this.sleepMsLoad = 20;
+        this.sleepMsLoadAll = 50;
+        this.sleepMsLoadAllPerKey = 10;
+        this.sleepMsLoadAllKeys = 8000;
+    }
+
+    public void preload(int size) {
+        for (int i = 0; i < size; i++) {
+            store.put("k" + i, "v" + i);
+        }
+    }
+
+    // ---------------------------------------------------------------- setters
+
+    public void setSleepMsLoad(int sleepMsLoad) {
+        this.sleepMsLoad = sleepMsLoad;
+    }
+
+    public void setSleepMsLoadAll(int sleepMsLoadAll) {
+        this.sleepMsLoadAll = sleepMsLoadAll;
+    }
+
+    public void setSleepMsLoadAllPerKey(int sleepMsLoadAllPerKey) {
+        this.sleepMsLoadAllPerKey = sleepMsLoadAllPerKey;
+    }
+
+    public void setSleepMsLoadAllKeys(int sleepMsLoadAllKeys) {
+        this.sleepMsLoadAllKeys = sleepMsLoadAllKeys;
+    }
+
+    // ----------------------------------------------------- MapStore interface
+
+    @Override
+    public String load(String key) {
+        logger.info("load(" + key + ") called.");
+        if (sleepMsLoad > 0) {
+            Sleep.sleep(sleepMsLoad, false);
+        }
+        return store.get(key);
+    }
+
+    @Override
+    public Map<String, String> loadAll(Collection<String> keys) {
+        List<String> keysList = new ArrayList<String>(keys);
+        Collections.sort(keysList);
+        logger.info("loadAll(" + keysList + ") called.");
+        if (sleepMsLoadAll > 0) {
+            Sleep.sleep(sleepMsLoadAll, false);
+        }
+        Map<String, String> result = new HashMap<String, String>();
+        for (String key : keys) {
+            if (sleepMsLoadAllPerKey > 0) {
+                Sleep.sleep(sleepMsLoadAllPerKey, false);
+            }
+            String value = store.get(key);
+            if (value != null) {
+                result.put(key, value);
+            }
+        }
+        return result;
+    }
+
+    @Override
+    public Set<String> loadAllKeys() {
+        logger.info("loadAllKeys() called.");
+        if (sleepMsLoadAllKeys > 0) {
+            Sleep.sleep(sleepMsLoadAllKeys, true);
+        }
+        Set<String> result = new HashSet<String>(store.keySet());
+        List<String> resultList = new ArrayList<String>(result);
+        Collections.sort(resultList);
+        logger.info("loadAllKeys result: size = " + result.size() + ", keys = " + resultList + ".");
+        return result;
+    }
+
+    @Override
+    public void store(String key, String value) {
+        logger.info("store(" + key + ") called.");
+        store.put(key, value);
+    }
+
+    @Override
+    public void storeAll(Map<String, String> map) {
+        TreeSet<String> setSorted = new TreeSet<String>(map.keySet());
+        logger.info("storeAll(" + setSorted + ") called.");
+        store.putAll(map);
+    }
+
+    @Override
+    public void delete(String key) {
+        logger.info("delete(" + key + ") called.");
+        store.remove(key);
+    }
+
+    @Override
+    public void deleteAll(Collection<String> keys) {
+        List<String> keysList = new ArrayList<String>(keys);
+        Collections.sort(keysList);
+        logger.info("deleteAll(" + keysList + ") called.");
+        for (String key : keys) {
+            store.remove(key);
+        }
+    }
+
+}
+```
+
+Thanks for looking into this and best,
+Lukas

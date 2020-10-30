@@ -1,0 +1,14 @@
+At the PCF side, we are using JSON file to start service(hazelcast instance). [hazelcast-json-starter](https://github.com/hazelcast/hazelcast-json-starter/blob/master/src/main/java/GsonStarter.java) takes the json file, converts it into Config object then starts hazelcast instance. While we are investigating one of the customer tickets reports that eviction does not work on PCF env, we have realized that `mapEvictionPolicy` is null though `evictionPolicy` is already configured at JSON file. The expected behaviour is, if `evictionPolicy` is configured but `mapEvictionPolicy` is **not**, `mapEvictionPolicy` should be configured into value of `evictionPolicy`. 
+
+`mapEvictionPolicy` becomes null because it is set only by XMLConfigBuilder class and at the [hazelcast-json-starter](https://github.com/hazelcast/hazelcast-json-starter/blob/master/src/main/java/GsonStarter.java) side, [gson](https://github.com/google/gson) library uses reflection of Config class to create it from JSON file:
+https://github.com/hazelcast/hazelcast/blob/master/hazelcast/src/main/java/com/hazelcast/config/XmlConfigBuilder.java#L1375
+https://github.com/hazelcast/hazelcast/blob/master/hazelcast/src/main/java/com/hazelcast/config/MapConfig.java#L467
+
+First me and @gurbuzali have tried to fix this issue at [hazelcast-json-starter](https://github.com/hazelcast/hazelcast-json-starter/blob/master/src/main/java/GsonStarter.java) side:
+
+- We started with [jackson](https://github.com/FasterXML/jackson) library which maps the fields of a JSON object to fields in a Java object by matching the names of the JSON field to the getter and setter methods in the Java object as a default, but we encountered a lot errors. 
+
+- Then we tried to convert the JSON file into XML then create Config object from it but JSON --> XML conversion is very problematic, we need to handle a lot of hazelcast-xml specific edge cases and we need to update our [hazelcast-full.json](https://github.com/hazelcast/hazelcast-code-samples/tree/master/hazelcast-integration/pcf-integration/hazelcast-full.json).
+
+As a result we have decided to this issue should be fixed at hazelcast side. One of the possible solution of this issue is, we can set value of `mapEvictionPolicy` at own getter ,not at `setEvictionPolicy()` thus it will not become null:
+https://github.com/hazelcast/hazelcast/blob/master/hazelcast/src/main/java/com/hazelcast/config/MapConfig.java#L465-L492

@@ -1,0 +1,106 @@
+### What is the problem
+
+In trying to migrate an eXist app currently running on eXist 3.3 to current 4.7 I hit a strange NPE. The actual code is scattered across several modules and functions but I was able to squeeze it into a single reproducible test (yet, the code does not make much sense anymore ;)
+
+The issue might be related to #2577 and/or #2385?
+
+### Describe how to reproduce or add a test
+
+```xquery
+xquery version "3.1";
+
+module namespace ct2="http://exist-db.org/xquery/closures/test2";
+declare namespace test="http://exist-db.org/xquery/xqsuite";
+
+(: first object :)
+declare function ct2:obj1($item as item()*) as map(*) {
+    map {
+        'name' : 'obj1',
+        'check' : function() as xs:boolean {
+            matches($item, 'foo')
+        },
+        'test' : function() { ct2:do-something($item) }
+    }
+};
+
+(: second object, referencing a function from object1 :)
+declare function ct2:obj2($item as item()*) as map(*) {
+    map {
+        'name' : 'obj2',
+        'check' : function() as xs:boolean {
+            not(ct2:obj1($item)('check')())
+        },
+        'test' : function() { ct2:do-something($item) }
+    }
+};
+
+(: some function calling ct2:name-by-id() :)
+(: this is only introduced to catch the NPE and make it more readable :)
+declare function ct2:do-something($id as xs:string) as xs:string+ {
+    try { ct2:name-by-id($id) } catch * { $err:code cast as xs:string }
+};
+
+(: iterate over objects and return their name, if the test passes :)
+declare function ct2:name-by-id($id as xs:string) as xs:string+ {
+    for $func in $ct2:functions
+    return 
+        if($func($id)('check')()) then $func($id)('name')
+        else ()
+};
+
+(: expose objects :)
+declare variable $ct2:functions := 
+    for $func in inspect:module-functions()
+    return 
+        if(function-name($func) => starts-with('ct2:obj')) then $func
+        else ()
+;
+
+(: now following the tests … :)
+declare 
+    %test:assertEquals('obj1') 
+    function ct2:test1() as xs:string {
+        ct2:obj1('foo')('test')()
+    };
+
+declare 
+    %test:assertEquals('obj1') 
+    function ct2:test2() as xs:string {
+        ct2:obj2('foo')('test')()
+    };
+
+declare 
+    %test:assertEquals('obj1', 'obj1') 
+    function ct2:test3() as xs:string+ {
+        ct2:obj1('foo')('test')(),
+        ct2:obj2('foo')('test')()
+    };
+```
+
+#### Test output
+
+```xml
+<testsuites>
+    <testsuite package="http://exist-db.org/xquery/closures/test2"
+        timestamp="2019-06-02T14:29:02.281Z" tests="3" failures="1" errors="0" pending="0"
+        time="PT0.011S">
+        <testcase name="test1" class="ct2:test1">
+            <failure message="assertEquals failed." type="failure-error-code-1">obj1</failure>
+            <output>java:java.lang.NullPointerException</output>
+        </testcase>
+        <testcase name="test2" class="ct2:test2"/>
+        <testcase name="test3" class="ct2:test3"/>
+    </testsuite>
+</testsuites>
+```
+
+NB: the single invocation of `ct2:obj1('foo')('test')()` fails (= testcase 1) but the combination with a successful call to `ct2:obj2('foo')('test')()` works (= testcase 3).
+
+### Context information
+
+- eXist Version : 4.7.0
+- eXist Build : 201905201236
+- Git commit : 64ba51345
+- Java 1.8.0_212 IcedTea (OpenJDK 64-Bit Server VM) 
+- Operating System : Linux 4.9.125-linuxkit amd64
+- running from Docker image stadlerpeter/existdb:4.7

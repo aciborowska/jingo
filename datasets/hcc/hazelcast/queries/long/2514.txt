@@ -1,0 +1,105 @@
+The following exception was thrown when adding an object to an IMap that has an index on a field of a nested Portable:
+
+```
+SEVERE: [localhost]:5702 [dev] [3.2.1] com.hazelcast.nio.serialization.HazelcastSerializationException: Could not find class-definition for factory-id: 1, class-id: 1, version: 0
+com.hazelcast.query.impl.QueryException: com.hazelcast.nio.serialization.HazelcastSerializationException: Could not find class-definition for factory-id: 1, class-id: 1, version: 0
+    at com.hazelcast.query.impl.QueryEntry.extractViaReflection(QueryEntry.java:96)
+    at com.hazelcast.query.impl.QueryEntry.getAttribute(QueryEntry.java:79)
+    at com.hazelcast.query.impl.IndexImpl.saveEntryIndex(IndexImpl.java:65)
+    at com.hazelcast.query.impl.IndexService.saveEntryIndex(IndexService.java:68)
+    at com.hazelcast.map.DefaultRecordStore.saveIndex(DefaultRecordStore.java:932)
+    at com.hazelcast.map.DefaultRecordStore.put(DefaultRecordStore.java:679)
+    at com.hazelcast.map.operation.PutOperation.run(PutOperation.java:33)
+    at com.hazelcast.spi.impl.BasicOperationService.processOperation(BasicOperationService.java:363)
+    at com.hazelcast.spi.impl.BasicOperationService.processPacket(BasicOperationService.java:309)
+    at com.hazelcast.spi.impl.BasicOperationService.access$400(BasicOperationService.java:102)
+    at com.hazelcast.spi.impl.BasicOperationService$BasicOperationProcessorImpl.process(BasicOperationService.java:756)
+    at com.hazelcast.spi.impl.BasicOperationScheduler$PartitionThread.process(BasicOperationScheduler.java:276)
+    at com.hazelcast.spi.impl.BasicOperationScheduler$PartitionThread.doRun(BasicOperationScheduler.java:270)
+    at com.hazelcast.spi.impl.BasicOperationScheduler$PartitionThread.run(BasicOperationScheduler.java:245)
+```
+
+To reproduce the issue:
+- The Portable object put into the map must contain at least two nested Portable objects
+- One of the nested Portable objects must use a different factory to the outer object and the object that has the indexed field
+- The object must go into a map partition on a different node to the one doing the put 
+  - When a put is done by a HazelcastInstance, it will load the deserialization metadata needed and no longer throw the exception
+  - Either do the put from a client or within a cluster with multiple nodes (the originating node will be fine, but others will throw)
+
+For example:
+
+```
+public class OuterObject implements Portable {
+    private ModelObject model;
+    private OtherObject other;
+
+    @Override
+    public int getClassId() {
+        return ModelFactory.OUTER_OBJECT_ID;
+    }
+
+    @Override
+    public int getFactoryId() {
+        return ModelFactory.FACTORY_ID;
+    }
+
+    ...
+}
+
+public class ModelObject implements Portable {
+    private long timestamp;
+
+    @Override
+    public int getClassId() {
+        return ModelFactory.MODEL_OBJECT_ID;
+    }
+
+    @Override
+    public int getFactoryId() {
+        return ModelFactory.FACTORY_ID;
+    }
+
+    ...
+}
+
+public class OtherObject implements Portable {
+    @Override
+    public int getClassId() {
+        return OtherFactory.OTHER_OBJECT_ID; 
+    }
+
+    @Override
+    public int getFactoryId() {
+        return OtherFactory.FACTORY_ID; // different factory to the outer object and the indexed object
+    }
+
+    ...
+}
+
+public class NestedObjectIndexProblem {
+
+    public static void main(String[] args) throws Exception {
+        Config config = new Config().setNetworkConfig(
+                new NetworkConfig().setJoin(
+                        new JoinConfig().setMulticastConfig(
+                                new MulticastConfig().setEnabled(false)
+                        ).setTcpIpConfig(
+                                new TcpIpConfig().setEnabled(true).addMember("localhost")
+                        )
+                )
+        ).setSerializationConfig(
+                new SerializationConfig().addPortableFactory(1, new OtherFactory()).addPortableFactory(2, new ModelFactory())
+        ).addMapConfig(
+                new MapConfig().setName("scratch").setInMemoryFormat(
+                        InMemoryFormat.BINARY
+                ).addMapIndexConfig(new MapIndexConfig("model.timestamp", true)) // index on timestamp field in nested "model" object
+        );
+
+        ...
+
+        // start multiple nodes and then do put here, or do put from client
+    }
+
+    ...
+}
+```

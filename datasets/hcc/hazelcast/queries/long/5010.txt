@@ -1,0 +1,57 @@
+I'm filing this in response to this [StackOverflow question](http://stackoverflow.com/questions/29481508/hazelcast-aggregations-api-results-in-classcastexception-with-predicates).
+
+I was refactoring some code to use the Aggregations API for counts, rather than the naive approach of building a list of matching entries and returning the results.
+
+First attempt (using `PredicateBuilder`):
+
+``` java
+ public static int reportCountforSource(String sourceId) 
+  {
+      EntryObject e = new PredicateBuilder().getEntryObject();
+      Predicate<String, Report> predicate = e.get("sourceId").equal(sourceId);
+      Supplier<String, Report, Object> supplier = Supplier.fromPredicate(predicate);
+      Long count = reportMap.aggregate(supplier, Aggregations.count());
+
+      return count.intValue();
+  }  
+```
+
+Second attempt (using `Predicates`):
+
+``` java
+  public static int reportCountforSource(String sourceId) 
+  {
+      @SuppressWarnings("unchecked")
+      Predicate<String, Report> predicate = Predicates.equal("sourceId", sourceId);
+      Supplier<String, Report, Object> supplier = Supplier.fromPredicate(predicate);
+      Long count = reportMap.aggregate(supplier, Aggregations.count());
+
+      return count.intValue();
+  }    
+```
+
+Both of these methods result in a `ClassCastException`
+
+```
+Caused by: java.lang.ClassCastException: com.hazelcast.mapreduce.aggregation.impl.SupplierConsumingMapper$SimpleEntry cannot be cast to com.hazelcast.query.impl.QueryableEntry
+    at com.hazelcast.query.Predicates$AbstractPredicate.readAttribute(Predicates.java:859) 
+    at com.hazelcast.query.Predicates$EqualPredicate.apply(Predicates.java:779) 
+    at com.hazelcast.mapreduce.aggregation.impl.PredicateSupplier.apply(PredicateSupplier.java:58) 
+    at com.hazelcast.mapreduce.aggregation.impl.SupplierConsumingMapper.map(SupplierConsumingMapper.java:55)
+    at com.hazelcast.mapreduce.impl.task.KeyValueSourceMappingPhase.executeMappingPhase(KeyValueSourceMappingPhase.java:49)
+```
+
+Third attempt (using lambda as `Predicate` interface implementation):
+
+``` java
+ public static int reportCountforSource(String sourceId) 
+  {
+      Predicate<String, Report> predicate = (entry) ->  entry.getValue().getSourceId().equals(sourceId);
+      Supplier<String, Report, Object> supplier = Supplier.fromPredicate(predicate);
+      Long count = reportMap.aggregate(supplier, Aggregations.count());
+
+      return count.intValue();
+  }    
+```
+
+According to the response from @noctarius, this is a bug (or two).

@@ -1,0 +1,36 @@
+I originally posted this question on [stackoverflow](https://stackoverflow.com/questions/45862782/hazelcast-registration-objects-causing-memory-leak-while-using-scheduledexecutor).
+
+We are using Hazelcast (version 3.8.2) ScheduledExecutor to perform tasks in a cluster. We have a memory issue. 
+
+[Zabbix memory graph - OLD GC Usage](https://i.stack.imgur.com/4kEkJ.png)
+
+
+Profiling was done, and we realized that the leak is happening in EventServiceSegment for registration maps. It's all for .partitionLost events. Or, well, majority.
+
+[Yourkit memory profiling](https://i.stack.imgur.com/ESs3u.png)
+
+We know about disposing finished future, and here's our code that is performed on each instance periodically.
+
+```
+final long futureDisposed = service.getAllScheduledFutures().values().stream().flatMap(Collection::stream)
+            .filter(future -> future.getStats().getTotalRuns() > 0).peek(IScheduledFuture::dispose).count();
+final long futuresLeft = service.getAllScheduledFutures().values().stream().flatMap(Collection::stream).count();
+```
+
+What we get when logging those values is okay, correct number of tasks is disposed, and correct number of tasks remains scheduled. At the moment of this heap dump, futuresLeft logged ~2500 scheduled futures as left in the system. But the memory is still growing.
+
+Our tasks get generated in batches of hundreds, then get scheduled for same delay. The tasks are implementing Runnable, Serializable and HazelcastInstanceAware. We also have transient references to some objects we pick up from userContext of HazelcastInstance.
+
+Scheduling is done as:
+```
+this.scheduler = instance.getScheduledExecutorService(schedulerName);
+this.scheduler.schedule(new Task(taskId), delay, TimeUnit.MILLISECONDS);
+```
+
+When tasks are executed, they might get rescheduled, and then we create a new object (previously we would schedule same objects back, but then we changed it, hoping it would help, but it didn't).
+
+Scheduler is configured with durability 1 and poolSize of 2.
+
+I've went through code, googled whatever keyword I could find, but nothing helped. I can see that these registrations are supposed to be cleaned when calling dispose, but they are not.
+
+How to properly clean this registrations map when tasks are finished?

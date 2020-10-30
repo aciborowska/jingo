@@ -1,0 +1,147 @@
+Found with opendj 6.0.0 rev (0c9d8ae1a65)
+
+We found a regression in our schema tests when updating and modifying some schema objects.
+
+We setup a server with some data in dc=com.
+We update the schema with a file:
+
+
+./DJ1/opendj/bin/ldapmodify -h localhost -p 1398 -D "cn=myself" -w password
+dn: ds-task-id=6,cn=Scheduled Tasks,cn=Tasks
+objectclass: top
+objectclass: ds-task
+objectclass: ds-task-add-schema-file
+ds-task-class-name: org.opends.server.tasks.AddSchemaFileTask
+ds-task-id: 6
+ds-task-schema-file-name: 05-DynamicSchemaAdd.ldif
+
+
+
+The schema file contains:
+
+dn: cn=schema
+objectClass: top
+objectClass: ldapSubentry
+objectClass: subschema
+attributeTypes: ( addschema1at-oid NAME 'addschema1AT' SUP name )
+objectClasses: ( addschema1oc-oid NAME 'addschema1OC' STRUCTURAL MUST addschema1AT )
+
+
+
+We add an entry using the new schema:
+
+./DJ1/opendj/bin/ldapmodify -h localhost -p 1398 -D "cn=myself" -w password
+dn: dc=dynamic-schema-tests,dc=example,dc=com
+dc: dynamic-schema-tests
+objectclass: top
+objectclass: domain
+
+./DJ1/opendj/bin/ldapmodify -h localhost -p 1398 -D "cn=myself" -w password
+dn: addschema1AT=schema1,dc=dynamic-schema-tests,dc=example,dc=com
+objectclass: top
+objectclass: addschema1OC
+addschema1AT: schema1
+
+
+
+We add new attribute and object class with this new attribute:
+
+./DJ1/opendj/bin/ldapmodify -h localhost -p 1398 -D "cn=myself" -w password
+dn: cn=schema
+changetype:modify
+add: attributeTypes
+attributeTypes: ( addschema2at-oid NAME 'addschema2AT' SUP name )
+-
+add: objectClasses
+objectClasses: ( addschema2oc-oid NAME 'addschema2OC' STRUCTURAL MUST addschema2AT )
+
+
+
+We add a new entry with this objectclass:
+
+./DJ1/opendj/bin/ldapmodify -h localhost -p 1398 -D "cn=myself" -w password
+dn: dc=dynamic-schema-tests-2,dc=example,dc=com
+dc: dynamic-schema-tests-2
+objectclass: top
+objectclass: domain
+
+./DJ1/opendj/bin/ldapmodify -h localhost -p 1398 -D "cn=myself" -w password
+dn: addschema2AT=schema2,dc=dynamic-schema-tests-2,dc=example,dc=com
+objectclass: top
+objectclass: addschema2OC
+addschema2AT: schema2
+
+
+
+and make sure the object exists.
+
+We replace one objectClass and attributeType with another objectClass and attributeType:
+
+
+./DJ1/opendj/bin/ldapmodify -h localhost -p 1398 -D "cn=myself" -w password
+dn: cn=schema
+changetype:modify
+delete: objectClasses
+objectClasses: ( addschema2oc-oid NAME 'addschema2OC' STRUCTURAL MUST addschema2AT )
+-
+delete: attributeTypes
+attributeTypes: ( addschema2at-oid NAME 'addschema2AT' SUP name )
+-
+add: attributeTypes
+attributeTypes: ( addschema3at-oid NAME 'addschema3AT' SUP name )
+-
+add: objectClasses
+objectClasses: ( addschema3oc-oid NAME 'addschema3OC' STRUCTURAL MUST addschema3AT )
+
+
+
+We add an entry with this new objectclass and attribute:
+
+./DJ1/opendj/bin/ldapmodify -h localhost -p 1398 -D "cn=myself" -w password
+dn: addschema3AT=schema4,dc=dynamic-schema-tests-2,dc=example,dc=com
+objectclass: top
+objectclass: addschema3OC
+addschema3AT: schema4
+
+
+
+Then we remove  schema objectClass and attributeType:
+
+
+./DJ1/opendj/bin/ldapmodify -h localhost -p 1398 -D "cn=myself" -w password
+dn: cn=schema
+changetype:modify
+delete: objectClasses
+objectClasses: ( addschema3oc-oid NAME 'addschema3OC' STRUCTURAL MUST addschema3AT )
+-
+delete: attributeTypes
+attributeTypes: ( addschema3at-oid NAME 'addschema3AT' SUP name )
+
+
+
+Everything went fine but when checking we cannot use this objectclass and attribute type, we expect to have RC=65 but we have RC=255:
+
+
+./DJ1/opendj/bin/ldapmodify -h localhots -p 1398 -D "cn=myself" -w password
+dn: addschema3AT=schema3,dc=dynamic-schema-tests-2,dc=example,dc=com
+objectclass: top
+objectclass: addschema3OC
+addschema3AT: schema3
+
+# Processing ADD request for addschema3AT=schema3,dc=dynamic-schema-tests-2,dc=example,dc=com
+
+$ echo $?
+255
+
+
+
+and in DJ1 error logs:
+
+[18/Oct/2017:10:37:57 +0200] category=CORE severity=ERROR msgID=108 msg=Worker Thread 13 encountered an uncaught exception while processing operation AddOperation(connID=26, opID=1, dn=addschema3AT=schema3,dc=dynamic-schema-tests-2,dc=example,dc=com): NullPointerException (StructuralObjectClassVirtualAttributeProvider.java:43 VirtualAttributeRule.java:144 Entry.java:2390 Entry.java:1842 AddOperation.java:885 AddOperation.java:701 AddOperation.java:557 AddOperation.java:496 TraditionalWorkerThread.java:122)
+[18/Oct/2017:10:37:57 +0200] category=CORE severity=ERROR msgID=140 msg=An uncaught exception during processing for thread Worker Thread 13 has caused it to terminate abnormally. The stack trace for that exception is: UndeliverableException: org.forgerock.opendj.ldap.LdapException: Other: Worker Thread 13 encountered an uncaught exception while processing operation AddOperation(connID=26, opID=1, dn=addschema3AT=schema3,dc=dynamic-schema-tests-2,dc=example,dc=com): NullPointerException (StructuralObjectClassVirtualAttributeProvider.java:43 VirtualAttributeRule.java:144 Entry.java:2390 Entry.java:1842 AddOperation.java:885 AddOperation.java:701 AddOperation.java:557 AddOperation.java:496 TraditionalWorkerThread.java:122) (RxJavaPlugins.java:349 FlowableCreate.java:133 ReactiveHandlersUtils.java:406 LdapClientConnection.java:352 TraditionalWorkerThread.java:141)
+[18/Oct/2017:10:37:57 +0200] category=CORE severity=NOTICE msgID=139 msg=The Directory Server has sent an alert notification generated by class org.opends.server.api.DirectoryThread (alert type org.opends.server.UncaughtException, alert ID org.opends.messages.core-140): An uncaught exception during processing for thread Worker Thread 13 has caused it to terminate abnormally. The stack trace for that exception is: UndeliverableException: org.forgerock.opendj.ldap.LdapException: Other: Worker Thread 13 encountered an uncaught exception while processing operation AddOperation(connID=26, opID=1, dn=addschema3AT=schema3,dc=dynamic-schema-tests-2,dc=example,dc=com): NullPointerException (StructuralObjectClassVirtualAttributeProvider.java:43 VirtualAttributeRule.java:144 Entry.java:2390 Entry.java:1842 AddOperation.java:885 AddOperation.java:701 AddOperation.java:557 AddOperation.java:496 TraditionalWorkerThread.java:122) (RxJavaPlugins.java:349 FlowableCreate.java:133 ReactiveHandlersUtils.java:406 LdapClientConnection.java:352 TraditionalWorkerThread.java:141)
+
+
+
+
+

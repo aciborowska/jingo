@@ -1,0 +1,36 @@
+I think there is a bug in hazelcast eviction logic for USED_HEAP_PERCENTAGE and  USED_HEAP_SIZE
+
+This is code snippet from MapService$MapEvictTask:
+
+private boolean checkLimits(MapContainer mapContainer) {
+
+```
+        if (maxSizePolicy == MaxSizeConfig.MaxSizePolicy.USED_HEAP_SIZE || maxSizePolicy == MaxSizeConfig.MaxSizePolicy.USED_HEAP_PERCENTAGE) {
+            long total = Runtime.getRuntime().totalMemory();
+            long used = (total - Runtime.getRuntime().freeMemory());
+            if (maxSizePolicy == MaxSizeConfig.MaxSizePolicy.USED_HEAP_SIZE) {
+                return maxSize > (used / 1024 / 1024);
+            } else {
+                return maxSize > (used / total);
+            }
+```
+
+ USED_HEAP_PERCENTAGE case:
+
+"total" and "used" are both long, so  (used / total) result  is always 0 and checkLimits(...) is always returns "true" for this case
+
+It means HC will try to evict elements every second. 
+
+USED_HEAP_SIZE case:
+
+The code compares "maxSize" with used memory and return "false" if used memory is GREATER than max configured. So HC is actually stopping eviction if we use more memory for storage than allowed.
+
+The fix is pretty simple - reverse compare logic and fix percentage calculation:
+
+```
+            if (maxSizePolicy == MaxSizeConfig.MaxSizePolicy.USED_HEAP_SIZE) {
+                return maxSize < (used / 1024 / 1024);
+            } else {
+                return maxSize < (100d * used / total);
+            }
+```

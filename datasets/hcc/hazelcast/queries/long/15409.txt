@@ -1,0 +1,52 @@
+Reference to a reliable topic listener remain in Java heap after the listener is removed. I have tried 3.6.1 and 3.11, the issue happens with both versions.
+Listeners are references as follows:
+```
+this     - value: TopicListener 
+ <- messageListener     - class: com.hazelcast.topic.impl.reliable.ReliableMessageListenerAdapter
+  <- listener     - class: com.hazelcast.topic.impl.reliable.ReliableMessageRunner
+   <- state     - class: com.hazelcast.spi.impl.operationservice.impl.InvocationFuture
+    <- future     - class: com.hazelcast.spi.impl.operationservice.impl.PartitionInvocation
+     <- val     - class: java.util.concurrent.ConcurrentHashMap$Node
+      <- [3]     - class: java.util.concurrent.ConcurrentHashMap$Node[]
+       <- table     - class: java.util.concurrent.ConcurrentHashMap
+        <- invocations     - class: com.hazelcast.spi.impl.operationservice.impl.InvocationRegistry
+         <- invocationRegistry     - class: com.hazelcast.spi.impl.operationservice.impl.InboundResponseHandlerSupplier
+          <- this$0 (thread object)     - class: com.hazelcast.spi.impl.operationservice.impl.InboundResponseHandlerSupplier$ResponseThread
+```
+
+Please see a simple test case below. Run the test, make a heap dump, there will be exactly 100 TopicListeners in the heap.
+```
+import com.hazelcast.config.Config;
+import com.hazelcast.core.*;
+
+public class TopicListener implements MessageListener {
+    public static void main(String[] args) {
+        Config cfg = new Config();
+        cfg.setInstanceName("node");
+        System.out.println("*** Creating a Hazelcast node...");
+        HazelcastInstance hazelcastInstance = Hazelcast.getOrCreateHazelcastInstance(cfg);
+        System.out.println("*** Done");
+        hangOn();
+
+        ITopic topic = hazelcastInstance.getReliableTopic("topic_name");
+        for (int i = 0; i < 100; i++) {
+            String listenerId = topic.addMessageListener(new TopicListener());
+            topic.removeMessageListener(listenerId);
+        }
+        System.out.println("*** Done with adding/removing topic listeners");
+    }
+
+    @Override
+    public void onMessage(Message message) {}
+
+    private static void hangOn() {
+        Thread thread = new Thread(() -> {
+            try {
+                Thread.sleep(86_400_000); // 24 hours
+            } catch (InterruptedException ignore) {}
+        });
+        thread.setDaemon(false);
+        thread.start();
+    }
+}
+```

@@ -1,0 +1,58 @@
+Please answer these questions before submitting your issue. Thanks!
+
+### Which version of Sharding-Jdbc do you using?
+2.0.0M1
+
+### Expected behavior
+做读写分离后，之前每天执行一次的DDL语句居然执行不成功了！
+
+### Actual behavior
+```
+2017-12-26 23:55:00  [DubboServerHandler-10.86.199.108:30103-thread-92] ERROR druid.sql.Statement - Slf4jLogFilter.java:149 - {conn-10610, pstmt-35015} execute error. CREATE TABLE IF NOT EXISTS order_stat_20171227 LIKE order_stat
+ java.sql.SQLException: The MySQL server is running with the --read-only option so it cannot execute this statement
+	at com.mysql.jdbc.SQLError.createSQLException(SQLError.java:996) ~[mysql-connector-java-5.1.33.jar:5.1.33]
+	at com.mysql.jdbc.MysqlIO.checkErrorPacket(MysqlIO.java:3887) ~[mysql-connector-java-5.1.33.jar:5.1.33]
+	at com.mysql.jdbc.MysqlIO.checkErrorPacket(MysqlIO.java:3823) ~[mysql-connector-java-5.1.33.jar:5.1.33]
+	at com.mysql.jdbc.MysqlIO.sendCommand(MysqlIO.java:2435) ~[mysql-connector-java-5.1.33.jar:5.1.33]
+	at com.mysql.jdbc.MysqlIO.sqlQueryDirect(MysqlIO.java:2582) ~[mysql-connector-java-5.1.33.jar:5.1.33]
+	at com.mysql.jdbc.ConnectionImpl.execSQL(ConnectionImpl.java:2530) ~[mysql-connector-java-5.1.33.jar:5.1.33]
+	at com.mysql.jdbc.PreparedStatement.executeInternal(PreparedStatement.java:1907) ~[mysql-connector-java-5.1.33.jar:5.1.33]
+	at com.mysql.jdbc.PreparedStatement.execute(PreparedStatement.java:1199) ~[mysql-connector-java-5.1.33.jar:5.1.33]
+	at com.alibaba.druid.filter.FilterChainImpl.preparedStatement_execute(FilterChainImpl.java:2931) [druid-1.0.15.jar:1.0.15]
+	at com.alibaba.druid.filter.FilterEventAdapter.preparedStatement_execute(FilterEventAdapter.java:440) [druid-1.0.15.jar:1.0.15]
+	at com.alibaba.druid.filter.FilterChainImpl.preparedStatement_execute(FilterChainImpl.java:2929) [druid-1.0.15.jar:1.0.15]
+	at com.alibaba.druid.filter.FilterEventAdapter.preparedStatement_execute(FilterEventAdapter.java:440) [druid-1.0.15.jar:1.0.15]
+	at com.alibaba.druid.filter.FilterChainImpl.preparedStatement_execute(FilterChainImpl.java:2929) [druid-1.0.15.jar:1.0.15]
+	at com.alibaba.druid.proxy.jdbc.PreparedStatementProxyImpl.execute(PreparedStatementProxyImpl.java:131) [druid-1.0.15.jar:1.0.15]
+	at com.alibaba.druid.pool.DruidPooledPreparedStatement.execute(DruidPooledPreparedStatement.java:493) [druid-1.0.15.jar:1.0.15]
+	at io.shardingjdbc.core.executor.type.prepared.PreparedStatementExecutor$3.execute(PreparedStatementExecutor.java:97) [sharding-jdbc-core-2.0.0.M1.jar:na]
+	at io.shardingjdbc.core.executor.type.prepared.PreparedStatementExecutor$3.execute(PreparedStatementExecutor.java:93) [sharding-jdbc-core-2.0.0.M1.jar:na]
+	at io.shardingjdbc.core.executor.ExecutorEngine.executeInternal(ExecutorEngine.java:175) [sharding-jdbc-core-2.0.0.M1.jar:na]
+	at io.shardingjdbc.core.executor.ExecutorEngine.syncExecute(ExecutorEngine.java:155) [sharding-jdbc-core-2.0.0.M1.jar:na]
+	at io.shardingjdbc.core.executor.ExecutorEngine.execute(ExecutorEngine.java:124) [sharding-jdbc-core-2.0.0.M1.jar:na]
+	at io.shardingjdbc.core.executor.ExecutorEngine.executePreparedStatement(ExecutorEngine.java:96) [sharding-jdbc-core-2.0.0.M1.jar:na]
+```
+
+### Steps to reproduce the behavior
+只配置了读写分离，然后在mybatis里随意配置一个DDL的语句，就产生了这个bug. 但是官网说的是无条件支持DDL，希望能修复该BUG. 初步猜测具体原因应该是getConnection时获取到了从库的connection.
+
+### Please provide the reproduce example codes (such as github link) if possible.
+跟进到sharding-jdbc源码中，发现在[MasterSlaveConnection](https://github.com/shardingjdbc/sharding-jdbc/blob/2.0.0.M1/sharding-jdbc-core/src/main/java/io/shardingjdbc/core/jdbc/core/connection/MasterSlaveConnection.java)这个类中的getConnections方法的问题.该方法的注释也进一步说明了这一点
+```
+/**
+     * Get database connections via SQL type.
+     *
+     * <p>DDL will return all connections; DQL will return slave connection; DML or updated before in same thread will return master connection.</p>
+     * 
+     * @param sqlType SQL type
+     * @return database connections via SQL type
+     * @throws SQLException SQL exception
+     */
+    public Collection<Connection> getConnections(final SQLType sqlType) throws SQLException {
+        cachedSQLType = sqlType;
+        Map<String, DataSource> dataSources = SQLType.DDL == sqlType ? masterSlaveDataSource.getAllDataSources() : masterSlaveDataSource.getDataSource(sqlType).toMap();
+...
+...
+```
+What! SQLType.DDL == sqlType 居然返回masterSlaveDataSource.getAllDataSources()！！！
+很纳闷 **DDL** 什么时候可以跑读库去执行了，希望能尽快修复该BUG。

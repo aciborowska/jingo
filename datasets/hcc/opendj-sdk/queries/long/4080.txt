@@ -1,0 +1,38 @@
+Backend 1 contains dc=example,dc=com and a local ou=groups,dc=example,dc=com entry.
+Backend 2 contains dc=foo,dc=example,dc=com.
+
+Attempt to delete ou=groups,dc=example,dc=com as the root user.
+
+Expected result: the entry is deleted.
+
+Actual result: the delete operation fails with
+
+
+# Processing DELETE request for ou=groups,dc=example,dc=com 
+# The LDAP modify request failed: 66 (Not Allowed on Non-Leaf) 
+# Additional Information: Entry ou=groups,dc=example,dc=com cannot be removed because the backend that should contain that entry has a subordinate backend with a base DN of dc=foo,dc=example,dc=com that is below the target DN.
+
+
+
+We're failing in this part of the local delete code:
+
+
+
+            // The selected backend will have the responsibility of making sure that
+            // the entry actually exists and does not have any children (or possibly
+            // handling a subtree delete). But we will need to check if there are
+            // any subordinate backends that should stop us from attempting the delete
+            BackendConfigManager backendConfigManager =
+                    DirectoryServer.getInstance().getServerContext().getBackendConfigManager();
+            final Iterator<Dn> subordinates = backendConfigManager.findSubordinateNamingContextsForEntry(entryDN);
+            if (subordinates.hasNext()) {
+                setResultCodeAndMessageNoInfoDisclosure(entry, ResultCode.NOT_ALLOWED_ON_NONLEAF,
+                        ERR_DELETE_HAS_SUB_BACKEND.get(entryDN, subordinates.next()));
+                return;
+            }
+
+
+
+Initial guess is that it looks like findSubordinateNamingContextsForEntry(entryDN) is returning the wrong iterator, i.e. for all subordinates of dc=example,dc=com, not all subordinates of the target ou=groups,dc=example,dc=com.
+
+The code in DJ 3.5 is rather different, and it works. This appears to be a DS 5 regression.

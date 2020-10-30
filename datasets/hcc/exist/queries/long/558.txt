@@ -1,0 +1,60 @@
+I have found a repeatable deadlock in validation:
+
+```java
+final TransactionManager transact = brokerPool.getTransactionManager();
+try(final DBBroker broker = brokerPool.get(user));
+        final Txn transaction = transact.beginTransaction()) {
+
+  Collection coll = broker.getOrCreateCollection("/db/validate-test");
+  broker.saveCollection(transaction, coll);
+
+  //do some validatation
+  final Properties properties = new Properties();
+  final ExistResolver resolver = new ExistResolver(brokerPool);
+  ValidateProperty.URI_RESOLVER.put(properties, resolver);
+  ValidateProperty.ENTITY_RESOLVER.put(properties, resolver);
+  final ValidationDriver driver = new
+ValidationDriver(properties.toPropertyMap(), schemaReader);
+
+  // Load schema
+
+  InputSource grammar =
+Shared.getInputSource("/db/validate-test/something.nvdl", context);
+
+  driver.loadSchema(grammar); // THIS WILL DEADLOCK PROGRESS
+
+  transaction.commit();
+}
+```
+
+So the real issue is the interaction between `broker.getOrCreateCollection` and `EmbeddedDownload` used by the validation. Basically what happens is -
+
+1) The `main` thread executing the `broker.getOrCreateCollection` will acquire a `WRITE_LOCK` on the collection `/db/validate-test` and add it to the transaction.
+
+2) When `driver.loadSchema`is executed, it uses the registered `ExistResolver`.
+
+3) The `ExistResolver` will call `EmbeddedInputStream`, and the key thing here is that `EmbeddedInputStream` creates a new thread - `EmbeddedDownloadThread`.
+
+4) `EmbeddedDownloadThread` will attempt to take a `READ_LOCK` on `/db/validate-test`.
+
+5) KABOOM! Basically (1) is waiting on (4) to progress, and (4) is awaiting on the lock held by (1).
+
+This is not the classic deadlock. It happens specifically because `NativeBroker#getOrCreateCollection` causes the transaction to hold onto a `WRITE_LOCK` until it is committed.
+
+Unfortunately, the architecture of this issue is not just limited to validation...
+
+The implication of this, is that within the same transaction, it is impossible to run any code in another thread that may try to access the collection (or a sub-collection or resource of).
+
+That is exactly what the `ExistResolver` does! This limitation will lead to a deadlock anywhere multithreaded code is used within the same transaction (if the same collection (or sub collection/resource) is accessed.
+
+So... is there any other multithreaded code apart from `ExistResolver` that might execute within a transaction after `getOrCreateCollection`? I don't know! If so, then that may be deadlock prone also.
+
+I guess we have two options:
+
+1) If `ExistResolver` is likely the only multithreaded code, and we can accept a single threaded limitation. Then we have to refactor `ExistResolver` not to use threads.
+
+2) Otherwise, we have to do a bit more serious work...
+
+2.1) Perhaps one solution is that `getOrCreateCollection` does not need to register a `WRITE_LOCK` with the transaction. Perhaps just a `READ_LOCK` is enough (as that would prevent further writes anyway). This would only remove the **_t1:WRITE<-2:READ**_ issue, it would not prevent a **_t1:WRITE<-t2:WRITE**_ deadlock.
+
+2.2) Probably other solutions...

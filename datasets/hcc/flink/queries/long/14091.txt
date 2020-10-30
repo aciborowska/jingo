@@ -1,0 +1,58 @@
+when zk change leader, the state of curator is suspended,job manager can not tigger checkpoint.but it doesn't tigger checkpoint after zk resume.
+
+we found that the lastState in the class ZooKeeperCheckpointIDCounter  never change back to normal when it fall into SUSPENDED or LOST.
+/**
+ _* Connection state listener. In case of {@link ConnectionState#SUSPENDED} or 
+{@link_
+ _* ConnectionState#LOST} we are not guaranteed to read a current count from ZooKeeper._
+ */
+private static class SharedCountConnectionStateListener implements ConnectionStateListener {
+
+ private volatile ConnectionState lastState;
+
+ @Override
+ public void stateChanged(CuratorFramework client, ConnectionState newState) {
+ if (newState == ConnectionState.SUSPENDED || newState == ConnectionState.LOST) {
+ lastState = newState;
+ }
+ }
+
+ private ConnectionState getLastState() {
+ return lastState;
+ }
+}
+
+ 
+
+we change the state back. after test, solve the problem.
+
+ 
+h6. /**
+ _* Connection state listener. In case of {@link ConnectionState#SUSPENDED} or {@link_
+ _* ConnectionState#LOST}
+ we are not guaranteed to read a current count from ZooKeeper._
+ */
+private static class SharedCountConnectionStateListener implements ConnectionStateListener {
+
+ private volatile ConnectionState lastState;
+
+ @Override
+ public void stateChanged(CuratorFramework client, ConnectionState newState) {
+ if (newState == ConnectionState.SUSPENDED || newState == ConnectionState.LOST) {
+ lastState = newState;
+ }
+ else{
+ /* if connectionState is not SUSPENDED and LOST, reset lastState. */
+ lastState = null;
+ }
+ }
+
+ private ConnectionState getLastState() {
+ return lastState;
+ }
+}
+
+ 
+
+log：
+{{2019-09-16 13:38:38,020 INFO  org.apache.flink.shaded.zookeeper.org.apache.zookeeper.ClientCnxn  - Unable to read additional data from server sessionid 0x26cff6487c2000e, likely server has closed socket, closing socket connection and attempting reconnect}}{{2019-09-16 13:38:38,122 INFO  org.apache.flink.shaded.curator.org.apache.curator.framework.state.ConnectionStateManager  - State change: SUSPENDED}}{{2019-09-16 13:38:38,123 WARN  org.apache.flink.runtime.leaderretrieval.ZooKeeperLeaderRetrievalService  - Connection to ZooKeeper suspended. Can no longer retrieve the leader from ZooKeeper.}}{{2019-09-16 13:38:38,126 WARN  org.apache.flink.runtime.leaderretrieval.ZooKeeperLeaderRetrievalService  - Connection to ZooKeeper suspended. Can no longer retrieve the leader from ZooKeeper.}}{{2019-09-16 13:38:38,126 WARN  org.apache.flink.runtime.jobmanager.ZooKeeperSubmittedJobGraphStore  - ZooKeeper connection SUSPENDING. Changes to the submitted job graphs are not monitored (temporarily).}}{{2019-09-16 13:38:38,128 WARN  org.apache.flink.runtime.leaderelection.ZooKeeperLeaderElectionService  - Connection to ZooKeeper suspended. The contender akka.tcp://flink@node007224:19115/user/dispatcher no longer participates in the leader election.}}{{2019-09-16 13:38:38,128 WARN  org.apache.flink.runtime.leaderelection.ZooKeeperLeaderElectionService  - Connection to ZooKeeper suspended. The contender akka.tcp://flink@node007224:19115/user/resourcemanager no longer participates in the leader election.}}{{2019-09-16 13:38:38,128 WARN  org.apache.flink.runtime.leaderretrieval.ZooKeeperLeaderRetrievalService  - Connection to ZooKeeper suspended. Can no longer retrieve the leader from ZooKeeper.}}{{2019-09-16 13:38:38,128 WARN  org.apache.flink.runtime.leaderelection.ZooKeeperLeaderElectionService  - Connection to ZooKeeper suspended. The contender http://node007224:8081 no longer participates in the leader election.}}{{2019-09-16 13:38:38,128 WARN  org.apache.flink.runtime.leaderretrieval.ZooKeeperLeaderRetrievalService  - Connection to ZooKeeper suspended. Can no longer retrieve the leader from ZooKeeper.}}{{2019-09-16 13:38:38,128 WARN  org.apache.flink.runtime.leaderelection.ZooKeeperLeaderElectionService  - Connection to ZooKeeper suspended. The contender akka.tcp://flink@node007224:19115/user/jobmanager_2 no longer participates in the leader election.}}{{2019-09-16 13:38:38,128 WARN  org.apache.flink.runtime.leaderretrieval.ZooKeeperLeaderRetrievalService  - Connection to ZooKeeper suspended. Can no longer retrieve the leader from ZooKeeper.}}{{2019-09-16 13:38:38,128 WARN  org.apache.flink.runtime.leaderretrieval.ZooKeeperLeaderRetrievalService  - Connection to ZooKeeper suspended. Can no longer retrieve the leader from ZooKeeper.}}{{2019-09-16 13:38:39,109 WARN  org.apache.flink.shaded.zookeeper.org.apache.zookeeper.ClientCnxn  - SASL configuration failed: javax.security.auth.login.LoginException: No JAAS configuration section named 'Client' was found in specified JAAS configuration file: '/tmp/jaas-4823064314619540149.conf'. Will continue connection to Zookeeper server without SASL authentication, if Zookeeper server allows it.}}{{2019-09-16 13:38:39,109 INFO  org.apache.flink.shaded.zookeeper.org.apache.zookeeper.ClientCnxn  - Opening socket connection to server 192.168.7.231/192.168.7.231:2181}}{{2019-09-16 13:38:39,109 ERROR org.apache.flink.shaded.curator.org.apache.curator.ConnectionState  - Authentication failed}}{{2019-09-16 13:38:39,110 INFO  org.apache.flink.shaded.zookeeper.org.apache.zookeeper.ClientCnxn  - Socket connection established to 192.168.7.231/192.168.7.231:2181, initiating session}}{{2019-09-16 13:38:39,112 INFO  org.apache.flink.shaded.zookeeper.org.apache.zookeeper.ClientCnxn  - Unable to read additional data from server sessionid 0x26cff6487c2000e, likely server has closed socket, closing socket connection and attempting reconnect}}{{2019-09-16 13:38:39,778 WARN  org.apache.flink.shaded.zookeeper.org.apache.zookeeper.ClientCnxn  - SASL configuration failed: javax.security.auth.login.LoginException: No JAAS configuration section named 'Client' was found in specified JAAS configuration file: '/tmp/jaas-4823064314619540149.conf'. Will continue connection to Zookeeper server without SASL authentication, if Zookeeper server allows it.}}{{2019-09-16 13:38:39,778 INFO  org.apache.flink.shaded.zookeeper.org.apache.zookeeper.ClientCnxn  - Opening socket connection to server 192.168.7.230/192.168.7.230:2181}}{{2019-09-16 13:38:39,778 ERROR org.apache.flink.shaded.curator.org.apache.curator.ConnectionState  - Authentication failed}}{{2019-09-16 13:38:39,778 INFO  org.apache.flink.shaded.zookeeper.org.apache.zookeeper.ClientCnxn  - Socket connection established to 192.168.7.230/192.168.7.230:2181, initiating session}}{{2019-09-16 13:38:39,780 INFO  org.apache.flink.shaded.zookeeper.org.apache.zookeeper.ClientCnxn  - Session establishment complete on server 192.168.7.230/192.168.7.230:2181, sessionid = 0x26cff6487c2000e, negotiated timeout = 60000}}{{2019-09-16 13:38:39,780 INFO  org.apache.flink.shaded.curator.org.apache.curator.framework.state.ConnectionStateManager  - State change: RECONNECTED}}{{2019-09-16 13:38:39,780 INFO  org.apache.flink.runtime.leaderretrieval.ZooKeeperLeaderRetrievalService  - Connection to ZooKeeper was reconnected. Leader retrieval can be restarted.}}{{2019-09-16 13:38:39,780 INFO  org.apache.flink.runtime.leaderretrieval.ZooKeeperLeaderRetrievalService  - Connection to ZooKeeper was reconnected. Leader retrieval can be restarted.}}{{2019-09-16 13:38:39,780 INFO  org.apache.flink.runtime.leaderelection.ZooKeeperLeaderElectionService  - Connection to ZooKeeper was reconnected. Leader election can be restarted.}}{{2019-09-16 13:38:39,780 INFO  org.apache.flink.runtime.jobmanager.ZooKeeperSubmittedJobGraphStore  - ZooKeeper connection RECONNECTED. Changes to the submitted job graphs are monitored again.}}{{2019-09-16 13:38:39,780 INFO  org.apache.flink.runtime.leaderelection.ZooKeeperLeaderElectionService  - Connection to ZooKeeper was reconnected. Leader election can be restarted.}}{{2019-09-16 13:38:39,781 INFO  org.apache.flink.runtime.leaderretrieval.ZooKeeperLeaderRetrievalService  - Connection to ZooKeeper was reconnected. Leader retrieval can be restarted.}}{{2019-09-16 13:38:39,781 INFO  org.apache.flink.runtime.leaderelection.ZooKeeperLeaderElectionService  - Connection to ZooKeeper was reconnected. Leader election can be restarted.}}{{2019-09-16 13:38:39,781 INFO  org.apache.flink.runtime.leaderretrieval.ZooKeeperLeaderRetrievalService  - Connection to ZooKeeper was reconnected. Leader retrieval can be restarted.}}{{2019-09-16 13:38:39,781 INFO  org.apache.flink.runtime.leaderelection.ZooKeeperLeaderElectionService  - Connection to ZooKeeper was reconnected. Leader election can be restarted.}}{{2019-09-16 13:38:39,781 INFO  org.apache.flink.runtime.leaderretrieval.ZooKeeperLeaderRetrievalService  - Connection to ZooKeeper was reconnected. Leader retrieval can be restarted.}}{{2019-09-16 13:38:39,781 INFO  org.apache.flink.runtime.leaderretrieval.ZooKeeperLeaderRetrievalService  - Connection to ZooKeeper was reconnected. Leader retrieval can be restarted.}}{{2019-09-16 13:38:43,142 INFO  org.apache.flink.runtime.checkpoint.CheckpointCoordinator     - Completed checkpoint 6995 for job 21b6ef566750f5766443641254e8e1a9 (16841 bytes in 49 ms).}}{{2019-09-16 13:38:43,144 ERROR org.apache.flink.runtime.checkpoint.CheckpointCoordinator     - Exception while triggering checkpoint for job 21b6ef566750f5766443641254e8e1a9.}}{{java.lang.IllegalStateException: Connection state: SUSPENDED}}{{    at org.apache.flink.runtime.checkpoint.ZooKeeperCheckpointIDCounter.checkConnectionState(ZooKeeperCheckpointIDCounter.java:159)}}{{    at org.apache.flink.runtime.checkpoint.ZooKeeperCheckpointIDCounter.get(ZooKeeperCheckpointIDCounter.java:133)}}{{    at org.apache.flink.runtime.checkpoint.CheckpointCoordinator.triggerCheckpoint(CheckpointCoordinator.java:448)}}{{    at org.apache.flink.runtime.checkpoint.CheckpointCoordinator$ScheduledTrigger.run(CheckpointCoordinator.java:1323)}}{{    at java.util.concurrent.Executors$RunnableAdapter.call(Executors.java:511)}}{{    at java.util.concurrent.FutureTask.runAndReset(FutureTask.java:308)}}{{    at java.util.concurrent.ScheduledThreadPoolExecutor$ScheduledFutureTask.access$301(ScheduledThreadPoolExecutor.java:180)}}{{    at java.util.concurrent.ScheduledThreadPoolExecutor$ScheduledFutureTask.run(ScheduledThreadPoolExecutor.java:294)}}{{    at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1142)}}{{    at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:617)}}{{    at java.lang.Thread.run(Thread.java:745)}}

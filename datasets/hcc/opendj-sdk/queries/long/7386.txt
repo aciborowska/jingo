@@ -1,0 +1,147 @@
+Found with automated stress test with 7.0.0-M2020-10.5.
+
+The issue is that after purge-delay the size of changelogDb is still increasing.
+
+ 
+
+Test to reproduce:
+
+python3 run-pybot.py -v -c stress -s cts -n DJ
+
+
+You need to download config.cfg and copy it to the config folder. Adjust java_home in the config.cfg.
+
+Test steps:
+
+./DJ1/opendj/setup -h grana.internal.forgerock.com -p 1389 -D "uid=admin" -w password --adminConnectorPort 4444 -Z 1636   --profile am-cts --set am-cts/amCtsAdminPassword:str0ngB1ndPa55w#ord --acceptLicense --monitorUserDn uid=Monitor --monitorUserPassword password --serverId "dj1" --deploymentKey AI1QLGYmsSzDRjKDmQZu7l9sAD10aA5CBVN1bkVDC24LTccCYcFwGw --deploymentKeyPassword
+
+./DJ2/opendj/setup -h grana.internal.forgerock.com -p 1390 -D "uid=admin" -w password --adminConnectorPort 4445 -Z 1637   --profile am-cts --set am-cts/amCtsAdminPassword:str0ngB1ndPa55w#ord --acceptLicense --monitorUserDn uid=Monitor --monitorUserPassword password --serverId "dj2" --deploymentKey AI1QLGYmsSzDRjKDmQZu7l9sAD10aA5CBVN1bkVDC24LTccCYcFwGw --deploymentKeyPassword
+
+
+The test then adds some ACIs on both servers:
+
+./bin/dsconfig --offline set-access-control-handler-prop --add "global-aci:(extop=\"1.3.6.1.4.1.26027.1.6.1||1.3.6.1.4.1.26027.1.6.3||1.3.6.1.4.1.4203.1.11.1||1.3.6.1.4.1.1466.20037||1.3.6.1.4.1.4203.1.11.3\")(version 3.0; acl \"AM extended operation access\"; allow(read) userdn=\"ldap:///anyone\";)" -n
+
+./bin/dsconfig --offline set-access-control-handler-prop --add "global-aci:(targetcontrol=\"2.16.840.1.113730.3.4.2||2.16.840.1.113730.3.4.17||2.16.840.1.113730.3.4.19||1.3.6.1.4.1.4203.1.10.2||1.3.6.1.4.1.42.2.27.8.5.1||2.16.840.1.113730.3.4.16||1.2.840.113556.1.4.1413||1.3.6.1.4.1.36733.2.1.5.1||1.3.6.1.1.12||1.3.6.1.1.13.1||1.3.6.1.1.13.2||1.2.840.113556.1.4.319||1.2.826.0.1.3344810.2.3||2.16.840.1.113730.3.4.18||2.16.840.1.113730.3.4.9||1.2.840.113556.1.4.473||1.3.6.1.4.1.42.2.27.9.5.9\")(version 3.0; acl \"AM extended operation access\"; allow(read) userdn=\"ldap:///uid=openam_cts,ou=admins,ou=famrecords,ou=openam-session,ou=tokens\";)" -n
+
+./bin/dsconfig --offline set-access-control-handler-prop --add "global-aci:(targetattr=\"createTimestamp||creatorsName||modifiersName||modifyTimestamp||entryDN||entryUUID||subschemaSubentry||etag||governingStructureRule||structuralObjectClass||hasSubordinates||numSubordinates||isMemberOf\")(version 3.0; acl \"AM Operational Attributes\"; allow (read,search,compare) userdn=\"ldap:///uid=openam_cts,ou=admins,ou=famrecords,ou=openam-session,ou=tokens\";)" -n
+
+./bin/dsconfig --offline set-access-control-handler-prop --add "global-aci:(targetcontrol=\"1.3.6.1.1.12||1.3.6.1.1.13.1\")(version 3.0; acl \"Allow assertion control\"; allow (read) userdn = \"ldap:///uid=openam_cts,ou=admins,ou=famrecords,ou=openam-session,ou=tokens\";)" -n
+
+
+Sets bootstrap servers:
+
+./DJ1/opendj/bin/dsconfig --offline set-synchronization-provider-prop --provider-name "Multimaster Synchronization" --add bootstrap-replication-server:grana.internal.forgerock.com:8989 --add bootstrap-replication-server:grana.internal.forgerock.com:8990 -n
+
+./DJ2/opendj/bin/dsconfig --offline set-synchronization-provider-prop --provider-name "Multimaster Synchronization" --add bootstrap-replication-server:grana.internal.forgerock.com:8989 --add bootstrap-replication-server:grana.internal.forgerock.com:8990 -n
+
+
+Imports data:
+
+dn: ou=tokens
+ou: tokens
+objectClass: top
+objectClass: organizationalUnit
+
+dn: ou=openam-session,ou=tokens
+ou: openam-session
+objectClass: top
+objectClass: organizationalUnit
+
+dn: ou=famrecords,ou=openam-session,ou=tokens
+ou: famrecords
+objectClass: top
+objectClass: organizationalUnit
+
+dn: ou=People,ou=famrecords,ou=openam-session,ou=tokens
+ou: People
+objectClass: organizationalUnit
+
+
+Rebuilds indexes:
+
+./DJ1/opendj/bin/rebuild-index  --offline -b ou=tokens  -i coreTokenDate01 -i coreTokenDate02 -i coreTokenDate03 -i coreTokenDate04 -i coreTokenDate05 -i coreTokenExpirationDate -i coreTokenInteger01 -i coreTokenInteger02 -i coreTokenInteger03 -i coreTokenInteger04 -i coreTokenInteger05 -i coreTokenMultiString01 -i coreTokenMultiString02 -i coreTokenString01 -i coreTokenString02 -i coreTokenString03 -i coreTokenString08 -i coreTokenString09 -i coreTokenString10 -i coreTokenString14 -i coreTokenString15 -i coreTokenUserId --clearDegradedState
+
+./DJ2/opendj/bin/rebuild-index  --offline -b ou=tokens  -i coreTokenDate01 -i coreTokenDate02 -i coreTokenDate03 -i coreTokenDate04 -i coreTokenDate05 -i coreTokenExpirationDate -i coreTokenInteger01 -i coreTokenInteger02 -i coreTokenInteger03 -i coreTokenInteger04 -i coreTokenInteger05 -i coreTokenMultiString01 -i coreTokenMultiString02 -i coreTokenString01 -i coreTokenString02 -i coreTokenString03 -i coreTokenString08 -i coreTokenString09 -i coreTokenString10 -i coreTokenString14 -i coreTokenString15 -i coreTokenUserId --clearDegradedState
+
+
+Sets purge-delay:
+
+./DJ1/opendj/bin/dsconfig --offline set-synchronization-provider-prop --provider-name "Multimaster Synchronization" --set "replication-purge-delay:600s" -n
+
+./DJ2/opendj/bin/dsconfig --offline set-synchronization-provider-prop --provider-name "Multimaster Synchronization" --set "replication-purge-delay:600s" -n
+
+
+Starts both servers.
+ Enables sync provider:
+
+./DJ1/opendj/bin/dsconfig -h grana.internal.forgerock.com -p 4444 -D "uid=admin" -w password -X set-synchronization-provider-prop --provider-name "Multimaster Synchronization" --set enabled:true -n
+./DJ2/opendj/bin/dsconfig -h grana.internal.forgerock.com -p 4445 -D "uid=admin" -w password -X set-synchronization-provider-prop --provider-name "Multimaster Synchronization" --set enabled:true -n
+
+
+Initialize:
+
+./DJ1/opendj/bin/dsrepl initialize --toAllServers -h grana.internal.forgerock.com -p 4444 -D "uid=admin" -w password -X  --baseDn "ou=tokens"
+
+STDOUT:
+Starting initialization from 'dj1' to all replicas for base DNs: 'ou=tokens'
+Starting initialization for base DN: 'ou=tokens'
+4 entries processed (100 % complete).
+Done
+
+
+
+Adds entries with ldapmodify:
+
+dn: ou=user,ou=famrecords,ou=openam-session,ou=tokens
+objectClass: organizationalUnit
+objectClass: top
+ou: user
+
+dn: cn=admin,ou=user,ou=famrecords,ou=openam-session,ou=tokens
+objectClass: person
+objectClass: inetorgperson
+objectClass: organizationalperson
+objectClass: top
+uid: admin
+userPassword: str0ngPa55w#ord
+givenName: admin
+cn: admin
+sn: admin
+ds-privilege-name: proxied-auth
+
+dn: coreTokenId=8617639176522377385,ou=famrecords,ou=openam-session,ou=tokens
+objectClass: top
+objectClass: frCoreToken
+coreTokenId: 8617639176522377385
+coreTokenType: SESSION
+coreTokenExpirationDate: 20130801121901+0100
+coreTokenObject:: eyJjbGllbnREb21haW4iOiJkYz1vcGVuYW0sZGM9Zm9yZ2Vyb2NrLGRjPW
+9yZyIsImNsaWVudElEIjoiaWQ9YW1hZG1pbixvdT11c2VyLGRjPW9wZW5hbSxkYz1mb3JnZXJvY
+2ssZGM9b3JnIiwiY29va2llTW9kZSI6bnVsbCwiY29va2llU3RyIjpudWxsLCJjcmVhdGlvblRp
+bWUiOjEzNzUzNTM4NDEsImlzSVNTdG9yZWQiOnRydWUsImxhdGVzdEFjY2Vzc1RpbWUiOjEzNzU
+zNTM4NDEsIm1heENhY2hpbmdUaW1lIjozLCJtYXhJZGxlVGltZSI6MzAsIm1heFNlc3Npb25UaW
+1lIjoxMjAsInJlc2NoZWR1bGVQb3NzaWJsZSI6ZmFsc2UsInJlc3RyaWN0ZWRUb2tlbnNCeVJlc
+3RyaWN0aW9uIjp7fSwicmVzdHJpY3RlZFRva2Vuc0J5U2lkIjp7fSwic2Vzc2lvbkV2ZW50VVJM
+cyI6eyJodHRwOi8vcndhcHNob3R0LmZvcmdlcm9jay5jb206ODA4MC9vcGVuYW0vbm90aWZpY2F
+0aW9uc2VydmljZSI6W3siY29taW5nRnJvbUF1dGgiOmZhbHNlLCJjb29raWVNb2RlIjpudWxsLC
+JlbmNyeXB0ZWRTdHJpbmciOiJBUUlDNXdNMkxZNFNmY3hqVTlUdUlTVjVwY1pWQmhoOGZBMmtSd
+EhQWDA2NXV6RS4qQUFKVFNRQUNNRElBQWxOTEFCTTROakUzTmpNNU1UYzJOVEl5TXpjM016ZzFB
+QUpUTVFBQ01ERS4qIiwiZXh0ZW5zaW9uUGFydCI6bnVsbCwiZXh0ZW5zaW9ucyI6e30sImlzUGF
+yc2VkIjpmYWxzZSwic2Vzc2lvbkRvbWFpbiI6IiIsInNlc3Npb25TZXJ2ZXIiOiIiLCJzZXNzaW
+9uU2VydmVySUQiOiIiLCJzZXNzaW9uU2VydmVyUG9ydCI6IiIsInNlc3Npb25TZXJ2ZXJQcm90b
+2NvbCI6IiIsInNlc3Npb25TZXJ2ZXJVUkkiOiIiLCJ0YWlsIjpudWxsfV19LCJzZXNzaW9uSGFu
+ZGxlIjoic2hhbmRsZTpBUUlDNXdNMkxZNFNmY3gzUVNodkpRb3ZXeFhMbzRIZU44SU5HTnpKME9
+iVlBzMC4qQUFKVFNRQUNNRElBQWxNeEFBSXdNUUFDVTBzQUV6ZzJNVGMyTXpreE56WTFNakl6Tn
+pjek9EVS4qIiwic2Vzc2lvbklEIjp7ImNvbWluZ0Zyb21BdXRoIjpmYWxzZSwiY29va2llTW9kZ
+SI6bnVsbCwiZW5jcnlwdGVkU3RyaW5nIjoiQVFJQzV3TTJMWTRTZmN4alU5VHVJU1Y1cGNaVkJo aDhmQTJrUnRIUFgwNjV1ekUuKkFBSlRTUUFDTURJQUFsTkxBQk00TmpFM05qTTVNVGMyTlRJeU1 6YzNNemcxQUFKVE1RQUNNREUuKiIsImV4dGVuc2lvblBhcnQiOiJBQUpUU1FBQ01ESUFBbE5MQU JNNE5qRTNOak01TVRjMk5USXlNemMzTXpnMUFBSlRNUUFDTURFPSIsImV4dGVuc2lvbnMiOnsiU 0kiOiIwMiIsIlMxIjoiMDEiLCJTSyI6Ijg2MTc2MzkxNzY1MjIzNzczODUifSwiaXNQYXJzZWQi OnRydWUsInNlc3Npb25Eb21haW4iOiJkYz1vcGVuYW0sZGM9Zm9yZ2Vyb2NrLGRjPW9yZyIsInN lc3Npb25TZXJ2ZXIiOiJyd2Fwc2hvdHQuZm9yZ2Vyb2NrLmNvbSIsInNlc3Npb25TZXJ2ZXJJRC I6IjAyIiwic2Vzc2lvblNlcnZlclBvcnQiOiI4MDgwIiwic2Vzc2lvblNlcnZlclByb3RvY29sI joiaHR0cCIsInNlc3Npb25TZXJ2ZXJVUkkiOiIvb3BlbmFtIiwidGFpbCI6IiJ9LCJzZXNzaW9u UHJvcGVydGllcyI6eyJDaGFyU2V0IjoiVVRGLTgiLCJVc2VySWQiOiJhbWFkbWluIiwiRnVsbEx vZ2luVVJMIjoiL29wZW5hbS9VSS9Mb2dpbiIsInN1Y2Nlc3NVUkwiOiIvb3BlbmFtL2NvbnNvbG UiLCJjb29raWVTdXBwb3J0IjoidHJ1ZSIsIkF1dGhMZXZlbCI6IjAiLCJTZXNzaW9uSGFuZGxlI joic2hhbmRsZTpBUUlDNXdNMkxZNFNmY3luNlRVblJrMGNQWWJ5d2JNYTVlSHAzS29kSkZNdWgw OC4qQUFKVFNRQUNNRElBQWxNeEFBSXdNUUFDVTBzQUZDMHlPVGMzTmpJME5qUTRORFl5T0RBNE5 EazAqIiwiVXNlclRva2VuIjoiYW1hZG1pbiIsImxvZ2luVVJMIjoiL29wZW5hbS9VSS9Mb2dpbi IsIlByaW5jaXBhbHMiOiJhbWFkbWluIiwiU2VydmljZSI6ImxkYXBTZXJ2aWNlIiwic3VuLmFtL lVuaXZlcnNhbElkZW50aWZpZXIiOiJpZD1hbWFkbWluLG91PXVzZXIsZGM9b3BlbmFtLGRjPWZv cmdlcm9jayxkYz1vcmciLCJhbWxiY29va2llIjoiMDEiLCJPcmdhbml6YXRpb24iOiJkYz1vcGV uYW0sZGM9Zm9yZ2Vyb2NrLGRjPW9yZyIsIkxvY2FsZSI6ImVuX1VTIiwiSG9zdE5hbWUiOiIxNz IuMTYuMTAwLjEzMCIsIkF1dGhUeXBlIjoiRGF0YVN0b3JlIiwiSG9zdCI6IjE3Mi4xNi4xMDAuM TMwIiwiVXNlclByb2ZpbGUiOiJSZXF1aXJlZCIsImNsaWVudFR5cGUiOiJnZW5lcmljSFRNTCIs IkFNQ3R4SWQiOiI3MGNiMzc3NDE4MjQwZjU2MDEiLCJhdXRoSW5zdGFudCI6IjIwMTMtMDgtMDF UMTA6NDQ6MDFaIiwiUHJpbmNpcGFsIjoiaWQ9YW1hZG1pbixvdT11c2VyLGRjPW9wZW5hbSxkYz 1mb3JnZXJvY2ssZGM9b3JnIn0sInNlc3Npb25TdGF0ZSI6MSwic2Vzc2lvblR5cGUiOjAsInRpb
+WVkT3V0QXQiOjAsInV1aWQiOiJpZD1hbWFkbWluLG91PXVzZXIsZGM9b3BlbmFtLGRjPWZvcmdl
+ cm9jayxkYz1vcmciLCJ2ZXJzaW9uIjowLCJ3aWxsRXhwaXJlRmxhZyI6dHJ1ZX0=
+coreTokenUserId: cn=admin,cn=admin,ou=famrecords,ou=openam-session,ou=tokens
+
+
+
+Run addrate for 30m:
+
+bin/addrate -h grana.internal.forgerock.com -p 1389 -D "uid=admin" -w password --useStartTls  -X  --targetThroughput 8000 -d 1800 -S -C random -c 10 -t 3 -i 18 -F -s 100000 /tmp/data/token.template
+

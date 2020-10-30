@@ -1,0 +1,50 @@
+(HazelcastClient version 3.8)
+
+When using the Discovery system to locate nodes the `DefaultAddressProvider` still get added to the addressProviders list causing the hazelcast(client) to try to connect to localhost. This is both unneeded and unwanted when using for example the `MulticastDiscoveryStrategy`.
+
+In `com.hazelcast.client.impl.HazelcastClientInstanceImpl.createAddressProviders  ~ line 265`
+the `DefaultAddressProvider` get added which has a instance of `ClientNetworkConfig`
+Because `ClientNetworkConfig ~ line 212` alway returns a list with localhost if nothing is specified we end up with a Client that always connect to localhost unless a explict address is provided (which is unwanted in many discovery cases).
+
+Proposed solution: 
+only include `DefaultAddresProviders` if no others are provided.
+
+psuedo patch:
+```java
+src/main/java/com/hazelcast/client/impl/HazelcastClientInstanceImpl.java
+- 264: addressProviders.add(new DefaultAddressProvider(networkConfig));
+
++ 281:  if (addressProviders.isEmpty()) {
+ + 282    	addressProviders.add(new DefaultAddressProvider(networkConfig));
+ + 283: }
+```
+
+
+
+Reproducable by using any DiscoveryStrategy and not adding addresses to the clientconfig.xml
+```xml
+example client config:
+<hazelcast-client xsi:schemaLocation="http://www.hazelcast.com/schema/config hazelcast-config-3.8.xsd"
+           xmlns="http://www.hazelcast.com/schema/client-config"
+           xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+    <group>
+        <name>hazelcast-dev</name>
+        <password>dev-pass</password>
+    </group>
+    <network>
+	<aws enabled="false"/>
+	<connection-timeout>10000</connection-timeout>
+	<connection-attempt-period>500</connection-attempt-period>
+	<connection-attempt-limit>20000</connection-attempt-limit>
+    <smart-routing>true</smart-routing>
+    <redo-operation>true</redo-operation>
+	<discovery-strategies>
+		<discovery-strategy class="com.hazelcast.spi.discovery.multicast.MulticastDiscoveryStrategy" enabled="true" >
+			<properties>
+				<property name="port" >9999</property>
+				<property name="group" >230.18.0.255</property>
+			</properties>
+		</discovery-strategy>
+	</discovery-strategies>
+</network>
+```

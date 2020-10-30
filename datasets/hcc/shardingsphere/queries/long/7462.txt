@@ -1,0 +1,164 @@
+## Bug Report
+
+**For English only**, other languages will not accept.
+
+Before report a bug, make sure you have:
+
+- Searched open and closed [GitHub issues](https://github.com/apache/shardingsphere/issues).
+- Read documentation: [ShardingSphere Doc](https://shardingsphere.apache.org/document/current/en/overview).
+
+Please pay attention on issues you submitted, because we maybe need more details. 
+If no response anymore and we cannot reproduce it on current information, we will **close it**.
+
+Please answer these questions before submitting your issue. Thanks!
+
+### Which version of ShardingSphere did you use?
+
+5.0.0-RC1-SNAPSHOT
+
+### Which project did you use? ShardingSphere-JDBC or ShardingSphere-Proxy?
+
+ShardingSphere-Proxy
+
+### Expected behavior
+
+Route correctly.
+
+### Actual behavior
+
+Route result incorrect in concurrency.
+
+A client hold one connection to execute SQL:
+
+(Either use local transaction or not.)
+```
+INSERT INTO t_order (order_id, user_id, status) VALUES (96322, 222, '222')
+UPDATE t_order SET status = 'modified' WHERE order_id = 96322 AND user_id =222
+SELECT * FROM t_order WHERE order_id = 96322 AND user_id =222
+DELETE FROM t_order WHERE order_id = 96322 AND user_id =222
+```
+
+All these SQLs are expected to be routed to ds_0::t_order_0 .
+
+But the actual route result is:
+
+```
+1157380:[INFO ] 15:29:19.330 [ShardingSphere-Command-75] ShardingSphere-SQL - Logic SQL: INSERT INTO t_order (order_id, user_id, status) VALUES (96322, 222, '222')
+1157382:[INFO ] 15:29:19.330 [ShardingSphere-Command-75] ShardingSphere-SQL - SQLStatement: InsertStatementContext(super=CommonSQLStatementContext(sqlStatement=org.apache.shardingsphere.sql.parser.sql.dialect.statement.mysql.dml.MySQLInsertStatement@4a1e2bcd, tablesContext=TablesContext(tables=[SimpleTableSegment(tableName=TableNameSegment(startIndex=12, stopIndex=18, identifier=IdentifierValue(value=t_order, quoteCharacter=NONE)), owner=Optional.empty, alias=Optional.empty)])), tablesContext=TablesContext(tables=[SimpleTableSegment(tableName=TableNameSegment(startIndex=12, stopIndex=18, identifier=IdentifierValue(value=t_order, quoteCharacter=NONE)), owner=Optional.empty, alias=Optional.empty)]), columnNames=[order_id, user_id, status], insertValueContexts=[InsertValueContext(parameterCount=0, valueExpressions=[LiteralExpressionSegment(startIndex=56, stopIndex=60, literals=96322), LiteralExpressionSegment(startIndex=63, stopIndex=65, literals=222), LiteralExpressionSegment(startIndex=68, stopIndex=72, literals=222)], parameters=[])], insertSelectContext=null, onDuplicateKeyUpdateValueContext=null, generatedKeyContext=Optional[GeneratedKeyContext(columnName=order_id, generated=false, generatedValues=[96322])])
+1157384:[INFO ] 15:29:19.331 [ShardingSphere-Command-75] ShardingSphere-SQL - Actual SQL: ds_0 ::: INSERT INTO t_order_1 (order_id, user_id, status) VALUES (96322, 222, '222')
+1157388:[INFO ] 15:29:19.332 [ShardingSphere-Command-194] ShardingSphere-SQL - Logic SQL: UPDATE t_order SET status = 'modified' WHERE order_id = 96322 AND user_id =222
+1157390:[INFO ] 15:29:19.332 [ShardingSphere-Command-194] ShardingSphere-SQL - Actual SQL: ds_0 ::: UPDATE t_order_0 SET status = 'modified' WHERE order_id = 96322 AND user_id =222
+1157392:[INFO ] 15:29:19.332 [ShardingSphere-Command-132] ShardingSphere-SQL - Logic SQL: SELECT * FROM t_order WHERE order_id = 96322 AND user_id =222
+1157396:[INFO ] 15:29:19.332 [ShardingSphere-Command-132] ShardingSphere-SQL - Actual SQL: ds_0 ::: SELECT * FROM t_order_0 WHERE order_id = 96322 AND user_id =222
+1157397:[INFO ] 15:29:19.333 [ShardingSphere-Command-19] ShardingSphere-SQL - Logic SQL: DELETE FROM t_order WHERE order_id = 96322 AND user_id =222
+1157399:[INFO ] 15:29:19.333 [ShardingSphere-Command-19] ShardingSphere-SQL - Actual SQL: ds_0 ::: DELETE FROM t_order_0 WHERE order_id = 96322 AND user_id =222
+```
+
+
+The config-sharding.yaml:
+
+```
+schemaName: sharding_db
+
+dataSourceCommon:
+  username: root
+  password:
+  connectionTimeoutMilliseconds: 30000
+  idleTimeoutMilliseconds: 60000
+  maxLifetimeMilliseconds: 1800000
+  maxPoolSize: 200
+  minPoolSize: 200
+  maintenanceIntervalMilliseconds: 30000
+
+dataSources:
+  ds_0:
+    url: jdbc:mysql://127.0.0.1:3306/demo_ds_0?serverTimezone=UTC&useSSL=false
+  ds_1:
+    url: jdbc:mysql://127.0.0.1:3306/demo_ds_1?serverTimezone=UTC&useSSL=false
+
+rules:
+- !SHARDING
+  tables:
+    t_order:
+      actualDataNodes: ds_${0..1}.t_order_${0..1}
+      tableStrategy:
+        standard:
+          shardingColumn: order_id
+          shardingAlgorithmName: t_order_inline
+      keyGenerateStrategy:
+        column: order_id
+        keyGeneratorName: snowflake
+    t_order_item:
+      actualDataNodes: ds_${0..1}.t_order_item_${0..1}
+      tableStrategy:
+        standard:
+          shardingColumn: order_id
+          shardingAlgorithmName: t_order_item_inline
+      keyGenerateStrategy:
+        column: order_item_id
+        keyGeneratorName: snowflake
+  bindingTables:
+    - t_order,t_order_item
+  defaultDatabaseStrategy:
+    standard:
+      shardingColumn: user_id
+      shardingAlgorithmName: database_inline
+  defaultTableStrategy:
+    none:
+  
+  shardingAlgorithms:
+    database_inline:
+      type: INLINE
+      props:
+        algorithm-expression: ds_${user_id % 2}
+    t_order_inline:
+      type: INLINE
+      props:
+        algorithm-expression: t_order_${order_id % 2}
+    t_order_item_inline:
+      type: INLINE
+      props:
+        algorithm-expression: t_order_item_${order_id % 2}
+  
+  keyGenerators:
+    snowflake:
+      type: SNOWFLAKE
+      props:
+        worker-id: 123
+```
+
+The server.yaml:
+
+```
+authentication:
+  users:
+    root:
+      password: root
+    sharding:
+      password: sharding 
+      authorizedSchemas: sharding_db
+
+props:
+  max-connections-size-per-query: 200
+  acceptor-size: 200  # The default value is available processors count * 2.
+  executor-size: 200  # Infinite by default.
+  proxy-frontend-flush-threshold: 128  # The default value is 128.
+    # LOCAL: Proxy will run with LOCAL transaction.
+    # XA: Proxy will run with XA transaction.
+    # BASE: Proxy will run with B.A.S.E transaction.
+  proxy-transaction-type: LOCAL
+  proxy-opentracing-enabled: false
+  proxy-hint-enabled: false
+  query-with-cipher-column: true
+  sql-show: true
+  allow-range-query-with-inline-sharding: false
+  check-table-metadata-enabled: false
+```
+
+The incorrect route results occur occasionally.
+
+### Reason analyze (If you can)
+
+### Steps to reproduce the behavior, such as: SQL to execute, sharding rule configuration, when exception occur etc.
+
+### Example codes for reproduce this issue (such as a github link).

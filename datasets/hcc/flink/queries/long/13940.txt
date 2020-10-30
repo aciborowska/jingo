@@ -1,0 +1,28 @@
+ 
+ The cleaning up of tmp files in S3 introduced by this ticket/PR:
+ https://issues.apache.org/jira/browse/FLINK-10963
+  is preventing the flink job from being able to recover under some circumstances.
+  
+ This is what seems to be happening:
+ When the jobs tries to recover, it will call initializeState() on all operators, which results in the Bucket.restoreInProgressFile method being called.
+ This will download the part_tmp file mentioned in the checkpoint that we're restoring from, and finally it will call fsWriter.cleanupRecoverableState which deletes the part_tmp file in S3.
+  Now the open() method is called on all operators. If the open() call fails for one of the operators (this might happen if the issue that caused the job to fail and restart is still unresolved), the job will fail again and try to restart from the same checkpoint as before. This time however, downloading the part_tmp file mentioned in the checkpoint fails because it was deleted during the last recover attempt.
+
+The bug is critical because it results in data loss.
+  
+  
+  
+ I discovered the bug because I have a flink job with a RabbitMQ source and a StreamingFileSink that writes to S3 (and therefore uses the S3RecoverableWriter).
+ Occasionally I have some RabbitMQ connection issues which causes the job to fail and restart, sometimes the first few restart attempts fail because rabbitmq is unreachable when flink tries to reconnect.
+  
+ This is what I was seeing:
+ RabbitMQ goes down
+ Job fails because of a RabbitMQ ConsumerCancelledException
+ Job attempts to restart but fails with a Rabbitmq connection exception (x number of times)
+ RabbitMQ is back up
+ Job attempts to restart but fails with a FileNotFoundException due to some _part_tmp file missing in S3.
+  
+ The job will be unable to restart and only option is to cancel and restart the job (and loose all state)
+  
+  
+  

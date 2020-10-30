@@ -1,0 +1,48 @@
+The current implementation of the XAResource contains the following two issues:
+1. If XAResourceProxy.setTransactionTimeout(int) is called with the same value, then it should not invoke anything else.
+2. The transaction timeout cannot be set to zero (container default), this should be possible.
+
+The JEE6 documentation states the following:
+_Sets the current transaction timeout value for this XAResource instance. Once set, this timeout value is effective until setTransactionTimeout is invoked again with a different value. To reset the timeout value to the default value used by the resource manager, set the value to zero. If the timeout operation is performed successfully, the method returns true; otherwise false. If a resource manager does not support explicitly setting the transaction timeout value, this method returns false._
+
+Reference: http://docs.oracle.com/javaee/6/api/javax/transaction/xa/XAResource.html#setTransactionTimeout(int)
+#### 1. If XAResourceProxy.setTransactionTimeout(int) is called with the same value, then it should not invoke anything else.
+
+This could be solved in the following class.
+
+Edit: Not sure if the method below has to return `true` or `false` when the method is called with a timeout value that has already been set. The documentation isn't clear about this.
+
+`com.hazelcast.client.impl.client.txn.TransactionProxy.java:83`
+
+``` diff
+index af0ee57..63aefe4 100644
+--- a/hazelcast-client/src/main/java/com/hazelcast/client/impl/client/txn/TransactionProxy.java
++++ b/hazelcast-client/src/main/java/com/hazelcast/client/impl/client/txn/TransactionProxy.java
+@@ -81,7 +81,7 @@ final class TransactionProxy {
+     }
+
+     public boolean setTimeoutMillis(long timeoutMillis) {
+-        if (state == NO_TXN) {
++        if (state == NO_TXN && options.getTimeoutMillis() != timeoutMillis) {
+             options.setTimeout(timeoutMillis, TimeUnit.MILLISECONDS);
+             return true;
+         }
+```
+#### 2. The transaction timeout cannot be set to zero (container default), this should be possible
+
+This issue is probably a bit more critical. This diff solves the issue.
+
+``` diff
+index 76a8959..fbb77b0 100644
+--- a/hazelcast/src/main/java/com/hazelcast/transaction/TransactionOptions.java
++++ b/hazelcast/src/main/java/com/hazelcast/transaction/TransactionOptions.java
+@@ -95,7 +95,7 @@ public final class TransactionOptions implements DataSerializable {
+      * @see #getTimeoutMillis()
+      */
+     public TransactionOptions setTimeout(long timeout, TimeUnit timeUnit) {
+-        if (timeout <= 0) {
++        if (timeout < 0) {
+             throw new IllegalArgumentException("Timeout must be positive!");
+         }
+         if (timeUnit == null) {
+```

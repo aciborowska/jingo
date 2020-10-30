@@ -1,0 +1,43 @@
+Under rare circumstances the DS replication recovery thread (RSUpdate) can spin, can be started multiple times, will not shutdown willingly when the server is shutting down, and can look for replay operations in the future.
+
+For example, a user recently reported:
+
+
+During a load test we noticed that even under no load, one cpu core is pegged at 100%.  For example cpu7 below.
+
+11:29:42 PM  CPU    %usr   %nice    %sys %iowait    %irq   %soft %steal  %guest   %idle
+11:29:45 PM  all   12.68    0.00    0.13    0.04    0.00    0.00 0.00    0.00   87.15
+11:29:45 PM    0    0.67    0.00    0.00    0.00    0.00    0.00 0.00    0.00   99.33
+11:29:45 PM    1    0.00    0.00    0.00    0.00    0.00    0.00 0.00    0.00  100.00
+11:29:45 PM    2    0.33    0.00    0.00    0.00    0.00    0.00 0.00    0.00   99.67
+11:29:45 PM    3    0.00    0.00    0.00    0.00    0.00    0.00 0.00    0.00  100.00
+11:29:45 PM    4    0.33    0.00    0.00    0.00    0.00    0.00 0.00    0.00   99.67
+11:29:45 PM    5    0.33    0.00    0.00    0.00    0.00    0.00 0.00    0.00   99.67
+11:29:45 PM    6    0.33    0.00    0.00    0.00    0.00    0.00 0.00    0.00   99.67
+11:29:45 PM    7   99.34    0.00    0.66    0.00    0.00    0.00 0.00    0.00    0.00
+
+I took some consecutive jstacks of the pid and the only area where the stack was changing was for this thread. Is this something that we shoudl be concerned about?
+
+"Replica DS(15968) missing change publisher for domain "cn=schema"" prio=10 tid=0x00007f77f014a000 nid=0x740e runnable [0x00007f76d35b4000]
+   java.lang.Thread.State: RUNNABLE
+    at java.util.HashMap.put(HashMap.java:372)
+    at java.util.HashSet.add(HashSet.java:200)
+    at java.util.AbstractCollection.addAll(AbstractCollection.java:305)
+    at java.util.LinkedHashSet.<init>(LinkedHashSet.java:152)
+    at org.opends.server.types.AttributeBuilder$SmallSet.addAll(AttributeBuilder.java:929)
+    at org.opends.server.types.AttributeBuilder.addAll(AttributeBuilder.java:1356)
+    at org.opends.server.backends.SchemaBackend.getSchemaEntry(SchemaBackend.java:824)
+    at org.opends.server.backends.SchemaBackend.getSchemaEntry(SchemaBackend.java:663)
+    at org.opends.server.backends.SchemaBackend.search(SchemaBackend.java:4229)
+    at org.opends.server.workflowelement.localbackend.LocalBackendSearchOperation.processLocalSearch(LocalBackendSearchOperation.java:266)
+    at org.opends.server.workflowelement.localbackend.LocalBackendWorkflowElement.execute(LocalBackendWorkflowElement.java:533)
+    at org.opends.server.core.WorkflowImpl.execute(WorkflowImpl.java:197)
+    at org.opends.server.core.WorkflowTopologyNode.execute(WorkflowTopologyNode.java:100)
+    at org.opends.server.core.SearchOperationBasis.run(SearchOperationBasis.java:1459)
+    at org.opends.server.protocols.internal.InternalClientConnection.processSearch(InternalClientConnection.java:2347)
+    at org.opends.server.protocols.internal.InternalClientConnection.processSearch(InternalClientConnection.java:2298)
+    at org.opends.server.replication.plugin.LDAPReplicationDomain.searchForChangedEntries(LDAPReplicationDomain.java:4812)
+    at org.opends.server.replication.plugin.LDAPReplicationDomain.buildAndPublishMissingChanges(LDAPReplicationDomain.java:4722)
+    at org.opends.server.replication.plugin.LDAPReplicationDomain$RSUpdater.run(LDAPReplicationDomain.java:440)
+
+This was when recovering the schema backend which is a special case since it does not record ds-sync-hist info so recovery is impossible IIRC. However, we have also seen rare cases where this occurs for normal backends.

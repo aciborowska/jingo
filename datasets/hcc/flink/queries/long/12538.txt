@@ -1,0 +1,13 @@
+There is a potential regression in Flink 1.5+ which came with the low-latency changes. Whenever the RecordWriter finishes a buffer, it will first ask for a new buffer, then adds it to the appropriate result subpartition which notifies Netty of data being available.
+
+In back-pressured scenarios where all buffers from the local pool are taken, it may happen that you do not immediately get a new buffer and have to wait for as long as it takes to get it before Netty can make use of the finished network buffer. Pre 1.5, Flink always immediately notified the downwards stack.
+Although we do still have the output flusher notifying Netty within at most 100ms (by default), the new behaviour may actually decrease throughput and latency in a back-pressured scenario.
+
+Having a quick look at the code, changing this behaviour is probably not too difficult but only needs to take care not to introduce additional locking / locking multiple times compared to now. Things to do/consider:
+
+	PipelinedSubpartition#add() contains some optimisations to avoid unnecessary flushes but these conditions are under a lock -> try to not acquire it twice
+	RecordWriter#requestNewBufferBuilder() could therefore maybe have an optimised path with a non-blocking buffer builder request if successful and if not, notify/flush and do another blocking request
+
+
+
+After talking to Piotr Nowojski offline, we are not sure how grave the issue is and whether we would improve by changing it. If you are willing to take a look and have code changing the current behaviour, please verify that it does not cause any performance regression itself and actually does improve some scenario (shown by a performance test, e.g. via https://github.com/dataArtisans/flink-benchmarks ).

@@ -1,0 +1,67 @@
+When launching a job with the cluster through this script it creates dependency issues.
+
+ 
+
+We have a job which uses AsyncHttpClient, which uses the netty library. When building/running a Docker image for a Flink job cluster on Kubernetes (build.sh https://github.com/apache/flink/blob/release-1.6/flink-container/docker/build.sh) will copy our given artifact to a file called "job.jar" in the lib/ folder of the distribution inside the container.
+
+Upon runtime (standalone-job.sh) we get:
+
+ 
+
+
+2018-10-11 13:44:10.057 [flink-akka.actor.default-dispatcher-15] INFO  org.apache.flink.runtime.executiongraph.ExecutionGraph  - StateProcessFunction -> ToCustomerRatingFlatMap -> async wait operator -> Sink: CollectResultsSink (1/1) (f7fac66a85d41d4eac44ff609c515710) switched from RUNNING to FAILED.
+java.lang.NoSuchMethodError: io.netty.handler.ssl.SslContext.newClientContextInternal(Lio/netty/handler/ssl/SslProvider;Ljava/security/Provider;[Ljava/security/cert/X509Certificate;Ljavax/net/ssl/TrustManagerFactory;[Ljava/security/cert/X509Certificate;Ljava/security/PrivateKey;Ljava/lang/String;Ljavax/net/ssl/KeyManagerFactory;Ljava/lang/Iterable;Lio/netty/handler/ssl/CipherSuiteFilter;Lio/netty/handler/ssl/ApplicationProtocolConfig;[Ljava/lang/String;JJZ)Lio/netty/handler/ssl/SslContext;
+    at io.netty.handler.ssl.SslContextBuilder.build(SslContextBuilder.java:452)
+    at org.asynchttpclient.netty.ssl.DefaultSslEngineFactory.buildSslContext(DefaultSslEngineFactory.java:58)
+    at org.asynchttpclient.netty.ssl.DefaultSslEngineFactory.init(DefaultSslEngineFactory.java:73)
+    at org.asynchttpclient.netty.channel.ChannelManager.<init>(ChannelManager.java:100)
+    at org.asynchttpclient.DefaultAsyncHttpClient.<init>(DefaultAsyncHttpClient.java:89)
+    at org.asynchttpclient.Dsl.asyncHttpClient(Dsl.java:32)
+    at com.test.events.common.asynchttp.AsyncHttpClientProvider.configureAsyncHttpClient(AsyncHttpClientProvider.java:128)
+    at com.test.events.common.asynchttp.AsyncHttpClientProvider.<init>(AsyncHttpClientProvider.java:51)
+
+
+
+  
+
+It's because it loads Apache Flink's Netty dependency first
+
+ 
+
+
+[Loaded io.netty.handler.codec.http.HttpObject from file:/opt/flink-1.6.1/lib/flink-shaded-hadoop2-uber-1.6.1.jar]
+[Loaded io.netty.handler.codec.http.HttpMessage from file:/opt/flink-1.6.1/lib/flink-shaded-hadoop2-uber-1.6.1.jar]
+
+
+ 
+
+
+2018-10-12 11:48:20.434 [main] INFO org.apache.flink.runtime.taskexecutor.TaskManagerRunner - Classpath: /opt/flink-1.6.1/lib/flink-python_2.11-1.6.1.jar:/opt/flink-1.6.1/lib/flink-shaded-hadoop2-uber-1.6.1.jar:/opt/flink-1.6.1/lib/job.jar:/opt/flink-1.6.1/lib/log4j-1.2.17.jar:/opt/flink-1.6.1/lib/logback-access.jar:/opt/flink-1.6.1/lib/logback-classic.jar:/opt/flink-1.6.1/lib/logback-core.jar:/opt/flink-1.6.1/lib/netty-buffer-4.1.30.Final.jar:/opt/flink-1.6.1/lib/netty-codec-4.1.30.Final.jar:/opt/flink-1.6.1/lib/netty-codec-socks-4.1.30.Final.jar:/opt/flink-1.6.1/lib/netty-common-4.1.30.Final.jar:/opt/flink-1.6.1/lib/netty-handler-4.1.30.Final.jar:/opt/flink-1.6.1/lib/netty-handler-proxy-4.1.30.Final.jar:/opt/flink-1.6.1/lib/netty-resolver-dns-4.1.30.Final.jar:/opt/flink-1.6.1/lib/netty-transport-4.1.30.Final.jar:/opt/flink-1.6.1/lib/netty-transport-native-epoll-4.1.30.Final.jar:/opt/flink-1.6.1/lib/netty-transport-native-unix-common-4.1.30.Final.jar:/opt/flink-1.6.1/lib/slf4j-log4j12-1.7.7.jar:/opt/flink-1.6.1/lib/flink-dist_2.11-1.6.1.jar:::
+
+
+ 
+
+The workaround is to rename job.jar to 1JOB.jar for example to be loaded first
+
+ 
+
+
+2018-10-12 13:51:09.165 [main] INFO org.apache.flink.runtime.taskexecutor.TaskManagerRunner - Classpath: /Users/users/projects/flink/flink-1.6.1/lib/1JOB.jar:/Users/users/projects/flink/flink-1.6.1/lib/flink-python_2.11-1.6.1.jar:/Users/users/projects/flink/flink-1.6.1/lib/flink-shaded-hadoop2-uber-1.6.1.jar:/Users/users/projects/flink/flink-1.6.1/lib/log4j-1.2.17.jar:/Users/users/projects/flink/flink-1.6.1/lib/logback-access.jar:/Users/users/projects/flink/flink-1.6.1/lib/logback-classic.jar:/Users/users/projects/flink/flink-1.6.1/lib/logback-core.jar:/Users/users/projects/flink/flink-1.6.1/lib/slf4j-log4j12-1.7.7.jar:/Users/users/projects/flink/flink-1.6.1/lib/flink-dist_2.11-1.6.1.jar::: 
+
+
+ 
+
+ 
+
+
+[Loaded io.netty.handler.codec.http.HttpObject from file:/Users/users/projects/flink/flink-1.6.1/lib/1JOB.jar]
+[Loaded io.netty.handler.codec.http.HttpMessage from file:/Users/users/projects/flink/flink-1.6.1/lib/1JOB.jar] 
+
+
+ 
+
+This needs to be fixed properly as it also means after workaround it will load the job's libraries first and could cause the Flink to crash or behave in unexpected ways.
+
+ 
+
+ 

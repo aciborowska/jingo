@@ -1,0 +1,108 @@
+If a map is defined with an index but the server is unable to deserialize the class, a `putAll` results in some data (1 record per partition) being saved. Since the data can't be indexed, it shouldn't be saved, and this is the behaviour that `put` does.
+
+Reproducer for 4.0, same behaviour on 3.12.4
+```
+public class Reproducer {
+	
+	static final String MAP_NAME = Payload.class.getSimpleName();
+	static final int NUMBER_OF_ENTRIES = 100_000;
+	static final int PAYLOAD_SERIALIZED_TYPE_ID = 987_654_321;
+	
+	public static void main(String[] args) throws Exception {
+		Reproducer application = new Reproducer();
+		application.go();
+	}
+
+	void go() throws Exception {
+		Config config = this.createServerConfig();
+		HazelcastInstance hazelcastServer = Hazelcast.newHazelcastInstance(config);
+		
+		ClientConfig clientConfig = this.createClientConfig();
+		HazelcastInstance hazelcastClient = HazelcastClient.newHazelcastClient(clientConfig);
+
+		IMap<Integer, Payload> payloadMap = hazelcastClient.getMap(MAP_NAME);
+
+		HashMap<Integer, Payload> hashMap = new HashMap<>();
+		for (int i=0 ; i < NUMBER_OF_ENTRIES ; i++) {
+			Payload payload = new Payload();
+			payload.setS("" + i);
+			hashMap.put(i, payload);
+		}
+		try {
+			payloadMap.putAll(hashMap);
+		} catch (Exception e) {
+			e.printStackTrace();
+		}
+		
+		int size = payloadMap.size();
+		if (size!=NUMBER_OF_ENTRIES) {
+			System.out.println("=== SIZE IS " + size + " BUT SHOULD BE " + NUMBER_OF_ENTRIES);
+		}
+		
+		hazelcastClient.shutdown();
+		hazelcastServer.shutdown();
+	}
+	
+	Config createServerConfig() {
+		Config config = new Config();
+		
+		JoinConfig joinConfig = config.getNetworkConfig().getJoin();
+		joinConfig.getMulticastConfig().setEnabled(false);
+		joinConfig.getTcpIpConfig().setEnabled(true).setMembers(Arrays.asList("127.0.0.1"));
+		
+		IndexConfig indexConfig = new IndexConfig();
+		indexConfig.addAttribute("s").setType(IndexType.HASH);
+		
+		config.getMapConfig("default").addIndexConfig(indexConfig);
+		
+		return config;
+	}
+	
+	ClientConfig createClientConfig() {
+		ClientConfig clientConfig = new ClientConfig();
+		
+		SerializerConfig serializerConfig = new SerializerConfig();
+		serializerConfig.setClass(PayloadSerializer.class);
+		serializerConfig.setTypeClass(Payload.class);
+		
+		clientConfig.getSerializationConfig().addSerializerConfig(serializerConfig);
+		
+		return clientConfig;
+	}
+
+	static class Payload {
+		String s;
+		public String getS() {
+			return s;
+		}
+		public void setS(String s) {
+			this.s = s;
+		}
+		@Override
+		public String toString() {
+			return "Payload [s=" + s + "]";
+		}
+	}
+
+	static class PayloadSerializer implements ByteArraySerializer<Payload> {
+		@Override
+		public int getTypeId() {
+			return PAYLOAD_SERIALIZED_TYPE_ID;
+		}
+		@Override
+		public void destroy() {
+		}
+		@Override
+		public byte[] write(Payload object) throws IOException {
+			return object.getS().getBytes();
+		}
+		@Override
+		public Payload read(byte[] buffer) throws IOException {
+			Payload object = new Payload();
+			object.setS(new String(buffer));
+			return object;
+		}
+	}
+
+}
+```

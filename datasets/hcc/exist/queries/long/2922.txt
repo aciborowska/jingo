@@ -1,0 +1,26 @@
+As described here - https://github.com/eXist-db/dashboard/issues/92
+After logging into the Dashboard on eXist-db 5.0.0-RC8 and clicking User Manager, then you will see the following in the logs:
+
+```
+2019-06-28 15:53:38,136 [qtp732118572-52] WARN  (BrokerPool.java [release]:1327) - Broker org.exist.storage.NativeBroker_exist_5 was returned with extraneous Subjects, cleaning... 
+java.lang.IllegalStateException: DBBroker pushSubject/popSubject mismatch
+	at org.exist.storage.BrokerPool.release(BrokerPool.java:1327) [exist-core-5.0.0-RC8-SNAPSHOT.jar:5.0.0-RC8-SNAPSHOT]
+	at org.exist.storage.DBBroker.close(DBBroker.java:1039) [exist-core-5.0.0-RC8-SNAPSHOT.jar:5.0.0-RC8-SNAPSHOT]
+	at org.exist.http.urlrewrite.XQueryURLRewrite.service(XQueryURLRewrite.java:320) [exist-core-5.0.0-RC8-SNAPSHOT.jar:5.0.0-RC8-SNAPSHOT]
+	at javax.servlet.http.HttpServlet.service(HttpServlet.java:790) [javax.servlet-api-3.1.0.jar:3.1.0]
+```
+
+---
+
+If you trace the `pushSubject/popSubject` calls you will find the issue is via `org.exist.xquery.UserSwitchingBasicFunction` being used by the Persistent Login module's `org.exist.xquery.modules.persistentlogin.PersistentLoginFunctions`.
+
+You will see the following calls in `UserSwitchingBasicFunction`:
+1. `UserSwitchingBasicFunction@8067#switchUser(admin)` [`pushedSubject`==`false`] -> `DBBroker#pushSubject`    (line 96/col 5 - persistentlogin/login.xql)
+2. `UserSwitchingBasicFunction@8450#switchUser(admin)` [`pushedSubject`==`false`] -> `DBBroker#pushSubject`	(line 96/col 5 - persistentlogin/login.xql)
+3. `UserSwitchingBasicFunction@8450#switchUser(admin)` [`pushedSubject`==`true`] -> `DBBroker#pushSubject`		(line 96/col 5 - persistentlogin/login.xql)
+4. `UserSwitchingBasicFunction@8067#resetState()` [`pushedSubject`==`true`] -> `DBBroker#popSubject`
+5. `UserSwitchingBasicFunction@8450#resetState()` [`pushedSubject`==`true`] -> `DBBroker#popSubject`
+
+The issue appears to be call (3). It is not clear to me why eXist-db is calling `switchUser` twice on the same (@8450) `UserSwitchingBasicFunction` object.
+
+I expected that each `switchUser` XQuery call would get a new instance of `UserSwitchingBasicFunction`

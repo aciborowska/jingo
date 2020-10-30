@@ -1,0 +1,33 @@
+Flink's `MetricStore` is not thread-safe. multi-treads may acess java' hashmap inside `MetricStore` and can tirgger hashmap's infinte loop. 
+
+Recently I met the case that flink jobmanager consumed 100% cpu. A part of stacktrace is shown below. The full jstack is in the attachment.
+
+"ForkJoinPool-1-worker-19" daemon prio=10 tid=0x00007fbdacac9800 nid=0x64c1 runnable [0x00007fbd7d1c2000]
+   java.lang.Thread.State: RUNNABLE
+        at java.util.HashMap.put(HashMap.java:494)
+        at org.apache.flink.runtime.webmonitor.metrics.MetricStore.addMetric(MetricStore.java:176)
+        at org.apache.flink.runtime.webmonitor.metrics.MetricStore.add(MetricStore.java:121)
+        at org.apache.flink.runtime.webmonitor.metrics.MetricFetcher.addMetrics(MetricFetcher.java:198)
+        at org.apache.flink.runtime.webmonitor.metrics.MetricFetcher.access$500(MetricFetcher.java:58)
+        at org.apache.flink.runtime.webmonitor.metrics.MetricFetcher$4.onSuccess(MetricFetcher.java:188)
+        at akka.dispatch.OnSuccess.internal(Future.scala:212)
+        at akka.dispatch.japi$CallbackBridge.apply(Future.scala:175)
+        at akka.dispatch.japi$CallbackBridge.apply(Future.scala:172)
+        at scala.PartialFunction$class.applyOrElse(PartialFunction.scala:123)
+        at scala.runtime.AbstractPartialFunction.applyOrElse(AbstractPartialFunction.scala:28)
+        at scala.concurrent.Future$$anonfun$onSuccess$1.apply(Future.scala:117)
+        at scala.concurrent.Future$$anonfun$onSuccess$1.apply(Future.scala:115)
+        at scala.concurrent.impl.CallbackRunnable.run(Promise.scala:32)
+        at java.util.concurrent.ForkJoinTask$AdaptedRunnable.exec(ForkJoinTask.java:1265)
+        at java.util.concurrent.ForkJoinTask.doExec(ForkJoinTask.java:334)
+        at java.util.concurrent.ForkJoinWorkerThread.execTask(ForkJoinWorkerThread.java:604)
+        at java.util.concurrent.ForkJoinPool.scan(ForkJoinPool.java:784)
+        at java.util.concurrent.ForkJoinPool.work(ForkJoinPool.java:646)
+        at java.util.concurrent.ForkJoinWorkerThread.run(ForkJoinWorkerThread.java:398)
+
+
+
+There are 24 threads show same stacktrace as above to indicate they are spining at HashMap.put(HashMap.java:494) (I am using Java 1.7.0_6). Many posts indicate multi-threads accessing hashmap cause this problem and I reproduce the case as well. The test code is attached. I only modify the HashMap.transfer() by adding concurrent barriers for different treads in order to simulate the timing of creation of cycles in hashmap's Entry.  My program's stacktrace shows it hangs at same line of HashMap(HashMap.put(HashMap.java:494)) as the stacktrace I post above.
+
+ Even through `MetricFetcher` has a 10 seconds minimum inteverl between each metrics qurey, it still cannot guarntee query responses do not acess `MtricStore`'s hashmap concurrently.  Thus I think it's a bug to fix.
+

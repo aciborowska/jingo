@@ -1,0 +1,103 @@
+
+### Task List
+
+- [x] Steps to reproduce provided
+- [x] Example that reproduces the problem uploaded to Github
+- [x] Full description of the issue provided (see below)
+
+### Steps to Reproduce
+
+1. The steps below are the basic outline, and the code I actually ran is tagged here: https://github.com/diroussel/sudoku-server-micornaut/tree/v1.0
+1. Follow the getting started guide to create a basic REST service, based on https://guides.micronaut.io/micronaut-creating-first-graal-app/guide/index.html
+2. Have one endpoint that returns json, or text, as a regular 200 response
+3. Create another endpoint that redirects to the first, like this...
+```java
+    @Get("/random.{fmt}")
+    public HttpResponse<?> randomBoard(String fmt) {
+        Random random = ThreadLocalRandom.current();
+        long seed = random.nextInt(Integer.MAX_VALUE);
+        return HttpResponse.temporaryRedirect(URI.create("/sudoku/puzzle/" + seed + '.' + fmt));
+    }
+
+```
+4. Hit the first endpoint with the HTTP test tool of your choice, like wrk or hey.  Then look at the number of open TCP connections on your machine in time wait state.
+```
+❯ wrk -c 20 -t 4 --latency http://localhost:8080/sudoku/puzzle/659932391.svg
+Running 10s test @ http://localhost:8080/sudoku/puzzle/659932391.svg
+  4 threads and 20 connections
+  Thread Stats   Avg      Stdev     Max   +/- Stdev
+    Latency   403.13us  103.55us   4.30ms   96.82%
+    Req/Sec    12.25k   623.18    13.49k    67.08%
+  Latency Distribution
+     50%  389.00us
+     75%  424.00us
+     90%  458.00us
+     99%  642.00us
+  492186 requests in 10.10s, 2.61GB read
+Requests/sec:  48731.45
+Transfer/sec:    264.25MB
+
+~  took 10s
+❯ netstat -n | grep _WAIT | wc -l
+      28
+```
+5. Now try again with the redirect endpoint and notice the requests per second is many times lower, and many TCP connections are left in time wait state.  And if you are unlucky the ulimit is exceeded.
+```
+❯ wrk -c 20 -t 4 --latency http://localhost:8080/sudoku/random.svg
+Running 10s test @ http://localhost:8080/sudoku/random.svg
+  4 threads and 20 connections
+  Thread Stats   Avg      Stdev     Max   +/- Stdev
+    Latency    22.07ms  102.22ms 786.23ms   95.63%
+    Req/Sec     1.79k   614.12     2.39k    83.52%
+  Latency Distribution
+     50%    1.25ms
+     75%    1.48ms
+     90%    2.37ms
+     99%  638.92ms
+  16373 requests in 10.04s, 2.57MB read
+Requests/sec:   1630.72
+Transfer/sec:    261.94KB
+
+~ on ☸ kind-kind took 10s
+❯ netstat -n | grep _WAIT | wc -l
+   29220
+
+```
+6. Doing a curl we can see that micronaut closed the http connection and this is why we get lowered performance, and use so many TCP connections:
+```
+❯ curl -v http://localhost:8080/sudoku/random.txt
+*   Trying ::1...
+* TCP_NODELAY set
+* Connected to localhost (::1) port 8080 (#0)
+> GET /sudoku/random.txt HTTP/1.1
+> Host: localhost:8080
+> User-Agent: curl/7.64.1
+> Accept: */*
+>
+< HTTP/1.1 307 Temporary Redirect
+< Location: /sudoku/puzzle/349253481.txt
+< Date: Thu, 23 Jul 2020 09:52:28 GMT
+< transfer-encoding: chunked
+< connection: close
+<
+* Closing connection 0
+```
+
+### Expected Behaviour
+
+A redirection should have a small impact on performance.  It should be just another HTTP request.  Redirecting from one endpoint to another is a common pattern, and is not expected to impact performance.  
+
+### Actual Behaviour
+
+The code in [RoutingInBoundHandler will always close a HTTP connection went the status code is greater than 299](https://github.com/micronaut-projects/micronaut-core/blob/v2.0.0/http-server-netty/src/main/java/io/micronaut/http/server/netty/RoutingInBoundHandler.java#L1602).  The original contribution that added this behaviour is [here](https://github.com/micronaut-projects/micronaut-core/commit/27ae88170f8c63fa6c9d5151a6b91713e557f4f2), and the reason for this addition is not explained.
+
+### Environment Information
+
+- **Operating System**: macOS 10.15.5
+- **Micronaut Version:** v2.0.0
+- **JDK Version:** openjdk 14.0.1
+
+### Example Application
+
+https://github.com/diroussel/sudoku-server-micornaut/tree/v1.0
+

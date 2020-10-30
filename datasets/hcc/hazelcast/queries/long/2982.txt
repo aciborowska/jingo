@@ -1,0 +1,47 @@
+Hi,
+
+I think I found a bug in IMap.getAll() related to Near Caching in com.hazelcast.client.proxy.ClientMapProxy (in both 3.2.3 and 3.3 RC3)
+
+I'll put the details here, but would like to file an actual ticket if someone can point me in the correct direction. 
+
+Basically, the code first checks the near cache with a copy of the set of keys passed in.  If it finds the value locally it removes the key from the set so that it does not try and retrieve it later when it goes to the actual node.  However, the check to see if everything has been found is faulty.  It is checking if the ORIGINAL set of keys passed in is empty but should be checking if the COPY of the set is empty.  I've marked the code below with a comment.
+
+Also, I suspect that the code that actually checks the near cache is wrong as well, it check the cache with the converted key, but stores the value withe original key.
+
+```
+@Override
+public Map<K, V> getAll(Set<K> keys) {
+    initNearCache();
+    Set<Data> keySet = new HashSet(keys.size());
+    Map<K, V> result = new HashMap<K, V>();
+    for (Object key : keys) {
+        keySet.add(toData(key));
+    }
+    if (nearCache != null) {
+        final Iterator<Data> iterator = keySet.iterator();
+        while (iterator.hasNext()) {
+            Data key = iterator.next();
+            Object cached = nearCache.get(key);  ///////////////// !!!!!!!!!!!!!!  Checked with "Data"
+            if (cached != null && !ClientNearCache.NULL_OBJECT.equals(cached)) {
+                result.put((K) toObject(key), (V) cached); /////////////////  !!!!!!!!!!!!!!!!   Put in with actual object
+                iterator.remove();
+            }
+        }
+    }
+    if (keys.isEmpty()) {  // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!  I should be checking 'keySet' not keys
+        return result;
+    }
+    MapGetAllRequest request = new MapGetAllRequest(name, keySet);
+    MapEntrySet mapEntrySet = invoke(request);
+    Set<Entry<Data, Data>> entrySet = mapEntrySet.getEntrySet();
+    for (Entry<Data, Data> dataEntry : entrySet) {
+        final V value = (V) toObject(dataEntry.getValue());
+        final K key = (K) toObject(dataEntry.getKey());
+        result.put(key, value);
+        if (nearCache != null) {
+            nearCache.put(dataEntry.getKey(), value);
+        }
+    }
+    return result;
+}
+```

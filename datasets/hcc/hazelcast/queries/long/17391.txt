@@ -1,0 +1,31 @@
+When you instantiate a new EvictionConfig(), it has the eviction policy set to [EvictionPolicy.LRU](https://github.com/hazelcast/hazelcast/blob/b0a8a6656b3d58b7ef17b2afb62c353dc34b127b/hazelcast/src/main/java/com/hazelcast/config/EvictionConfig.java#L67))
+
+But: The default eviction config set on the map has the eviction policy set to [EvictionPolicy.NONE](https://github.com/hazelcast/hazelcast/blob/97ff57ba92dc1fbfa77720885e7db40757999080/hazelcast/src/main/java/com/hazelcast/config/MapConfig.java#L127)
+
+This leads to following behaviour:
+```java
+Config config = new Config();
+MapConfig mapConfig = config.getMapConfig("training1");
+EvictionConfig evictionConfig = new EvictionConfig()
+      .setMaxSizePolicy(MaxSizePolicy.PER_NODE)
+      .setSize(100);
+mapConfig.setEvictionConfig(evictionConfig);
+HazelcastInstance client = Hazelcast.newHazelcastInstance(config);
+```
+:point_up: this configuration will perform eviction. As `new EvictionConfig()` set the `EvictionPolicy` to `LRU`. 
+
+Now consider this example:
+```java
+Config config = new Config();
+MapConfig mapConfig = config.getMapConfig("training1"); 
+mapConfig.getEvictionConfig()
+      .setMaxSizePolicy(MaxSizePolicy.PER_NODE) 
+      .setSize(100);
+HazelcastInstance client = Hazelcast.newHazelcastInstance(config);
+```
+This configuration above will NOT do any eviction at all. Because it uses the default `EvictionConfig` instance which has `EvictionPolicy` set to `NONE`.
+This is surprising. As a user I want eviction to kick in when I set `size`. 
+
+We should fix the inconsistency. The best solution appears to be this: Always set default `size` as `Integer.MAX_VALUE` and `EvictionPolicy` as `LRU`. This seems like it should behave unsurprisingly. However that could be a performance problem: As the naive implementation would ALWAYS check `mapSize < Integer.MAX_VALUE`. So we have to optimize this check away. 
+
+Thanks to @Holmistr for reporting this and @mmedenjak for analysis. 

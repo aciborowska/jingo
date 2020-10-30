@@ -1,0 +1,57 @@
+When a map is configured with OBJECT in memory format and queries are used in combination with entry processor, the query will be able to see the same object instance the entry processor is working on. This means that you have a whole bunch of potential race/jmm problems here.
+
+The following test shows this race problem by letting a query see the work in progress on a map entry value. The begin value of the account = 0, and the end value = 20, but the query will find the object in its intermediate state: 10. 
+
+```
+  @Test
+    public void objectInMemoryFormatAndQueriesAreRacy() throws InterruptedException, ExecutionException {
+        Config config = new Config();
+        config.addMapConfig(new MapConfig("objectMap").setInMemoryFormat(InMemoryFormat.OBJECT));
+
+        HazelcastInstance hz = createHazelcastInstance(config);
+        final IMap<String, Account> map = hz.getMap("objectMap");
+        final String key = "1";
+        map.put(key, new Account());
+
+        final CountDownLatch latch = new CountDownLatch(1);
+        final ExecutorService executor = Executors.newFixedThreadPool(1);
+        Future f = executor.submit(new Runnable() {
+            @Override
+            public void run() {
+                map.executeOnKey(key, new AbstractEntryProcessor() {
+                    @Override
+                    public Object process(Map.Entry entry) {
+                        try {
+                            Thread.sleep(5000);
+                        } catch (InterruptedException e) {
+                            throw new RuntimeException();
+                        }
+                        Account account = (Account) entry.getValue();
+                        account.amount = 10;
+                        latch.countDown();
+                        try {
+                            Thread.sleep(5000);
+                        } catch (InterruptedException e) {
+                            throw new RuntimeException();
+                        }
+                        account.amount = 20;
+                        return null;
+                    }
+                });
+            }
+        });
+
+        latch.await();
+
+        Collection<Account> result = map.values(new Predicate<String, Account>() {
+            @Override
+            public boolean apply(Map.Entry<String, Account> mapEntry) {
+                Account account = mapEntry.getValue();
+                return account.amount == 10;
+            }
+        });
+
+        assertEquals(0, result.size());
+        f.get();
+    }
+```

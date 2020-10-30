@@ -1,0 +1,160 @@
+According to http://opendj.forgerock.org/doc/admin-guide/index/chap-change-certs.html the keystore named "truststore" should contain the public server certificate. The problem is that this wont work. The only way I can make it work is to import the signed cert into the keystore named "keystore" where the key is. So the keystore named "truststore" is empty and the keystore named "keystore" contains the key, the signed cert and the public CA. 
+
+I had the impression from the docs link above that I should do a "genkey" against the "keystore" and after the signing of the "csr" import the public server cert into the "truststore". This is obviously not correct.
+
+
+And makes this more tricky is that when setting up SASL EXTERNAL the keystore named "truststore" must be used ... Then in that case the keystore named "keystore" wont work for the SASL external. Nothing in the docs says anything abut this. I had to enable debugging and look at tons of java dump output to understand what was going on...
+
+
+Is it a documentation flaw, OpenDJ code problem or just me that wont interpret the docs correctly?
+
+If it is me interpreting the docs wrong, I think it need some clarifications for people to be able to understand this without to much headache...
+
+
+
+B t w... This is what I have done that works ok (SASL external setup not included)
+
+
+mkdir /tmp/STORES
+
+echo "testtest" > keystore.pin
+
+
+	GENERATe MY KEYs keystore (cannot generate an empty one. Strange....)
+keytool -genkey -alias foo -keyalg RSA -keystore keystore -keysize 2048 -storepass `cat keystore.pin`
+keytool -delete -alias foo -keystore keystore -storepass `cat keystore.pin`
+keytool -list -keystore keystore -storepass `cat keystore.pin`
+
+
+
+
+
+	GENERATe MY CERTs keystore (cannot generate an empty one. Strange....)
+keytool -genkey -alias foo -keyalg RSA -keystore truststore -keysize 2048 -storepass `cat keystore.pin`
+keytool -delete -alias foo -keystore truststore -storepass `cat keystore.pin`
+keytool -list -keystore truststore -storepass `cat keystore.pin`
+
+
+
+
+
+	GEN KEY FOR MY KEYSTORE
+keytool -genkey -alias TEST -keyalg RSA -keystore keystore -keysize 2048 -storepass `cat keystore.pin` -dname "CN=TEST.DOMAIN.SE,O=MY ORG"
+
+
+
+
+
+	GEN CSR
+keytool -certreq  -alias TEST -file TEST.csr -keystore keystore -storepass `cat keystore.pin`
+
+
+
+
+
+
+	Send the CSR for signing by CA......
+
+
+
+
+
+	Import CA
+openssl x509 -in cacert.pem -inform pem -outform der -out cacert.der
+keytool -import -alias MY_CA -file  cacert.der -keystore keystore -storepass `cat keystore.pin`
+
+
+
+
+
+
+	Import signed CERT
+openssl x509 -in TEST.pem -inform pem -outform der -out TEST.der
+keytool -import -alias TEST -file TEST.der -keystore keystore -trustcacerts -storepass `cat keystore.pin`
+
+
+
+
+
+
+
+	Fix in OpenDJ
+Copy 
+
+
+	truststore
+	keystore
+	keystore.pin
+to ${OpenDJ_HOME}/config
+
+
+
+
+
+
+	ENABLE Manager Providers
+dn: cn=JKS,cn=Key Manager Providers,cn=config
+changetype: modify
+replace: ds-cfg-enabled
+ds-cfg-enabled: true
+
+
+
+dn: cn=JKS,cn=Trust Manager Providers,cn=config
+changetype: modify
+replace: ds-cfg-enabled
+ds-cfg-enabled: true
+
+
+	ENABLE SSL
+dn: cn=LDAPS Connection Handler,cn=Connection Handlers,cn=config
+changetype: modify
+replace: ds-cfg-enabled
+ds-cfg-enabled: true
+
+
+
+
+
+
+	ENABLE TLS
+dn: cn=LDAP Connection Handler,cn=Connection Handlers,cn=config
+changetype: modify
+replace: ds-cfg-key-manager-provider
+ds-cfg-key-manager-provider: cn=JKS,cn=Key Manager Providers,cn=config
+-
+replace: ds-cfg-trust-manager-provider
+ds-cfg-trust-manager-provider: cn=JKS,cn=Trust Manager Providers,cn=config
+
+
+
+
+dn: cn=LDAP Connection Handler,cn=Connection Handlers,cn=config
+changetype: modify
+replace: ds-cfg-allow-start-tls
+ds-cfg-allow-start-tls: true
+
+
+
+
+
+	TEST
+openssl s_client -showcerts -CAfile cacert.pem -connect TEST.DOMAIN.SE:636
+
+
+
+
+
+
+
+
+Thanks in advance
+
+Per-Olov Sjöholm
+Sweden
+
+
+
+
+
+

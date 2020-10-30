@@ -1,0 +1,67 @@
+Given these two ACIs:
+
+ds-cfg-global-aci: (targetattr="*")(version 3.0; acl "Anonymous read access"; allow (read,search,compare) userdn="ldap:///self";)
+
+ds-cfg-global-aci: (targetattr!="userPassword") (targetfilter="(|(uid=billy*)(mail=*@forgerock.com))") (version 3.0; acl "allow read,search for can-only-see-billy-fr-users group members"; allow(read,search,compare) groupdn="ldap:///cn=can-only-see-billy-fr-users,ou=groups,ou=identities";)
+
+
+
+The expected behavior is that the userPassword attribute will be hidden for all users returned but for the entry of the user currently bound.
+
+The current behavior is that the userPassword is returned for all the entries:
+
+$ ./bin/ldapsearch -ZX -h localhost -p 1636 -D "uid=jane,ou=people,ou=identities" -w password -b "ou=identities" "(sn=Smith*)"
+dn: uid=jane,ou=people,ou=identities
+objectClass: top
+objectClass: person
+objectClass: organizationalPerson
+objectClass: inetOrgPerson
+cn: Jane
+mail: jane@da.com
+sn: Smith
+uid: jane
+userPassword: {PBKDF2-HMAC-SHA256}10:qh48GNs3j3EbgTOqqXbn7Zuo7hrTOSALE8ja5PX9R+gq+PlFqFzZUQ0TVoJQUo15
+
+dn: uid=billyjoe,ou=people,ou=identities
+objectClass: top
+objectClass: person
+objectClass: organizationalPerson
+objectClass: inetOrgPerson
+cn: Billy Joe
+mail: billyjoe@forgerock.com
+sn: Smith
+uid: billyjoe
+userPassword: {PBKDF2-HMAC-SHA256}10:uBiaKMzAnhBfFmawMKd2th1bt7S9qVzRTmtatFj2bBGT1JhNmGVj6/JUsdbajkAb
+
+dn: uid=billybob,ou=people,ou=identities
+objectClass: top
+objectClass: person
+objectClass: organizationalPerson
+objectClass: inetOrgPerson
+cn: Billy Bob
+mail: billybob@forgerock.com
+sn: Smith
+uid: billybob
+userPassword: {PBKDF2-HMAC-SHA256}10:TnOwUbLS0WQZDdq7qagQyBpZB5jDuG7A+PxlLuea+NGmWpJ6o8lLUT25QdQAfUFG
+
+dn: uid=sally,ou=people,ou=identities
+objectClass: top
+objectClass: person
+objectClass: organizationalPerson
+objectClass: inetOrgPerson
+cn: Sally
+mail: sally@forgerock.com
+sn: Smith
+uid: sally
+userPassword: {PBKDF2-HMAC-SHA256}10:RTjOYgf/Oagt3hpnp8LLFtNUHjYRmNs8sjEnD/EkHIwqfLvoeAm7YAr4hxOhp204
+
+
+
+Interestingly, trying to debug the ACI actually hide this bug. That is, adding the following ACI the previous ones lead to the expected behavior:
+
+ds-cfg-global-aci: (targetcontrol="1.3.6.1.4.1.42.2.27.9.5.2") (version 3.0;acl "Allow My App to get effective rights"; allow(read) userdn="ldap:///all";)
+ds-cfg-global-aci: (targetattr="aclRights||aclRightsInfo")(version 3.0; acl "Allow My App to read effective rights attributes"; allow (read,search,compare) userdn="ldap:///all";)
+
+
+
+It feels like the subject self should materialize something in the target part of the ACI (e.g: add automatically a (target=<currentBoundUser>)) which is not the case today.

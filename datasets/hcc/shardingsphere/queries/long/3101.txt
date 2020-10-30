@@ -1,0 +1,140 @@
+i'm using sharding-jdbc
+my pom.xml configuration:
+```
+org.apache.shardingsphere.sharding-jdbc-spring-boot-starter(version :  4.0.0-RC2)
+&
+org.apache.shardingsphere.sharding-jdbc-spring-namespace(version : 4.0.0-RC2)
+
+```
+my table sql:
+```
+CREATE TABLE `t_user_info` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `user_name` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL DEFAULT '' COMMENT '用户名',
+  `id_no` varchar(18) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL DEFAULT '' COMMENT '用户身份证号',
+  `cipher_id_no` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci DEFAULT '' COMMENT '用户身份证密文',
+  `age` int(11) NOT NULL COMMENT '年龄',
+  `mobile` varchar(11) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL DEFAULT '' COMMENT '用户手机号',
+  `cipher_mobile` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '用户手机号密文',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_id_no` (`id_no`) USING BTREE COMMENT '身份证号唯一索引'
+) ENGINE=InnoDB AUTO_INCREMENT=3 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+```
+
+my application.properties:
+
+```
+spring.shardingsphere.datasource.name=ds
+
+#数据库连接基本信息
+spring.shardingsphere.datasource.ds.type=com.alibaba.druid.pool.DruidDataSource
+spring.shardingsphere.datasource.ds.driver-class-name=com.mysql.cj.jdbc.Driver
+spring.shardingsphere.datasource.ds.url=jdbc:mysql://localhost:3306/demo?characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false
+spring.shardingsphere.datasource.ds.username=root
+spring.shardingsphere.datasource.ds.password=1123
+
+#连接池参数配置
+spring.shardingsphere.datasource.ds.max-total=20
+spring.shardingsphere.datasource.ds.initialSize=1
+spring.shardingsphere.datasource.ds.minIdle=1
+spring.shardingsphere.datasource.ds.maxActive=20
+spring.shardingsphere.datasource.ds.maxWait=3000
+spring.shardingsphere.datasource.ds.validationQuery=SELECT 1 FROM DUAL
+spring.shardingsphere.datasource.ds.poolPreparedStatements=true
+spring.shardingsphere.datasource.ds.maxPoolPreparedStatementPerConnectionSize=20
+
+#数据脱敏加密方式
+spring.shardingsphere.encrypt.encryptors.encryptor_aes.type=aes
+spring.shardingsphere.encrypt.encryptors.encryptor_aes.props.aes.key.value=123456abc
+
+#数据脱敏基本字段信息
+spring.shardingsphere.encrypt.tables.t_user_info.columns.id_no.plainColumn=id_no
+spring.shardingsphere.encrypt.tables.t_user_info.columns.id_no.cipherColumn=cipher_id_no
+spring.shardingsphere.encrypt.tables.t_user_info.columns.id_no.encryptor=encryptor_aes
+
+spring.shardingsphere.encrypt.tables.t_user_info.columns.mobile.plainColumn=mobile
+spring.shardingsphere.encrypt.tables.t_user_info.columns.mobile.cipherColumn=cipher_mobile
+spring.shardingsphere.encrypt.tables.t_user_info.columns.mobile.encryptor=encryptor_aes
+
+#是否打印SQL
+spring.shardingsphere.props.sql.show=true
+
+#查询是否走密文字段
+spring.shardingsphere.props.query.with.cipher.column=false
+```
+
+my junit case:
+
+```
+@RunWith(SpringRunner.class)
+@SpringBootTest
+@FixMethodOrder(MethodSorters.JVM)
+@Rollback
+//@Transactional
+public class UserInfoTest {
+
+	private static final String ID_NO = "xxxx";
+	private static final String UPDATE_ID_NO = "xxxxx";
+	private static final String MOBILE = "xxxxx";
+	private static final String UPDATE_MOBILE = "xxxxx";
+
+	@Resource
+	private UserMapper userMapper;
+
+	@Test
+	public void insertTest(){
+		User user = new User();
+
+		user.setUserName("test");
+		user.setIdNo(ID_NO);
+		user.setAge(23);
+		user.setMobile(MOBILE);
+
+		int result = userMapper.insert(user);
+		Assert.assertEquals(result, 1);
+	}
+
+	@Test
+	public void selectBeforeUpdateTest(){
+		User user = userMapper.selectByIdNo(ID_NO);
+		Assert.assertNotNull(user);
+	}
+
+	@Test
+	public void updateTest(){
+		User user = userMapper.selectByIdNo(ID_NO);
+		Assert.assertNotNull(user);
+
+		//user.setIdNo(UPDATE_ID_NO);
+//		user.setMobile(UPDATE_MOBILE);
+//
+//		int result = userMapper.updateByPrimaryKey(user);
+//		Assert.assertEquals(result, 1);
+//
+//		User oldUser = userMapper.selectByIdNo(ID_NO);
+//		Assert.assertNotNull(oldUser);
+//
+//		User newUser = userMapper.selectByIdNo(UPDATE_ID_NO);
+//		Assert.assertNull(newUser);
+	}
+
+	@Test
+	public void deleteTest(){
+		//TODO 删除就不写了，没啥用
+	}
+}
+```
+
+error occured while "userMapper.selectByIdNo(ID_NO);" is running 
+
+according to this document ： [https://shardingsphere.apache.org/document/current/cn/features/orchestration/encrypt/](url)
+
+when `query.with.cipher.column=false` ， it means the sharding-jdbc query opreation will only use the plainColumn. however, when my junit case runnning , i found the exception ,because the sharding-jdbc wanted to decrypt the plainColunmn.
+
+i try to debug and found the reason, and it turns out that  StreamQueryResult class has a operation 
+
+`queryResultMetaData.getShardingEncryptor(column_index)`
+
+the result is not null, and then the sharding-jdbc decrypt the plainColumn value.
+
+Is this a bug or normal logic , what can i do to fix this thing?

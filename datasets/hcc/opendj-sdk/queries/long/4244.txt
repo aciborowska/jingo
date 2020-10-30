@@ -1,0 +1,67 @@
+Customers using OpenIDM are reporting that IDM's changelog searches which used to be fast are now very slow in DJ 3.5.
+
+IDM always searches for 100 changes from the last known changenumber, in other words the range may be greater than lastChangeNumber, and the search may then return less than 100 results.
+
+Examples of searches that were fast in 2.6.x, and now slow in 3.5.x are:
+
+
+[07/Aug/2017:11:51:01 +0000] SEARCH REQ conn=151 op=164 msgID=165 base="cn=changelog" scope=one filter="(&(changeNumber>=5719)(changeNumber<=5818))" attrs="changeNumber,targetDN,changeType,changes,newRdn,deleteOldRdn,newSuperior,targetEntryUUID,targetUniqueID,changeInitiatorsName" result=0 nentries=15 etime=88467
+[07/Aug/2017:11:55:01 +0000] SEARCH REQ conn=151 op=194 msgID=195 base="cn=changelog" scope=one filter="(&(changeNumber>=5734)(changeNumber<=5833))" attrs="changeNumber,targetDN,changeType,changes,newRdn,deleteOldRdn,newSuperior,targetEntryUUID,targetUniqueID,changeInitiatorsName" result=0 nentries=2 etime=90795
+
+
+
+Searches which don't match any results are reported to return immediately.
+
+In one case, the RS changelogs held changes from 6 different servers (all "live", no "dead" replicas) and for 5 different domains. Most domains had very few changes, however the CTS domain from one server contained ~ 620MB of changes.
+
+In the above case, a jstack showed the worker thread and the change number indexer thread:
+
+
+"Worker Thread 11" #197 prio=5 os_prio=0 tid=0x00007f6544c6e800 nid=0x24c2 runnable [0x00007f6420dcc000]
+   java.lang.Thread.State: RUNNABLE
+        at java.io.RandomAccessFile.readBytes(Native Method)
+        at java.io.RandomAccessFile.read(RandomAccessFile.java:377)
+        at java.io.RandomAccessFile.readFully(RandomAccessFile.java:436)
+        at org.forgerock.opendj.ldap.ByteStringBuilder.appendBytes(ByteStringBuilder.java:503)
+        at org.opends.server.replication.server.changelog.file.BlockLogReader.readNextRecord(BlockLogReader.java:308)
+        at org.opends.server.replication.server.changelog.file.BlockLogReader.readRecord(BlockLogReader.java:244)
+        at org.opends.server.replication.server.changelog.file.BlockLogReader.searchClosestBlockStartToKey(BlockLogReader.java:399)
+        at org.opends.server.replication.server.changelog.file.BlockLogReader.seekToRecord(BlockLogReader.java:158)
+        at org.opends.server.replication.server.changelog.file.LogFile$LogFileCursor.positionTo(LogFile.java:634)
+        at org.opends.server.replication.server.changelog.file.Log$InternalLogCursor.positionTo(Log.java:1286)
+        at org.opends.server.replication.server.changelog.file.Log$AbortableLogCursor.positionTo(Log.java:1537)
+        at org.opends.server.replication.server.changelog.file.FileReplicaDBCursor.nextWhenCursorIsExhaustedOrNotCorrectlyPositionned(FileReplicaDBCursor.java:117)
+        at org.opends.server.replication.server.changelog.file.FileReplicaDBCursor.next(FileReplicaDBCursor.java:111)
+        at org.opends.server.replication.server.changelog.file.ReplicaCursor.next(ReplicaCursor.java:123)
+        at org.opends.server.replication.server.changelog.file.CompositeDBCursor.addCursor(CompositeDBCursor.java:170)
+        at org.opends.server.replication.server.changelog.file.CompositeDBCursor.recycleExhaustedCursors(CompositeDBCursor.java:126)
+        at org.opends.server.replication.server.changelog.file.CompositeDBCursor.next(CompositeDBCursor.java:107)
+        at org.opends.server.replication.server.changelog.file.DomainDBCursor.next(DomainDBCursor.java:32)
+        at org.opends.server.replication.server.changelog.file.CompositeDBCursor.addCursor(CompositeDBCursor.java:170)
+        at org.opends.server.replication.server.changelog.file.CompositeDBCursor.recycleExhaustedCursors(CompositeDBCursor.java:126)
+        at org.opends.server.replication.server.changelog.file.CompositeDBCursor.next(CompositeDBCursor.java:107)
+        at org.opends.server.replication.server.changelog.file.MultiDomainDBCursor.next(MultiDomainDBCursor.java:32)
+        at org.opends.server.backends.ChangelogBackend.findReplicaUpdateMessage(ChangelogBackend.java:1107)
+        at org.opends.server.backends.ChangelogBackend.sendChangeNumberEntriesFromCursors(ChangelogBackend.java:1003)
+        at org.opends.server.backends.ChangelogBackend.initialSearchFromChangeNumber(ChangelogBackend.java:959)
+        at org.opends.server.backends.ChangelogBackend.search(ChangelogBackend.java:518)
+        at org.opends.server.workflowelement.localbackend.LocalBackendSearchOperation.processSearch(LocalBackendSearchOperation.java:224)
+        at org.opends.server.workflowelement.localbackend.LocalBackendSearchOperation.processLocalSearch(LocalBackendSearchOperation.java:101)
+        at org.opends.server.workflowelement.localbackend.LocalBackendWorkflowElement.execute(LocalBackendWorkflowElement.java:732)
+        at org.opends.server.workflowelement.localbackend.LocalBackendWorkflowElement.executeOnNonRootDSE(LocalBackendWorkflowElement.java:1051)
+        at org.opends.server.workflowelement.localbackend.LocalBackendWorkflowElement.execute(LocalBackendWorkflowElement.java:894)
+        at org.opends.server.core.SearchOperationBasis.run(SearchOperationBasis.java:1007)
+        at org.opends.server.extensions.TraditionalWorkerThread.run(TraditionalWorkerThread.java:148)
+
+"Change number indexer" #43 prio=5 os_prio=0 tid=0x00007f654525f800 nid=0x244b in Object.wait() [0x00007f64b4c63000]
+   java.lang.Thread.State: WAITING (on object monitor)
+        at java.lang.Object.wait(Native Method)
+        at java.lang.Object.wait(Object.java:502)
+        at org.opends.server.replication.server.changelog.file.ChangeNumberIndexer.run(ChangeNumberIndexer.java:412)
+        - locked <0x000000044eb3fa48> (a org.opends.server.replication.server.changelog.file.ChangeNumberIndexer)
+
+
+
+Customer notes that removing CTS from the changelog (creating a second replication topology) resolves the problem.
+
+What other information is needed to diagnose this problem?

@@ -1,0 +1,52 @@
+When using the AWSParemeterStoreConfigClient to retrieve Strings and SecureStrings from AWS into config values any string containing the literal "=" equals sign causes the the matching of the parameter name to fail thus returning nothing.  It appears to be due to these lines in the code:
+
+https://github.com/micronaut-projects/micronaut-core/blob/1bf5c3edeecda870c03fa3bc433b0fc76b213733/discovery-client/src/main/java/io/micronaut/discovery/aws/parameterstore/AWSParameterStoreConfigClient.java#L333
+
+https://github.com/micronaut-projects/micronaut-core/blob/1bf5c3edeecda870c03fa3bc433b0fc76b213733/discovery-client/src/main/java/io/micronaut/discovery/aws/parameterstore/AWSParameterStoreConfigClient.java#L344
+
+which split on the equals sign for some reason.
+
+To reproduce:  
+
+Add some parameters to AWS of type String and SecureString using the amazon console:
+Name: /config/test-application/test-service/param1  Type:String  Value: "foo=bar"
+Name: /config/test-application/test-service/param2  Type:SecureString  Value: "foo=securebar"
+Name: /config/test-application/test-service/param3 Type:String Value: "noequalsinme"
+
+Build a test project with the correct dependencies to use AWS parameter store:
+
+```groovy
+   compile "io.micronaut:micronaut-discovery-client"
+    compile "io.micronaut.configuration:micronaut-aws-common"
+    compile group: 'com.amazonaws', name: 'aws-java-sdk-ssm', version: '1.11.308'
+```
+add a bootstrap.yml:
+
+```bootstrap.yml
+micronaut:
+  application:
+    name: test-application
+  config-client:
+    enabled: true
+
+aws:
+  client:
+    system-manager:
+      parameterstore:
+        enabled: true
+        useSecureParameters: true
+```
+Build a config to get the injected properties:
+
+```
+@ConfigurationProperties('test-service')
+class TestServiceConfig {
+
+    String param1
+    String param2
+    String param3
+}
+```
+
+If you run such a project then only String parameters that DO NOT have an = sign in their string or in the decrypted version in the case of SecureString will pass through correctly in this case only "noequalsinme" param3 should work.  param1 and param2 will be blank because of the = parsing mentioned above which seems to mess up the property key they are stored under.
+

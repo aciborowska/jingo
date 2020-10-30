@@ -1,0 +1,36 @@
+I've encountered an issue with a failed AWS join.  However, I suspect the issue is generic to other join failure conditions.
+
+In my AWS case - if I misconfigure the AWS credentials in some way, such that join fails, the node eventually starts, but I end up with my logs completely filling up with this repeating log entry:
+
+2013-09-26 10:14:15.428 [hz.clusterCache.cached.thread-2] INFO    com.hazelcast.partition.PartitionService.null: [172.31.79.52]:5701 [clusterName] Initializing cluster partition table first arrangement...
+2013-09-26 10:14:15.428 [hz.clusterCache.cached.thread-2] INFO    com.hazelcast.partition.PartitionService.null: [172.31.79.52]:5701 [clusterName] Initializing cluster partition table first arrangement...
+
+(nb. I'm using Hazelcast as Hibernate second-level cache here, and this message is logged on EVERY second-level cache access, hence the high volume of access, and excessive log spam... plus, I think the second-level cache is not operational, which is bad)
+
+Other interesting (ie. earlier) parts to the logs are the following during Hazelcast initialisation:
+
+2013-09-26 10:14:02.220 [main] WARNING com.hazelcast.cluster.TcpIpJoinerOverAWS.null: [172.31.79.52]:5701 [clusterName] Failed to connect, node joined= false, allConnected= false to all other members after 0 seconds.
+2013-09-26 10:14:02.220 [main] WARNING com.hazelcast.cluster.TcpIpJoinerOverAWS.null: [172.31.79.52]:5701 [clusterName] Rebooting after 10 seconds.
+
+-- this is repeated a number of times at 10s intervals... and is then followed by:
+
+2013-09-26 10:14:12.765 [main] WARNING com.hazelcast.cluster.TcpIpJoinerOverAWS.null: [172.31.79.52]:5701 [clusterName] Join try count exceed limit, setting this node as master!
+2013-09-26 10:14:12.766 [main] WARNING com.hazelcast.instance.Node.null: [172.31.79.52]:5701 [clusterName] Config seed port is 5701 and cluster size is 0. Some of the ports seem occupied!
+
+-- note that the cluster size is reported as 0... !
+
+Looking at the Hazelcast source, I think the issue stems from:
+
+a) the ClusterServiceImpl sets the local node as part of it's members list during constructor
+b) a subsequent ClusterServiceImpl.reset() call clears the clusterService members list entirely - including clearing out the local node!  This method is called by the node.rejoin() method, as part of the repeated attempts to join in AbstractJoiner.postJoin()
+c) after 5 attempts, AbstractJoiner.postJoin() gives up and calls setNodeAsMaster(), but the ClusterServiceImpl doesn't know about it's own local node anymore, and the "cluster" is correspondingly stuffed.
+
+The hazelcast caches that are presented to Hibernate should still be able to function in this case - albeit with just the one local node.  Currently, the hibernate second-level cache would be broken, and the application logs are a disaster.
+
+I think the solution is probably that the ClusterServiceImpl.reset() call should not clear the members list entirely - but instead reset it to the initial state, containing the local node.  That would be changing line 622 of ClusterServiceImpl.java as follows:
+
+&lt; membersRef.set(null);
+&#8210;&#8210;
+&gt; setMembers(node.getLocalMember());
+
+An alternative possibility is that the Node.setNodeAsMaster() call should ensure that the clusterService at least knows about itself.

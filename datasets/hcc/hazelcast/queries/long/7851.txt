@@ -1,0 +1,49 @@
+I am using Hazelcast 3.6 and running 2 node cluster with 16GB of memory on each for hazelcast. The hazelcast server seems to be fine with memory usage, however on the client end (my application) it is causing out of memory and not able to find the root cause. I am using HazelcastClient to connect to cluster and get/containsKey/put/remove data from Map and Multimap  with key as Long value and value as custom objects, getting OOM after storing about 1 -2 mil objects(each object is  of 2-4KB in size) in each Map and Mulitmap. We also use lot of atomic variable to maintain the counter of each activity, I am getting this behavior consistently and at the end getting OOM error. Attached is the graph of heap usage over a period of 20min. It always trends upwards and it stops when OOM error comes, i have analyzed the heap dump for multiple occurrences and the heap usage is mainly because of hazelcast object, below are the main leak suspects from MAT, i verified and reviewed our code multiple times and there is nothing that causes a memory leak. 
+
+Here is the code, i am using singleton pattern to initialize Hazelcast client instance and using the same for all other usage.
+
+```
+ClientConfig clientConfig = null;
+HazelcastProvider provider = null;
+ if (hzInstance == null)
+  {
+    synchronized (CacheHelper.class)
+    {
+      if (hzInstance == null)
+      {
+        Config hzCfg = new Config();
+        GroupConfig groupConfig = getGroupConfig(smCfg);
+        hzCfg.setGroupConfig(groupConfig);
+        hzCfg.setInstanceName(instanceName);
+        PartitionGroupConfig partitionGroupConfig = new PartitionGroupConfig();
+        partitionGroupConfig.setEnabled(RTUtils.getPropertyValue(smCfg,                           PARTITION_GROUP_ENABLED, false));
+        hzCfg.setPartitionGroupConfig(partitionGroupConfig);
+
+        NetworkConfig network = cfg.getNetworkConfig();
+       JoinConfig join = network.getJoin();
+       join.getMulticastConfig().setEnabled(false);
+       join.getTcpIpConfig().setEnabled(true);
+       List<String> addresses = RTUtils.getMultiValToList(RTUtils.getPropertyValue(stromConfig, TCPIP_MEMBERS));
+       addresses.add(reqMem);
+        join.getTcpIpConfig().setMembers(addresses);
+        join.getTcpIpConfig().setRequiredMember(reqMem);
+        hzInstance = HazelcastClient.newHazelcastClient(_clientConfig)
+      }
+    }
+  }
+```
+
+I am attaching few screenshots
+
+![histogram sampling](https://cloud.githubusercontent.com/assets/5994348/14068758/793a199c-f45b-11e5-9d47-0ee858585058.JPG)
+![histogram](https://cloud.githubusercontent.com/assets/5994348/14068761/794087c8-f45b-11e5-896d-ccd984541e5c.JPG)
+![leask suspects](https://cloud.githubusercontent.com/assets/5994348/14068762/7942d852-f45b-11e5-993f-21a71b90444a.JPG)
+![leask suspects1](https://cloud.githubusercontent.com/assets/5994348/14068763/7943f32c-f45b-11e5-894d-ff811712a360.JPG)
+![leask suspects2](https://cloud.githubusercontent.com/assets/5994348/14068760/793f5006-f45b-11e5-928f-d28751e3046b.JPG)
+![oom](https://cloud.githubusercontent.com/assets/5994348/14068759/793eb3bc-f45b-11e5-9034-c60c25228e07.JPG)
+
+The thread com.hazelcast.util.executor.StripedExecutor$Worker @ 0x6ffd45bd8 hz.client_0_dev.event-1 keeps local variables with total size 647,087,896 (18.97%) bytes.
+
+The thread com.hazelcast.util.executor.StripedExecutor$Worker @ 0x6ffd80118 hz.client_0_dev.event-2 keeps local variables with total size 629,825,296 (18.47%) bytes.
+
+The thread com.hazelcast.util.executor.StripedExecutor$Worker @ 0x6fff13750 hz.client_0_dev.event-4 keeps local variables with total size 612,568,016 (17.96%) bytes.

@@ -1,0 +1,72 @@
+Bug description
+It seems the dsconfig batch file processing removes double and single-quotes from attribute values found in the batch file. This prevents the extension of global aci.
+
+The following executes without problem
+
+./dsconfig set-access-control-handler-prop --add global-aci:'(target = "ldap:///cn=schema")(targetattr = "attributeTypes || objectClasses")(version 3.0;acl "Modify schema"; allow (write)(userdn = "ldap:///uid=openam,ou=admins,dc=redacted,dc=redacted");)’ -h localhost -p 4444 -D “cn=Directory Manager” -w redacted --no-prompt
+
+
+
+Problems:
+1. If I want to execute the same dsconfig command via a batch file, it throws an error:
+
+cat << EOH >/tmp/batch
+set-access-control-handler-prop --add global-aci:'(target = "ldap:///cn=schema")(targetattr = "attributeTypes || objectClasses")(version 3.0;acl "Modify schema"; allow (write)(userdn = "ldap:///uid=openam,ou=admins,dc=redacted,dc=redacted");)’
+EOH
+./dsconfig -F /tmp/batch -h localhost -p 4444 -D “cn=Directory Manager” -w redacted --no-prompt
+ 
+set-access-control-handler-prop --add global-aci:(target = ldap:///cn=schema)(targetattr = attributeTypes || objectClasses)(version 3.0;acl Modify schema; allow (write)(userdn = ldap:///uid=openam,ou=admins,dc=redacted,dc=redacted);)
+An error occurred while parsing the command-line arguments:  Argument "=“ does not start with one or two dashes and unnamed trailing arguments are not allowed
+
+
+
+Notice the missing single and double quotes!
+I think for the sake of usability there should be no difference in how the dsconfig batch interpreter and the POSIX shell interprets the input.
+
+2. If I escape the spaces inside the parameter value, I got the following:
+
+cat << EOH >/tmp/batch
+set-access-control-handler-prop --add global-aci:(target\ =\ "ldap:///cn=schema")(targetattr\ =\ "attributeTypes || objectClasses")(version\ 3.0;acl\ "Modify schema";\ allow\ (write)(userdn\ =\ "ldap:///uid=openam,ou=admins,dc=redacted,dc=redacted");)
+EOH
+./dsconfig -F /tmp/batch -h localhost -p 4444 -D “cn=Directory Manager” -w redacted --no-prompt
+
+
+
+Output:
+
+set-access-control-handler-prop --add global-aci:(target = ldap:///cn=schema)(targetattr = attributeTypes || objectClasses)(version 3.0;acl Modify schema; allow (write)(userdn = ldap:///uid=openam,ou=admins,dc=redacted,dc=redacted);)
+The value "(target = ldap:///cn=schema)(targetattr = attributeTypes ||
+objectClasses)(version 3.0;acl Modify schema; allow (write)(userdn =
+ldap:///uid=openam,ou=admins,dc=redacted,dc=redacted);)" is not a valid value
+for the Dsee Compat Access Control Handler property "global-aci" which has the
+following syntax: ACI
+
+
+
+Notice the missing single and double quotes!
+The cause of the error message seems to be at least the missing quotes around the acl name.
+
+Possible cause:
+After reviewing the opendj trunk, it seems replaceSpacesInQuotes discards single and double quotes, which would be needed in my case. On the sidenote, it seems  this function does not allow embedding a single or double quote inside of a single- or double-quoted string.
+
+
+./opendj-project/opendj-config/src/main/java/org/forgerock/opendj/config/dsconfig/DSConfig.java:1003
+ 
+private String replaceSpacesInQuotes(final String line) {
+        String newLine = "";
+        boolean inQuotes = false;
+        for (int ii = 0; ii < line.length(); ii++) {
+            char ch = line.charAt(ii);
+            if (ch == '\"' || ch == '\'') {
+                inQuotes = !inQuotes;
+                continue;
+            }
+            if (inQuotes && ch == ' ') {
+                newLine += "\\ ";
+            } else {
+                newLine += ch;
+            }
+        }
+        return newLine;
+    }
+

@@ -1,0 +1,607 @@
+当我频繁的执行sql或者在一个请求中执行sql太多会出现
+[27/10/16 10:20:28:028 CST] pool-1-thread-26 ERROR executor.ExecutorEngine: Concurrent execute result error {}
+com.dangdang.ddframe.rdb.sharding.exception.ShardingJdbcException: java.sql.SQLException: Error
+和
+[27/10/16 10:20:28:028 CST] pool-1-thread-30 ERROR stat.StatFilter: getUpdateCount error
+com.mysql.jdbc.exceptions.jdbc4.MySQLNonTransientConnectionException: No operations allowed after statement closed.
+服务配置如下:
+
+<bean id="dataSource_0" class="com.alibaba.druid.pool.DruidDataSource"
+        init-method="init" destroy-method="close">
+
+```
+    <!-- 数据源驱动类可不写，Druid默认会自动根据URL识别DriverClass -->
+    <!-- <property name="driverClassName" value="${jdbc.replicationDriver}" 
+        /> -->
+    <property name="driverClassName" value="${jdbc.driver}" />
+    <!-- 基本属性 url、user、password -->
+    <property name="url" value="${jdbc.url_0}" />
+    <property name="username" value="${jdbc.username_0}" />
+    <property name="password" value="${jdbc.password_0}" />
+
+    <!-- 配置初始化大小、最小、最大 -->
+    <property name="initialSize" value="100" />
+    <property name="minIdle" value="300" />
+    <property name="maxActive" value="2000" />
+
+    <!-- 配置获取连接等待超时的时间 -->
+    <property name="maxWait" value="60000" />
+
+    <!-- 配置间隔多久才进行一次检测，检测需要关闭的空闲连接，单位是毫秒 -->
+    <property name="timeBetweenEvictionRunsMillis" value="5000" />
+
+    <!-- 配置一个连接在池中最小生存的时间，单位是毫秒 -->
+    <property name="minEvictableIdleTimeMillis" value="30000" />
+
+    <property name="testWhileIdle" value="true" />
+    <property name="testOnBorrow" value="false" />
+    <property name="testOnReturn" value="false" />
+    <!-- 配置监控统计拦截的filters -->
+    <property name="filters" value="stat" />
+</bean>
+
+<bean id="dataSource_1" class="com.alibaba.druid.pool.DruidDataSource"
+    init-method="init" destroy-method="close">
+
+    <!-- 数据源驱动类可不写，Druid默认会自动根据URL识别DriverClass -->
+    <!-- <property name="driverClassName" value="${jdbc.replicationDriver}" 
+        /> -->
+    <property name="driverClassName" value="${jdbc.driver}" />
+    <!-- 基本属性 url、user、password -->
+    <property name="url" value="${jdbc.url_1}" />
+    <property name="username" value="${jdbc.username_1}" />
+    <property name="password" value="${jdbc.password_1}" />
+
+    <!-- 配置初始化大小、最小、最大 -->
+    <property name="initialSize" value="100" />
+    <property name="minIdle" value="300" />
+    <property name="maxActive" value="2000" />
+    <!-- 配置获取连接等待超时的时间 -->
+    <property name="maxWait" value="60000" />
+
+    <!-- 配置间隔多久才进行一次检测，检测需要关闭的空闲连接，单位是毫秒 -->
+    <property name="timeBetweenEvictionRunsMillis" value="5000" />
+
+    <!-- 配置一个连接在池中最小生存的时间，单位是毫秒 -->
+    <property name="minEvictableIdleTimeMillis" value="30000" />
+
+    <property name="testWhileIdle" value="true" />
+    <property name="testOnBorrow" value="false" />
+    <property name="testOnReturn" value="false" />
+    <!-- 配置监控统计拦截的filters -->
+    <property name="filters" value="stat" />
+</bean>
+
+
+<rdb:strategy id="databaseShardingStrategy" sharding-columns="id"
+    algorithm-class="com.handu.open.dubbo.monitor.config.ModuloSingleKeyDatabaseShardingAlgorithm" />
+<rdb:strategy id="tableShardingStrategy" sharding-columns="invoke_time"
+    algorithm-class="com.handu.open.dubbo.monitor.config.ModuloSingleKeyTableShardingAlgorithm" />
+
+<rdb:data-source id="shardingDataSource">
+<rdb:sharding-rule data-sources="dataSource_0,dataSource_1"
+    default-data-source="dataSource_0">
+    <rdb:table-rules>
+        <rdb:table-rule logic-table="dubbo_invoke"
+            actual-tables="dubbo_invoke_${0..1}" database-strategy="databaseShardingStrategy"
+            table-strategy="tableShardingStrategy" />
+    </rdb:table-rules>
+</rdb:sharding-rule>
+<rdb:props>
+    <prop key="executor.min.idle.size">30</prop>
+    <prop key="executor.max.size">100</prop>
+    <prop key="executor.max.idle.timeout.millisecond">3000000</prop>
+</rdb:props>
+```
+
+/rdb:data-source
+
+pom文件:
+<dependency>
+            <groupId>com.dangdang</groupId>
+            <artifactId>sharding-jdbc-core</artifactId>
+            <version>1.3.3</version>
+        </dependency>
+    <dependency>
+        <groupId>com.dangdang</groupId>
+        <artifactId>sharding-jdbc-config-spring</artifactId>
+        <version>1.3.3</version>
+    </dependency>
+
+java加载配置:
+public class MyBatisConfig implements ApplicationContextAware {
+
+```
+@Autowired
+private Environment env;
+
+private ApplicationContext context;
+private final ApplicationContext ac = new FileSystemXmlApplicationContext("classpath:spring-context.xml");
+
+@Bean
+public DataSource dataSource() {
+    DataSource dataSource = (DataSource) ac.getBean("shardingDataSource");
+    return dataSource;
+}
+
+@Bean
+public SqlSessionFactory sqlSessionFactory() throws Exception {
+    SqlSessionFactoryBean factoryBean = new SqlSessionFactoryBean();
+    factoryBean.setDataSource(dataSource());
+    factoryBean.setMapperLocations(context.getResources("classpath*:mappers/**/*.xml"));
+    return factoryBean.getObject();
+}
+
+@Bean
+public DataSourceTransactionManager transactionManager() {
+    DataSourceTransactionManager transactionManager = new DataSourceTransactionManager();
+    transactionManager.setDataSource(dataSource());
+    return transactionManager;
+}
+
+public void setApplicationContext(ApplicationContext applicationContext) throws BeansException {
+    context = applicationContext;
+}
+```
+
+}
+
+具体错误:
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4 endVisit node: class com.alibaba.druid.sql.ast.statement.SQLSelectItem
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4 endVisit result: SQLParsedResult(routeContext=RouteContext(tables=[Table(name=dubbo_invoke, alias=Optional.absent())], sqlStatementType=null, sqlBuilder=null), conditionContexts=[], mergeContext=MergeContext(orderByColumns=[], groupByColumns=[], aggregationColumns=[AggregationColumn(expression=SUM(success), aggregationType=SUM, alias=Optional.of(success), option=Optional.absent(), derivedColumns=[], columnIndex=1)], limit=null))
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4 endVisit condition: ConditionContext(conditions={})
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4 endVisit SQL: SELECT SUM(success) AS success
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4 visit node: class com.alibaba.druid.sql.ast.statement.SQLSelectItem
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4 visit argument: com.alibaba.druid.sql.ast.expr.SQLAggregateExpr@42ac9424 AS failure
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5 visit node: class com.alibaba.druid.sql.ast.expr.SQLAggregateExpr
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5 visit argument: com.alibaba.druid.sql.ast.expr.SQLAggregateExpr@42ac9424
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5   6 visit node: class com.alibaba.druid.sql.ast.expr.SQLIdentifierExpr
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5   6 visit argument: failure
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5   6 endVisit node: class com.alibaba.druid.sql.ast.expr.SQLIdentifierExpr
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5   6 endVisit result: SQLParsedResult(routeContext=RouteContext(tables=[Table(name=dubbo_invoke, alias=Optional.absent())], sqlStatementType=null, sqlBuilder=null), conditionContexts=[], mergeContext=MergeContext(orderByColumns=[], groupByColumns=[], aggregationColumns=[AggregationColumn(expression=SUM(success), aggregationType=SUM, alias=Optional.of(success), option=Optional.absent(), derivedColumns=[], columnIndex=1), AggregationColumn(expression=SUM(failure), aggregationType=SUM, alias=Optional.of(failure), option=Optional.absent(), derivedColumns=[], columnIndex=2)], limit=null))
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5   6 endVisit condition: ConditionContext(conditions={})
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5   6 endVisit SQL: SELECT SUM(success) AS success, SUM(failure
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5 endVisit node: class com.alibaba.druid.sql.ast.expr.SQLAggregateExpr
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5 endVisit result: SQLParsedResult(routeContext=RouteContext(tables=[Table(name=dubbo_invoke, alias=Optional.absent())], sqlStatementType=null, sqlBuilder=null), conditionContexts=[], mergeContext=MergeContext(orderByColumns=[], groupByColumns=[], aggregationColumns=[AggregationColumn(expression=SUM(success), aggregationType=SUM, alias=Optional.of(success), option=Optional.absent(), derivedColumns=[], columnIndex=1), AggregationColumn(expression=SUM(failure), aggregationType=SUM, alias=Optional.of(failure), option=Optional.absent(), derivedColumns=[], columnIndex=2)], limit=null))
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5 endVisit condition: ConditionContext(conditions={})
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5 endVisit SQL: SELECT SUM(success) AS success, SUM(failure)
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4 endVisit node: class com.alibaba.druid.sql.ast.statement.SQLSelectItem
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4 endVisit result: SQLParsedResult(routeContext=RouteContext(tables=[Table(name=dubbo_invoke, alias=Optional.absent())], sqlStatementType=null, sqlBuilder=null), conditionContexts=[], mergeContext=MergeContext(orderByColumns=[], groupByColumns=[], aggregationColumns=[AggregationColumn(expression=SUM(success), aggregationType=SUM, alias=Optional.of(success), option=Optional.absent(), derivedColumns=[], columnIndex=1), AggregationColumn(expression=SUM(failure), aggregationType=SUM, alias=Optional.of(failure), option=Optional.absent(), derivedColumns=[], columnIndex=2)], limit=null))
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4 endVisit condition: ConditionContext(conditions={})
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4 endVisit SQL: SELECT SUM(success) AS success, SUM(failure) AS failure
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4 visit node: class com.alibaba.druid.sql.ast.statement.SQLSelectItem
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4 visit argument: com.alibaba.druid.sql.ast.expr.SQLAggregateExpr@3dc216f2 AS elapsed
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5 visit node: class com.alibaba.druid.sql.ast.expr.SQLAggregateExpr
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5 visit argument: com.alibaba.druid.sql.ast.expr.SQLAggregateExpr@3dc216f2
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5   6 visit node: class com.alibaba.druid.sql.ast.expr.SQLIdentifierExpr
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5   6 visit argument: elapsed
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5   6 endVisit node: class com.alibaba.druid.sql.ast.expr.SQLIdentifierExpr
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5   6 endVisit result: SQLParsedResult(routeContext=RouteContext(tables=[Table(name=dubbo_invoke, alias=Optional.absent())], sqlStatementType=null, sqlBuilder=null), conditionContexts=[], mergeContext=MergeContext(orderByColumns=[], groupByColumns=[], aggregationColumns=[AggregationColumn(expression=SUM(success), aggregationType=SUM, alias=Optional.of(success), option=Optional.absent(), derivedColumns=[], columnIndex=1), AggregationColumn(expression=SUM(failure), aggregationType=SUM, alias=Optional.of(failure), option=Optional.absent(), derivedColumns=[], columnIndex=2), AggregationColumn(expression=SUM(elapsed), aggregationType=SUM, alias=Optional.of(elapsed), option=Optional.absent(), derivedColumns=[], columnIndex=3)], limit=null))
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5   6 endVisit condition: ConditionContext(conditions={})
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5   6 endVisit SQL: SELECT SUM(success) AS success, SUM(failure) AS failure, SUM(elapsed
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5 endVisit node: class com.alibaba.druid.sql.ast.expr.SQLAggregateExpr
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5 endVisit result: SQLParsedResult(routeContext=RouteContext(tables=[Table(name=dubbo_invoke, alias=Optional.absent())], sqlStatementType=null, sqlBuilder=null), conditionContexts=[], mergeContext=MergeContext(orderByColumns=[], groupByColumns=[], aggregationColumns=[AggregationColumn(expression=SUM(success), aggregationType=SUM, alias=Optional.of(success), option=Optional.absent(), derivedColumns=[], columnIndex=1), AggregationColumn(expression=SUM(failure), aggregationType=SUM, alias=Optional.of(failure), option=Optional.absent(), derivedColumns=[], columnIndex=2), AggregationColumn(expression=SUM(elapsed), aggregationType=SUM, alias=Optional.of(elapsed), option=Optional.absent(), derivedColumns=[], columnIndex=3)], limit=null))
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5 endVisit condition: ConditionContext(conditions={})
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5 endVisit SQL: SELECT SUM(success) AS success, SUM(failure) AS failure, SUM(elapsed)
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4 endVisit node: class com.alibaba.druid.sql.ast.statement.SQLSelectItem
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4 endVisit result: SQLParsedResult(routeContext=RouteContext(tables=[Table(name=dubbo_invoke, alias=Optional.absent())], sqlStatementType=null, sqlBuilder=null), conditionContexts=[], mergeContext=MergeContext(orderByColumns=[], groupByColumns=[], aggregationColumns=[AggregationColumn(expression=SUM(success), aggregationType=SUM, alias=Optional.of(success), option=Optional.absent(), derivedColumns=[], columnIndex=1), AggregationColumn(expression=SUM(failure), aggregationType=SUM, alias=Optional.of(failure), option=Optional.absent(), derivedColumns=[], columnIndex=2), AggregationColumn(expression=SUM(elapsed), aggregationType=SUM, alias=Optional.of(elapsed), option=Optional.absent(), derivedColumns=[], columnIndex=3)], limit=null))
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4 endVisit condition: ConditionContext(conditions={})
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4 endVisit SQL: SELECT SUM(success) AS success, SUM(failure) AS failure, SUM(elapsed) AS elapsed
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4 visit node: class com.alibaba.druid.sql.ast.statement.SQLSelectItem
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4 visit argument: com.alibaba.druid.sql.ast.expr.SQLAggregateExpr@a49cc586 AS maxElapsed
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5 visit node: class com.alibaba.druid.sql.ast.expr.SQLAggregateExpr
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5 visit argument: com.alibaba.druid.sql.ast.expr.SQLAggregateExpr@a49cc586
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5   6 visit node: class com.alibaba.druid.sql.ast.expr.SQLIdentifierExpr
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5   6 visit argument: max_elapsed
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5   6 endVisit node: class com.alibaba.druid.sql.ast.expr.SQLIdentifierExpr
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5   6 endVisit result: SQLParsedResult(routeContext=RouteContext(tables=[Table(name=dubbo_invoke, alias=Optional.absent())], sqlStatementType=null, sqlBuilder=null), conditionContexts=[], mergeContext=MergeContext(orderByColumns=[], groupByColumns=[], aggregationColumns=[AggregationColumn(expression=SUM(success), aggregationType=SUM, alias=Optional.of(success), option=Optional.absent(), derivedColumns=[], columnIndex=1), AggregationColumn(expression=SUM(failure), aggregationType=SUM, alias=Optional.of(failure), option=Optional.absent(), derivedColumns=[], columnIndex=2), AggregationColumn(expression=SUM(elapsed), aggregationType=SUM, alias=Optional.of(elapsed), option=Optional.absent(), derivedColumns=[], columnIndex=3), AggregationColumn(expression=MAX(max_elapsed), aggregationType=MAX, alias=Optional.of(maxElapsed), option=Optional.absent(), derivedColumns=[], columnIndex=4)], limit=null))
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5   6 endVisit condition: ConditionContext(conditions={})
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5   6 endVisit SQL: SELECT SUM(success) AS success, SUM(failure) AS failure, SUM(elapsed) AS elapsed, MAX(max_elapsed
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5 endVisit node: class com.alibaba.druid.sql.ast.expr.SQLAggregateExpr
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5 endVisit result: SQLParsedResult(routeContext=RouteContext(tables=[Table(name=dubbo_invoke, alias=Optional.absent())], sqlStatementType=null, sqlBuilder=null), conditionContexts=[], mergeContext=MergeContext(orderByColumns=[], groupByColumns=[], aggregationColumns=[AggregationColumn(expression=SUM(success), aggregationType=SUM, alias=Optional.of(success), option=Optional.absent(), derivedColumns=[], columnIndex=1), AggregationColumn(expression=SUM(failure), aggregationType=SUM, alias=Optional.of(failure), option=Optional.absent(), derivedColumns=[], columnIndex=2), AggregationColumn(expression=SUM(elapsed), aggregationType=SUM, alias=Optional.of(elapsed), option=Optional.absent(), derivedColumns=[], columnIndex=3), AggregationColumn(expression=MAX(max_elapsed), aggregationType=MAX, alias=Optional.of(maxElapsed), option=Optional.absent(), derivedColumns=[], columnIndex=4)], limit=null))
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5 endVisit condition: ConditionContext(conditions={})
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5 endVisit SQL: SELECT SUM(success) AS success, SUM(failure) AS failure, SUM(elapsed) AS elapsed, MAX(max_elapsed)
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4 endVisit node: class com.alibaba.druid.sql.ast.statement.SQLSelectItem
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4 endVisit result: SQLParsedResult(routeContext=RouteContext(tables=[Table(name=dubbo_invoke, alias=Optional.absent())], sqlStatementType=null, sqlBuilder=null), conditionContexts=[], mergeContext=MergeContext(orderByColumns=[], groupByColumns=[], aggregationColumns=[AggregationColumn(expression=SUM(success), aggregationType=SUM, alias=Optional.of(success), option=Optional.absent(), derivedColumns=[], columnIndex=1), AggregationColumn(expression=SUM(failure), aggregationType=SUM, alias=Optional.of(failure), option=Optional.absent(), derivedColumns=[], columnIndex=2), AggregationColumn(expression=SUM(elapsed), aggregationType=SUM, alias=Optional.of(elapsed), option=Optional.absent(), derivedColumns=[], columnIndex=3), AggregationColumn(expression=MAX(max_elapsed), aggregationType=MAX, alias=Optional.of(maxElapsed), option=Optional.absent(), derivedColumns=[], columnIndex=4)], limit=null))
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4 endVisit condition: ConditionContext(conditions={})
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4 endVisit SQL: SELECT SUM(success) AS success, SUM(failure) AS failure, SUM(elapsed) AS elapsed, MAX(max_elapsed) AS maxElapsed
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4 visit node: class com.alibaba.druid.sql.ast.statement.SQLSelectItem
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4 visit argument: com.alibaba.druid.sql.ast.expr.SQLAggregateExpr@11570f83 AS maxConcurrent
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5 visit node: class com.alibaba.druid.sql.ast.expr.SQLAggregateExpr
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5 visit argument: com.alibaba.druid.sql.ast.expr.SQLAggregateExpr@11570f83
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5   6 visit node: class com.alibaba.druid.sql.ast.expr.SQLIdentifierExpr
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5   6 visit argument: max_concurrent
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5   6 endVisit node: class com.alibaba.druid.sql.ast.expr.SQLIdentifierExpr
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5   6 endVisit result: SQLParsedResult(routeContext=RouteContext(tables=[Table(name=dubbo_invoke, alias=Optional.absent())], sqlStatementType=null, sqlBuilder=null), conditionContexts=[], mergeContext=MergeContext(orderByColumns=[], groupByColumns=[], aggregationColumns=[AggregationColumn(expression=SUM(success), aggregationType=SUM, alias=Optional.of(success), option=Optional.absent(), derivedColumns=[], columnIndex=1), AggregationColumn(expression=SUM(failure), aggregationType=SUM, alias=Optional.of(failure), option=Optional.absent(), derivedColumns=[], columnIndex=2), AggregationColumn(expression=SUM(elapsed), aggregationType=SUM, alias=Optional.of(elapsed), option=Optional.absent(), derivedColumns=[], columnIndex=3), AggregationColumn(expression=MAX(max_elapsed), aggregationType=MAX, alias=Optional.of(maxElapsed), option=Optional.absent(), derivedColumns=[], columnIndex=4), AggregationColumn(expression=MIN(max_concurrent), aggregationType=MIN, alias=Optional.of(maxConcurrent), option=Optional.absent(), derivedColumns=[], columnIndex=5)], limit=null))
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5   6 endVisit condition: ConditionContext(conditions={})
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5   6 endVisit SQL: SELECT SUM(success) AS success, SUM(failure) AS failure, SUM(elapsed) AS elapsed, MAX(max_elapsed) AS maxElapsed, MIN(max_concurrent
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5 endVisit node: class com.alibaba.druid.sql.ast.expr.SQLAggregateExpr
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5 endVisit result: SQLParsedResult(routeContext=RouteContext(tables=[Table(name=dubbo_invoke, alias=Optional.absent())], sqlStatementType=null, sqlBuilder=null), conditionContexts=[], mergeContext=MergeContext(orderByColumns=[], groupByColumns=[], aggregationColumns=[AggregationColumn(expression=SUM(success), aggregationType=SUM, alias=Optional.of(success), option=Optional.absent(), derivedColumns=[], columnIndex=1), AggregationColumn(expression=SUM(failure), aggregationType=SUM, alias=Optional.of(failure), option=Optional.absent(), derivedColumns=[], columnIndex=2), AggregationColumn(expression=SUM(elapsed), aggregationType=SUM, alias=Optional.of(elapsed), option=Optional.absent(), derivedColumns=[], columnIndex=3), AggregationColumn(expression=MAX(max_elapsed), aggregationType=MAX, alias=Optional.of(maxElapsed), option=Optional.absent(), derivedColumns=[], columnIndex=4), AggregationColumn(expression=MIN(max_concurrent), aggregationType=MIN, alias=Optional.of(maxConcurrent), option=Optional.absent(), derivedColumns=[], columnIndex=5)], limit=null))
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5 endVisit condition: ConditionContext(conditions={})
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5 endVisit SQL: SELECT SUM(success) AS success, SUM(failure) AS failure, SUM(elapsed) AS elapsed, MAX(max_elapsed) AS maxElapsed, MIN(max_concurrent)
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4 endVisit node: class com.alibaba.druid.sql.ast.statement.SQLSelectItem
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4 endVisit result: SQLParsedResult(routeContext=RouteContext(tables=[Table(name=dubbo_invoke, alias=Optional.absent())], sqlStatementType=null, sqlBuilder=null), conditionContexts=[], mergeContext=MergeContext(orderByColumns=[], groupByColumns=[], aggregationColumns=[AggregationColumn(expression=SUM(success), aggregationType=SUM, alias=Optional.of(success), option=Optional.absent(), derivedColumns=[], columnIndex=1), AggregationColumn(expression=SUM(failure), aggregationType=SUM, alias=Optional.of(failure), option=Optional.absent(), derivedColumns=[], columnIndex=2), AggregationColumn(expression=SUM(elapsed), aggregationType=SUM, alias=Optional.of(elapsed), option=Optional.absent(), derivedColumns=[], columnIndex=3), AggregationColumn(expression=MAX(max_elapsed), aggregationType=MAX, alias=Optional.of(maxElapsed), option=Optional.absent(), derivedColumns=[], columnIndex=4), AggregationColumn(expression=MIN(max_concurrent), aggregationType=MIN, alias=Optional.of(maxConcurrent), option=Optional.absent(), derivedColumns=[], columnIndex=5)], limit=null))
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4 endVisit condition: ConditionContext(conditions={})
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4 endVisit SQL: SELECT SUM(success) AS success, SUM(failure) AS failure, SUM(elapsed) AS elapsed, MAX(max_elapsed) AS maxElapsed, MIN(max_concurrent) AS maxConcurrent
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4 visit node: class com.alibaba.druid.sql.ast.expr.SQLBinaryOpExpr
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4 visit argument: 1 = 1
+    AND invoke_time >= ?
+    AND invoke_time <= ?
+    AND service = ?
+    AND method = ?
+    AND type = ?
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5 visit node: class com.alibaba.druid.sql.ast.expr.SQLBinaryOpExpr
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5 visit argument: 1 = 1
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5   6 visit node: class com.alibaba.druid.sql.ast.expr.SQLIntegerExpr
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5   6 visit argument: 1
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5   6 endVisit node: class com.alibaba.druid.sql.ast.expr.SQLIntegerExpr
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5   6 endVisit result: SQLParsedResult(routeContext=RouteContext(tables=[Table(name=dubbo_invoke, alias=Optional.absent())], sqlStatementType=null, sqlBuilder=null), conditionContexts=[], mergeContext=MergeContext(orderByColumns=[], groupByColumns=[], aggregationColumns=[AggregationColumn(expression=SUM(success), aggregationType=SUM, alias=Optional.of(success), option=Optional.absent(), derivedColumns=[], columnIndex=1), AggregationColumn(expression=SUM(failure), aggregationType=SUM, alias=Optional.of(failure), option=Optional.absent(), derivedColumns=[], columnIndex=2), AggregationColumn(expression=SUM(elapsed), aggregationType=SUM, alias=Optional.of(elapsed), option=Optional.absent(), derivedColumns=[], columnIndex=3), AggregationColumn(expression=MAX(max_elapsed), aggregationType=MAX, alias=Optional.of(maxElapsed), option=Optional.absent(), derivedColumns=[], columnIndex=4), AggregationColumn(expression=MIN(max_concurrent), aggregationType=MIN, alias=Optional.of(maxConcurrent), option=Optional.absent(), derivedColumns=[], columnIndex=5)], limit=null))
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5   6 endVisit condition: ConditionContext(conditions={})
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5   6 endVisit SQL: SELECT SUM(success) AS success, SUM(failure) AS failure, SUM(elapsed) AS elapsed, MAX(max_elapsed) AS maxElapsed, MIN(max_concurrent) AS maxConcurrent FROM [Token(dubbo_invoke)] WHERE 1
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5   6 visit node: class com.alibaba.druid.sql.ast.expr.SQLIntegerExpr
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5   6 visit argument: 1
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5   6 endVisit node: class com.alibaba.druid.sql.ast.expr.SQLIntegerExpr
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5   6 endVisit result: SQLParsedResult(routeContext=RouteContext(tables=[Table(name=dubbo_invoke, alias=Optional.absent())], sqlStatementType=null, sqlBuilder=null), conditionContexts=[], mergeContext=MergeContext(orderByColumns=[], groupByColumns=[], aggregationColumns=[AggregationColumn(expression=SUM(success), aggregationType=SUM, alias=Optional.of(success), option=Optional.absent(), derivedColumns=[], columnIndex=1), AggregationColumn(expression=SUM(failure), aggregationType=SUM, alias=Optional.of(failure), option=Optional.absent(), derivedColumns=[], columnIndex=2), AggregationColumn(expression=SUM(elapsed), aggregationType=SUM, alias=Optional.of(elapsed), option=Optional.absent(), derivedColumns=[], columnIndex=3), AggregationColumn(expression=MAX(max_elapsed), aggregationType=MAX, alias=Optional.of(maxElapsed), option=Optional.absent(), derivedColumns=[], columnIndex=4), AggregationColumn(expression=MIN(max_concurrent), aggregationType=MIN, alias=Optional.of(maxConcurrent), option=Optional.absent(), derivedColumns=[], columnIndex=5)], limit=null))
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5   6 endVisit condition: ConditionContext(conditions={})
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5   6 endVisit SQL: SELECT SUM(success) AS success, SUM(failure) AS failure, SUM(elapsed) AS elapsed, MAX(max_elapsed) AS maxElapsed, MIN(max_concurrent) AS maxConcurrent FROM [Token(dubbo_invoke)] WHERE 1 = 1
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5 endVisit node: class com.alibaba.druid.sql.ast.expr.SQLBinaryOpExpr
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5 endVisit result: SQLParsedResult(routeContext=RouteContext(tables=[Table(name=dubbo_invoke, alias=Optional.absent())], sqlStatementType=null, sqlBuilder=null), conditionContexts=[], mergeContext=MergeContext(orderByColumns=[], groupByColumns=[], aggregationColumns=[AggregationColumn(expression=SUM(success), aggregationType=SUM, alias=Optional.of(success), option=Optional.absent(), derivedColumns=[], columnIndex=1), AggregationColumn(expression=SUM(failure), aggregationType=SUM, alias=Optional.of(failure), option=Optional.absent(), derivedColumns=[], columnIndex=2), AggregationColumn(expression=SUM(elapsed), aggregationType=SUM, alias=Optional.of(elapsed), option=Optional.absent(), derivedColumns=[], columnIndex=3), AggregationColumn(expression=MAX(max_elapsed), aggregationType=MAX, alias=Optional.of(maxElapsed), option=Optional.absent(), derivedColumns=[], columnIndex=4), AggregationColumn(expression=MIN(max_concurrent), aggregationType=MIN, alias=Optional.of(maxConcurrent), option=Optional.absent(), derivedColumns=[], columnIndex=5)], limit=null))
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5 endVisit condition: ConditionContext(conditions={})
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5 endVisit SQL: SELECT SUM(success) AS success, SUM(failure) AS failure, SUM(elapsed) AS elapsed, MAX(max_elapsed) AS maxElapsed, MIN(max_concurrent) AS maxConcurrent FROM [Token(dubbo_invoke)] WHERE 1 = 1
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5 visit node: class com.alibaba.druid.sql.ast.expr.SQLBinaryOpExpr
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5 visit argument: invoke_time >= ?
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5   6 visit node: class com.alibaba.druid.sql.ast.expr.SQLIdentifierExpr
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5   6 visit argument: invoke_time
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5   6 endVisit node: class com.alibaba.druid.sql.ast.expr.SQLIdentifierExpr
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5   6 endVisit result: SQLParsedResult(routeContext=RouteContext(tables=[Table(name=dubbo_invoke, alias=Optional.absent())], sqlStatementType=null, sqlBuilder=null), conditionContexts=[], mergeContext=MergeContext(orderByColumns=[], groupByColumns=[], aggregationColumns=[AggregationColumn(expression=SUM(success), aggregationType=SUM, alias=Optional.of(success), option=Optional.absent(), derivedColumns=[], columnIndex=1), AggregationColumn(expression=SUM(failure), aggregationType=SUM, alias=Optional.of(failure), option=Optional.absent(), derivedColumns=[], columnIndex=2), AggregationColumn(expression=SUM(elapsed), aggregationType=SUM, alias=Optional.of(elapsed), option=Optional.absent(), derivedColumns=[], columnIndex=3), AggregationColumn(expression=MAX(max_elapsed), aggregationType=MAX, alias=Optional.of(maxElapsed), option=Optional.absent(), derivedColumns=[], columnIndex=4), AggregationColumn(expression=MIN(max_concurrent), aggregationType=MIN, alias=Optional.of(maxConcurrent), option=Optional.absent(), derivedColumns=[], columnIndex=5)], limit=null))
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5   6 endVisit condition: ConditionContext(conditions={})
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5   6 endVisit SQL: SELECT SUM(success) AS success, SUM(failure) AS failure, SUM(elapsed) AS elapsed, MAX(max_elapsed) AS maxElapsed, MIN(max_concurrent) AS maxConcurrent FROM [Token(dubbo_invoke)] WHERE 1 = 1 AND invoke_time
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5 endVisit node: class com.alibaba.druid.sql.ast.expr.SQLBinaryOpExpr
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5 endVisit result: SQLParsedResult(routeContext=RouteContext(tables=[Table(name=dubbo_invoke, alias=Optional.absent())], sqlStatementType=null, sqlBuilder=null), conditionContexts=[], mergeContext=MergeContext(orderByColumns=[], groupByColumns=[], aggregationColumns=[AggregationColumn(expression=SUM(success), aggregationType=SUM, alias=Optional.of(success), option=Optional.absent(), derivedColumns=[], columnIndex=1), AggregationColumn(expression=SUM(failure), aggregationType=SUM, alias=Optional.of(failure), option=Optional.absent(), derivedColumns=[], columnIndex=2), AggregationColumn(expression=SUM(elapsed), aggregationType=SUM, alias=Optional.of(elapsed), option=Optional.absent(), derivedColumns=[], columnIndex=3), AggregationColumn(expression=MAX(max_elapsed), aggregationType=MAX, alias=Optional.of(maxElapsed), option=Optional.absent(), derivedColumns=[], columnIndex=4), AggregationColumn(expression=MIN(max_concurrent), aggregationType=MIN, alias=Optional.of(maxConcurrent), option=Optional.absent(), derivedColumns=[], columnIndex=5)], limit=null))
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5 endVisit condition: ConditionContext(conditions={})
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5 endVisit SQL: SELECT SUM(success) AS success, SUM(failure) AS failure, SUM(elapsed) AS elapsed, MAX(max_elapsed) AS maxElapsed, MIN(max_concurrent) AS maxConcurrent FROM [Token(dubbo_invoke)] WHERE 1 = 1 AND invoke_time >= ?
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5 visit node: class com.alibaba.druid.sql.ast.expr.SQLBinaryOpExpr
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5 visit argument: invoke_time <= ?
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5   6 visit node: class com.alibaba.druid.sql.ast.expr.SQLIdentifierExpr
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5   6 visit argument: invoke_time
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5   6 endVisit node: class com.alibaba.druid.sql.ast.expr.SQLIdentifierExpr
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5   6 endVisit result: SQLParsedResult(routeContext=RouteContext(tables=[Table(name=dubbo_invoke, alias=Optional.absent())], sqlStatementType=null, sqlBuilder=null), conditionContexts=[], mergeContext=MergeContext(orderByColumns=[], groupByColumns=[], aggregationColumns=[AggregationColumn(expression=SUM(success), aggregationType=SUM, alias=Optional.of(success), option=Optional.absent(), derivedColumns=[], columnIndex=1), AggregationColumn(expression=SUM(failure), aggregationType=SUM, alias=Optional.of(failure), option=Optional.absent(), derivedColumns=[], columnIndex=2), AggregationColumn(expression=SUM(elapsed), aggregationType=SUM, alias=Optional.of(elapsed), option=Optional.absent(), derivedColumns=[], columnIndex=3), AggregationColumn(expression=MAX(max_elapsed), aggregationType=MAX, alias=Optional.of(maxElapsed), option=Optional.absent(), derivedColumns=[], columnIndex=4), AggregationColumn(expression=MIN(max_concurrent), aggregationType=MIN, alias=Optional.of(maxConcurrent), option=Optional.absent(), derivedColumns=[], columnIndex=5)], limit=null))
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5   6 endVisit condition: ConditionContext(conditions={})
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5   6 endVisit SQL: SELECT SUM(success) AS success, SUM(failure) AS failure, SUM(elapsed) AS elapsed, MAX(max_elapsed) AS maxElapsed, MIN(max_concurrent) AS maxConcurrent FROM [Token(dubbo_invoke)] WHERE 1 = 1 AND invoke_time >= ? AND invoke_time
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5 endVisit node: class com.alibaba.druid.sql.ast.expr.SQLBinaryOpExpr
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5 endVisit result: SQLParsedResult(routeContext=RouteContext(tables=[Table(name=dubbo_invoke, alias=Optional.absent())], sqlStatementType=null, sqlBuilder=null), conditionContexts=[], mergeContext=MergeContext(orderByColumns=[], groupByColumns=[], aggregationColumns=[AggregationColumn(expression=SUM(success), aggregationType=SUM, alias=Optional.of(success), option=Optional.absent(), derivedColumns=[], columnIndex=1), AggregationColumn(expression=SUM(failure), aggregationType=SUM, alias=Optional.of(failure), option=Optional.absent(), derivedColumns=[], columnIndex=2), AggregationColumn(expression=SUM(elapsed), aggregationType=SUM, alias=Optional.of(elapsed), option=Optional.absent(), derivedColumns=[], columnIndex=3), AggregationColumn(expression=MAX(max_elapsed), aggregationType=MAX, alias=Optional.of(maxElapsed), option=Optional.absent(), derivedColumns=[], columnIndex=4), AggregationColumn(expression=MIN(max_concurrent), aggregationType=MIN, alias=Optional.of(maxConcurrent), option=Optional.absent(), derivedColumns=[], columnIndex=5)], limit=null))
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5 endVisit condition: ConditionContext(conditions={})
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5 endVisit SQL: SELECT SUM(success) AS success, SUM(failure) AS failure, SUM(elapsed) AS elapsed, MAX(max_elapsed) AS maxElapsed, MIN(max_concurrent) AS maxConcurrent FROM [Token(dubbo_invoke)] WHERE 1 = 1 AND invoke_time >= ? AND invoke_time <= ?
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5 visit node: class com.alibaba.druid.sql.ast.expr.SQLBinaryOpExpr
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5 visit argument: service = ?
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5   6 visit node: class com.alibaba.druid.sql.ast.expr.SQLIdentifierExpr
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5   6 visit argument: service
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5   6 endVisit node: class com.alibaba.druid.sql.ast.expr.SQLIdentifierExpr
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5   6 endVisit result: SQLParsedResult(routeContext=RouteContext(tables=[Table(name=dubbo_invoke, alias=Optional.absent())], sqlStatementType=null, sqlBuilder=null), conditionContexts=[], mergeContext=MergeContext(orderByColumns=[], groupByColumns=[], aggregationColumns=[AggregationColumn(expression=SUM(success), aggregationType=SUM, alias=Optional.of(success), option=Optional.absent(), derivedColumns=[], columnIndex=1), AggregationColumn(expression=SUM(failure), aggregationType=SUM, alias=Optional.of(failure), option=Optional.absent(), derivedColumns=[], columnIndex=2), AggregationColumn(expression=SUM(elapsed), aggregationType=SUM, alias=Optional.of(elapsed), option=Optional.absent(), derivedColumns=[], columnIndex=3), AggregationColumn(expression=MAX(max_elapsed), aggregationType=MAX, alias=Optional.of(maxElapsed), option=Optional.absent(), derivedColumns=[], columnIndex=4), AggregationColumn(expression=MIN(max_concurrent), aggregationType=MIN, alias=Optional.of(maxConcurrent), option=Optional.absent(), derivedColumns=[], columnIndex=5)], limit=null))
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5   6 endVisit condition: ConditionContext(conditions={})
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5   6 endVisit SQL: SELECT SUM(success) AS success, SUM(failure) AS failure, SUM(elapsed) AS elapsed, MAX(max_elapsed) AS maxElapsed, MIN(max_concurrent) AS maxConcurrent FROM [Token(dubbo_invoke)] WHERE 1 = 1 AND invoke_time >= ? AND invoke_time <= ? AND service
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5 endVisit node: class com.alibaba.druid.sql.ast.expr.SQLBinaryOpExpr
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5 endVisit result: SQLParsedResult(routeContext=RouteContext(tables=[Table(name=dubbo_invoke, alias=Optional.absent())], sqlStatementType=null, sqlBuilder=null), conditionContexts=[], mergeContext=MergeContext(orderByColumns=[], groupByColumns=[], aggregationColumns=[AggregationColumn(expression=SUM(success), aggregationType=SUM, alias=Optional.of(success), option=Optional.absent(), derivedColumns=[], columnIndex=1), AggregationColumn(expression=SUM(failure), aggregationType=SUM, alias=Optional.of(failure), option=Optional.absent(), derivedColumns=[], columnIndex=2), AggregationColumn(expression=SUM(elapsed), aggregationType=SUM, alias=Optional.of(elapsed), option=Optional.absent(), derivedColumns=[], columnIndex=3), AggregationColumn(expression=MAX(max_elapsed), aggregationType=MAX, alias=Optional.of(maxElapsed), option=Optional.absent(), derivedColumns=[], columnIndex=4), AggregationColumn(expression=MIN(max_concurrent), aggregationType=MIN, alias=Optional.of(maxConcurrent), option=Optional.absent(), derivedColumns=[], columnIndex=5)], limit=null))
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5 endVisit condition: ConditionContext(conditions={})
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5 endVisit SQL: SELECT SUM(success) AS success, SUM(failure) AS failure, SUM(elapsed) AS elapsed, MAX(max_elapsed) AS maxElapsed, MIN(max_concurrent) AS maxConcurrent FROM [Token(dubbo_invoke)] WHERE 1 = 1 AND invoke_time >= ? AND invoke_time <= ? AND service = ?
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5 visit node: class com.alibaba.druid.sql.ast.expr.SQLBinaryOpExpr
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5 visit argument: method = ?
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5   6 visit node: class com.alibaba.druid.sql.ast.expr.SQLIdentifierExpr
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5   6 visit argument: method
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5   6 endVisit node: class com.alibaba.druid.sql.ast.expr.SQLIdentifierExpr
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5   6 endVisit result: SQLParsedResult(routeContext=RouteContext(tables=[Table(name=dubbo_invoke, alias=Optional.absent())], sqlStatementType=null, sqlBuilder=null), conditionContexts=[], mergeContext=MergeContext(orderByColumns=[], groupByColumns=[], aggregationColumns=[AggregationColumn(expression=SUM(success), aggregationType=SUM, alias=Optional.of(success), option=Optional.absent(), derivedColumns=[], columnIndex=1), AggregationColumn(expression=SUM(failure), aggregationType=SUM, alias=Optional.of(failure), option=Optional.absent(), derivedColumns=[], columnIndex=2), AggregationColumn(expression=SUM(elapsed), aggregationType=SUM, alias=Optional.of(elapsed), option=Optional.absent(), derivedColumns=[], columnIndex=3), AggregationColumn(expression=MAX(max_elapsed), aggregationType=MAX, alias=Optional.of(maxElapsed), option=Optional.absent(), derivedColumns=[], columnIndex=4), AggregationColumn(expression=MIN(max_concurrent), aggregationType=MIN, alias=Optional.of(maxConcurrent), option=Optional.absent(), derivedColumns=[], columnIndex=5)], limit=null))
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5   6 endVisit condition: ConditionContext(conditions={})
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5   6 endVisit SQL: SELECT SUM(success) AS success, SUM(failure) AS failure, SUM(elapsed) AS elapsed, MAX(max_elapsed) AS maxElapsed, MIN(max_concurrent) AS maxConcurrent FROM [Token(dubbo_invoke)] WHERE 1 = 1 AND invoke_time >= ? AND invoke_time <= ? AND service = ? AND method
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5 endVisit node: class com.alibaba.druid.sql.ast.expr.SQLBinaryOpExpr
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5 endVisit result: SQLParsedResult(routeContext=RouteContext(tables=[Table(name=dubbo_invoke, alias=Optional.absent())], sqlStatementType=null, sqlBuilder=null), conditionContexts=[], mergeContext=MergeContext(orderByColumns=[], groupByColumns=[], aggregationColumns=[AggregationColumn(expression=SUM(success), aggregationType=SUM, alias=Optional.of(success), option=Optional.absent(), derivedColumns=[], columnIndex=1), AggregationColumn(expression=SUM(failure), aggregationType=SUM, alias=Optional.of(failure), option=Optional.absent(), derivedColumns=[], columnIndex=2), AggregationColumn(expression=SUM(elapsed), aggregationType=SUM, alias=Optional.of(elapsed), option=Optional.absent(), derivedColumns=[], columnIndex=3), AggregationColumn(expression=MAX(max_elapsed), aggregationType=MAX, alias=Optional.of(maxElapsed), option=Optional.absent(), derivedColumns=[], columnIndex=4), AggregationColumn(expression=MIN(max_concurrent), aggregationType=MIN, alias=Optional.of(maxConcurrent), option=Optional.absent(), derivedColumns=[], columnIndex=5)], limit=null))
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5 endVisit condition: ConditionContext(conditions={})
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5 endVisit SQL: SELECT SUM(success) AS success, SUM(failure) AS failure, SUM(elapsed) AS elapsed, MAX(max_elapsed) AS maxElapsed, MIN(max_concurrent) AS maxConcurrent FROM [Token(dubbo_invoke)] WHERE 1 = 1 AND invoke_time >= ? AND invoke_time <= ? AND service = ? AND method = ?
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5 visit node: class com.alibaba.druid.sql.ast.expr.SQLBinaryOpExpr
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5 visit argument: type = ?
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5   6 visit node: class com.alibaba.druid.sql.ast.expr.SQLIdentifierExpr
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5   6 visit argument: type
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5   6 endVisit node: class com.alibaba.druid.sql.ast.expr.SQLIdentifierExpr
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5   6 endVisit result: SQLParsedResult(routeContext=RouteContext(tables=[Table(name=dubbo_invoke, alias=Optional.absent())], sqlStatementType=null, sqlBuilder=null), conditionContexts=[], mergeContext=MergeContext(orderByColumns=[], groupByColumns=[], aggregationColumns=[AggregationColumn(expression=SUM(success), aggregationType=SUM, alias=Optional.of(success), option=Optional.absent(), derivedColumns=[], columnIndex=1), AggregationColumn(expression=SUM(failure), aggregationType=SUM, alias=Optional.of(failure), option=Optional.absent(), derivedColumns=[], columnIndex=2), AggregationColumn(expression=SUM(elapsed), aggregationType=SUM, alias=Optional.of(elapsed), option=Optional.absent(), derivedColumns=[], columnIndex=3), AggregationColumn(expression=MAX(max_elapsed), aggregationType=MAX, alias=Optional.of(maxElapsed), option=Optional.absent(), derivedColumns=[], columnIndex=4), AggregationColumn(expression=MIN(max_concurrent), aggregationType=MIN, alias=Optional.of(maxConcurrent), option=Optional.absent(), derivedColumns=[], columnIndex=5)], limit=null))
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5   6 endVisit condition: ConditionContext(conditions={})
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5   6 endVisit SQL: SELECT SUM(success) AS success, SUM(failure) AS failure, SUM(elapsed) AS elapsed, MAX(max_elapsed) AS maxElapsed, MIN(max_concurrent) AS maxConcurrent FROM [Token(dubbo_invoke)] WHERE 1 = 1 AND invoke_time >= ? AND invoke_time <= ? AND service = ? AND method = ? AND type
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5 endVisit node: class com.alibaba.druid.sql.ast.expr.SQLBinaryOpExpr
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5 endVisit result: SQLParsedResult(routeContext=RouteContext(tables=[Table(name=dubbo_invoke, alias=Optional.absent())], sqlStatementType=null, sqlBuilder=null), conditionContexts=[], mergeContext=MergeContext(orderByColumns=[], groupByColumns=[], aggregationColumns=[AggregationColumn(expression=SUM(success), aggregationType=SUM, alias=Optional.of(success), option=Optional.absent(), derivedColumns=[], columnIndex=1), AggregationColumn(expression=SUM(failure), aggregationType=SUM, alias=Optional.of(failure), option=Optional.absent(), derivedColumns=[], columnIndex=2), AggregationColumn(expression=SUM(elapsed), aggregationType=SUM, alias=Optional.of(elapsed), option=Optional.absent(), derivedColumns=[], columnIndex=3), AggregationColumn(expression=MAX(max_elapsed), aggregationType=MAX, alias=Optional.of(maxElapsed), option=Optional.absent(), derivedColumns=[], columnIndex=4), AggregationColumn(expression=MIN(max_concurrent), aggregationType=MIN, alias=Optional.of(maxConcurrent), option=Optional.absent(), derivedColumns=[], columnIndex=5)], limit=null))
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5 endVisit condition: ConditionContext(conditions={})
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4   5 endVisit SQL: SELECT SUM(success) AS success, SUM(failure) AS failure, SUM(elapsed) AS elapsed, MAX(max_elapsed) AS maxElapsed, MIN(max_concurrent) AS maxConcurrent FROM [Token(dubbo_invoke)] WHERE 1 = 1 AND invoke_time >= ? AND invoke_time <= ? AND service = ? AND method = ? AND type = ?
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4 endVisit node: class com.alibaba.druid.sql.ast.expr.SQLBinaryOpExpr
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4 endVisit result: SQLParsedResult(routeContext=RouteContext(tables=[Table(name=dubbo_invoke, alias=Optional.absent())], sqlStatementType=null, sqlBuilder=null), conditionContexts=[], mergeContext=MergeContext(orderByColumns=[], groupByColumns=[], aggregationColumns=[AggregationColumn(expression=SUM(success), aggregationType=SUM, alias=Optional.of(success), option=Optional.absent(), derivedColumns=[], columnIndex=1), AggregationColumn(expression=SUM(failure), aggregationType=SUM, alias=Optional.of(failure), option=Optional.absent(), derivedColumns=[], columnIndex=2), AggregationColumn(expression=SUM(elapsed), aggregationType=SUM, alias=Optional.of(elapsed), option=Optional.absent(), derivedColumns=[], columnIndex=3), AggregationColumn(expression=MAX(max_elapsed), aggregationType=MAX, alias=Optional.of(maxElapsed), option=Optional.absent(), derivedColumns=[], columnIndex=4), AggregationColumn(expression=MIN(max_concurrent), aggregationType=MIN, alias=Optional.of(maxConcurrent), option=Optional.absent(), derivedColumns=[], columnIndex=5)], limit=null))
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4 endVisit condition: ConditionContext(conditions={})
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3   4 endVisit SQL: SELECT SUM(success) AS success, SUM(failure) AS failure, SUM(elapsed) AS elapsed, MAX(max_elapsed) AS maxElapsed, MIN(max_concurrent) AS maxConcurrent FROM [Token(dubbo_invoke)] WHERE 1 = 1 AND invoke_time >= ? AND invoke_time <= ? AND service = ? AND method = ? AND type = ?
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3 endVisit node: class com.alibaba.druid.sql.dialect.mysql.ast.statement.MySqlSelectQueryBlock
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3 endVisit result: SQLParsedResult(routeContext=RouteContext(tables=[Table(name=dubbo_invoke, alias=Optional.absent())], sqlStatementType=null, sqlBuilder=null), conditionContexts=[], mergeContext=MergeContext(orderByColumns=[], groupByColumns=[], aggregationColumns=[AggregationColumn(expression=SUM(success), aggregationType=SUM, alias=Optional.of(success), option=Optional.absent(), derivedColumns=[], columnIndex=1), AggregationColumn(expression=SUM(failure), aggregationType=SUM, alias=Optional.of(failure), option=Optional.absent(), derivedColumns=[], columnIndex=2), AggregationColumn(expression=SUM(elapsed), aggregationType=SUM, alias=Optional.of(elapsed), option=Optional.absent(), derivedColumns=[], columnIndex=3), AggregationColumn(expression=MAX(max_elapsed), aggregationType=MAX, alias=Optional.of(maxElapsed), option=Optional.absent(), derivedColumns=[], columnIndex=4), AggregationColumn(expression=MIN(max_concurrent), aggregationType=MIN, alias=Optional.of(maxConcurrent), option=Optional.absent(), derivedColumns=[], columnIndex=5)], limit=null))
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3 endVisit condition: ConditionContext(conditions={})
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2   3 endVisit SQL: SELECT SUM(success) AS success, SUM(failure) AS failure, SUM(elapsed) AS elapsed, MAX(max_elapsed) AS maxElapsed, MIN(max_concurrent) AS maxConcurrent FROM [Token(dubbo_invoke)] WHERE 1 = 1 AND invoke_time >= ? AND invoke_time <= ? AND service = ? AND method = ? AND type = ?
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2 endVisit node: class com.alibaba.druid.sql.ast.statement.SQLSelect
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2 endVisit result: SQLParsedResult(routeContext=RouteContext(tables=[Table(name=dubbo_invoke, alias=Optional.absent())], sqlStatementType=null, sqlBuilder=null), conditionContexts=[], mergeContext=MergeContext(orderByColumns=[], groupByColumns=[], aggregationColumns=[AggregationColumn(expression=SUM(success), aggregationType=SUM, alias=Optional.of(success), option=Optional.absent(), derivedColumns=[], columnIndex=1), AggregationColumn(expression=SUM(failure), aggregationType=SUM, alias=Optional.of(failure), option=Optional.absent(), derivedColumns=[], columnIndex=2), AggregationColumn(expression=SUM(elapsed), aggregationType=SUM, alias=Optional.of(elapsed), option=Optional.absent(), derivedColumns=[], columnIndex=3), AggregationColumn(expression=MAX(max_elapsed), aggregationType=MAX, alias=Optional.of(maxElapsed), option=Optional.absent(), derivedColumns=[], columnIndex=4), AggregationColumn(expression=MIN(max_concurrent), aggregationType=MIN, alias=Optional.of(maxConcurrent), option=Optional.absent(), derivedColumns=[], columnIndex=5)], limit=null))
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2 endVisit condition: ConditionContext(conditions={})
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1   2 endVisit SQL: SELECT SUM(success) AS success, SUM(failure) AS failure, SUM(elapsed) AS elapsed, MAX(max_elapsed) AS maxElapsed, MIN(max_concurrent) AS maxConcurrent FROM [Token(dubbo_invoke)] WHERE 1 = 1 AND invoke_time >= ? AND invoke_time <= ? AND service = ? AND method = ? AND type = ?
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1 endVisit node: class com.alibaba.druid.sql.ast.statement.SQLSelectStatement
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1 endVisit result: SQLParsedResult(routeContext=RouteContext(tables=[Table(name=dubbo_invoke, alias=Optional.absent())], sqlStatementType=null, sqlBuilder=null), conditionContexts=[], mergeContext=MergeContext(orderByColumns=[], groupByColumns=[], aggregationColumns=[AggregationColumn(expression=SUM(success), aggregationType=SUM, alias=Optional.of(success), option=Optional.absent(), derivedColumns=[], columnIndex=1), AggregationColumn(expression=SUM(failure), aggregationType=SUM, alias=Optional.of(failure), option=Optional.absent(), derivedColumns=[], columnIndex=2), AggregationColumn(expression=SUM(elapsed), aggregationType=SUM, alias=Optional.of(elapsed), option=Optional.absent(), derivedColumns=[], columnIndex=3), AggregationColumn(expression=MAX(max_elapsed), aggregationType=MAX, alias=Optional.of(maxElapsed), option=Optional.absent(), derivedColumns=[], columnIndex=4), AggregationColumn(expression=MIN(max_concurrent), aggregationType=MIN, alias=Optional.of(maxConcurrent), option=Optional.absent(), derivedColumns=[], columnIndex=5)], limit=null))
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1 endVisit condition: ConditionContext(conditions={})
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE visitor.VisitorLogProxy:   1 endVisit SQL: SELECT SUM(success) AS success, SUM(failure) AS failure, SUM(elapsed) AS elapsed, MAX(max_elapsed) AS maxElapsed, MIN(max_concurrent) AS maxConcurrent FROM [Token(dubbo_invoke)] WHERE 1 = 1 AND invoke_time >= ? AND invoke_time <= ? AND service = ? AND method = ? AND type = ?
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 DEBUG parser.SQLParseEngine: Parsed SQL result: SQLParsedResult(routeContext=RouteContext(tables=[Table(name=dubbo_invoke, alias=Optional.absent())], sqlStatementType=null, sqlBuilder=null), conditionContexts=[ConditionContext(conditions={})], mergeContext=MergeContext(orderByColumns=[], groupByColumns=[], aggregationColumns=[AggregationColumn(expression=SUM(success), aggregationType=SUM, alias=Optional.of(success), option=Optional.absent(), derivedColumns=[], columnIndex=1), AggregationColumn(expression=SUM(failure), aggregationType=SUM, alias=Optional.of(failure), option=Optional.absent(), derivedColumns=[], columnIndex=2), AggregationColumn(expression=SUM(elapsed), aggregationType=SUM, alias=Optional.of(elapsed), option=Optional.absent(), derivedColumns=[], columnIndex=3), AggregationColumn(expression=MAX(max_elapsed), aggregationType=MAX, alias=Optional.of(maxElapsed), option=Optional.absent(), derivedColumns=[], columnIndex=4), AggregationColumn(expression=MIN(max_concurrent), aggregationType=MIN, alias=Optional.of(maxConcurrent), option=Optional.absent(), derivedColumns=[], columnIndex=5)], limit=null))
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 DEBUG parser.SQLParseEngine: Parsed SQL: SELECT SUM(success) AS success, SUM(failure) AS failure, SUM(elapsed) AS elapsed, MAX(max_elapsed) AS maxElapsed, MIN(max_concurrent) AS maxConcurrent FROM [Token(dubbo_invoke)] WHERE 1 = 1 AND invoke_time >= ? AND invoke_time <= ? AND service = ? AND method = ? AND type = ?
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 DEBUG single.SingleTableRouter: Before database sharding dubbo_invoke routes db names: [dataSource_0, dataSource_1] sharding columns: [id] sharding values: []
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 DEBUG single.SingleTableRouter: After database sharding dubbo_invoke result: [dataSource_0, dataSource_1]
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 DEBUG single.SingleTableRouter: Before table sharding dubbo_invoke routes db names: [DataNode(dataSourceName=dataSource_0, tableName=dubbo_invoke_1), DataNode(dataSourceName=dataSource_1, tableName=dubbo_invoke_1), DataNode(dataSourceName=dataSource_0, tableName=dubbo_invoke_0), DataNode(dataSourceName=dataSource_1, tableName=dubbo_invoke_0)] sharding columns: [invoke_time] sharding values: []
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 DEBUG single.SingleTableRouter: After table sharding dubbo_invoke result: [dubbo_invoke_1, dubbo_invoke_0]
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 DEBUG router.SQLRouteEngine: final route result is 4 target
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 DEBUG router.SQLRouteEngine: dataSource_1:SELECT SUM(success) AS success, SUM(failure) AS failure, SUM(elapsed) AS elapsed, MAX(max_elapsed) AS maxElapsed, MIN(max_concurrent) AS maxConcurrent FROM dubbo_invoke_0 WHERE 1 = 1 AND invoke_time >= ? AND invoke_time <= ? AND service = ? AND method = ? AND type = ? [1477497600986, 1477583999986, com.talk51.modules.course.CourseService, getSeries, provider]
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 DEBUG router.SQLRouteEngine: dataSource_0:SELECT SUM(success) AS success, SUM(failure) AS failure, SUM(elapsed) AS elapsed, MAX(max_elapsed) AS maxElapsed, MIN(max_concurrent) AS maxConcurrent FROM dubbo_invoke_1 WHERE 1 = 1 AND invoke_time >= ? AND invoke_time <= ? AND service = ? AND method = ? AND type = ? [1477497600986, 1477583999986, com.talk51.modules.course.CourseService, getSeries, provider]
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 DEBUG router.SQLRouteEngine: dataSource_1:SELECT SUM(success) AS success, SUM(failure) AS failure, SUM(elapsed) AS elapsed, MAX(max_elapsed) AS maxElapsed, MIN(max_concurrent) AS maxConcurrent FROM dubbo_invoke_1 WHERE 1 = 1 AND invoke_time >= ? AND invoke_time <= ? AND service = ? AND method = ? AND type = ? [1477497600986, 1477583999986, com.talk51.modules.course.CourseService, getSeries, provider]
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 DEBUG router.SQLRouteEngine: dataSource_0:SELECT SUM(success) AS success, SUM(failure) AS failure, SUM(elapsed) AS elapsed, MAX(max_elapsed) AS maxElapsed, MIN(max_concurrent) AS maxConcurrent FROM dubbo_invoke_0 WHERE 1 = 1 AND invoke_time >= ? AND invoke_time <= ? AND service = ? AND method = ? AND type = ? [1477497600986, 1477583999986, com.talk51.modules.course.CourseService, getSeries, provider]
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 DEBUG router.SQLRouteEngine: merge context:MergeContext(orderByColumns=[], groupByColumns=[], aggregationColumns=[AggregationColumn(expression=SUM(success), aggregationType=SUM, alias=Optional.of(success), option=Optional.absent(), derivedColumns=[], columnIndex=1), AggregationColumn(expression=SUM(failure), aggregationType=SUM, alias=Optional.of(failure), option=Optional.absent(), derivedColumns=[], columnIndex=2), AggregationColumn(expression=SUM(elapsed), aggregationType=SUM, alias=Optional.of(elapsed), option=Optional.absent(), derivedColumns=[], columnIndex=3), AggregationColumn(expression=MAX(max_elapsed), aggregationType=MAX, alias=Optional.of(maxElapsed), option=Optional.absent(), derivedColumns=[], columnIndex=4), AggregationColumn(expression=MIN(max_concurrent), aggregationType=MIN, alias=Optional.of(maxConcurrent), option=Optional.absent(), derivedColumns=[], columnIndex=5)], limit=null)
+[27/10/16 10:57:12:012 CST] pool-1-thread-27 ERROR executor.ExecutorEngine: Concurrent execute result error {}
+com.dangdang.ddframe.rdb.sharding.exception.ShardingJdbcException: java.sql.SQLException: Error
+    at com.dangdang.ddframe.rdb.sharding.executor.ExecutorExceptionHandler.handleException(ExecutorExceptionHandler.java:61)
+    at com.dangdang.ddframe.rdb.sharding.executor.PreparedStatementExecutor.executeInternal(PreparedStatementExecutor.java:188)
+    at com.dangdang.ddframe.rdb.sharding.executor.PreparedStatementExecutor.access$200(PreparedStatementExecutor.java:46)
+    at com.dangdang.ddframe.rdb.sharding.executor.PreparedStatementExecutor$4.execute(PreparedStatementExecutor.java:170)
+    at com.dangdang.ddframe.rdb.sharding.executor.PreparedStatementExecutor$4.execute(PreparedStatementExecutor.java:166)
+    at com.dangdang.ddframe.rdb.sharding.executor.ExecutorEngine$1.call(ExecutorEngine.java:109)
+    at com.google.common.util.concurrent.TrustedListenableFutureTask$TrustedFutureInterruptibleTask.runInterruptibly(TrustedListenableFutureTask.java:108)
+    at com.google.common.util.concurrent.InterruptibleTask.run(InterruptibleTask.java:41)
+    at com.google.common.util.concurrent.TrustedListenableFutureTask.run(TrustedListenableFutureTask.java:77)
+    at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1145)
+    at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:615)
+    at java.lang.Thread.run(Thread.java:745)
+Caused by: java.sql.SQLException: Error
+    at com.alibaba.druid.pool.DruidDataSource.handleConnectionException(DruidDataSource.java:1193)
+    at com.alibaba.druid.pool.DruidPooledConnection.handleException(DruidPooledConnection.java:127)
+    at com.alibaba.druid.pool.DruidPooledStatement.checkException(DruidPooledStatement.java:68)
+    at com.alibaba.druid.pool.DruidPooledPreparedStatement.execute(DruidPooledPreparedStatement.java:495)
+    at com.dangdang.ddframe.rdb.sharding.executor.PreparedStatementExecutor.executeInternal(PreparedStatementExecutor.java:185)
+    ... 10 more
+Caused by: java.lang.NullPointerException
+    at com.alibaba.druid.support.profile.Profiler.release(Profiler.java:58)
+    at com.alibaba.druid.filter.stat.StatFilter.statement_executeErrorAfter(StatFilter.java:501)
+    at com.alibaba.druid.filter.FilterEventAdapter.preparedStatement_execute(FilterEventAdapter.java:450)
+    at com.alibaba.druid.filter.FilterChainImpl.preparedStatement_execute(FilterChainImpl.java:2929)
+    at com.alibaba.druid.proxy.jdbc.PreparedStatementProxyImpl.execute(PreparedStatementProxyImpl.java:118)
+    at com.alibaba.druid.pool.DruidPooledPreparedStatement.execute(DruidPooledPreparedStatement.java:493)
+    ... 11 more
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 DEBUG spring.SqlSessionUtils: Closing non transactional SqlSession [org.apache.ibatis.session.defaults.DefaultSqlSession@632fafe1]
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 DEBUG datasource.DataSourceUtils: Returning JDBC Connection to DataSource
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 DEBUG annotation.ExceptionHandlerExceptionResolver: Resolving exception from handler [public java.lang.String com.handu.open.dubbo.monitor.controller.StatisticsController.index(com.handu.open.dubbo.monitor.domain.DubboInvoke,org.springframework.ui.Model)]: org.mybatis.spring.MyBatisSystemException: nested exception is org.apache.ibatis.exceptions.PersistenceException: 
+### Error querying database.  Cause: com.dangdang.ddframe.rdb.sharding.exception.ShardingJdbcException: java.util.concurrent.ExecutionException: com.dangdang.ddframe.rdb.sharding.exception.ShardingJdbcException: java.sql.SQLException: Error
+### The error may exist in file [D:\workspace.metadata.plugins\org.eclipse.wst.server.core\tmp9\wtpwebapps\dubbo-monitor\WEB-INF\classes\mappers\DubboInvokeMapper.xml]
+### The error may involve com.handu.open.dubbo.monitor.DubboMonitorService.countDubboInvokeInfo-Inline
+### The error occurred while setting parameters
+### SQL: SELECT             SUM(success) as success,             SUM(failure) as failure,             SUM(elapsed) as elapsed,             MAX(max_elapsed) as maxElapsed,             MIN(max_concurrent) as maxConcurrent         FROM dubbo_invoke         WHERE             1 = 1                                                     AND invoke_time >= ?                                 AND invoke_time <= ?                                 AND service = ?                                 AND method = ?                                                      AND type = ?
+### Cause: com.dangdang.ddframe.rdb.sharding.exception.ShardingJdbcException: java.util.concurrent.ExecutionException: com.dangdang.ddframe.rdb.sharding.exception.ShardingJdbcException: java.sql.SQLException: Error
+
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 DEBUG annotation.ResponseStatusExceptionResolver: Resolving exception from handler [public java.lang.String com.handu.open.dubbo.monitor.controller.StatisticsController.index(com.handu.open.dubbo.monitor.domain.DubboInvoke,org.springframework.ui.Model)]: org.mybatis.spring.MyBatisSystemException: nested exception is org.apache.ibatis.exceptions.PersistenceException: 
+### Error querying database.  Cause: com.dangdang.ddframe.rdb.sharding.exception.ShardingJdbcException: java.util.concurrent.ExecutionException: com.dangdang.ddframe.rdb.sharding.exception.ShardingJdbcException: java.sql.SQLException: Error
+### The error may exist in file [D:\workspace.metadata.plugins\org.eclipse.wst.server.core\tmp9\wtpwebapps\dubbo-monitor\WEB-INF\classes\mappers\DubboInvokeMapper.xml]
+### The error may involve com.handu.open.dubbo.monitor.DubboMonitorService.countDubboInvokeInfo-Inline
+### The error occurred while setting parameters
+### SQL: SELECT             SUM(success) as success,             SUM(failure) as failure,             SUM(elapsed) as elapsed,             MAX(max_elapsed) as maxElapsed,             MIN(max_concurrent) as maxConcurrent         FROM dubbo_invoke         WHERE             1 = 1                                                     AND invoke_time >= ?                                 AND invoke_time <= ?                                 AND service = ?                                 AND method = ?                                                      AND type = ?
+### Cause: com.dangdang.ddframe.rdb.sharding.exception.ShardingJdbcException: java.util.concurrent.ExecutionException: com.dangdang.ddframe.rdb.sharding.exception.ShardingJdbcException: java.sql.SQLException: Error
+
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 DEBUG support.DefaultHandlerExceptionResolver: Resolving exception from handler [public java.lang.String com.handu.open.dubbo.monitor.controller.StatisticsController.index(com.handu.open.dubbo.monitor.domain.DubboInvoke,org.springframework.ui.Model)]: org.mybatis.spring.MyBatisSystemException: nested exception is org.apache.ibatis.exceptions.PersistenceException: 
+### Error querying database.  Cause: com.dangdang.ddframe.rdb.sharding.exception.ShardingJdbcException: java.util.concurrent.ExecutionException: com.dangdang.ddframe.rdb.sharding.exception.ShardingJdbcException: java.sql.SQLException: Error
+### The error may exist in file [D:\workspace.metadata.plugins\org.eclipse.wst.server.core\tmp9\wtpwebapps\dubbo-monitor\WEB-INF\classes\mappers\DubboInvokeMapper.xml]
+### The error may involve com.handu.open.dubbo.monitor.DubboMonitorService.countDubboInvokeInfo-Inline
+### The error occurred while setting parameters
+### SQL: SELECT             SUM(success) as success,             SUM(failure) as failure,             SUM(elapsed) as elapsed,             MAX(max_elapsed) as maxElapsed,             MIN(max_concurrent) as maxConcurrent         FROM dubbo_invoke         WHERE             1 = 1                                                     AND invoke_time >= ?                                 AND invoke_time <= ?                                 AND service = ?                                 AND method = ?                                                      AND type = ?
+### Cause: com.dangdang.ddframe.rdb.sharding.exception.ShardingJdbcException: java.util.concurrent.ExecutionException: com.dangdang.ddframe.rdb.sharding.exception.ShardingJdbcException: java.sql.SQLException: Error
+
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE servlet.DispatcherServlet: Cleared thread-bound request context: SecurityContextHolderAwareRequestWrapper[ org.springframework.security.web.context.HttpSessionSecurityContextRepository$Servlet3SaveToSessionRequestWrapper@674b68bd]
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 DEBUG servlet.DispatcherServlet: Could not complete request
+org.mybatis.spring.MyBatisSystemException: nested exception is org.apache.ibatis.exceptions.PersistenceException: 
+### Error querying database.  Cause: com.dangdang.ddframe.rdb.sharding.exception.ShardingJdbcException: java.util.concurrent.ExecutionException: com.dangdang.ddframe.rdb.sharding.exception.ShardingJdbcException: java.sql.SQLException: Error
+### The error may exist in file [D:\workspace.metadata.plugins\org.eclipse.wst.server.core\tmp9\wtpwebapps\dubbo-monitor\WEB-INF\classes\mappers\DubboInvokeMapper.xml]
+### The error may involve com.handu.open.dubbo.monitor.DubboMonitorService.countDubboInvokeInfo-Inline
+### The error occurred while setting parameters
+### SQL: SELECT             SUM(success) as success,             SUM(failure) as failure,             SUM(elapsed) as elapsed,             MAX(max_elapsed) as maxElapsed,             MIN(max_concurrent) as maxConcurrent         FROM dubbo_invoke         WHERE             1 = 1                                                     AND invoke_time >= ?                                 AND invoke_time <= ?                                 AND service = ?                                 AND method = ?                                                      AND type = ?
+### Cause: com.dangdang.ddframe.rdb.sharding.exception.ShardingJdbcException: java.util.concurrent.ExecutionException: com.dangdang.ddframe.rdb.sharding.exception.ShardingJdbcException: java.sql.SQLException: Error
+
+```
+at org.mybatis.spring.MyBatisExceptionTranslator.translateExceptionIfPossible(MyBatisExceptionTranslator.java:75)
+at org.mybatis.spring.SqlSessionTemplate$SqlSessionInterceptor.invoke(SqlSessionTemplate.java:371)
+at com.sun.proxy.$Proxy26.selectList(Unknown Source)
+at org.mybatis.spring.SqlSessionTemplate.selectList(SqlSessionTemplate.java:198)
+at com.handu.open.dubbo.monitor.support.Dao.getList(Dao.java:145)
+at com.handu.open.dubbo.monitor.DubboMonitorService.countDubboInvokeInfo(DubboMonitorService.java:319)
+at com.handu.open.dubbo.monitor.controller.StatisticsController.composeData(StatisticsController.java:135)
+at com.handu.open.dubbo.monitor.controller.StatisticsController.index(StatisticsController.java:81)
+at sun.reflect.NativeMethodAccessorImpl.invoke0(Native Method)
+at sun.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:57)
+at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)
+at java.lang.reflect.Method.invoke(Method.java:606)
+at org.springframework.web.method.support.InvocableHandlerMethod.invoke(InvocableHandlerMethod.java:215)
+at org.springframework.web.method.support.InvocableHandlerMethod.invokeForRequest(InvocableHandlerMethod.java:132)
+at org.springframework.web.servlet.mvc.method.annotation.ServletInvocableHandlerMethod.invokeAndHandle(ServletInvocableHandlerMethod.java:104)
+at org.springframework.web.servlet.mvc.method.annotation.RequestMappingHandlerAdapter.invokeHandleMethod(RequestMappingHandlerAdapter.java:745)
+at org.springframework.web.servlet.mvc.method.annotation.RequestMappingHandlerAdapter.handleInternal(RequestMappingHandlerAdapter.java:685)
+at org.springframework.web.servlet.mvc.method.AbstractHandlerMethodAdapter.handle(AbstractHandlerMethodAdapter.java:80)
+at org.springframework.web.servlet.DispatcherServlet.doDispatch(DispatcherServlet.java:919)
+at org.springframework.web.servlet.DispatcherServlet.doService(DispatcherServlet.java:851)
+at org.springframework.web.servlet.FrameworkServlet.processRequest(FrameworkServlet.java:953)
+at org.springframework.web.servlet.FrameworkServlet.doGet(FrameworkServlet.java:844)
+at javax.servlet.http.HttpServlet.service(HttpServlet.java:620)
+at org.springframework.web.servlet.FrameworkServlet.service(FrameworkServlet.java:829)
+at javax.servlet.http.HttpServlet.service(HttpServlet.java:727)
+at org.apache.catalina.core.ApplicationFilterChain.internalDoFilter(ApplicationFilterChain.java:303)
+at org.apache.catalina.core.ApplicationFilterChain.doFilter(ApplicationFilterChain.java:208)
+at org.apache.tomcat.websocket.server.WsFilter.doFilter(WsFilter.java:52)
+at org.apache.catalina.core.ApplicationFilterChain.internalDoFilter(ApplicationFilterChain.java:241)
+at org.apache.catalina.core.ApplicationFilterChain.doFilter(ApplicationFilterChain.java:208)
+at org.springframework.security.web.FilterChainProxy$VirtualFilterChain.doFilter(FilterChainProxy.java:330)
+at org.springframework.security.web.access.intercept.FilterSecurityInterceptor.invoke(FilterSecurityInterceptor.java:118)
+at org.springframework.security.web.access.intercept.FilterSecurityInterceptor.doFilter(FilterSecurityInterceptor.java:84)
+at org.springframework.security.web.FilterChainProxy$VirtualFilterChain.doFilter(FilterChainProxy.java:342)
+at org.springframework.security.web.access.ExceptionTranslationFilter.doFilter(ExceptionTranslationFilter.java:113)
+at org.springframework.security.web.FilterChainProxy$VirtualFilterChain.doFilter(FilterChainProxy.java:342)
+at org.springframework.security.web.session.SessionManagementFilter.doFilter(SessionManagementFilter.java:103)
+at org.springframework.security.web.FilterChainProxy$VirtualFilterChain.doFilter(FilterChainProxy.java:342)
+at org.springframework.security.web.authentication.AnonymousAuthenticationFilter.doFilter(AnonymousAuthenticationFilter.java:113)
+at org.springframework.security.web.FilterChainProxy$VirtualFilterChain.doFilter(FilterChainProxy.java:342)
+at org.springframework.security.web.servletapi.SecurityContextHolderAwareRequestFilter.doFilter(SecurityContextHolderAwareRequestFilter.java:154)
+at org.springframework.security.web.FilterChainProxy$VirtualFilterChain.doFilter(FilterChainProxy.java:342)
+at org.springframework.security.web.savedrequest.RequestCacheAwareFilter.doFilter(RequestCacheAwareFilter.java:45)
+at org.springframework.security.web.FilterChainProxy$VirtualFilterChain.doFilter(FilterChainProxy.java:342)
+at org.springframework.security.web.authentication.www.BasicAuthenticationFilter.doFilter(BasicAuthenticationFilter.java:201)
+at org.springframework.security.web.FilterChainProxy$VirtualFilterChain.doFilter(FilterChainProxy.java:342)
+at org.springframework.security.web.authentication.logout.LogoutFilter.doFilter(LogoutFilter.java:110)
+at org.springframework.security.web.FilterChainProxy$VirtualFilterChain.doFilter(FilterChainProxy.java:342)
+at org.springframework.security.web.header.HeaderWriterFilter.doFilterInternal(HeaderWriterFilter.java:57)
+at org.springframework.web.filter.OncePerRequestFilter.doFilter(OncePerRequestFilter.java:106)
+at org.springframework.security.web.FilterChainProxy$VirtualFilterChain.doFilter(FilterChainProxy.java:342)
+at org.springframework.security.web.context.SecurityContextPersistenceFilter.doFilter(SecurityContextPersistenceFilter.java:87)
+at org.springframework.security.web.FilterChainProxy$VirtualFilterChain.doFilter(FilterChainProxy.java:342)
+at org.springframework.security.web.context.request.async.WebAsyncManagerIntegrationFilter.doFilterInternal(WebAsyncManagerIntegrationFilter.java:50)
+at org.springframework.web.filter.OncePerRequestFilter.doFilter(OncePerRequestFilter.java:106)
+at org.springframework.security.web.FilterChainProxy$VirtualFilterChain.doFilter(FilterChainProxy.java:342)
+at org.springframework.security.web.FilterChainProxy.doFilterInternal(FilterChainProxy.java:192)
+at org.springframework.security.web.FilterChainProxy.doFilter(FilterChainProxy.java:160)
+at org.springframework.web.filter.DelegatingFilterProxy.invokeDelegate(DelegatingFilterProxy.java:343)
+at org.springframework.web.filter.DelegatingFilterProxy.doFilter(DelegatingFilterProxy.java:260)
+at org.apache.catalina.core.ApplicationFilterChain.internalDoFilter(ApplicationFilterChain.java:241)
+at org.apache.catalina.core.ApplicationFilterChain.doFilter(ApplicationFilterChain.java:208)
+at org.apache.catalina.core.StandardWrapperValve.invoke(StandardWrapperValve.java:220)
+at org.apache.catalina.core.StandardContextValv十月 27, 2016 10:57:12 上午 org.apache.catalina.core.StandardWrapperValve invoke
+```
+
+严重: Servlet.service() for servlet [springServlet] in context with path [/dubbo-monitor] threw exception [Request processing failed; nested exception is org.mybatis.spring.MyBatisSystemException: nested exception is org.apache.ibatis.exceptions.PersistenceException: 
+### Error querying database.  Cause: com.dangdang.ddframe.rdb.sharding.exception.ShardingJdbcException: java.util.concurrent.ExecutionException: com.dangdang.ddframe.rdb.sharding.exception.ShardingJdbcException: java.sql.SQLException: Error
+### The error may exist in file [D:\workspace.metadata.plugins\org.eclipse.wst.server.core\tmp9\wtpwebapps\dubbo-monitor\WEB-INF\classes\mappers\DubboInvokeMapper.xml]
+### The error may involve com.handu.open.dubbo.monitor.DubboMonitorService.countDubboInvokeInfo-Inline
+### The error occurred while setting parameters
+### SQL: SELECT             SUM(success) as success,             SUM(failure) as failure,             SUM(elapsed) as elapsed,             MAX(max_elapsed) as maxElapsed,             MIN(max_concurrent) as maxConcurrent         FROM dubbo_invoke         WHERE             1 = 1                                                     AND invoke_time >= ?                                 AND invoke_time <= ?                                 AND service = ?                                 AND method = ?                                                      AND type = ?
+### Cause: com.dangdang.ddframe.rdb.sharding.exception.ShardingJdbcException: java.util.concurrent.ExecutionException: com.dangdang.ddframe.rdb.sharding.exception.ShardingJdbcException: java.sql.SQLException: Error] with root cause
+
+java.lang.NullPointerException
+    at com.alibaba.druid.support.profile.Profiler.release(Profiler.java:58)
+    at com.alibaba.druid.filter.stat.StatFilter.statement_executeErrorAfter(StatFilter.java:501)
+    at com.alibaba.druid.filter.FilterEventAdapter.preparedStatement_execute(FilterEventAdapter.java:450)
+    at com.alibaba.druid.filter.FilterChainImpl.preparedStatement_execute(FilterChainImpl.java:2929)
+    at com.alibaba.druid.proxy.jdbc.PreparedStatementProxyImpl.execute(PreparedStatementProxyImpl.java:118)
+    at com.alibaba.druid.pool.DruidPooledPreparedStatement.execute(DruidPooledPreparedStatement.java:493)
+    at com.dangdang.ddframe.rdb.sharding.executor.PreparedStatementExecutor.executeInternal(PreparedStatementExecutor.java:185)
+    at com.dangdang.ddframe.rdb.sharding.executor.PreparedStatementExecutor.access$200(PreparedStatementExecutor.java:46)
+    at com.dangdang.ddframe.rdb.sharding.executor.PreparedStatementExecutor$4.execute(PreparedStatementExecutor.java:170)
+    at com.dangdang.ddframe.rdb.sharding.executor.PreparedStatementExecutor$4.execute(PreparedStatementExecutor.java:166)
+    at com.dangdang.ddframe.rdb.sharding.executor.ExecutorEngine$1.call(ExecutorEngine.java:109)
+    at com.google.common.util.concurrent.TrustedListenableFutureTask$TrustedFutureInterruptibleTask.runInterruptibly(TrustedListenableFutureTask.java:108)
+    at com.google.common.util.concurrent.InterruptibleTask.run(InterruptibleTask.java:41)
+    at com.google.common.util.concurrent.TrustedListenableFutureTask.run(TrustedListenableFutureTask.java:77)
+    at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1145)
+    at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:615)
+    at java.lang.Thread.run(Thread.java:745)
+
+e.invoke(StandardContextValve.java:122)
+    at org.apache.catalina.authenticator.AuthenticatorBase.invoke(AuthenticatorBase.java:501)
+    at org.apache.catalina.core.StandardHostValve.invoke(StandardHostValve.java:170)
+    at org.apache.catalina.valves.ErrorReportValve.invoke(ErrorReportValve.java:98)
+    at org.apache.catalina.valves.AccessLogValve.invoke(AccessLogValve.java:950)
+    at org.apache.catalina.core.StandardEngineValve.invoke(StandardEngineValve.java:116)
+    at org.apache.catalina.connector.CoyoteAdapter.service(CoyoteAdapter.java:408)
+    at org.apache.coyote.http11.AbstractHttp11Processor.process(AbstractHttp11Processor.java:1040)
+    at org.apache.coyote.AbstractProtocol$AbstractConnectionHandler.process(AbstractProtocol.java:607)
+    at org.apache.tomcat.util.net.JIoEndpoint$SocketProcessor.run(JIoEndpoint.java:315)
+    at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1145)
+    at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:615)
+    at java.lang.Thread.run(Thread.java:745)
+Caused by: org.apache.ibatis.exceptions.PersistenceException: 
+### Error querying database.  Cause: com.dangdang.ddframe.rdb.sharding.exception.ShardingJdbcException: java.util.concurrent.ExecutionException: com.dangdang.ddframe.rdb.sharding.exception.ShardingJdbcException: java.sql.SQLException: Error
+### The error may exist in file [D:\workspace.metadata.plugins\org.eclipse.wst.server.core\tmp9\wtpwebapps\dubbo-monitor\WEB-INF\classes\mappers\DubboInvokeMapper.xml]
+### The error may involve com.handu.open.dubbo.monitor.DubboMonitorService.countDubboInvokeInfo-Inline
+### The error occurred while setting parameters
+### SQL: SELECT             SUM(success) as success,             SUM(failure) as failure,             SUM(elapsed) as elapsed,             MAX(max_elapsed) as maxElapsed,             MIN(max_concurrent) as maxConcurrent         FROM dubbo_invoke         WHERE             1 = 1                                                     AND invoke_time >= ?                                 AND invoke_time <= ?                                 AND service = ?                                 AND method = ?                                                      AND type = ?
+### Cause: com.dangdang.ddframe.rdb.sharding.exception.ShardingJdbcException: java.util.concurrent.ExecutionException: com.dangdang.ddframe.rdb.sharding.exception.ShardingJdbcException: java.sql.SQLException: Error
+
+```
+at org.apache.ibatis.exceptions.ExceptionFactory.wrapException(ExceptionFactory.java:26)
+at org.apache.ibatis.session.defaults.DefaultSqlSession.selectList(DefaultSqlSession.java:111)
+at org.apache.ibatis.session.defaults.DefaultSqlSession.selectList(DefaultSqlSession.java:102)
+at sun.reflect.GeneratedMethodAccessor63.invoke(Unknown Source)
+at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)
+at java.lang.reflect.Method.invoke(Method.java:606)
+at org.mybatis.spring.SqlSessionTemplate$SqlSessionInterceptor.invoke(SqlSessionTemplate.java:358)
+... 74 more
+```
+
+Caused by: com.dangdang.ddframe.rdb.sharding.exception.ShardingJdbcException: java.util.concurrent.ExecutionException: com.dangdang.ddframe.rdb.sharding.exception.ShardingJdbcException: java.sql.SQLException: Error
+    at com.dangdang.ddframe.rdb.sharding.executor.ExecutorExceptionHandler.handleException(ExecutorExceptionHandler.java:61)
+    at com.dangdang.ddframe.rdb.sharding.executor.ExecutorEngine.getFutureResults(ExecutorEngine.java:134)
+    at com.dangdang.ddframe.rdb.sharding.executor.ExecutorEngine.execute(ExecutorEngine.java:70)
+    at com.dangdang.ddframe.rdb.sharding.executor.PreparedStatementExecutor.execute(PreparedStatementExecutor.java:166)
+    at com.dangdang.ddframe.rdb.sharding.jdbc.ShardingPreparedStatement.execute(ShardingPreparedStatement.java:112)
+    at sun.reflect.GeneratedMethodAccessor35.invoke(Unknown Source)
+    at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)
+    at java.lang.reflect.Method.invoke(Method.java:606)
+    at org.apache.ibatis.logging.jdbc.PreparedStatementLogger.invoke(PreparedStatementLogger.java:62)
+    at com.sun.proxy.$Proxy35.execute(Unknown Source)
+    at org.apache.ibatis.executor.statement.PreparedStatementHandler.query(PreparedStatementHandler.java:59)
+    at org.apache.ibatis.executor.statement.RoutingStatementHandler.query(RoutingStatementHandler.java:73)
+    at org.apache.ibatis.executor.SimpleExecutor.doQuery(SimpleExecutor.java:60)
+    at org.apache.ibatis.executor.BaseExecutor.queryFromDatabase(BaseExecutor.java:267)
+    at org.apache.ibatis.executor.BaseExecutor.query(BaseExecutor.java:137)
+    at org.apache.ibatis.executor.CachingExecutor.query(CachingExecutor.java:96)
+    at org.apache.ibatis.executor.CachingExecutor.query(CachingExecutor.java:77)
+    at org.apache.ibatis.session.defaults.DefaultSqlSession.selectList(DefaultSqlSession.java:108)
+    ... 79 more
+Caused by: java.util.concurrent.ExecutionException: com.dangdang.ddframe.rdb.sharding.exception.ShardingJdbcException: java.sql.SQLException: Error
+    at com.google.common.util.concurrent.AbstractFuture.getDoneValue(AbstractFuture.java:472)
+    at com.google.common.util.concurrent.AbstractFuture.get(AbstractFuture.java:451)
+    at com.google.common.util.concurrent.AbstractFuture$TrustedFuture.get(AbstractFuture.java:74)
+    at com.dangdang.ddframe.rdb.sharding.executor.ExecutorEngine.getFutureResults(ExecutorEngine.java:132)
+    ... 95 more
+Caused by: com.dangdang.ddframe.rdb.sharding.exception.ShardingJdbcException: java.sql.SQLException: Error
+    at com.dangdang.ddframe.rdb.sharding.executor.ExecutorExceptionHandler.handleException(ExecutorExceptionHandler.java:61)
+    at com.dangdang.ddframe.rdb.sharding.executor.PreparedStatementExecutor.executeInternal(PreparedStatementExecutor.java:188)
+    at com.dangdang.ddframe.rdb.sharding.executor.PreparedStatementExecutor.access$200(PreparedStatementExecutor.java:46)
+    at com.dangdang.ddframe.rdb.sharding.executor.PreparedStatementExecutor$4.execute(PreparedStatementExecutor.java:170)
+    at com.dangdang.ddframe.rdb.sharding.executor.PreparedStatementExecutor$4.execute(PreparedStatementExecutor.java:166)
+    at com.dangdang.ddframe.rdb.sharding.executor.ExecutorEngine$1.call(ExecutorEngine.java:109)
+    at com.google.common.util.concurrent.TrustedListenableFutureTask$TrustedFutureInterruptibleTask.runInterruptibly(TrustedListenableFutureTask.java:108)
+    at com.google.common.util.concurrent.InterruptibleTask.run(InterruptibleTask.java:41)
+    at com.google.common.util.concurrent.TrustedListenableFutureTask.run(TrustedListenableFutureTask.java:77)
+    ... 3 more
+Caused by: java.sql.SQLException: Error
+    at com.alibaba.druid.pool.DruidDataSource.handleConnectionException(DruidDataSource.java:1193)
+    at com.alibaba.druid.pool.DruidPooledConnection.handleException(DruidPooledConnection.java:127)
+    at com.alibaba.druid.pool.DruidPooledStatement.checkException(DruidPooledStatement.java:68)
+    at com.alibaba.druid.pool.DruidPooledPreparedStatement.execute(DruidPooledPreparedStatement.java:495)
+    at com.dangdang.ddframe.rdb.sharding.executor.PreparedStatementExecutor.executeInternal(PreparedStatementExecutor.java:185)
+    ... 10 more
+Caused by: java.lang.NullPointerException
+    at com.alibaba.druid.support.profile.Profiler.release(Profiler.java:58)
+    at com.alibaba.druid.filter.stat.StatFilter.statement_executeErrorAfter(StatFilter.java:501)
+    at com.alibaba.druid.filter.FilterEventAdapter.preparedStatement_execute(FilterEventAdapter.java:450)
+    at com.alibaba.druid.filter.FilterChainImpl.preparedStatement_execute(FilterChainImpl.java:2929)
+    at com.alibaba.druid.proxy.jdbc.PreparedStatementProxyImpl.execute(PreparedStatementProxyImpl.java:118)
+    at com.alibaba.druid.pool.DruidPooledPreparedStatement.execute(DruidPooledPreparedStatement.java:493)
+    ... 11 more
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE support.XmlWebApplicationContext: Publishing event in WebApplicationContext for namespace 'springServlet-servlet': ServletRequestHandledEvent: url=[/dubbo-monitor/services/statistics]; client=[127.0.0.1]; method=[GET]; servlet=[springServlet]; session=[0CD0C26C26FBC7F192F21A645B3F58B2]; user=[admin]; time=[4806ms]; status=[failed: org.mybatis.spring.MyBatisSystemException: nested exception is org.apache.ibatis.exceptions.PersistenceException: 
+### Error querying database.  Cause: com.dangdang.ddframe.rdb.sharding.exception.ShardingJdbcException: java.util.concurrent.ExecutionException: com.dangdang.ddframe.rdb.sharding.exception.ShardingJdbcException: java.sql.SQLException: Error
+### The error may exist in file [D:\workspace.metadata.plugins\org.eclipse.wst.server.core\tmp9\wtpwebapps\dubbo-monitor\WEB-INF\classes\mappers\DubboInvokeMapper.xml]
+### The error may involve com.handu.open.dubbo.monitor.DubboMonitorService.countDubboInvokeInfo-Inline
+### The error occurred while setting parameters
+### SQL: SELECT             SUM(success) as success,             SUM(failure) as failure,             SUM(elapsed) as elapsed,             MAX(max_elapsed) as maxElapsed,             MIN(max_concurrent) as maxConcurrent         FROM dubbo_invoke         WHERE             1 = 1                                                     AND invoke_time >= ?                                 AND invoke_time <= ?                                 AND service = ?                                 AND method = ?                                                      AND type = ?
+### Cause: com.dangdang.ddframe.rdb.sharding.exception.ShardingJdbcException: java.util.concurrent.ExecutionException: com.dangdang.ddframe.rdb.sharding.exception.ShardingJdbcException: java.sql.SQLException: Error]
+
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 TRACE support.AnnotationConfigWebApplicationContext: Publishing event in Root WebApplicationContext: ServletRequestHandledEvent: url=[/dubbo-monitor/services/statistics]; client=[127.0.0.1]; method=[GET]; servlet=[springServlet]; session=[0CD0C26C26FBC7F192F21A645B3F58B2]; user=[admin]; time=[4806ms]; status=[failed: org.mybatis.spring.MyBatisSystemException: nested exception is org.apache.ibatis.exceptions.PersistenceException: 
+### Error querying database.  Cause: com.dangdang.ddframe.rdb.sharding.exception.ShardingJdbcException: java.util.concurrent.ExecutionException: com.dangdang.ddframe.rdb.sharding.exception.ShardingJdbcException: java.sql.SQLException: Error
+### The error may exist in file [D:\workspace.metadata.plugins\org.eclipse.wst.server.core\tmp9\wtpwebapps\dubbo-monitor\WEB-INF\classes\mappers\DubboInvokeMapper.xml]
+### The error may involve com.handu.open.dubbo.monitor.DubboMonitorService.countDubboInvokeInfo-Inline
+### The error occurred while setting parameters
+### SQL: SELECT             SUM(success) as success,             SUM(failure) as failure,             SUM(elapsed) as elapsed,             MAX(max_elapsed) as maxElapsed,             MIN(max_concurrent) as maxConcurrent         FROM dubbo_invoke         WHERE             1 = 1                                                     AND invoke_time >= ?                                 AND invoke_time <= ?                                 AND service = ?                                 AND method = ?                                                      AND type = ?
+### Cause: com.dangdang.ddframe.rdb.sharding.exception.ShardingJdbcException: java.util.concurrent.ExecutionException: com.dangdang.ddframe.rdb.sharding.exception.ShardingJdbcException: java.sql.SQLException: Error]
+
+[27/10/16 10:57:12:012 CST] http-bio-9091-exec-1 DEBUG context.SecurityContextPersistenceFilter: SecurityContextHolder now cleared, as request processing completed
+[27/10/16 10:57:14:014 CST] DubboServerHandler-172.16.3.47:7070-thread-200 DEBUG transport.DecodeHandler:  [DUBBO] Decode decodeable message com.alibaba.dubbo.rpc.protocol.dubbo.DecodeableRpcInvocation, dubbo version: 2.8.4, current host: 172.16.3.47
+[27/10/16 10:57:14:014 CST] DubboServerHandler-172.16.3.47:7070-thread-200  INFO monitor.DubboMonitorService:  [DUBBO] collect statistics: count://172.16.0.179/com.talk51.modules.courseNew.ImportDataService/checkRedisDate?application=course-consumer&concurrent=0&elapsed=0&failure=0&input=0&interface=com.talk51.modules.courseNew.ImportDataService&max.concurrent=0&max.elapsed=0&max.input=0&max.output=0&method=checkRedisDate&output=0&provider=172.16.0.179:20887&success=0&timestamp=1477536710132, dubbo version: 2.8.4, current host: 172.16.3.47
+[27/10/16 10:57:14:014 CST] DubboServerHandler-172.16.3.47:7070-thread-200 TRACE codec.ExchangeCodec:  [DUBBO] the resulting byte size of encoding is 17, dubbo version: 2.8.4, current host: 172.16.3.47
+[27/10/16 10:57:14:014 CST] DubboMonitorAsyncWriteLogThread  INFO idgen.IdWorker: worker starting. timestamp left shift 22, datacenter id bits 5, worker id bits 5, sequence bits 12, workerid 1
+
+
+<!---
+@huboard:{"custom_state":"archived"}
+-->

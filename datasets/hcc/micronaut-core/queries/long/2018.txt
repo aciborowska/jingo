@@ -1,0 +1,87 @@
+### Steps to Reproduce
+
+- Implement bean [`ConstraintValidator`](https://docs.micronaut.io/latest/api/io/micronaut/validation/validator/constraints/ConstraintValidator.html), e.g.:
+
+```kotlin
+@ValidRange
+@Introspected
+data class Range(
+    val from: Int,
+    val to: Int
+)
+
+@Retention
+@Constraint(validatedBy = [])
+annotation class ValidRange(
+    val message: String = "invalid range"
+)
+
+@Factory
+class ValidatorFactory {
+
+    @Singleton
+    fun validRange() = ConstraintValidator<ValidRange, Range> { value, _, _ ->
+        value == null || value.from < value.to
+    }
+}
+```
+
+- Run a Micronaut [Validator](https://docs.micronaut.io/latest/api/io/micronaut/validation/validator/Validator.html) on `Range` object:
+
+```kotlin
+validator.validate(Range(1,0))
+```
+
+### Expected Behaviour
+
+Micronaut Validator validates `Range` object
+
+### Actual Behaviour
+
+Micronaut Validator causes `IllegalArgumentException` to be thrown:
+
+```
+java.lang.IllegalArgumentException: Parameter specified as non-null is null: method ValidatorFactory$validRange$1.isValid, parameter <anonymous parameter 1>
+	at ValidatorFactory$validRange$1.isValid(KotlinBeanConstraintValidatorTest.kt)
+	at io.micronaut.validation.validator.DefaultValidator.validatePojoInternal(DefaultValidator.java:912)
+	at io.micronaut.validation.validator.DefaultValidator.doValidate(DefaultValidator.java:962)
+	at io.micronaut.validation.validator.DefaultValidator.validate(DefaultValidator.java:143)
+	at io.micronaut.validation.validator.DefaultValidator.validate(DefaultValidator.java:110)
+        ...
+```
+
+### Environment Information
+
+- **Operating System**: Linux Mint 19.1
+- **Micronaut Version:** 1.2.0
+- **JDK Version:** OpenJDK 11.0.2
+
+### Example Application
+
+- https://github.com/ddl0x0d/micronaut-issues
+  - [`KotlinBeanConstraintValidatorTest.kt`](https://github.com/ddl0x0d/micronaut-issues/blob/master/src/test/kotlin/micronaut/issues/validation/KotlinBeanConstraintValidatorTest.kt)
+
+Test also includes identical scenario with same bean constraint validator but written in Java, and in this case it works fine.
+
+### Root cause
+
+[`DefaultValidator`](https://github.com/micronaut-projects/micronaut-core/blob/v1.2.0/validation/src/main/java/io/micronaut/validation/validator/DefaultValidator.java#L912):
+
+```java
+private <T> void validatePojoInternal(...) {
+    ...
+    if (!constraintValidator.isValid((T) parameterValue, null, context)) { // LOC 912
+    ...
+}
+```
+
+[`ConstraintValidator`](https://github.com/micronaut-projects/micronaut-core/blob/v1.2.0/validation/src/main/java/io/micronaut/validation/validator/constraints/ConstraintValidator.java#L62):
+
+```java
+boolean isValid(
+        @Nullable T value,
+        @Nonnull AnnotationValue<A> annotationMetadata, // LOC 62
+        @Nonnull ConstraintValidatorContext context);
+```
+
+`null` is being passed to a `@Nonnull`-annotated argument.

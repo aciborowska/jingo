@@ -1,0 +1,105 @@
+Filing issue after reporting [on gitter](https://gitter.im/micronautfw/questions?at=5bfd824ca115c91ef7a0abca).
+
+### Task List
+
+- [x] Steps to reproduce provided
+- [x] Stacktrace (if present) provided
+- [x] Example that reproduces the problem uploaded to Github
+- [x] Full description of the issue provided (see below)
+
+### Steps to Reproduce
+
+1. Clone my [micronaut-examples fork](https://github.com/mmindenhall/micronaut-examples)
+1. `cd micronaut-examples/hello-world-kotlin`
+1. `git checkout large-file-upload-2`
+1. `./gradlew :cleanTest :test --info --tests example.UploadControllerTest`
+1. In the provided test, a temp file of 1.999GB succeeds, but 2GB fails.
+
+### Expected Behaviour
+
+`StreamingFileUpload` should be able to handle a chunked file of (theoretically) unlimited size.  The implementation should minimize memory usage by only buffering chunks until they are processed by the `StreamingFileUpload` subscriber.
+
+### Actual Behaviour
+
+A file 2GB or larger will cause an error.  It *seems* that the netty http-server implementation is allocating/growing a buffer to hold the entire request body rather than just buffering chunks until processed.  The negative capacity value in the exception likely results from increasing the buffer capacity until it overflows the 32-bit int.
+
+Stacktrace:
+
+```
+    10:18:48.285 [nioEventLoopGroup-1-3] ERROR i.m.h.s.netty.RoutingInBoundHandler - Unexpected error occurred: readerIndex: 0, writerIndex: -2147483648 (expected: 0 <= readerIndex <= writerIndex <= capacity(-2147483648))
+    java.lang.IndexOutOfBoundsException: readerIndex: 0, writerIndex: -2147483648 (expected: 0 <= readerIndex <= writerIndex <= capacity(-2147483648))
+        at io.netty.buffer.AbstractByteBuf.checkIndexBounds(AbstractByteBuf.java:111)
+        at io.netty.buffer.AbstractByteBuf.writerIndex(AbstractByteBuf.java:134)
+        at io.netty.buffer.CompositeByteBuf.writerIndex(CompositeByteBuf.java:1694)
+        at io.netty.buffer.CompositeByteBuf.addComponent0(CompositeByteBuf.java:280)
+        at io.netty.buffer.CompositeByteBuf.addComponent(CompositeByteBuf.java:198)
+        at io.netty.handler.codec.http.multipart.AbstractMemoryHttpData.addContent(AbstractMemoryHttpData.java:108)
+        at io.netty.handler.codec.http.multipart.HttpPostMultipartRequestDecoder.loadDataMultipart(HttpPostMultipartRequestDecoder.java:1375)
+        at io.netty.handler.codec.http.multipart.HttpPostMultipartRequestDecoder.getFileUpload(HttpPostMultipartRequestDecoder.java:907)
+        at io.netty.handler.codec.http.multipart.HttpPostMultipartRequestDecoder.decodeMultipart(HttpPostMultipartRequestDecoder.java:551)
+        at io.netty.handler.codec.http.multipart.HttpPostMultipartRequestDecoder.parseBodyMultipart(HttpPostMultipartRequestDecoder.java:442)
+        at io.netty.handler.codec.http.multipart.HttpPostMultipartRequestDecoder.parseBody(HttpPostMultipartRequestDecoder.java:411)
+        at io.netty.handler.codec.http.multipart.HttpPostMultipartRequestDecoder.offer(HttpPostMultipartRequestDecoder.java:336)
+        at io.netty.handler.codec.http.multipart.HttpPostMultipartRequestDecoder.offer(HttpPostMultipartRequestDecoder.java:53)
+        at io.netty.handler.codec.http.multipart.HttpPostRequestDecoder.offer(HttpPostRequestDecoder.java:227)
+        at io.micronaut.http.server.netty.FormDataHttpContentProcessor.onData(FormDataHttpContentProcessor.java:75)
+        at io.micronaut.http.server.netty.AbstractHttpContentProcessor.doOnNext(AbstractHttpContentProcessor.java:80)
+        at io.micronaut.http.server.netty.AbstractHttpContentProcessor.doOnNext(AbstractHttpContentProcessor.java:36)
+        at io.micronaut.core.async.subscriber.CompletionAwareSubscriber.onNext(CompletionAwareSubscriber.java:53)
+        at io.micronaut.http.netty.reactive.HandlerPublisher.publishMessage(HandlerPublisher.java:461)
+        at io.micronaut.http.netty.reactive.HandlerPublisher.channelRead(HandlerPublisher.java:417)
+        at io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:362)
+        at io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:348)
+        at io.netty.channel.AbstractChannelHandlerContext.fireChannelRead(AbstractChannelHandlerContext.java:340)
+        at io.micronaut.http.netty.stream.HttpStreamsHandler.handleReadHttpContent(HttpStreamsHandler.java:258)
+        at io.micronaut.http.netty.stream.HttpStreamsHandler.channelRead(HttpStreamsHandler.java:226)
+        at io.micronaut.http.netty.stream.HttpStreamsServerHandler.channelRead(HttpStreamsServerHandler.java:122)
+        at io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:362)
+        at io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:348)
+        at io.netty.channel.AbstractChannelHandlerContext.fireChannelRead(AbstractChannelHandlerContext.java:340)
+        at io.netty.handler.codec.MessageToMessageDecoder.channelRead(MessageToMessageDecoder.java:102)
+        at io.netty.handler.codec.MessageToMessageCodec.channelRead(MessageToMessageCodec.java:111)
+        at io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:362)
+        at io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:348)
+        at io.netty.channel.AbstractChannelHandlerContext.fireChannelRead(AbstractChannelHandlerContext.java:340)
+        at io.netty.channel.ChannelInboundHandlerAdapter.channelRead(ChannelInboundHandlerAdapter.java:86)
+        at io.netty.handler.codec.http.HttpServerKeepAliveHandler.channelRead(HttpServerKeepAliveHandler.java:64)
+        at io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:362)
+        at io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:348)
+        at io.netty.channel.AbstractChannelHandlerContext.fireChannelRead(AbstractChannelHandlerContext.java:340)
+        at io.netty.handler.flow.FlowControlHandler.dequeue(FlowControlHandler.java:187)
+        at io.netty.handler.flow.FlowControlHandler.read(FlowControlHandler.java:129)
+        at io.netty.channel.AbstractChannelHandlerContext.invokeRead(AbstractChannelHandlerContext.java:693)
+        at io.netty.channel.AbstractChannelHandlerContext.read(AbstractChannelHandlerContext.java:673)
+        at io.netty.channel.ChannelDuplexHandler.read(ChannelDuplexHandler.java:95)
+        at io.netty.channel.AbstractChannelHandlerContext.invokeRead(AbstractChannelHandlerContext.java:693)
+        at io.netty.channel.AbstractChannelHandlerContext.read(AbstractChannelHandlerContext.java:673)
+        at io.netty.channel.ChannelDuplexHandler.read(ChannelDuplexHandler.java:95)
+        at io.netty.channel.AbstractChannelHandlerContext.invokeRead(AbstractChannelHandlerContext.java:693)
+        at io.netty.channel.AbstractChannelHandlerContext.read(AbstractChannelHandlerContext.java:673)
+        at io.netty.channel.ChannelDuplexHandler.read(ChannelDuplexHandler.java:95)
+        at io.netty.channel.AbstractChannelHandlerContext.invokeRead(AbstractChannelHandlerContext.java:693)
+        at io.netty.channel.AbstractChannelHandlerContext.read(AbstractChannelHandlerContext.java:673)
+        at io.micronaut.http.netty.reactive.HandlerPublisher.requestDemand(HandlerPublisher.java:164)
+        at io.micronaut.http.netty.stream.HttpStreamsHandler$1.requestDemand(HttpStreamsHandler.java:218)
+        at io.micronaut.http.netty.reactive.HandlerPublisher.receivedDemand(HandlerPublisher.java:326)
+        at io.micronaut.http.netty.reactive.HandlerPublisher.access$300(HandlerPublisher.java:67)
+        at io.micronaut.http.netty.reactive.HandlerPublisher$ChannelSubscription.lambda$request$0(HandlerPublisher.java:548)
+        at io.netty.util.concurrent.AbstractEventExecutor.safeExecute(AbstractEventExecutor.java:163)
+        at io.netty.util.concurrent.SingleThreadEventExecutor.runAllTasks(SingleThreadEventExecutor.java:404)
+        at io.netty.channel.nio.NioEventLoop.run(NioEventLoop.java:462)
+        at io.netty.util.concurrent.SingleThreadEventExecutor$5.run(SingleThreadEventExecutor.java:897)
+        at io.netty.util.concurrent.FastThreadLocalRunnable.run(FastThreadLocalRunnable.java:30)
+        at java.lang.Thread.run(Thread.java:748)
+```
+
+### Environment Information
+
+- **Operating System**: macOS 10.14 (Mojave)
+- **Micronaut Version:** 1.0.2.BUILD-SNAPSHOT
+- **JDK Version:** 
+
+### Example Application
+
+See steps to reproduce above.
+

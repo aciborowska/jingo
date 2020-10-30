@@ -1,0 +1,60 @@
+Attached are the logs from when OpenAM shuts down. Here is the source code that does the shutting embedded DJ down component of that:
+
+
+
+    /** The embedded directory server. */
+    private static EmbeddedDirectoryServer openDj;
+    // ... snip ...
+    private static void shutdownServer(String reason, boolean duringUpgrade) {
+        Debug debug;
+        if (duringUpgrade) {
+            debug = Debug.getInstance("amUpgrade");
+        } else {
+            debug = Debug.getInstance(SetupConstants.DEBUG_NAME);
+        }
+        System.out.println("Checking DJ");
+        if (openDj.isRunning()) {
+            System.out.println("DJ is running, shutting it down");
+            debug.message("EmbeddedOpenDS.shutdown server...");
+            if (duringUpgrade) {
+                UpgradeProgress.reportStart("upgrade.opendj.stopping", serverRoot);
+            } else {
+                SetupProgress.reportStart("emb.opends.stopping", new Object[] {serverRoot});
+            }
+            openDj.stop(EmbeddedOpenDS.class.getCanonicalName(), LocalizableMessage.raw(reason));
+            int sleepcount = 0;
+            while (openDj.isRunning() && (sleepcount < 60)) {
+                System.out.println("DJ is still running");
+                sleepcount++;
+                try {
+                    Thread.sleep(1000);
+                } catch (InterruptedException e) {
+                    debug.error("EmbeddedOpenDS.shutdown interrupted while sleeping.", e);
+                }
+            }
+            if (openDj.isRunning()) {
+                if (duringUpgrade) {
+                    UpgradeProgress.reportEnd("upgrade.failed");
+                } else {
+                    SetupProgress.reportEnd("emb.failed", null);
+                }
+                debug.message("EmbeddedOpenDS.shutdown server failed.");
+            } else {
+                if (duringUpgrade) {
+                    UpgradeProgress.reportEnd("upgrade.success");
+                } else {
+                    SetupProgress.reportEnd("emb.success", null);
+                }
+                debug.message("EmbeddedOpenDS.shutdown server success.");
+            }
+        }
+        System.out.println("DJ Shutdown complete");
+    }
+
+
+
+You can see that I've added some System.out.println calls, and should be able to see the output from those in the log file.
+
+You can then see that there are no lines in the log saying DJ is still running, so the EmbeddedDirectoryServer#stop(String, LocalizableMessage) was called and immediately afterwards EmbeddedDirectoryServer#isRunning() started returning false. You can then see that immediately afterwards Tomcat complains that a whole lot of DJ-related threads are still running.
+
+You can also see an IllegalStateException stack trace - as far as I've noticed, this doesn't always appear, so I don't expect it to be directly related - if you think it's suspicious and you'd like it raised as a separate bug, I can do that.

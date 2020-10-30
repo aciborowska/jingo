@@ -1,0 +1,63 @@
+Performing a predicate query on a map where the predicate is using an indexed field defined for the map doesn't wait for a map load to complete prior to performing the query.  If the query is called as a continuation of the first access to the map in the cluster, the query is likely not to return all of the items in the map that match the query.  I have a github project that demonstrates the issue at [dpwegener/hazelcast-predicate-index](https://github.com/dpwegener/hazelcast-predicate-index)
+
+`StartCluster` configures a map called `indexed` to contain an index on the attribute `name`.  It also configures a MapLoader that just creates 5000 `Person` objects with a slight delay as each set of keys is loaded.
+
+```java
+     public static void main(String[] args) {
+        Config cfg = new Config();
+        MapConfig mapConfig = new MapConfig("indexed");
+        mapConfig.addMapIndexConfig(new MapIndexConfig("name", false));
+        MapStoreConfig mapStoreConfig = new MapStoreConfig();
+        mapStoreConfig.setClassName("com.wegener.hazelcast.PersonLoader");
+        mapStoreConfig.setEnabled(true);
+        mapConfig.setMapStoreConfig(mapStoreConfig);
+        cfg.addMapConfig(mapConfig);
+        HazelcastInstance instance = Hazelcast.newHazelcastInstance(cfg);
+        System.out.println("Ready");
+    }
+```
+
+`StartClient` runs a client that retrieves the map and performs a predicate query to obtain all `Person` objects that have the name `Name2499`, dumps out the count of objects and each object.  It then performs `get` calls on specific keys. and prints them out.
+
+```java
+    public static void main( String[] args ) {
+        ClientConfig clientConfig = new ClientConfig();
+        HazelcastInstance client = HazelcastClient.newHazelcastClient( clientConfig );
+        IMap<String, Person> indexedMap = client.getMap("indexed");
+        EntryObject eo = new PredicateBuilder().getEntryObject();
+        Predicate p = eo.get("name").equal("Name2499");
+        Collection<Person> results = indexedMap.values(p);
+        System.out.println("Results size: " + results.size());
+        results.forEach((person) -> System.out.println(person));
+        System.out.println(indexedMap.get("Name4999"));
+        System.out.println(indexedMap.get("Name1"));
+        System.out.println(indexedMap.get("Name2499"));
+    }
+```
+
+**Expected Results**
+
+```
+Results size: 1
+Person{name='Name2499' dummy='Name2499Name2499'}
+Person{name='Name4999' dummy='Name4999Name4999'}
+Person{name='Name1' dummy='Name1Name1'}
+Person{name='Name2499' dummy='Name2499Name2499'}
+```
+ 
+The first time you run `StartClient` after starting the cluster, the predicate query returns immediately returning an empty collection. The subsequent `get` calls wait till their corresponding `Person` gets loaded.  The last `get` retrieves the `Person` that should have been returned in the predicate query.
+
+**Actual Results**
+```
+Results size: 0
+Person{name='Name4999' dummy='Name4999Name4999'}
+Person{name='Name1' dummy='Name1Name1'}
+Person{name='Name2499' dummy='Name2499Name2499'}
+```
+
+
+If the index is changed to the `dummy` attribute 
+`        mapConfig.addMapIndexConfig(new MapIndexConfig("dummy", false));`
+The predicate query will wait for the load to complete and return `Person{name='Name2499' dummy='Name2499Name2499'}` as expected
+
+  

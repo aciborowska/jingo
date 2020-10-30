@@ -1,0 +1,59 @@
+Encountered the following issue while testing Python Batch API:
+
+root@a0810aa4b51b:/opt/flink# ./bin/pyflink.sh examples/python/batch/WordCount.py  -
+Starting execution of program
+Failed to run plan: null
+
+The program didn't contain a Flink job. Perhaps you forgot to call execute() on the execution environment.
+
+
+
+with logs containing the following stacktrace:
+
+2018-11-19 09:11:51,036 ERROR org.apache.flink.python.api.PythonPlanBinder                  - Failed to run plan.
+java.lang.NullPointerException
+        at org.apache.flink.python.api.streaming.plan.PythonPlanStreamer.close(PythonPlanStreamer.java:129)
+        at org.apache.flink.python.api.PythonPlanBinder.runPlan(PythonPlanBinder.java:201)
+        at org.apache.flink.python.api.PythonPlanBinder.main(PythonPlanBinder.java:98)
+        at sun.reflect.NativeMethodAccessorImpl.invoke0(Native Method)
+        at sun.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:62)
+        at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)
+        at java.lang.reflect.Method.invoke(Method.java:498)
+        at org.apache.flink.client.program.PackagedProgram.callMainMethod(PackagedProgram.java:529)
+        at org.apache.flink.client.program.PackagedProgram.invokeInteractiveModeForExecution(PackagedProgram.java:421)
+        at org.apache.flink.client.program.ClusterClient.run(ClusterClient.java:426)
+
+
+My root cause was not having Python installed on the docker image being used.
+
+Patching Flink with 
+
+diff --git a/flink-libraries/flink-python/src/main/java/org/apache/flink/python/api/streaming/plan/PythonPlanStreamer.java b/flink-libraries/flink-python/src/main/java/org/apache/flink/python/api/streaming/plan/PythonPlanStreamer.java
+index d25f3d51ff..3e6a068d8a 100644
+--- a/flink-libraries/flink-python/src/main/java/org/apache/flink/python/api/streaming/plan/PythonPlanStreamer.java
++++ b/flink-libraries/flink-python/src/main/java/org/apache/flink/python/api/streaming/plan/PythonPlanStreamer.java
+@@ -126,7 +126,9 @@ public class PythonPlanStreamer {
+                        process.destroy();
+                } finally {
+                        try {
+-                               server.close();
++                               if (server != null) {
++                                       server.close();
++                               }
+                        } catch (IOException e) {
+                                LOG.error("Failed to close socket.", e);
+                        }
+
+
+
+an attempt to run Python Batch API example will fail with
+
+root@33837d1efa28:/opt/flink# ./bin/pyflink.sh examples/python/batch/WordCount.py -
+Starting execution of program
+Failed to run plan: python does not point to a valid python binary.
+
+The program didn't contain a Flink job. Perhaps you forgot to call execute() on the execution environment
+
+
+
+which correctly identifes the problem i was facing - missing python (or incorrect python bin path).

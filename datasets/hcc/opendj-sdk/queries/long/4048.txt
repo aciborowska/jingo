@@ -1,0 +1,64 @@
+Reproducible on DJ 3.5.1 and 4.0.0 (DS 5).
+
+With default global ACIs, including one that allows anonymous read access), if I add a (non-global) ACI to an entry to deny access for one user, all users are denied access.
+
+The "effective rights" aclRights show that other users have access, but when actually doing a bind and search, the other users are not able to access that entry.
+
+TEST CASE:
+
+1. DJ 4.0.0 with default global ACIs.
+
+2. Import "init.ldif" attached to this bug. This includes 2 group entries "cn=static1" and "cn=static2".
+One group "cn=static1" has an ACI that denies access for user "uid=user.0".
+
+
+dn: cn=static1,ou=Groups,dc=example,dc=com
+...
+aci: (version 3.0;acl "Deny access to this group for specific user";
+ deny (all) userdn="ldap:///uid=user.0,ou=People,dc=example,dc=com";)
+
+
+
+3. Check aclRights for uid=user.0 :
+
+
+$ ./ldapsearch -p 5390 -D "cn=directory manager" -w password --getEffectiveRightsAuthzid "dn: uid=user.0,ou=people,dc=example,dc=com" --control effectiverights -b "dc=example,dc=com" "cn=static1" aclRights aclRightsInfo
+dn: cn=static1,ou=Groups,dc=example,dc=com
+aclRightsInfo;logs;entryLevel;add: acl_summary(main): access not allowed(add) on entry/attr(cn=static1,ou=Groups,dc=example,dc=com, NULL) to (uid=user.0,ou=people,dc=example,dc=com) (not proxied) ( reason: evaluated deny , deciding_aci: Deny access to this group for specific user)
+aclRightsInfo;logs;entryLevel;delete: acl_summary(main): access not allowed(delete) on entry/attr(cn=static1,ou=Groups,dc=example,dc=com, NULL) to (uid=user.0,ou=people,dc=example,dc=com) (not proxied) ( reason: evaluated deny , deciding_aci: Deny access to this group for specific user)
+aclRightsInfo;logs;entryLevel;read: acl_summary(main): access not allowed(read) on entry/attr(cn=static1,ou=Groups,dc=example,dc=com, NULL) to (uid=user.0,ou=people,dc=example,dc=com) (not proxied) ( reason: evaluated deny , deciding_aci: Deny access to this group for specific user)
+aclRightsInfo;logs;entryLevel;write: acl_summary(main): access not allowed(write) on entry/attr(cn=static1,ou=Groups,dc=example,dc=com, NULL) to (uid=user.0,ou=people,dc=example,dc=com) (not proxied) ( reason: evaluated deny , deciding_aci: Deny access to this group for specific user)
+aclRightsInfo;logs;entryLevel;proxy: acl_summary(main): access not allowed(proxy) on entry/attr(cn=static1,ou=Groups,dc=example,dc=com, NULL) to (uid=user.0,ou=people,dc=example,dc=com) (not proxied) ( reason: no acis matched the subject )
+aclRights;entryLevel: add:0,delete:0,read:0,write:0,proxy:0
+
+
+
+=> This is fine, uid=user.0 should be denied access.
+
+4. Check aclRights for uid=user.1 :
+
+
+$ ./ldapsearch -p 5390 -D "cn=directory manager" -w password --getEffectiveRightsAuthzid "dn: uid=user.1,ou=people,dc=example,dc=com" --control effectiverights -b "dc=example,dc=com" "cn=static1" aclRights aclRightsInfo
+dn: cn=static1,ou=Groups,dc=example,dc=com
+aclRightsInfo;logs;entryLevel;add: acl_summary(main): access not allowed(add) on entry/attr(cn=static1,ou=Groups,dc=example,dc=com, NULL) to (uid=user.1,ou=people,dc=example,dc=com) (not proxied) ( reason: no acis matched the subject )
+aclRightsInfo;logs;entryLevel;delete: acl_summary(main): access not allowed(delete) on entry/attr(cn=static1,ou=Groups,dc=example,dc=com, NULL) to (uid=user.1,ou=people,dc=example,dc=com) (not proxied) ( reason: no acis matched the subject )
+aclRightsInfo;logs;entryLevel;read: acl_summary(main): access not allowed(read) on entry/attr(cn=static1,ou=Groups,dc=example,dc=com, NULL) to (uid=user.1,ou=people,dc=example,dc=com) (not proxied) ( reason: no acis matched the subject )
+aclRightsInfo;logs;entryLevel;write: acl_summary(main): access not allowed(write) on entry/attr(cn=static1,ou=Groups,dc=example,dc=com, NULL) to (uid=user.1,ou=people,dc=example,dc=com) (not proxied) ( reason: no acis matched the subject )
+aclRightsInfo;logs;entryLevel;proxy: acl_summary(main): access not allowed(proxy) on entry/attr(cn=static1,ou=Groups,dc=example,dc=com, NULL) to (uid=user.1,ou=people,dc=example,dc=com) (not proxied) ( reason: no acis matched the subject )
+aclRights;entryLevel: add:0,delete:0,read:1,write:0,proxy:0
+
+
+
+=> This looks ok too, uid=user.1 should have read access (because of the default global ACI that allows anonymous read access).
+
+5. But if uid=user.1 tries to actually access that entry, he is unable to:
+
+
+$ ./ldapsearch -p 5390 -D "uid=user.1,ou=people,dc=example,dc=com" -w password -b "dc=example,dc=com" "cn=static1"
+$ 
+
+
+
+=> So aclRights takes the non-global and global ACIs into consideration, BUT when users attempt to access the entry, it appears that the non-global ACIs are ignored.
+
+6. A workaround is to add another (non-global) ACI to the "cn=static1" entry, to allow access for other users.

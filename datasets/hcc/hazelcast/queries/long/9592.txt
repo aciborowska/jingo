@@ -1,0 +1,47 @@
+ReplicatedMap configured with async-fillup=false prevents further nodes from joining the cluster. Nodes are stuck in endless loop at:
+```
+testAddObjectSyncFillup" #12 daemon prio=5 os_prio=0 tid=0x000000000aab9000 nid=0x4c8 waiting on condition [0x000000000bcde000]
+   java.lang.Thread.State: TIMED_WAITING (sleeping)
+	at java.lang.Thread.sleep(Native Method)
+	at java.lang.Thread.sleep(Thread.java:340)
+	at java.util.concurrent.TimeUnit.sleep(TimeUnit.java:386)
+	at com.hazelcast.replicatedmap.impl.ReplicatedMapProxy.sleep(ReplicatedMapProxy.java:123)
+	at com.hazelcast.replicatedmap.impl.ReplicatedMapProxy.initialize(ReplicatedMapProxy.java:115)
+	at com.hazelcast.spi.impl.proxyservice.impl.ProxyRegistry.doCreateProxy(ProxyRegistry.java:177)
+	at com.hazelcast.spi.impl.proxyservice.impl.ProxyRegistry.createProxy(ProxyRegistry.java:167)
+	at com.hazelcast.spi.impl.proxyservice.impl.ProxyRegistry.getOrCreateProxy(ProxyRegistry.java:136)
+```
+The problem is probably in [RequestMapDataOperation.java](https://github.com/hazelcast/hazelcast/blob/1640254ad58a08ac6a5f59242b7bbdd78dd20240/hazelcast/src/main/java/com/hazelcast/replicatedmap/impl/operation/RequestMapDataOperation.java), around
+```
+        if (store == null) {
+            if (logger.isFineEnabled()) {
+                logger.fine("No store is found for map: " + name + " to respond data request. partitionId=" + partitionId);
+            }
+
+            return;
+        }
+        long version = store.getVersion();
+        Set<RecordMigrationInfo> recordSet = getRecordSet(store);
+        if (recordSet.isEmpty()) {
+            if (logger.isFineEnabled()) {
+                logger.fine("No data is found on this store for map: " + name +  " to respond data request. partitionId="
+                        + partitionId);
+            }
+            return;
+        }
+```
+I guess the return statements are incorrect. This operation should always return at least empty Set<RecordMigrationInfo>, so that the caller is notified there is nothing to load and release the initialize() loop. 
+
+See attached modified [ReplicatedMapTest.java](https://github.com/hazelcast/hazelcast/blob/9d2eb04228da9c121161435410d90125a1ab597a/hazelcast/src/test/java/com/hazelcast/replicatedmap/ReplicatedMapTest.java), setAsyncFillup(false) aware test added:
+```
+  @Test
+    public void testAddObjectSyncFillup() throws Exception {
+        Config config = buildConfig(InMemoryFormat.OBJECT);
+        config.getReplicatedMapConfig("default").setAsyncFillup(false);
+        testAdd(config);
+    }
+```
+This test case timeouts.
+[ReplicatedMapTest.zip](https://github.com/hazelcast/hazelcast/files/689435/ReplicatedMapTest.zip)
+
+Regards

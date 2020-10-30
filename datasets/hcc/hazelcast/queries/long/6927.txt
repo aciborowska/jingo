@@ -1,0 +1,73 @@
+Using hazelcast 3.5.x, I am trying to externalize the enablement of partition-group to properties file, using Spring environment property replacement to enable based on the environment.  
+
+However, the "enabled" attribute for partition-group is set to type, boolean.  Other "enabled" attributes are set to string.  Having it set to boolean causes the initial loading and parsing of the XML to fail when the attribute contains property replacement value, instead of true/false. 
+
+``` xml
+<?xml version="1.0" encoding="UTF-8"?>
+<beans xmlns="http://www.springframework.org/schema/beans"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:hz="http://www.hazelcast.com/schema/spring"
+    xsi:schemaLocation="http://www.springframework.org/schema/beans 
+    http://www.springframework.org/schema/beans/spring-beans.xsd
+    http://www.hazelcast.com/schema/spring
+    http://www.hazelcast.com/schema/spring/hazelcast-spring.xsd">
+
+    <hz:hazelcast id="instance">
+        <hz:config>
+            <hz:instance-name>instance</hz:instance-name>
+
+            <hz:group password="$env{hazelcast.group.password}" name="$env{hazelcast.group.name}" />
+
+            <hz:network port="5701" port-auto-increment="true">
+                <hz:join>
+                    <hz:multicast enabled="false" />
+
+                    <hz:tcp-ip enabled="$env{hazelcast.tcpip.enabled}">
+                        <hz:members>$env{hazelcast.tcpip.members}</hz:members>
+                    </hz:tcp-ip>
+
+                    <hz:aws enabled="$env{hazelcast.aws.enabled}" access-key="$env{hazelcast.aws.accessKey}"
+                        secret-key="$env{hazelcast.aws.secretKey}" security-group-name="$env{hazelcast.aws.securitygroup}"
+                        host-header="ec2.amazonaws.com" region="us-east-1" />
+
+                </hz:join>
+            </hz:network>
+
+            <hz:partition-group enabled="$env{hazelcast.partition.enabled}" group-type="CUSTOM">
+                <hz:member-group>
+                    <hz:interface>$env{hazelcast.partition.interface1}</hz:interface>
+                </hz:member-group>
+                <hz:member-group>
+                    <hz:interface>$env{hazelcast.partition.interface2}</hz:interface>
+                </hz:member-group>
+            </hz:partition-group>
+...
+    </hz:hazelcast>
+</beans>
+```
+
+2015-11-30 10:17:18,104 ERROR [main](-) ContextLoader - Context initialization failed
+org.springframework.beans.factory.parsing.BeanDefinitionParsingException: Configuration problem: Failed to import bean definitions from URL location [classpath:spring-hazelcast-config.xml]
+Offending resource: class path resource [spring-global-context.xml]; nested exception is org.springframework.beans.factory.xml.XmlBeanDefinitionStoreException: Line 37 in XML document from class path resource [spring-hazelcast-config.xml] is invalid; nested exception is org.xml.sax.SAXParseException; lineNumber: 37; columnNumber: 88; cvc-datatype-valid.1.2.1: '$env{hazelcast.partition.enabled}' is not a valid value for 'boolean'.
+
+Changing the xs:boolean to xs:string in the XSD allows this to work and keeps it consistent with all other enabled attribute types.
+
+``` xml
+    <xs:complexType name="partition-group">
+        <xs:sequence>
+            <xs:element name="member-group" minOccurs="0" maxOccurs="unbounded">
+                <xs:complexType>
+                    <xs:sequence>
+                        <xs:element name="interface" type="interface" minOccurs="0" maxOccurs="unbounded"/>
+                    </xs:sequence>
+                </xs:complexType>
+            </xs:element>
+        </xs:sequence>
+        <!-- <xs:attribute name="enabled" type="xs:boolean" use="required"/> -->
+        <xs:attribute name="enabled" type="xs:string" use="required"/>
+        <xs:attribute name="group-type" type="xs:string" use="optional"/>
+    </xs:complexType>
+```
+
+If value other than true or false is used, the failure is still caught during the spring bean instantiation process with a TypeMismatchException/IllegalArgumentException
+
+exception is org.springframework.beans.TypeMismatchException: Failed to convert property value of type 'java.lang.String' to required type 'boolean' for property 'enabled'; nested exception is java.lang.IllegalArgumentException: Invalid boolean value [fail]

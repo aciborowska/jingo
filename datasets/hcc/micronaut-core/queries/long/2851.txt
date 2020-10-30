@@ -1,0 +1,91 @@
+I am currently working on a project where I need the frontend to close the connection gracefully by specifying a close code. However, Micronaut ignores the code and always closes with 1006 (ABNORMAL_CLOSURE).
+
+### Task List
+
+- [X] Steps to reproduce provided
+- [X] Stacktrace (if present) provided
+- [X] Example that reproduces the problem uploaded to Github
+- [X] Full description of the issue provided (see below)
+
+### Steps to Reproduce
+
+1. Create a Simple ServerWebSocket handler
+```Kotlin
+package micronauttest
+
+import io.micronaut.websocket.annotation.OnMessage
+import io.micronaut.websocket.annotation.ServerWebSocket
+
+@ServerWebSocket("/test")
+class PingWebSocket {
+
+    @OnMessage
+    fun msg() {
+    }
+}
+```
+2. Establish a connection using the JavaScript WebSocket API
+```JavaScript
+var ws = new WebSocket("ws://127.0.0.1:8080/test");
+```
+3. Close the connection using the JavaScript API and specify a close reason
+```JavaScript
+ws.close(1000);
+```
+
+### Expected Behaviour
+
+The server closes the session using the close code specified by the client. 
+
+### Actual Behaviour
+
+The server ignores the close code specified by the client and closes the session with 1006 (ABNORMAL_CLOSURE).
+
+From Firefox console:
+![image](https://user-images.githubusercontent.com/17690423/75236422-0bb47500-57be-11ea-97fa-6403a70516fc.png)
+
+### Environment Information
+
+- **Operating System**: Windows 10
+- **Micronaut Version:** 1.3.2
+- **JDK Version:** 11.0.2
+- Tested with Firefox and Chrome; I'm sure it's not a client issue.
+
+### Example Application
+
+*See snippets above, it's not worth an own project.*
+
+### Investigation
+
+When I tried to find the origin of the problem, I found [this piece of code](https://github.com/micronaut-projects/micronaut-core/blob/f1480baba9d657d76479846871b61557019c1417/http-netty/src/main/java/io/micronaut/http/netty/websocket/AbstractNettyWebSocketHandler.java#L260):
+
+![image](https://user-images.githubusercontent.com/17690423/75236594-4cac8980-57be-11ea-96a8-770b4b5954f9.png)
+
+I don't know why it's there (@jameskleeh, please shed some light on this). There was probably an intention behind this but what it does is closing all connections with 1006 which, in my view, doesn't make sense at all.
+
+Another discovery: Calling `session.close(CloseReason.NORMAL)` in the @OnClose method resolves the issue. I will use it as a temporary fix, but it is by no means a permanent solution.
+
+```Kotlin
+package micronauttest
+
+import io.micronaut.websocket.CloseReason
+import io.micronaut.websocket.WebSocketSession
+import io.micronaut.websocket.annotation.OnClose
+import io.micronaut.websocket.annotation.OnMessage
+import io.micronaut.websocket.annotation.ServerWebSocket
+
+@ServerWebSocket("/test")
+class PingWebSocket {
+
+    @OnMessage
+    fun msg(msg: String) {
+    }
+
+    @OnClose
+    fun close(session: WebSocketSession) {
+        return session.close(CloseReason.NORMAL)
+    }
+}
+```
+
+I am looking forward to having this fixed, thank you!

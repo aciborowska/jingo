@@ -1,0 +1,55 @@
+I stumbled upon this error when revived my a Windows VM to work on some Windows specific failures. It took me quite a long time to figure out, what's the root cause (and I didn't do this the first time, which is the reason for this issue).
+```java
+com.hazelcast.config.InvalidConfigurationException: cvc-complex-type.2.4.a:
+    Invalid content was found starting with element 'failure-detector'.
+    One of '{"http://www.hazelcast.com/schema/config":public-address,
+    "http://www.hazelcast.com/schema/config":reuse-address,
+    "http://www.hazelcast.com/schema/config":member-address-provider}' is expected.
+
+	at com.hazelcast.config.AbstractXmlConfigHelper.schemaValidation(AbstractXmlConfigHelper.java:189)
+	at com.hazelcast.config.XmlConfigBuilder.parseAndBuildConfig(XmlConfigBuilder.java:242)
+	at com.hazelcast.config.XmlConfigBuilder.build(XmlConfigBuilder.java:223)
+	at com.hazelcast.config.XmlConfigBuilder.build(XmlConfigBuilder.java:216)
+	at com.hazelcast.test.TestHazelcastInstanceFactory.initOrCreateConfig(TestHazelcastInstanceFactory.java:332)
+	(...)
+Caused by: org.xml.sax.SAXParseException; lineNumber: 83; columnNumber: 27;
+    cvc-complex-type.2.4.a: Invalid content was found starting with element 'failure-detector'.
+    One of '{"http://www.hazelcast.com/schema/config":public-address,
+    "http://www.hazelcast.com/schema/config":reuse-address,
+    "http://www.hazelcast.com/schema/config":member-address-provider}' is expected.
+	at com.sun.org.apache.xerces.internal.util.ErrorHandlerWrapper.createSAXParseException(ErrorHandlerWrapper.java:203)
+	at com.sun.org.apache.xerces.internal.util.ErrorHandlerWrapper.error(ErrorHandlerWrapper.java:134)
+	(...)
+	at javax.xml.validation.Validator.validate(Validator.java:124)
+	at com.hazelcast.config.AbstractXmlConfigHelper.schemaValidation(AbstractXmlConfigHelper.java:187)
+```
+
+The main reason for this error is an outdated `GeneratedBuildProperties` with an old Hazelcast version number in it (in this case a HZ 3.9 SNAPSHOT), which is used in `AbstractXmlConfigHelper` to determine the XSD schema location:
+```java
+private final String hazelcastSchemaLocation = getXmlType().name + "-config-"
+    + getReleaseVersion() + ".xsd";
+
+protected String getReleaseVersion() {
+    BuildInfo buildInfo = BuildInfoProvider.getBuildInfo();
+    String[] versionTokens = StringUtil.tokenizeVersionString(buildInfo.getVersion());
+    return versionTokens[0] + "." + versionTokens[1];
+}
+```
+You get a hint for this in the logs, since the `BuildInfo` is printed in the logs and contains the outdated version number: `BuildInfo right after testPut(com.hazelcast.cache.BasicCacheLiteMemberTest): BuildInfo{version='3.9-SNAPSHOT', build='20180522', buildNumber=20180522, revision=8b97b56, enterprise=false, serializationVersion=1}`, but it's super easy to miss that.
+
+There are several issues which make this error so hard to understand:
+* the `InvalidConfigurationException` gives no hint of the configuration source, even though the `SAXParseException` even prints out a `lineNumber` and `columnNumber`. So you have no idea which configuration seems to be wrong (hint: it's probably the `hazelcast-default.xml`).
+* the failure is not the configuration itself, but the outdated XSD, which is added to the validator:
+  ```java
+  // include hazelcast schema
+  schemas.add(new StreamSource(getClass().getClassLoader()
+        .getResourceAsStream(hazelcastSchemaLocation)));
+  ```
+  You get a hint of this, since the configured XSD generates this warning in the logs: `Name of the hazelcast schema location is incorrect, using default`
+* the `GeneratedBuildProperties` is not re-generated if you don't run the appropriate Maven goal (e.g. when just switching a branch in IDEA)
+* basically all hints for the reason are hidden in some info or warning logs, the assertion and stacktrace point into a wrong direction and don't contain any important information to get to the root cause
+
+What we can do:
+* improve the error output when a `SAXParseException` occurs (e.g. print out used XSD schemata, stress out if the XSD from the configuration was overridden, print out the source location)
+* improve the `GeneratedBuildProperties` generation (e.g. get it triggered by IDEA on branch switches)
+* removed the need for `GeneratedBuildProperties` (e.g. fallback for other lookup methods, since a `maven clean install -DskipTests takes at least 45 seconds on a normal workstation, which is a lot of overhead when switching branches with incompatible XSD)

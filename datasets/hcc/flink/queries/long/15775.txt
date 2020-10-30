@@ -1,0 +1,58 @@
+When pulled on by two sinks, the SourceFunctions of a TableSource will get instantiated twice; (and subsequently opened by the parallelism number, which is expected behavior):
+
+The following will instantiate the FooTableSource's SourceFunction once (OK behavior, but not the processing we want):
+
+ 
+
+
+tEnv.registerTableSource("foo_table", new FooTableSource());
+Table out0 = tEnv.sqlQuery("SELECT * FROM foo_table WHERE field_1 = 0");
+tEnv.registerTableSink("syso_sink_0", new SysoSink());
+out0.insertInto("syso_sink_0");
+
+
+ 
+
+This will instantiate the FooTableSource's SourceFunction twice (Not OK, as we're missing half the inputs in each SysoSink):
+
+ 
+
+
+tEnv.registerTableSource("foo_table", new FooTableSource());
+Table out0 = tEnv.sqlQuery("SELECT * FROM foo_table WHERE field_1 = 0");
+Table out1 = tEnv.sqlQuery("SELECT * FROM foo_table WHERE field_1 = 1");
+tEnv.registerTableSink("syso_sink_0", new SysoSink());
+tEnv.registerTableSink("syso_sink_1", new SysoSink());
+out0.insertInto("syso_sink_0");
+out1.insertInto("syso_sink_1"); 
+
+
+ 
+
+This might not be a problem for Kafka's SourceFunctions, as we can always reread from a log; but it is a data loss problem when the source data can't be reproduced.
+
+Actually, this might be me not understanding the API. Is there a way to make the runtime read from the same opened SourceFunctions?
+
+Attached is Java code that logs the faulty opening of the SourceFunctions, pom.xml, and logical execution plans for the duplicated case, and the workaround.
+
+ 
+
+Workaround: make a conversion to an appendStream. Somehow this makes the planner think it has to put a materialization barrier after the Source and read from that:
+
+ 
+
+
+tEnv.registerTableSource("foo_table_source", new FooTableSource());
+Table sourceTable = tEnv.sqlQuery("SELECT * FROM foo_table_source");
+Table appendingSourceTable = tEnv.fromDataStream(
+ tEnv.toAppendStream(sourceTable, Types.ROW(new String[]{"field_1"}, new TypeInformation[]{Types.LONG()}))
+);
+tEnv.registerTable("foo_table", appendingSourceTable);
+
+ 
+
+ 
+
+Best Regards,
+
+Ben

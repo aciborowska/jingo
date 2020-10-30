@@ -1,0 +1,28 @@
+User story
+
+One of the schema backend file (in db/schema) got corrupted in a directory server.
+ The administrator decides to stop the server and to restore the schema from a clean, hashed (or encrypted, or signed), schema backup, but, alas, restore fails.
+Reproduce case
+
+$ ./opendj/bin/backup --backupDirectory bak -h localhost -p 5444 -D "uid=admin" -w password -X --backendId schema --backupId clean-schema --hash
+
+
+Edit opendj/db/schema/02-config.ldif, for example, and break the LDIF syntax.
+
+$ ./opendj/bin/stop-ds
+$ ./opendj/bin/restore --offline --backupId clean-schema --backendId schema --backupDirectory ./opendj/bak
+[07/11/2019:12:06:20 +0100] category=TOOLS seq=0 severity=SEVERE msg=An error occurred while attempting to initialize server components to run the tool: An error occurred while trying to load the Directory Server configuration:  Unable to load the configuration-enabled schema: DecodeException: Unable to parse LDIF entry starting at line 21 because the first line does not contain a DN (the first line was "ldapSyntaxueoaes: ( 1.3.6.1.4.1.36733.2.1.3.7 DESC 'Summary metric' X-SUBST '1.3.6.1.4.1.36733.2.1.3.1' X-ORIGIN 'OpenDJ Directory Server' )" (DecodeException.java:54 RejectedLdifListener.java:34 AbstractLdifReader.java:191 LdifEntryReader.java:350 LdifEntryReader.java:120 LdifEntryReader.java:131 ConfigurationHandler.java:968 ConfigurationHandler.java:290 ConfigurationHandler.java:274 DirectoryServer.java:1412 DirectoryServer.java:1399 DirectoryServer.java:839 DirectoryServer.java:792 RestoreDb.java:291 TaskToolHelper.java:311 RestoreDb.java:223 Utils.java:961 Utils.java:938 RestoreDb.java:132)
+
+
+Root cause
+
+When restoring an encrypted, hashed or signed backup, we have to initialize a directory server to access crypto services. The initialization will read the current schema files in db/schema and fail if any schema file is corrupted.
+Fix suggestion
+
+Fabio Pistolesi and Cedric Tran-Xuan have uncovered that it is possible to implement a "light" directory server initialization that only requires default schema. 
+ This light initialization should be used by restore offline and any other offline tool that does not run Add, Modify or Delete operations on backends.
+Remarks
+
+After OPENDJ-6768 will be resolved, all backups will be protected with HMAC, therefore, it is preferable to fix this bug before implementing that improvement.
+
+I am marking this bug as a backport candidate because it certainly exists in previous versions but I don't think we should backport this considering the severity of the bug.

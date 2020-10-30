@@ -1,0 +1,39 @@
+Hazelcast version: 3.10
+JDK Version: 1.7.0_75
+
+We have several producers constantly produce items and invoke lock() on the certain lock object. But sometimes, all producers were blocked on the lock() operations waiting for some other members release the lock. After digging into our server logs, I have found something might be related to the issue.
+
+It began with one of the cluster member getting high working load. This member was too busy to handle heartbeat in time. We could find following warning in logs.
+```
+c.h.i.c.impl.ClusterHeartbeatManager ... Ignoring heartbeat from Member... since it is expired...
+```
+
+Afterwards, unlock operation began failed.
+```
+c.h.s.i.o.i.OutboundResponseHandler ... Cannot send response: CallTimeoutResponse ... com.hazelcast.concurrent.lock.operations.UnlockOperation ...
+```
+
+After printing several timeout messages, unlock operation failed with following errors.
+```
+c.h.c.l.operations.UnlockOperation ... Current thread is not owner of the lock! -> Owner: ab3f...7876, thread ID: 412
+```
+Where `ab3f...7876` was definitely used to represent the current member. From very below of our server logs, we notice the ID of this member was changed from `ab3f...7876` to a new one due to clusters merging. But before that, there is no other logs about updating its ID. 
+
+Skipping lots of `Current thread is not owner of the lock!` errors, there was 4 logs about cluster members (In these logs, we could see `ab3f...7876` besides the current member's ip). Each time the number of members varies. After the last log printed, only the current member was left in the cluster. 
+
+Then it printed (I'm not sure if they are important):
+```
+c.h.i.p.impl.MigrationManager ... Promotion commit failed for 5 migrations since destination ... left the cluster
+c.h.i.p.impl.MigrationManager ... Partition balance is ok, no need to re-partition cluster data...
+```
+
+Error messages about unlocking operation failure followed. But this time, they said `<not-locked>`.
+```
+c.h.c.l.operations.UnlockOperation ... Current thread is not owner of the lock! -> <not-locked>
+```
+
+Just some time later, current member as a single node cluster was merged to the bigger cluster. All following logs seemed back to normal. But the truly fact was all producers was not able to acquire certain lock anymore.
+
+----
+
+Above messages only show some info for further investigating but not the root cause. I wonder if it is because of some issues during splitting brains and merging? What can I do when the lock can not be held by new requests anymore?

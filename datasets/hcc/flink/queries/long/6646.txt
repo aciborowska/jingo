@@ -1,0 +1,43 @@
+While testing Flink 1.3.0 RC1, I ran into the following issue on the JobManager.
+
+
+2017-05-19 14:41:38,030 INFO  org.apache.flink.runtime.webmonitor.JobManagerRetriever       - New leader reachable under akka.tcp://flink@permanent-qa-cluster-i7c9.c.astral-sorter-757.internal:36528/user/jobmanager:6539dc04-d7fe-4f85-a0b6-09bfb0de8a58.
+2017-05-19 14:41:38,033 INFO  org.apache.flink.yarn.YarnFlinkResourceManager                - Resource Manager associating with leading JobManager Actor[akka://flink/user/jobmanager#1602741108] - leader session 6539dc04-d7fe-4f85-a0b6-09bfb0de8a58
+2017-05-19 14:41:38,033 INFO  org.apache.flink.yarn.YarnFlinkResourceManager                - Requesting new TaskManager container with 1024 megabytes memory. Pending requests: 1
+2017-05-19 14:41:38,781 INFO  org.apache.flink.yarn.YarnFlinkResourceManager                - Received new container: container_1494870922226_0061_02_000002 - Remaining pending container requests: 0
+2017-05-19 14:41:38,782 INFO  org.apache.flink.yarn.YarnFlinkResourceManager                - Launching TaskManager in container ContainerInLaunch @ 1495204898782: Container: [ContainerId: container_1494870922226_0061_02_000002, NodeId: permanent-qa-cluster-d3iz.c.astral-sorter-757.internal:8041, NodeHttpAddress: permanent-qa-cluster-d3iz.c.astral-sorter-757.internal:8042, Resource: <memory:1024, vCores:1>, Priority: 0, Token: Token { kind: ContainerToken, service: 10.240.0.32:8041 }, ] on host permanent-qa-cluster-d3iz.c.astral-sorter-757.internal
+2017-05-19 14:41:38,788 INFO  org.apache.hadoop.yarn.client.api.impl.ContainerManagementProtocolProxy  - Opening proxy : permanent-qa-cluster-d3iz.c.astral-sorter-757.internal:8041
+2017-05-19 14:41:44,284 INFO  org.apache.flink.yarn.YarnFlinkResourceManager                - Container container_1494870922226_0061_02_000002 failed, with a TaskManager in launch or registration. Exit status: -1000
+2017-05-19 14:41:44,284 INFO  org.apache.flink.yarn.YarnFlinkResourceManager                - Diagnostics for container container_1494870922226_0061_02_000002 in state COMPLETE : exitStatus=-1000 diagnostics=File does not exist: hdfs://nameservice1/user/robert/.flink/application_1494870922226_0061/cf9287fe-ac75-4066-a648-91787d946890-taskmanager-conf.yaml
+java.io.FileNotFoundException: File does not exist: hdfs://nameservice1/user/robert/.flink/application_1494870922226_0061/cf9287fe-ac75-4066-a648-91787d946890-taskmanager-conf.yaml
+	at org.apache.hadoop.hdfs.DistributedFileSystem$19.doCall(DistributedFileSystem.java:1219)
+	at org.apache.hadoop.hdfs.DistributedFileSystem$19.doCall(DistributedFileSystem.java:1211)
+	at org.apache.hadoop.fs.FileSystemLinkResolver.resolve(FileSystemLinkResolver.java:81)
+	at org.apache.hadoop.hdfs.DistributedFileSystem.getFileStatus(DistributedFileSystem.java:1211)
+	at org.apache.hadoop.yarn.util.FSDownload.copy(FSDownload.java:251)
+	at org.apache.hadoop.yarn.util.FSDownload.access$000(FSDownload.java:61)
+	at org.apache.hadoop.yarn.util.FSDownload$2.run(FSDownload.java:359)
+	at org.apache.hadoop.yarn.util.FSDownload$2.run(FSDownload.java:357)
+	at java.security.AccessController.doPrivileged(Native Method)
+	at javax.security.auth.Subject.doAs(Subject.java:415)
+	at org.apache.hadoop.security.UserGroupInformation.doAs(UserGroupInformation.java:1698)
+	at org.apache.hadoop.yarn.util.FSDownload.call(FSDownload.java:356)
+	at org.apache.hadoop.yarn.util.FSDownload.call(FSDownload.java:60)
+	at java.util.concurrent.FutureTask.run(FutureTask.java:262)
+	at java.util.concurrent.Executors$RunnableAdapter.call(Executors.java:471)
+	at java.util.concurrent.FutureTask.run(FutureTask.java:262)
+	at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1145)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:615)
+	at java.lang.Thread.run(Thread.java:745)
+
+
+
+The problem is the following:
+
+	JobManager1 starts from a yarn-session.sh
+	Job1 gets submitted to JobManager1
+	JobManager1 dies
+	YARN starts a new JM: JobManager2
+	in the meantime, errors on the yarn-session.sh appear, shutting down the session. This includes deleting the yarn staging directory in HDFS.
+	JobManager2 is unable to start a new Taskmanager because files in staging got deleted by the client.
+

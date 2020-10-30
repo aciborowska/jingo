@@ -1,0 +1,102 @@
+<!--
+Thanks for reporting your issue. Please share with us the following information, to help us resolve your issue quickly and efficiently.
+-->
+
+**Describe the bug**
+
+When using the new EntryStore API, and issuing a "PUT" into the IMap for an item which is NOT in the IMap but does exist in the backing store (database), the DefaultRecordStore will fetch the value (which is a MetadataAwareValue) from the store and attempt to return it without unraveling the value.  This causes HZ to throw the following error:
+
+Exception in thread "main" com.hazelcast.nio.serialization.HazelcastSerializationException: Failed to serialize 'com.hazelcast.map.EntryLoader$MetadataAwareValue'
+
+**Expected behavior**
+
+The store should be able to return a value which has not been loaded yet into the IMap and the value should be returned as the result of the put operation, without the serialization exception.
+ 
+
+**To Reproduce**
+
+Steps to reproduce the behavior:
+
+1. Using the sample at https://github.com/hazelcast/hazelcast-code-samples/tree/master/distributed-map/entrystore
+2. Modify the DummyDatabaseConnection.java replacing the "lookup" method with the following:
+
+```
+    public Record lookup(String key) {
+        if ( key.equalsIgnoreCase("one-minute-key") )
+        {
+            storage.put("one-minute-key", new Record("one-minute-key","someval",System.currentTimeMillis() + 60000));
+        }
+        return storage.get(key);
+    }
+```
+3. Execute the sample's main class "EntryStoreSample"
+
+
+**Additional context**
+
+The issue appears to be related to how the DefaultRecordStore handles the putInternal call
+
+`        Object oldValue = record == null ? (loadFromStore ? this.mapDataStore.load(key) : null) : record.getValue();`
+
+It seems the _mapDataStore_ should be checked to see if it's an EntryStore or the returned value should be checked for being an instance of MetadataAwareValue, in which case the value should be retrieved from the instance.
+ 
+```
+    protected Object putInternal(Data key, Object newValue, long ttl, long maxIdle, @Nullable UUID transactionId, boolean loadFromStore, boolean countAsAccess) {
+        this.checkIfLoaded();
+        long now = getNow();
+        this.markRecordStoreExpirable(ttl, maxIdle);
+        Record record = this.getRecordOrNull(key, now, false);
+        Object oldValue = record == null ? (loadFromStore ? this.mapDataStore.load(key) : null) : record.getValue();
+        newValue = this.mapServiceContext.interceptPut(this.interceptorRegistry, oldValue, newValue);
+        this.onStore(record);
+        if (record == null) {
+            this.putNewRecord(key, oldValue, newValue, ttl, maxIdle, now, transactionId);
+        } else {
+            this.updateRecord(key, record, oldValue, newValue, now, countAsAccess, ttl, maxIdle, true, transactionId, false);
+        }
+        return oldValue;
+    }
+```
+
+
+**Detailed StackTrace:**
+
+```
+Exception in thread "main" com.hazelcast.nio.serialization.HazelcastSerializationException: Failed to serialize 'com.hazelcast.map.EntryLoader$MetadataAwareValue'
+                at com.hazelcast.internal.serialization.impl.SerializationUtil.handleSerializeException(SerializationUtil.java:115)
+                at com.hazelcast.internal.serialization.impl.AbstractSerializationService.toBytes(AbstractSerializationService.java:173)
+                at com.hazelcast.internal.serialization.impl.AbstractSerializationService.toBytes(AbstractSerializationService.java:149)
+                at com.hazelcast.internal.serialization.impl.AbstractSerializationService.toData(AbstractSerializationService.java:134)
+                at com.hazelcast.internal.serialization.impl.AbstractSerializationService.toData(AbstractSerializationService.java:122)
+                at com.hazelcast.internal.serialization.impl.SerializationServiceV1.toData(SerializationServiceV1.java:137)
+                at com.hazelcast.map.impl.MapServiceContextImpl.toData(MapServiceContextImpl.java:548)
+                at com.hazelcast.map.impl.operation.PutOperation.runInternal(PutOperation.java:36)
+                at com.hazelcast.map.impl.operation.MapOperation.run(MapOperation.java:112)
+                at com.hazelcast.spi.impl.operationservice.Operation.call(Operation.java:184)
+                at com.hazelcast.spi.impl.operationservice.impl.OperationRunnerImpl.call(OperationRunnerImpl.java:227)
+                at com.hazelcast.spi.impl.operationservice.impl.OperationRunnerImpl.run(OperationRunnerImpl.java:216)
+                at com.hazelcast.spi.impl.operationexecutor.impl.OperationThread.process(OperationThread.java:160)
+                at com.hazelcast.spi.impl.operationexecutor.impl.OperationThread.process(OperationThread.java:138)
+                at com.hazelcast.spi.impl.operationexecutor.impl.OperationThread.run(OperationThread.java:123)
+Caused by: com.hazelcast.nio.serialization.HazelcastSerializationException: There is no suitable serializer for class com.hazelcast.map.EntryLoader$MetadataAwareValue
+                at com.hazelcast.internal.serialization.impl.AbstractSerializationService.serializerFor(AbstractSerializationService.java:507)
+                at com.hazelcast.internal.serialization.impl.AbstractSerializationService.toBytes(AbstractSerializationService.java:162)
+```
+
+Hazelcast: 4.0.2
+
+
+<!--
+Add any other context about the problem here.
+
+Common details that we're often interested in:
+- Detailed description of the steps to reproduce your issue
+- Logs and stack traces, if available
+- Hazelcast version that you use (e.g. 3.4, also specify whether it is a minor release or the latest snapshot)
+- If available, integration module versions (e.g. Tomcat, Jetty, Spring, Hibernate). Also, include their detailed configuration information such as web.xml, Hibernate configuration and `context.xml` for Spring
+- Cluster size, i.e. the number of Hazelcast cluster members
+- Number of the clients
+- Version of Java. It is also helpful to mention the JVM parameters
+- Operating system. If it is Linux, kernel version is helpful
+- Unit test with the `hazelcast.xml` file. If you could include a unit test which reproduces your issue, we would be grateful
+-->

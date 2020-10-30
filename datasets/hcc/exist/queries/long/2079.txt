@@ -1,0 +1,60 @@
+eXist-db 4.3.1 - Dashboard 1.1.0 - any platform
+repo 0.6.0
+
+When I try to get to packages from our own repository (http://decor.nictiz.nl/apps/public-repo-dev) I get a 404 in the package manager. Looking a little deeper the problem is that when it tries to load the `apps.xml` list, it interprets that list to be `text/xml` instead of `application/xml`.
+
+This happens in function packages:public-repo-contents in the line
+
+```xquery
+let $data := http:send-request($request)
+```
+
+You can replay that in Postman/curl and see what comes back (application/xml) using a simple http GET on:
+
+```
+http://decor.nictiz.nl/apps/public-repo-dev/public/apps.xml?version=4.3.1&amp;source=
+```
+
+But you when http:send-request() executes, you'll get:
+
+```xml
+<hc:response xmlns:hc="http://expath.org/ns/http-client" status="200" message="OK" spent-millis="136">
+    <hc:header name="server" value="nginx/1.10.2"/>
+    <hc:header name="date" value="Mon, 30 Jul 2018 01:55:16 GMT"/>
+    <hc:header name="content-type" value="text/plain; charset=utf-8"/>
+    <hc:header name="transfer-encoding" value="chunked"/>
+    <hc:header name="connection" value="keep-alive"/>
+    <hc:header name="x-xquery-cached" value="true"/>
+    <hc:body media-type="text/plain"/>
+</hc:response>&lt;apps version="4.3.1"&gt; ... &lt;/apps&gt;
+```
+
+To work around this problem I've replaced the call `http:send-request($request)` with `httpclient:get(xs:anyURI($url),false(), $request)` because the older HTTP client module will accept the body as XML.
+
+Reproduction code:
+
+```xquery
+xquery version "3.0";
+
+declare namespace http = "http://expath.org/ns/http-client";
+
+let $base   := 'http://decor.nictiz.nl/apps/public-repo-dev'
+
+let $url    := $base || "/public/apps.xml?version=4.3.1&amp;source=" || util:system-property("product-source")
+
+let $request :=
+    <http:request method="get" href="{$url}" timeout="10">
+        <http:header name="Cache-Control" value="no-cache"/>
+    </http:request>
+
+let $expath-response    := httpclient:get(xs:anyURI($url),false(), $request)
+let $exist-response     := http:send-request($request)
+
+return
+    <x url="{$url}">
+        <!-- response by expath http client -->
+        {$expath-response}
+        <!-- response by exist-db http client -->
+        {$exist-response}
+    </x>
+```

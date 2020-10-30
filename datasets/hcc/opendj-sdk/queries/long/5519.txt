@@ -1,0 +1,275 @@
+Global information
+
+Problem seen and reproducible by running four replicas system test (scenario3)
+ Change number indexer starts to be un-sync at the beginning of the test, when starting addrate on DS1 and modrate on DS2.
+
+May be related to https://bugster.forgerock.org/jira/browse/OPENDJ-5367
+Topology
+
+4 DJ instances
+
+	DS1 (1389 - server id 4) and DS3 (1390 - server id 6) running on raclette
+	DS2 (1389 - server id 5) and DS4 (1390 - server id 7) running on morbier
+
+
+
+https://wikis.forgerock.org/confluence/display/QA/Four+replicas#Fourreplicas-Topology
+Scenario
+
+	t0 :
+	
+		start modrate client against DS1
+		start addrate client against DS2
+	
+	
+
+
+
+Divergence in change number indexer seen just after the start : divergence between DS1 and DS3 found in 1.log change number file
+
+$ for i in `ls -all *log| sed 's/.*:...\([0-9]*\).log/\1/'|sort -n` ; do cmp $i.log ../../../../DS3/opendj/changelogDb/changenumberindex/$i.log ; done
+1.log ../../../../DS3/opendj/changelogDb/changenumberindex/1.log differ: char 308410, line 553
+34409.log ../../../../DS3/opendj/changelogDb/changenumberindex/34409.log differ: char 495838, line 65
+51613.log ../../../../DS3/opendj/changelogDb/changenumberindex/51613.log differ: char 910865, line 117
+653753.log ../../../../DS3/opendj/changelogDb/changenumberindex/653753.log differ: char 797675, line 17497
+[…] 
+
+Product information
+
+	revision : 5913c83c2d6
+	build id : 2018-09-28 00:00:11
+
+
+
+Logs file
+
+There are no ERROR/WARNING in all instances logs
+Change number entries order differs
+
+Step 1 : Check size 
+
+raclette $ ls -lt DS1/opendj/changelogDb/changenumberindex/1.log
+-rw-rw-r--. 1 testuser testuser 1048624 Sep 28 12:47 DS1/opendj/changelogDb/changenumberindex/1.log
+raclette  $ ls -lt DS3/opendj/changelogDb/changenumberindex/1.log
+-rw-rw-r--. 1 testuser testuser 1048624 Sep 28 12:47 DS3/opendj/changelogDb/changenumberindex/1.log
+
+
+Step 2 : Taking first change numbers in 1.log file
+
+$ ls -all *log| sed 's/.*:...\([0-9]*\).log/\1/'|sort -n
+1
+17205
+
+Step 3 : search all change numbers before 17205 in DS1 and DS3 
+
+ldapsearch -p 1389 -h localhost -D "cn=directory manager" -w "password"  -b "cn=changelog" "(changeNumber<=17205)" replicationCSN > /tmp/1
+ldapsearch -p 1390 -h localhost -D "cn=directory manager" -w "password"  -b "cn=changelog" "(changeNumber<=17205)" replicationCSN > /tmp/3
+
+Step 4 : find where divergence started
+
+$ diff /tmp/1 /tmp/3|more
+< replicationCSN: 010101661fca93d00000192b5
+<
+< dn: changeNumber=5061,cn=changelog
+< replicationCSN: 010101661fca93d00000192c5
+
+Step 5 : extract of DS1 (/tmp/1) : change number order is good
+
+dn: changeNumber=5060,cn=changelog
+replicationCSN: 010101661fca93d00000192b5
+dn: changeNumber=5061,cn=changelog
+replicationCSN: 010101661fca93d00000192c5
+dn: changeNumber=5062,cn=changelog
+replicationCSN: 010101661fca93d00000192d5 
+
+
+Step 6 : extract of DS3 (/tmp/3) : 228 entries missing
+
+dn: changeNumber=5060,cn=changelog
+replicationCSN: 010101661fca9418000004c94
+dn: changeNumber=5288,cn=changelog
+replicationCSN: 010101661fca9418000004ca4
+dn: changeNumber=5289,cn=changelog
+replicationCSN: 010101661fca941900001a0e5
+dn: changeNumber=5290,cn=changelog
+replicationCSN: 010101661fca941900001a0f5
+
+
+
+$ grep "changeNumber=5061,cn=changelog" /tmp/3
+
+
+Step 7 : 1.log extract
+
+	Download 1.log files here : http://abondance-fr/public/gandru/OPENDJ-5519/
+	Divergence starts at line 0004b4b0
+
+
+
+7.1 Extract of DS1
+
+hexdump 1.log -C |less
+0004b400 00 00 00 34 ca 93 d0 00 00 19 28 35 00 00 00 38 |...4......(5...8|
+0004b410 00 00 00 00 00 00 13 c2 6f 75 3d 73 73 6f 75 73 |........ou=ssous|
+0004b420 65 72 73 2c 64 63 3d 63 75 73 74 6f 6d 65 72 5f |ers,dc=customer_|
+0004b430 6f 6e 65 2c 64 63 3d 63 6f 6d 00 01 01 01 66 1f |one,dc=com....f.|
+0004b440 ca 93 d0 00 00 19 29 35 00 00 00 38 00 00 00 00 |......)5...8....|
+0004b450 00 00 13 c3 6f 75 3d 73 73 6f 75 73 65 72 73 2c |....ou=ssousers,|
+0004b460 64 63 3d 63 75 73 74 6f 6d 65 72 5f 6f 6e 65 2c |dc=customer_one,|
+0004b470 64 63 3d 63 6f 6d 00 01 01 01 66 1f ca 93 d0 00 |dc=com....f.....|
+0004b480 00 19 2a 35 00 00 00 38 00 00 00 00 00 00 13 c4 |..*5...8........|
+0004b490 6f 75 3d 73 73 6f 75 73 65 72 73 2c 64 63 3d 63 |ou=ssousers,dc=c|
+0004b4a0 75 73 74 6f 6d 65 72 5f 6f 6e 65 2c 64 63 3d 63 |ustomer_one,dc=c|
+0004b4b0 6f 6d 00 01 01 01 66 1f ca 93 d0 00 00 19 2b 35 |om....f.......+5|
+0004b4c0 00 00 00 38 00 00 00 00 00 00 13 c5 6f 75 3d 73 |...8........ou=s|
+0004b4d0 73 6f 75 73 65 72 73 2c 64 63 3d 63 75 73 74 6f |sousers,dc=custo|
+0004b4e0 6d 65 72 5f 6f 6e 65 2c 64 63 3d 63 6f 6d 00 01 |mer_one,dc=com..|
+0004b4f0 01 01 66 1f ca 93 d0 00 00 19 2c 35 00 00 00 38 |..f.......,5...8|
+0004b500 00 00 00 04 00 00 00 00 00 00 13 c6 6f 75 3d 73 |............ou=s|
+0004b510 73 6f 75 73 65 72 73 2c 64 63 3d 63 75 73 74 6f |sousers,dc=custo|
+0004b520 6d 65 72 5f 6f 6e 65 2c 64 63 3d 63 6f 6d 00 01 |mer_one,dc=com..|
+0004b530 01 01 66 1f ca 93 d0 00 00 19 2d 35 00 00 00 38 |..f.......-5...8|
+0004b540 00 00 00 00 00 00 13 c7 6f 75 3d 73 73 6f 75 73 |........ou=ssous|
+0004b550 65 72 73 2c 64 63 3d 63 75 73 74 6f 6d 65 72 5f |ers,dc=customer_|
+0004b560 6f 6e 65 2c 64 63 3d 63 6f 6d 00 01 01 01 66 1f |one,dc=com....f.|
+0004b570 ca 93 d0 00 00 19 2e 35 00 00 00 38 00 00 00 00 |.......5...8....|
+0004b580 00 00 13 c8 6f 75 3d 73 73 6f 75 73 65 72 73 2c |....ou=ssousers,|
+0004b590 64 63 3d 63 75 73 74 6f 6d 65 72 5f 6f 6e 65 2c |dc=customer_one,|
+0004b5a0 64 63 3d 63 6f 6d 00 01 01 01 66 1f ca 93 d0 00 |dc=com....f.....|
+0004b5b0 00 19 2f 35 00 00 00 38 00 00 00 00 00 00 13 c9 |../5...8........|
+0004b5c0 6f 75 3d 73 73 6f 75 73 65 72 73 2c 64 63 3d 63 |ou=ssousers,dc=c|
+0004b5d0 75 73 74 6f 6d 65 72 5f 6f 6e 65 2c 64 63 3d 63 |ustomer_one,dc=c|
+0004b5e0 6f 6d 00 01 01 01 66 1f ca 93 d0 00 00 19 30 35 |om....f.......05|
+0004b5f0 00 00 00 38 00 00 00 00 00 00 13 ca 6f 75 3d 73 |...8........ou=s|
+0004b600 00 00 00 10 73 6f 75 73 65 72 73 2c 64 63 3d 63 |....sousers,dc=c|
+0004b610 75 73 74 6f 6d 65 72 5f 6f 6e 65 2c 64 63 3d 63 |ustomer_one,dc=c|
+0004b620 6f 6d 00 01 01 01 66 1f ca 93 d0 00 00 19 31 35 |om....f.......15|
+0004b630 00 00 00 38 00 00 00 00 00 00 13 cb 6f 75 3d 73 |...8........ou=s|
+0004b640 73 6f 75 73 65 72 73 2c 64 63 3d 63 75 73 74 6f |sousers,dc=custo|
+0004b650 6d 65 72 5f 6f 6e 65 2c 64 63 3d 63 6f 6d 00 01 |mer_one,dc=com..|
+0004b660 01 01 66 1f ca 93 d0 00 00 19 32 35 00 00 00 38 |..f.......25...8|
+0004b670 00 00 00 00 00 00 13 cc 6f 75 3d 73 73 6f 75 73 |........ou=ssous|
+0004b680 65 72 73 2c 64 63 3d 63 75 73 74 6f 6d 65 72 5f |ers,dc=customer_|
+0004b690 6f 6e 65 2c 64 63 3d 63 6f 6d 00 01 01 01 66 1f |one,dc=com....f.|
+0004b6a0 ca 93 d0 00 00 19 33 35 00 00 00 38 00 00 00 00 |......35...8....|
+0004b6b0 00 00 13 cd 6f 75 3d 73 73 6f 75 73 65 72 73 2c |....ou=ssousers,|
+0004b6c0 64 63 3d 63 75 73 74 6f 6d 65 72 5f 6f 6e 65 2c |dc=customer_one,|
+0004b6d0 64 63 3d 63 6f 6d 00 01 01 01 66 1f ca 93 d0 00 |dc=com....f.....|
+0004b6e0 00 19 34 35 00 00 00 38 00 00 00 00 00 00 13 ce |..45...8........|
+0004b6f0 6f 75 3d 73 73 6f 75 73 65 72 73 2c 64 63 3d 63 |ou=ssousers,dc=c|
+0004b700 00 00 00 1c 75 73 74 6f 6d 65 72 5f 6f 6e 65 2c |....ustomer_one,|
+
+7.2 Extract of DS3
+
+hexdump 1.log -C |less
+0004b400 00 00 00 34 ca 93 d0 00 00 19 28 35 00 00 00 38 |...4......(5...8|
+0004b410 00 00 00 00 00 00 13 c2 6f 75 3d 73 73 6f 75 73 |........ou=ssous|
+0004b420 65 72 73 2c 64 63 3d 63 75 73 74 6f 6d 65 72 5f |ers,dc=customer_|
+0004b430 6f 6e 65 2c 64 63 3d 63 6f 6d 00 01 01 01 66 1f |one,dc=com....f.|
+0004b440 ca 93 d0 00 00 19 29 35 00 00 00 38 00 00 00 00 |......)5...8....|
+0004b450 00 00 13 c3 6f 75 3d 73 73 6f 75 73 65 72 73 2c |....ou=ssousers,|
+0004b460 64 63 3d 63 75 73 74 6f 6d 65 72 5f 6f 6e 65 2c |dc=customer_one,|
+0004b470 64 63 3d 63 6f 6d 00 01 01 01 66 1f ca 93 d0 00 |dc=com....f.....|
+0004b480 00 19 2a 35 00 00 00 38 00 00 00 00 00 00 13 c4 |..*5...8........|
+0004b490 6f 75 3d 73 73 6f 75 73 65 72 73 2c 64 63 3d 63 |ou=ssousers,dc=c|
+0004b4a0 75 73 74 6f 6d 65 72 5f 6f 6e 65 2c 64 63 3d 63 |ustomer_one,dc=c|
+0004b4b0 6f 6d 00 01 01 01 66 1f ca 94 18 00 00 04 c9 34 |om....f........4|
+0004b4c0 00 00 00 38 00 00 00 00 00 00 13 c5 6f 75 3d 73 |...8........ou=s|
+0004b4d0 73 6f 75 73 65 72 73 2c 64 63 3d 63 75 73 74 6f |sousers,dc=custo|
+0004b4e0 6d 65 72 5f 6f 6e 65 2c 64 63 3d 63 6f 6d 00 01 |mer_one,dc=com..|
+0004b4f0 01 01 66 1f ca 93 d0 00 00 19 2b 35 00 00 00 38 |..f.......+5...8|
+0004b500 00 00 00 04 00 00 00 00 00 00 13 c6 6f 75 3d 73 |............ou=s|
+0004b510 73 6f 75 73 65 72 73 2c 64 63 3d 63 75 73 74 6f |sousers,dc=custo|
+0004b520 6d 65 72 5f 6f 6e 65 2c 64 63 3d 63 6f 6d 00 01 |mer_one,dc=com..|
+0004b530 01 01 66 1f ca 93 d0 00 00 19 2c 35 00 00 00 38 |..f.......,5...8|
+0004b540 00 00 00 00 00 00 13 c7 6f 75 3d 73 73 6f 75 73 |........ou=ssous|
+0004b550 65 72 73 2c 64 63 3d 63 75 73 74 6f 6d 65 72 5f |ers,dc=customer_|
+0004b560 6f 6e 65 2c 64 63 3d 63 6f 6d 00 01 01 01 66 1f |one,dc=com....f.|
+0004b570 ca 93 d0 00 00 19 2d 35 00 00 00 38 00 00 00 00 |......-5...8....|
+0004b580 00 00 13 c8 6f 75 3d 73 73 6f 75 73 65 72 73 2c |....ou=ssousers,|
+0004b590 64 63 3d 63 75 73 74 6f 6d 65 72 5f 6f 6e 65 2c |dc=customer_one,|
+0004b5a0 64 63 3d 63 6f 6d 00 01 01 01 66 1f ca 93 d0 00 |dc=com....f.....|
+0004b5b0 00 19 2e 35 00 00 00 38 00 00 00 00 00 00 13 c9 |...5...8........|
+0004b5c0 6f 75 3d 73 73 6f 75 73 65 72 73 2c 64 63 3d 63 |ou=ssousers,dc=c|
+0004b5d0 75 73 74 6f 6d 65 72 5f 6f 6e 65 2c 64 63 3d 63 |ustomer_one,dc=c|
+0004b5e0 6f 6d 00 01 01 01 66 1f ca 93 d0 00 00 19 2f 35 |om....f......./5|
+0004b5f0 00 00 00 38 00 00 00 00 00 00 13 ca 6f 75 3d 73 |...8........ou=s|
+0004b600 00 00 00 10 73 6f 75 73 65 72 73 2c 64 63 3d 63 |....sousers,dc=c|
+0004b610 75 73 74 6f 6d 65 72 5f 6f 6e 65 2c 64 63 3d 63 |ustomer_one,dc=c|
+0004b620 6f 6d 00 01 01 01 66 1f ca 93 d0 00 00 19 30 35 |om....f.......05|
+0004b630 00 00 00 38 00 00 00 00 00 00 13 cb 6f 75 3d 73 |...8........ou=s|
+0004b640 73 6f 75 73 65 72 73 2c 64 63 3d 63 75 73 74 6f |sousers,dc=custo|
+0004b650 6d 65 72 5f 6f 6e 65 2c 64 63 3d 63 6f 6d 00 01 |mer_one,dc=com..|
+0004b660 01 01 66 1f ca 93 d0 00 00 19 31 35 00 00 00 38 |..f.......15...8|
+0004b670 00 00 00 00 00 00 13 cc 6f 75 3d 73 73 6f 75 73 |........ou=ssous|
+0004b680 65 72 73 2c 64 63 3d 63 75 73 74 6f 6d 65 72 5f |ers,dc=customer_|
+0004b690 6f 6e 65 2c 64 63 3d 63 6f 6d 00 01 01 01 66 1f |one,dc=com....f.|
+0004b6a0 ca 93 d0 00 00 19 32 35 00 00 00 38 00 00 00 00 |......25...8....|
+0004b6b0 00 00 13 cd 6f 75 3d 73 73 6f 75 73 65 72 73 2c |....ou=ssousers,|
+0004b6c0 64 63 3d 63 75 73 74 6f 6d 65 72 5f 6f 6e 65 2c |dc=customer_one,|
+0004b6d0 64 63 3d 63 6f 6d 00 01 01 01 66 1f ca 93 d0 00 |dc=com....f.....|
+0004b6e0 00 19 33 35 00 00 00 38 00 00 00 00 00 00 13 ce |..35...8........|
+0004b6f0 6f 75 3d 73 73 6f 75 73 65 72 73 2c 64 63 3d 63 |ou=ssousers,dc=c|
+0004b700 00 00 00 1c 75 73 74 6f 6d 65 72 5f 6f 6e 65 2c |....ustomer_one,|
+
+How to run the test
+
+controller : esiago
+ agents : raclette / morbier
+
+asiago $ scripts/stress/run/run_stress.py -c perf -s four_replicas.scenario3 --duration 2h --num_users 5000000 --monitoring_interval 180 --concurrency 10000 --dj_version 6.5.0-SNAPSHOT --cfg config/config_4replicas.cfg OpenDJ
+
+config file : see attachment
+Releases tracking
+Methodology
+
+	run the test
+	
+		wait installation configuration steps are done
+		stop the test few minutes after load starts on both DS1 and DS2
+	
+	
+	compare change number indexer log files between instances
+
+
+
+Run the test
+
+$ cd pyforge
+$ for release in 6.5.0-SNAPSHOT 6.0.0 5.5.0 5.5.1 5.5.2-final ; do scripts/stress/run/run_stress.py -c perf -s four_replicas.opendj_5519 --duration 2m --num_users 1000 --monitoring_interval 60 --concurrency 10000 --dj_version $release --cfg config/config_4replicas.cfg DJ ; done
+
+http://asiago.internal.forgerock.com/external/testuser/gandru/wks/pyforge/results/reports.html
+Summary
+
+I can see differences between content of files every time i run the test on lab machines but not on my laptop.
+
+
+
+Release
+Is problem found?
+
+
+5.5.0
+yes
+
+
+5.5.1
+yes 
+
+
+5.5.2
+yes
+
+
+6.0.0
+yes
+
+
+6.5.0
+yes
+
+
+
+
+
+ 

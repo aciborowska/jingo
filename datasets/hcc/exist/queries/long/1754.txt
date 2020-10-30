@@ -1,0 +1,87 @@
+# the problem
+When doing some unit tests, i encountered NPEs testing functions calling imported modules. (it is only a good guess, that this is the cause)
+Anyway, when calling exactly the same with `string(CALL) => util:eval()`, the test will run as expected.
+
+In other words, a test fails for:
+```XQuery
+declare
+    %test:args("/db/apps/sade/docs/about.md") %test:assertXPath('local-name($result) = "div"')
+function tests:multiviewer-markdown($docpath) {
+    multiviewer:markdown($docpath)
+};
+```
+```xml
+<testcase name="multiviewer-markdown" class="tests:multiviewer-markdown">
+    <error type="java:java.lang.NullPointerException" message=""/>
+</testcase>
+```
+…but works when the function uses `util:eval`:
+```XQuery
+declare
+    %test:args("/db/apps/sade/docs/about.md") %test:assertXPath('local-name($result) = "div"')
+function tests:multiviewer-markdown($docpath) {
+    util:eval( "multiviewer:markdown($docpath)" )
+};
+```
+```xml
+<testcase name="multiviewer-markdown" class="tests:multiviewer-markdown"/>
+```
+
+# reproduce/test
+So, here are three files you need to test this in eXist (you need the markdown parser installed)
+## Module with import = /db/apps/module.xqm
+```XQuery
+xquery version "3.1";
+module namespace module="http://exist-db.org/apps/myapp/module";
+import module namespace markdown="http://exist-db.org/xquery/markdown";
+declare function module:markdown($input as xs:string){
+    markdown:parse($input)
+};
+```
+## Test wrapper = /db/apps/test.xqm
+```XQuery
+xquery version "3.1";
+module namespace tests="https://sade.textgrid.de/ns/tests";
+import module namespace module="http://exist-db.org/apps/myapp/module" at "/db/apps/module.xqm";
+declare namespace test="http://exist-db.org/xquery/xqsuite";
+
+declare
+    %test:args("# Hello World") %test:assertXPath('$result//h1[. = "Hello World"]')
+function tests:module-markdown-util($string) {
+    util:eval( "module:markdown($string)" )
+};
+
+declare
+    %test:args("# Hello World") %test:assertXPath('$result//h1[. = "Hello World"]')
+function tests:module-markdown($string) {
+    module:markdown($string)
+};
+```
+## Start the test = /db/apps/test.xq
+```XQuery
+xquery version "3.1";
+import module namespace test="http://exist-db.org/xquery/xqsuite" at "resource:org/exist/xquery/lib/xqsuite/xqsuite.xql";
+(: all tests are specified in modules/test.xqm :)
+test:suite(
+    inspect:module-functions(xs:anyURI("/db/apps/test.xqm"))
+)
+```
+## Test return
+```xml
+<testsuites>
+    <testsuite package="https://sade.textgrid.de/ns/tests" timestamp="2018-02-26T12:05:54.213+01:00" failures="0" pending="0" tests="2" time="PT0.004S">
+        <testcase name="module-markdown" class="tests:module-markdown">
+            <error type="java:java.lang.NullPointerException" message=""/>
+        </testcase>
+        <testcase name="module-markdown-util" class="tests:module-markdown-util"/>
+    </testsuite>
+</testsuites>
+```
+### Context information
+  - eXist-db 4.0.0
+  - openjdk version "1.8.0_151"
+  - OpenJDK Runtime Environment (build 1.8.0_151-8u151-b12-0ubuntu0.17.10.2-b12)
+  - OpenJDK 64-Bit Server VM (build 25.151-b12, mixed mode)
+  - Linux
+  - 64 bit
+  - No custom changes in e.g. conf.xml

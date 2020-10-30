@@ -1,0 +1,16 @@
+It does not appear that Flink supports a charset encoding of "UTF-16". It particular, it doesn't appear that Flink consumes the Byte Order Mark (BOM) to establish whether a UTF-16 file is UTF-16LE or UTF-16BE.
+ 
+TextInputFormat.setCharset("UTF-16") calls DelimitedInputFormat.setCharset(), which sets TextInputFormat.charsetName and then modifies the previously set delimiterString to construct the proper byte string encoding of the the delimiter. This same charsetName is also used in TextInputFormat.readRecord() to interpret the bytes read from the file.
+ 
+There are two problems that this implementation would seem to have when using UTF-16.
+
+	delimiterString.getBytes(getCharset()) in DelimitedInputFormat.java will return a Big Endian byte sequence including the Byte Order Mark (BOM). The actual text file will not contain a BOM at each line ending, so the delimiter will never be read. Moreover, if the actual byte encoding of the file is Little Endian, the bytes will be interpreted incorrectly.
+	TextInputFormat.readRecord() will not see a BOM each time it decodes a byte sequence with the String(bytes, offset, numBytes, charset) call. Therefore, it will assume Big Endian, which may not always be correct. [1] https://github.com/apache/flink/blob/master/flink-java/src/main/java/org/apache/flink/api/java/io/TextInputFormat.java#L95
+
+
+
+ 
+While there are likely many solutions, I would think that all of them would have to start by reading the BOM from the file when a Split is opened and then using that BOM to modify the specified encoding to a BOM specific one when the caller doesn't specify one, and to overwrite the caller's specification if the BOM is in conflict with the caller's specification. That is, if the BOM indicates Little Endian and the caller indicates UTF-16BE, Flink should rewrite the charsetName as UTF-16LE.
+ I hope this makes sense and that I haven't been testing incorrectly or misreading the code.
+ 
+I've verified the problem on version 1.4.2. I believe the problem exists on all versions. 

@@ -1,0 +1,68 @@
+I'm adding new tests for the `loadAll()` methods of `JCache` and `IMap`: https://github.com/hazelcast/hazelcast/pull/10326
+
+The `ClientCacheNearCacheBasicTest` fails on the method `whenLoadAllWithListenerIsUsed_thenNearCacheIsInvalidated_onDataAdapter()` and creates the following exceptions:
+```java
+java.lang.NullPointerException
+	at com.hazelcast.client.impl.protocol.util.ParameterUtil.calculateDataSize(ParameterUtil.java:32)
+	at com.hazelcast.client.impl.protocol.codec.CacheAddNearCacheInvalidationListenerCodec.encodeCacheBatchInvalidationEvent(CacheAddNearCacheInvalidationListenerCodec.java:168)
+	at com.hazelcast.client.impl.protocol.task.cache.CacheAddNearCacheInvalidationListenerTask$NearCacheInvalidationListener.encodeBatchInvalidation(CacheAddNearCacheInvalidationListenerTask.java:63)
+	at com.hazelcast.internal.nearcache.impl.invalidation.AbstractBaseNearCacheInvalidationListener.sendInvalidation(AbstractBaseNearCacheInvalidationListener.java:54)
+	at com.hazelcast.client.impl.protocol.task.cache.AbstractCacheClientNearCacheInvalidationListener.handleEvent(AbstractCacheClientNearCacheInvalidationListener.java:47)
+	at com.hazelcast.cache.impl.AbstractCacheService.dispatchEvent(AbstractCacheService.java:465)
+	at com.hazelcast.cache.impl.AbstractCacheService.dispatchEvent(AbstractCacheService.java:65)
+	at com.hazelcast.spi.impl.eventservice.impl.LocalEventDispatcher.run(LocalEventDispatcher.java:56)
+	at com.hazelcast.util.executor.StripedExecutor$Worker.process(StripedExecutor.java:221)
+	at com.hazelcast.util.executor.StripedExecutor$Worker.run(StripedExecutor.java:204)
+```
+
+The scenario is a member and client node, both configured with a simple `CacheLoader`. The client has a Near Cache configured, invalidations are enabled.. The `loadAll()` is invoked on the member:
+```java
+ICacheCompletionListener listener = new ICacheCompletionListener();
+memberCache.loadAll(allKeys, true, listener);
+listener.await();
+```
+
+```java
+public class ICacheCacheLoader implements CacheLoader<Integer, String> {
+
+    @Override
+    public String load(Integer key) throws CacheLoaderException {
+        return "newValue-" + key;
+    }
+
+    @Override
+    public Map<Integer, String> loadAll(Iterable<? extends Integer> keys)
+            throws CacheLoaderException {
+        Map<Integer, String> entries = new HashMap<Integer, String>();
+        for (Integer key : keys) {
+            entries.put(key, "newValue-" + key);
+        }
+        return entries;
+    }
+}
+```
+```java
+public class ICacheCompletionListener implements CompletionListener {
+
+    private final CountDownLatch completed = new CountDownLatch(1);
+
+    private volatile Exception exception;
+
+    @Override
+    public void onCompletion() {
+        completed.countDown();
+    }
+
+    @Override
+    public void onException(Exception e) {
+        exception = e;
+    }
+
+    public void await() {
+        HazelcastTestSupport.assertOpenEventually(completed);
+        if (exception != null) {
+            throw rethrow(exception);
+        }
+    }
+}
+```

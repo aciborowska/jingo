@@ -1,0 +1,86 @@
+Hello it's me again :)
+
+Unfortunately I have found issue with IMap and it's QueryCache consistency.
+
+Documentation says:
+**After the construction of a continuous query cache, all changes on the underlying IMap are immediately reflected to this cache as a stream of events. Therefore, this cache will be an always up-to-date view of the IMap.**
+
+In my case from time to time it's not true.
+
+My Hazelcast configuration:
+
+``` java
+    private static HazelcastInstance createHazelcastInstance() {
+        HazelcastInstance hazelcastInstance = Hazelcast.newHazelcastInstance(configuration());
+        log.info("Started Hazelcast Node");
+        return hazelcastInstance;
+    }
+
+    private static Config configuration() {
+        return new Config()
+                .setProperty("hazelcast.logging.type", "slf4j")
+                .addMapConfig(new MapConfig(MAP_NAME)
+                        .setInMemoryFormat(InMemoryFormat.BINARY)
+                        .setReadBackupData(true)
+                        .setBackupCount(1)
+                        .addQueryCacheConfig(new QueryCacheConfig()
+                                .setName(MAP_NAME)
+                                .setPredicateConfig(new PredicateConfig(INSTANCE))
+                                .setIncludeValue(true)
+                                .setPopulate(true)
+                                .setDelaySeconds(0)
+                        )
+                );
+    }
+```
+
+And very simple main:
+
+``` java
+    public static void main(String[] args) throws Exception {
+        HazelcastInstance hazelcast = createHazelcastInstance();
+
+        IMap<Long, String> map = hazelcast.getMap(MAP_NAME);
+        QueryCache<Long, String> qc = map.getQueryCache(MAP_NAME);
+
+        while (true) {
+            map.clear();
+            sleep(50);
+            log.info("initial size: IMap {}, QC {}", map.size(), qc.size());
+
+            map.put(1L, "value-1");
+            map.put(2L, "value-2");
+            map.put(3L, "value-3");
+            log.info("size after 3x put: IMap {}, QC {}", map.size(), qc.size());
+
+            map.clear();
+            map.put(4L, "value-4");
+
+            log.info("final size: IMap {}, QC {}", map.size(), qc.size());
+            sleep(50);
+            log.info("size check after 50ms: IMap {}, QC {}", map.size(), qc.size());
+
+            if (map.size() != 1 || qc.size() != 1) {
+                log.error("inconsistency detected! value in IMap {} but QC is empty", map.values());
+                System.exit(-1);
+            }
+        }
+    }
+```
+On logs we can see that inconsistency was detected:
+
+```
+15:50:10,269  INFO Test:65 - initial size: IMap 0, QC 0
+15:50:10,269  INFO Test:70 - size after 3x put: IMap 3, QC 3
+15:50:10,269  INFO Test:75 - final size: IMap 1, QC 1
+15:50:10,338  INFO Test:77 - size check after 50ms: IMap 1, QC 1
+15:50:10,401  INFO Test:65 - initial size: IMap 0, QC 0
+15:50:10,401  INFO Test:70 - size after 3x put: IMap 3, QC 3
+15:50:10,401  INFO Test:75 - final size: IMap 1, QC 0
+15:50:10,454  INFO Test:77 - size check after 50ms: IMap 1, QC 0
+15:50:10,454 ERROR Test:80 - inconsistency detected! value in IMap [value-4] but QC is empty
+```
+
+It looks like clear on QueryCache was done after `value-4` was put, even if it was requested in different order. Actions on IMap were performed in correct order.
+
+Regards

@@ -1,0 +1,70 @@
+- Scale out 3 members cluster and 1 client
+- Wait for sanity on cluster that client discovers 3 members
+- Schedule  `scheduleAtFixedRate(new SimpleMapTask(), 0L, 100L, TimeUnit.MILLISECONDS)` 
+```
+@Slf4j
+public class SimpleMapTask implements Runnable, HazelcastInstanceAware, Serializable {
+    private transient HazelcastInstance instance;
+
+    @Override
+    public void setHazelcastInstance(HazelcastInstance hazelcastInstance) {
+        this.instance = hazelcastInstance;
+    }
+
+    @Override
+    public void run() {
+        val mapName = RandomStringUtils.randomAlphabetic(8);
+        val map = instance.<String, String>getMap(mapName);
+        IntStream.range(0, 42).boxed()
+                .forEach(it -> {
+                    val key = RandomStringUtils.randomAlphabetic(36);
+                    map.put(key, RandomStringUtils.randomAlphabetic(1024));
+                    map.delete(key);
+                    log.info("Deleted {}", key);
+                });
+        map.destroy();
+    }
+}
+
+```
+- Collect metrics, can be similar to below
+```
+if (hazelcastInstance instanceof HazelcastInstanceImpl) {
+            Map<String, Long> metricsMap = new HashMap<>();
+            val impl = (HazelcastInstanceImpl) hazelcastInstance;
+            impl.node.nodeEngine.getMetricsRegistry().collect(new MetricsCollector() {
+                @Override
+                public void collectLong(MetricDescriptor descriptor, long value) {
+                    if (prefix.equals(descriptor.prefix())) {
+                        metricsMap.put(descriptor.metric(), value);
+                    }
+                }
+
+                @Override
+                public void collectDouble(MetricDescriptor descriptor, double value) {
+                    log.warn("Collected double {}, {}", descriptor, value);
+                }
+
+                @Override
+                public void collectException(MetricDescriptor descriptor, Exception e) {
+                    log.warn("Collected exception", e);
+                }
+
+                @Override
+                public void collectNoValue(MetricDescriptor descriptor) {
+                    log.warn("No value collected {}", descriptor);
+                }
+            });
+            return metricsMap;
+        }
+```
+
+When collecting metrics we got below results from members
+```
+2020-09-16T13:38:22.442541775Z 13:38:22:442 [qtp1066417476-18] INFO Nanny - Member {}
+2020-09-16T13:38:22.443240450Z 13:38:22:442 [qtp1066417476-18] INFO Nanny - Member {}
+2020-09-16T13:38:22.458692970Z 13:38:22:458 [qtp1066417476-18] INFO Nanny - Member {totalExecutionTime=3525, creationTime=1600263497280, totalStartLatency=100833, pending=-33, cancelled=0, started=34, completed=33}
+```
+as can be seen `pending` is `-33`.
+
+- kindly check.

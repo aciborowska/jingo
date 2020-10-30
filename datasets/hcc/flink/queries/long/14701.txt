@@ -1,0 +1,9 @@
+If a SharedSlotOversubscribedException happens, the MultiTaskSlot will release some of its child SingleTaskSlot. The triggered releasing will trigger a re-allocation of the task slot right inside SingleTaskSlot#release(...). So that a previous allocation in SloSharingManager#allTaskSlots will be replaced by the new allocation because they share the same slotRequestId.
+However, the SingleTaskSlot#release(...) will then invoke MultiTaskSlot#releaseChild to release the previous allocation with the slotRequestId, which will unexpectedly remove the new allocation from the SloSharingManager.
+In this way, slot leak happens because the pending slot request is not tracked by the SloSharingManager and cannot be released when its payload terminates.
+
+A test case testNoSlotLeakOnSharedSlotOversubscribedException which exhibits this issue can be found in this commit.
+
+The slot leak blocks the TPC-DS queries on flink 1.10, see FLINK-14674.
+
+To solve it, I'd propose to strengthen the MultiTaskSlot#releaseChild to only remove its true child task slot from the SloSharingManager, i.e. add a check if (child == allTaskSlots.get(child.getSlotRequestId())) before invoking allTaskSlots.remove(child.getSlotRequestId()).

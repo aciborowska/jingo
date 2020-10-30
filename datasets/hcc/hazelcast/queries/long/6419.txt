@@ -1,0 +1,23 @@
+It seems that TransactionalMapProxySupport::replaceIfSameInternal keeps the lock in place for the key even if the replace was unsuccessful.
+
+```
+    public boolean replaceIfSameInternal(Data key, Object oldValue, Data newValue) {
+        VersionedValue versionedValue = lockAndGet(key, tx.getTimeoutMillis());
+        if (!getService().getMapServiceContext().compare(name, oldValue, versionedValue.value)) {
+            addUnlockTransactionRecord(key, versionedValue.version);
+            return false;
+        }
+        final TxnSetOperation op = new TxnSetOperation(name, key, newValue, versionedValue.version);
+        tx.add(new MapTransactionLogRecord(name, key, getPartitionId(key), op, versionedValue.version, tx.getOwnerUuid()));
+        return true;
+```
+
+We think that 
+
+```
+        if (!getService().getMapServiceContext().compare(name, oldValue, versionedValue.value)) {
+```
+
+should unlock the key immediately and not wait for a commit/rollback (or lock timeout) to do it, since it did not replace the value.
+
+Other methods within the same class exhibiting the same behavior are: putIfAbsentInternal, replaceInternal, removeIfSameInternal.

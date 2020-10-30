@@ -1,0 +1,35 @@
+1) Create 3 replicas containing 2000 sample entries
+2) Initialize replication
+3) Verify that replication is working ok
+4) Perform the following modrate on a single node:
+
+./bin/modrate -h matts-laptop -p 1389 -w password -D cn=directory\ manager -b 'uid=user.%1$d,ou=people,dc=example,dc=com' -g "rand(0,2000)" -g "randstr(16)" -F 'description:%2$s'
+
+5) Stop after 10K+ modifications
+6) Once each replica has quiesced, export content of each backend and ldif-diff: all are equal. Replication has not diverged
+7) Searching as cookie based changelog seems consistent as well
+8) Searching as draft changelog is not consistent. This can be verified by dumping the various changelogdb databases on each RS and comparing them:
+
+8.1) List DBs:
+
+  java -cp lib/je.jar com.sleepycat.je.util.DbDump -h changelogDb -l
+
+8.2) Dump DB:
+
+  java -cp lib/je.jar com.sleepycat.je.util.DbDump -h changelogDb  -s "<serverid> dc=example,dc=com"
+
+8.3) Dump CN DB:
+
+  java -cp lib/je.jar com.sleepycat.je.util.DbDump -h changelogDb -s draftcndb
+
+I have seen that the "<serverid> dc=example,dc=com" DBs (8.2) are identical apart from occasional "checkpointer" (TBC) records which look like they are used for quickly cross referencing from the draftcndb (see changelog.diff). Note also that these differences were only present in a DB on an RS which had been stopped and restarted during the test.
+
+The CN DB on the other hand is different for all three RS instances. Just the wc is sufficient to see this:
+
+matt@matts-laptop:~/opendj-topology/m1/OpenDJ-2.4.2$ wc -l  m1.dump2 ../../m2/OpenDJ-2.4.2/m2.dump2 ../../m3/OpenDJ-2.4.2/m3.dump2 
+   483852 m1.dump2
+   599698 ../../m2/OpenDJ-2.4.2/m2.dump2
+   457102 ../../m3/OpenDJ-2.4.2/m3.dump2
+  1540652 total
+
+A search on each changelog by changenumber reveals a huge difference in the total number of changes on each replica. In my case I saw 300K, 250K, and 220K changes.

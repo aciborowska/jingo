@@ -1,0 +1,18 @@
+Given a filter chain containing WebFilter and another filter which may cause session invalidation to take place (eg Spring Security's concurrent login detection ConcurrentSessionFilter) the WebFilter destroys the local session, but then upon returning up the call chain attempts to lookup the session again. 
+
+The local session is correctly detected as invalid, but the clustered version is retrieved and an attempt is made to create a new session - an invalid operation as attempting to create a new (local) session requires access to the response which has already been commited at this point and a java.lang.IllegalStateException is thrown.
+
+`Apr 03, 2012 1:37:43 PM org.apache.catalina.core.StandardWrapperValve invoke
+SEVERE: Servlet.service() for servlet [dispatcher] in context with path [] threw exception
+java.lang.IllegalStateException: Cannot create a session after the response has been committed
+    at org.apache.catalina.connector.Request.doGetSession(Request.java:2758)
+    at org.apache.catalina.connector.Request.getSession(Request.java:2268)
+    at org.apache.catalina.connector.RequestFacade.getSession(RequestFacade.java:899)
+    at javax.servlet.http.HttpServletRequestWrapper.getSession(HttpServletRequestWrapper.java:229)
+    at com.hazelcast.web.WebFilter$RequestWrapper.getOriginalSession(WebFilter.java:201)
+    at com.hazelcast.web.WebFilter.createNewSession(WebFilter.java:137)
+    at com.hazelcast.web.WebFilter$RequestWrapper.getSession(WebFilter.java:265)
+    at com.hazelcast.web.WebFilter.doFilter(WebFilter.java:513)
+    at org.apache.catalina.core.ApplicationFilterChain.internalDoFilter(ApplicationFilterChain.java:243)`
+
+The main issue here being that the cluster-wide session remains untouched during the invalidation locally but is then used after the chain.doFilter(..) in a manner which could cause the attempted creation of a new local session.

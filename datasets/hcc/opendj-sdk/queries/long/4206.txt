@@ -1,0 +1,60 @@
+Found using OpenDJ 4.1.0 rev 6e43d0db3c5
+
+Scenario
+ 1. configure 2 DJ servers and enable replication
+ 2. configure a proxy with "--proxyUsingSsl" option and specifying the LDAPS ports for the replication server
+
+$ opendj/setup proxy-server -Z 1641 --proxyUsingSsl --useJavaTrustStore /tmp/proxy-truststore -T password --replicationServer localhost:1636 --loadBalancingAlgorithm affinity -h localhost -p 1394 -D "cn=Directory Manager" -w password --proxyUserBindDn "cn=proxy,dc=example,dc=com" --proxyUserBindPassword "password" --adminConnectorPort 4449
+
+
+3. verify the proxy configuration
+
+$ opendj/bin/dsreplication Service Discovery Mechanism" -h localhost -p 4447 -X -D "cn=directory manager" -w password
+Property                           : Value(s)
+-----------------------------------:---------------------------------
+bind-dn                            : cn=Directory Manager
+bind-password                      : -
+bind-password-environment-variable : -
+bind-password-file                 : config/replication_bind_password
+bind-password-property             : -
+discovery-interval                 : 1 m
+key-manager-provider               : -
+primary-group-id                   : -
+replication-server                 : localhost:1636
+ssl-cert-nickname                  : -
+trust-manager-provider             : JKS
+use-ssl                            : true
+use-start-tls                      : false
+
+
+4. now add an entry on the proxy on LDAPS port
+
+$ opendj/bin/ldapmodify -h localhost -p 1641 -D "uid=user.0,ou=people,dc=example,dc=com" -w password --useSSL -X <<END_OF_COMMAND_INPUT
+dn: uid=iabizen-ssl-proxy2-1,ou=people,dc=example,dc=com
+objectclass: top
+objectClass: inetorgperson
+objectclass: organizationalperson
+objectclass: person
+userpassword:password
+givenname: Izen
+sn: Abizen
+cn: Izen Abizen
+END_OF_COMMAND_INPUT
+
+
+In the proxy logs the operation is done on LDAPS as expected:
+
+{"eventName":"DJ-LDAP","client":{"ip":"127.0.0.1","port":65005},"server":{"ip":"127.0.0.1","port":1641},"request":{"protocol":"LDAPS","operation":"ADD","connId":8,"msgId":2,"dn":"uid=iabizen-ssl-proxy2-1,ou=people,dc=example,dc=com"},"transactionId":"0","response":{"status":"SUCCESSFUL","statusCode":"0","elapsedTime":14109720,"elapsedTimeUnits":"NANOSECONDS"},"timestamp":"2017-08-08T09:14:23.148Z","_id":"6566ad65-f669-4d76-9acc-474dd13f73e5-107"}
+
+
+But in the DJ logs the operation is done on LDAP:
+
+{"eventName":"DJ-LDAP","client":{"ip":"127.0.0.1","port":64971},"server":{"ip":"127.0.0.1","port":1390},"request":{"protocol":"LDAP","operation":"ADD","connId":10,"msgId":6,"dn":"uid=iabizen-ssl-proxy2-1,ou=people,dc=example,dc=com"},"transactionId":"0","response":{"status":"SUCCESSFUL","statusCode":"0","elapsedTime":11590942,"elapsedTimeUnits":"NANOSECONDS"},"timestamp":"2017-08-08T09:14:23.147Z","_id":"8e2a302e-a240-497e-ae6e-932153725dbf-975"}
+
+
+Moreover looking at the proxy monitoring info we can see that the primary servers use LDAP port:
+
+$ opendj/bin/ldapsearch -p 1392 -D "cn=directory manager" -w password -b "cn=proxyRoot Backend,cn=monitor" objectclass=* ds-proxy-backend-partition
+dn: cn=proxyRoot Backend,cn=monitor
+ds-proxy-backend-partition: {"id":"Replication Service Discovery Mechanism","primaryServers":[{"hostPort":"openam.example.com:1389","online":true},{"hostPort":"openam.example.com:1390","online":true}],"secondaryServers":[]}
+

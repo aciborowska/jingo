@@ -1,0 +1,71 @@
+I observe the following exception with IMap.delete() when there is a listener attached:
+
+```
+June 11, 2014 4:24:57 PM com.hazelcast.map.operation.DeleteOperation
+SEVERE: [192.168.13.18]:5701 [dev] [3.3-EA] value cannot be null
+java.lang.IllegalArgumentException: value cannot be null
+    at com.hazelcast.query.impl.QueryEntry.<init>(QueryEntry.java:50)
+    at com.hazelcast.map.MapService.publishEvent(MapService.java:734)
+    at com.hazelcast.map.operation.BaseRemoveOperation.afterRun(BaseRemoveOperation.java:38)
+    at com.hazelcast.map.operation.DeleteOperation.afterRun(DeleteOperation.java:42)
+    at com.hazelcast.spi.impl.BasicOperationService.processOperation(BasicOperationService.java:372)
+    at com.hazelcast.spi.impl.BasicOperationService.access$300(BasicOperationService.java:95)
+    at com.hazelcast.spi.impl.BasicOperationService$BasicOperationProcessorImpl.process(BasicOperationService.java:725)
+    at com.hazelcast.spi.impl.BasicOperationScheduler$OperationThread.process(BasicOperationScheduler.java:430)
+    at com.hazelcast.spi.impl.BasicOperationScheduler$OperationThread.doRun(BasicOperationScheduler.java:424)
+    at com.hazelcast.spi.impl.BasicOperationScheduler$OperationThread.run(BasicOperationScheduler.java:399)
+```
+
+The issue is reproduced on the latest 3.3-EA version (and on all previous versions I tried). The reason is that DeleteOperation class doesn't set the dataOldValue field in the BaseRemoveOperarion (parent) - and then this field is assumed to be non-null in case there is a predicate. _The listener is not notified after this exception_.
+
+Below is the test that reproduced the issue:
+
+```
+    @Test
+    public void testReproduce() throws Exception {
+        final HazelcastInstance server = Hazelcast.newHazelcastInstance();
+        final IMap<Object, Object> serverMap = server.getMap("A");
+
+
+        final HazelcastInstance client = HazelcastClient.newHazelcastClient();
+        final IMap<Object, Object> clientMap = client.getMap("A");
+        clientMap.addEntryListener(new EntryListener<Object, Object>() {
+            @Override
+            public void entryAdded(EntryEvent<Object, Object> event) {
+                System.out.println("Added " + event);
+            }
+
+            @Override
+            public void entryRemoved(EntryEvent<Object, Object> event) {
+                System.out.println("Removed " + event);
+            }
+
+            @Override
+            public void entryUpdated(EntryEvent<Object, Object> event) {
+                System.out.println("Updated " + event);
+            }
+
+            @Override
+            public void entryEvicted(EntryEvent<Object, Object> event) {
+                System.out.println("Evicted" + event);
+
+            }
+        }, new TestPredicate(), true);
+
+        Thread.sleep(1000);
+        serverMap.put("A", "B");
+        Thread.sleep(1000);
+        clientMap.delete("A");
+    }
+
+    private static final class TestPredicate implements Predicate<Object, Object>, Serializable {
+
+        @Override
+        public boolean apply(Map.Entry<Object, Object> mapEntry) {
+            assert mapEntry != null;
+            return mapEntry.getKey().equals("A");
+        }
+    }
+```
+
+The issue is not reproduced if I don't set a predicate for the listener.

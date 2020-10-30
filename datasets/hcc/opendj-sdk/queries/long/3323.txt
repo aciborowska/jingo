@@ -1,0 +1,56 @@
+When configuring a rest endpoint with a complex (non-trivial) ldap structure, the groups property that is part of the user resource returns extra members :
+
+
+                "groups": {
+                    "type": "reference",
+                    "ldapAttribute": "isMemberOf",
+                    "baseDn": "ou=Groups,ou=Internal,dc=citec,dc=com,dc=au",
+                    "isMultiValued": true,
+                    "writability": "readOnly",
+                    "primaryKey": "cn",
+                    "mapper": {
+                        "type": "object",
+                        "properties": {
+                            "_id": {
+                                "type": "simple",
+                                "ldapAttribute": "cn",
+                                "writability": "readOnlyDiscardWrites"
+                            },
+                            "_dn": {
+                                "type": "simple",
+                                "ldapAttribute": "entryDn",
+                                "writability": "readOnlyDiscardWrites"
+                            }
+                        }
+                    }
+                },
+
+
+
+The _dn field has been added for illustration. The problem is the isMemberOf contains many group entries which are not under the baseDn specified for the reference groups. I'd expect that if groups are not under the specified group baseDn, they should be ignored. If the rest client requests {{/api/groups/
+{cn}
+}} where cn is outside the baseDn then those requests will fail. isMemberOf attributes are global to the entire server. The endpoint in this case constrains by base DN in all other respects.
+
+The code seems to be just truncating the first component of the dn and returning it, so it gets any group the user is a member of in the entire LDAP tree :
+
+
+
+"groups": [
+  {
+   "_id": "Execute",
+   "_dn": "cn=Execute,ou=GetCSV,ou=Ldap,ou=Action,ou=ACL,ou=Fastlink,dc=citec,dc=com,dc=au"
+  },
+  {
+   "_id": "Execute",
+   "_dn": "cn=Execute,ou=TogglePhoto,ou=Ldap,ou=Action,ou=ACL,ou=Fastlink,dc=citec,dc=com,dc=au"
+  },
+[.. more here ..]
+]
+
+
+
+The URLs of the form /api/groups/<cn> where cn is taken from a uniqueMember where the source DN has been blindly truncated, makes them not unique and the subsequently computed dn's will be invalid.
+
+The precondition of "groups" values, should be a DN parent check that the DN in uniqueMember is a subentry of the group baseDn for the current endpoint. This could be explicitly configured, maybe a whitelist includeGroups in the users resource, and perhaps a matching exclusion list, say excludeGroups for the reverse requirement. Both would be fairly inexpensive to compute, if the java Name / LdapName types are used for subtree comparisons.
+
+Is there currently a way to filter isMemberOf lines for groups that don't fall under the group baseDn ?

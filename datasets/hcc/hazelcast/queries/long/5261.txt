@@ -1,0 +1,253 @@
+Hi,
+
+we encountered an issue where calling the lock method on an ILock threw an OperationTimeoutException but the lock was still acquired, which is bad because the usual locking idiom is not correct:
+
+``` java
+lock.lock() // If this throws an OperationTimeoutException, the lock will never be unlocked
+try {
+  // Critical section
+} finally {
+  lock.unlock();
+}
+```
+
+It seems that this can happen in Hazelcast 3.3 if a lock operation is queued on the callee side, but not executed for 2*operation timeout. We don't know yet what caused this delay (many operations enqueued, operation execution slow?) in our case, but it seemed to happen. 
+
+Since the caller does not receive a WAIT_RESPONSE in this case, he will eventually check if the operation is executing, which is not the case, and fail with an OperationTimeoutException.
+
+The lock operation is still enqueued on the callee side and will eventually be executed, resulting in the lock being acquired without the caller knowing.
+
+It seems that this behaviour has been changed in the meantime, but I implemented a unit test and it also has problems in Hazelcast 3.4.1 (I couldn't test with Hazelcast 3.4.2 yet):
+
+The test case reproduces the problem using a blocking store implementation to artificially delay the execution of the lock operation and provoke the OperationTimeoutException. It fails for Hazelcast 3.3, but not for Hazelcast 3.4.1 if the lock operation is executed on a remote node. Interestingly, if you run only a single node, and the lock operation is thus local, the test is successful with Hazelcast 3.3, but fails with Hazelcast 3.4.1. And in the case where it is successful for Hazelcast 3.4.1, there is still a FATAL log message:
+
+```
+40252 [hz._hzInstance_2_dev.response] FATAL com.hazelcast.spi.OperationService  - [10.0.1.49]:5701 [dev] [3.4.1] While processing response...
+com.hazelcast.core.HazelcastException: No invocation for response: com.hazelcast.spi.impl.CallTimeoutResponse@2de3e7d2
+    at com.hazelcast.spi.impl.BasicOperationService$ResponsePacketHandler.notifyRemoteCall(BasicOperationService.java:602)
+    at com.hazelcast.spi.impl.BasicOperationService$ResponsePacketHandler.handle(BasicOperationService.java:586)
+    at com.hazelcast.spi.impl.BasicOperationService$ResponsePacketHandler.access$1300(BasicOperationService.java:579)
+    at com.hazelcast.spi.impl.BasicOperationService$BasicDispatcherImpl.dispatch(BasicOperationService.java:564)
+    at com.hazelcast.spi.impl.BasicOperationScheduler$ResponseThread.process(BasicOperationScheduler.java:532)
+    at com.hazelcast.spi.impl.BasicOperationScheduler$ResponseThread.doRun(BasicOperationScheduler.java:524)
+    at com.hazelcast.spi.impl.BasicOperationScheduler$ResponseThread.run(BasicOperationScheduler.java:501)
+```
+
+The test (actually two, one for local and one for remote execution) is the following:
+
+``` java
+import com.hazelcast.config.Config;
+import com.hazelcast.config.MapConfig;
+import com.hazelcast.config.MapStoreConfig;
+import com.hazelcast.config.XmlConfigBuilder;
+import com.hazelcast.core.*;
+import com.nm.test.hazelcast.TestHazelcast;
+import org.apache.log4j.BasicConfigurator;
+import org.apache.log4j.Logger;
+import java.util.*;
+import junit.framework.TestCase;
+
+/**
+ * A test to provoke an operation timeout exception when trying to acquire a lock, and see if the
+ * lock is actually not acquired if a timeout exception happens.
+ */
+public class TestLock2 extends TestCase {
+
+    private static final Logger logger = Logger.getLogger(TestLock2.class);
+
+    private static final String MAP_NAME = "DummyMap";
+    private static final long OPERATION_CALL_TIMEOUT = 3000;
+
+    private boolean lockException;
+
+    @Override
+    public void setUp() throws Exception {
+
+        // configure logging
+        if (!TestHazelcast.loggingInitialized) {
+            TestHazelcast.loggingInitialized = true;
+            BasicConfigurator.configure();
+        }
+
+        lockException = false;
+
+    }
+
+    public void testLock2Local() throws InterruptedException {
+        testLock2(false);
+    }
+
+    public void testLock2Remote() throws InterruptedException {
+        testLock2(true);
+    }
+
+    private void testLock2(boolean remote) throws InterruptedException {
+
+        // create hazelcast config
+        Config config = new XmlConfigBuilder().build();
+        config.setProperty("hazelcast.logging.type", "log4j");
+        config.setProperty("hazelcast.operation.call.timeout.millis", String.valueOf(OPERATION_CALL_TIMEOUT));
+
+        // create shared map store implementation
+        BlockingMapStore store = new BlockingMapStore();
+        // configure map store
+        MapStoreConfig mapStoreConfig = new MapStoreConfig();
+        mapStoreConfig.setEnabled(true);
+        mapStoreConfig.setClassName(null);
+        mapStoreConfig.setImplementation(store);
+        MapConfig mapConfig = config.getMapConfig(MAP_NAME);
+        mapConfig.setMapStoreConfig(mapStoreConfig);
+
+        // start a hazelcast instances
+        HazelcastInstance hcInstance1 = Hazelcast.newHazelcastInstance(config);
+        HazelcastInstance hcInstance2 = null;
+        if (remote) {
+            hcInstance2 = Hazelcast.newHazelcastInstance(config);
+            while (hcInstance1.getCluster().getMembers().size() < 2) {
+                Thread.sleep(250);
+            }
+        }
+
+        logger.info("Hazelcast instances started.");
+        try {
+
+            String curKey = Double.toString(Math.random());
+            if (remote) {
+                // find a remote key to ensure remote execution
+                while (hcInstance1.getPartitionService().getPartition(curKey).getOwner().localMember()) {
+                    curKey = Double.toString(Math.random());
+                }
+            }
+            final String key = curKey;
+
+            final IMap<String, String> map = hcInstance1.getMap(MAP_NAME);
+            final ILock lock = hcInstance1.getLock(key);
+
+            // block partition operation thread for key with a put operation
+            new Thread(new Runnable() {
+
+                @Override
+                public void run() {
+                    map.put(key, "value");
+                }
+
+            }).start();
+
+            try {
+                Thread.sleep(1000);
+            } catch (InterruptedException e1) {
+                e1.printStackTrace();
+            }
+
+            // start lock operation
+            new Thread(new Runnable() {
+
+                @Override
+                public void run() {
+                    logger.info("before acquire lock");
+                    try {
+                        lock.lock();
+                    } catch (OperationTimeoutException e) {
+                        lockException = true;
+                        logger.info("exception in lock", e);
+                    }
+                    if (!lockException) {
+                        logger.info("acquired lock");
+                    }
+                }
+
+            }).start();
+
+            // wait for operation timeout exception to occur
+            try {
+                Thread.sleep(2 * OPERATION_CALL_TIMEOUT + 1000);
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            }
+
+            logger.info("all operations started");
+            logger.info("release blocking store");
+            // let the put operation proceed, such that the lock operation will be executed
+            store.release();
+
+            try {
+                Thread.sleep(1000);
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            }
+
+            boolean locked = lock.isLocked();
+            System.out.println("Lock locked: " + locked);
+            assertTrue("Lock is locked although lock operation failed with an OperationTimeoutException", !(lockException && locked));
+
+        } finally {
+            hcInstance1.shutdown();
+            if (remote) {
+                hcInstance2.shutdown();
+            }
+        }
+
+    }
+
+    /**
+     * Map store that blocks put operations until {@link #release()} is called.
+     */
+    private static class BlockingMapStore implements MapStore<String, String> {
+
+        private boolean block = true;
+
+        public synchronized void release() {
+            block = false;
+            this.notify();
+        }
+
+        @Override
+        public String load(String key) {
+            return null;
+        }
+
+        @Override
+        public Map<String, String> loadAll(Collection<String> keys) {
+            return new HashMap<String, String>();
+        }
+
+        @Override
+        public Set<String> loadAllKeys() {
+            return new HashSet<String>();
+        }
+
+        @Override
+        public synchronized void store(String key, String value) {
+            while (block) {
+                try {
+                    this.wait();
+                } catch (InterruptedException e) {
+                    throw new RuntimeException(e);
+                }
+            }
+        }
+
+        @Override
+        public void storeAll(Map<String, String> map) {
+            // do nothing
+        }
+
+        @Override
+        public void delete(String key) {
+            // do nothing
+        }
+
+        @Override
+        public void deleteAll(Collection<String> keys) {
+            // do nothing
+        }
+
+    }
+
+}
+```
+
+Thanks for having a look!
+
+Cheers,
+Andreas

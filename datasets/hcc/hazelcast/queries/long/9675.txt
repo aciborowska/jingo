@@ -1,0 +1,85 @@
+Version: 3.8 EA
+
+I've been using the IScheduledExecutorService which was added in Hazelcast 3.8. It appears that when operations are scheduled and executed on a single local node, that the HazelcastInstance does not get injected. An instance is injected if the task is submitted and executed on a remote node.
+
+Sample reproduction case; console contains:
+
+```
+Testing via ExecutorService
+Injected state: true
+Testing via ScheduledExecutorService
+Injected state: false
+```
+
+Expected:
+
+```
+Testing via ExecutorService
+Injected state: true
+Testing via ScheduledExecutorService
+Injected state: true
+```
+
+Test case:
+
+```java
+import com.hazelcast.core.Hazelcast;
+import com.hazelcast.core.HazelcastInstance;
+import com.hazelcast.core.HazelcastInstanceAware;
+import org.junit.After;
+import org.junit.Before;
+import org.junit.Test;
+
+import java.io.Serializable;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+
+import static org.junit.Assert.assertTrue;
+
+public class HazelcastInstanceAwareTest {
+    HazelcastInstance instance;
+
+    @Before
+    public void setup() {
+        instance = Hazelcast.newHazelcastInstance();
+    }
+
+    @After
+    public void teardown() throws Exception {
+        instance.shutdown();
+    }
+
+    @Test
+    public void test() throws ExecutionException, InterruptedException {
+        System.err.println("Testing via ExecutorService");
+        assertTrue(instance.getExecutorService("foo").submit((Callable<Boolean>) new AwareRunnable()).get());
+
+        System.err.println("Testing via ScheduledExecutorService");
+        instance.getScheduledExecutorService("bar").scheduleAtFixedRate(new AwareRunnable(), 0, 5, TimeUnit.SECONDS);
+
+        Thread.sleep(TimeUnit.SECONDS.toMillis(10));
+    }
+
+    static class AwareRunnable implements Runnable, Callable<Boolean>, HazelcastInstanceAware, Serializable {
+        private volatile HazelcastInstance instance;
+
+        @Override
+        public void setHazelcastInstance(final HazelcastInstance instance) {
+            this.instance = instance;
+        }
+
+        @Override
+        public void run() {
+            call();
+        }
+
+        @Override
+        public Boolean call() {
+            final boolean injected = (instance != null);
+            System.err.println("Injected state: " + injected);
+            return injected;
+        }
+    }
+}
+```

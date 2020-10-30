@@ -1,0 +1,46 @@
+When building a custom job container using flink-container, the job can't be launched if the provided job jar does not have world-readable permission.
+
+This is because the job jar in the container is owned by root:root, but the docker container executes as the flink user.
+
+In environments with restrictive umasks (e.g. company laptops) that create files without group and other read permissions by default, this causes the instructions to fail.
+
+To reproduce on master:
+
+
+cd flink-container/docker
+cp ../../flink-examples/flink-examples-streaming/target/WordCount.jar .
+chmod go-r WordCount.jar  # still maintain user read permission
+./build.sh --job-jar WordCount.jar --from-archive flink-1.8.0-bin-scala_2.11.tgz --image-name flink-job:latest
+FLINK_DOCKER_IMAGE_NAME=flink-job FLINK_JOB=org.apache.flink.streaming.examples.wordcount.WordCount docker-compose up
+
+which results in the following error:
+
+
+job-cluster_1 | 2019-04-30 18:40:57,787 ERROR org.apache.flink.runtime.entrypoint.ClusterEntrypoint - Could not start cluster entrypoint StandaloneJobClusterEntryPoint.
+job-cluster_1 | org.apache.flink.runtime.entrypoint.ClusterEntrypointException: Failed to initialize the cluster entrypoint StandaloneJobClusterEntryPoint.
+job-cluster_1 | at org.apache.flink.runtime.entrypoint.ClusterEntrypoint.startCluster(ClusterEntrypoint.java:190)
+job-cluster_1 | at org.apache.flink.runtime.entrypoint.ClusterEntrypoint.runClusterEntrypoint(ClusterEntrypoint.java:535)
+job-cluster_1 | at org.apache.flink.container.entrypoint.StandaloneJobClusterEntryPoint.main(StandaloneJobClusterEntryPoint.java:105)
+job-cluster_1 | Caused by: org.apache.flink.util.FlinkException: Could not create the DispatcherResourceManagerComponent.
+job-cluster_1 | at org.apache.flink.runtime.entrypoint.component.AbstractDispatcherResourceManagerComponentFactory.create(AbstractDispatcherResourceManagerComponentFactory.java:257)
+job-cluster_1 | at org.apache.flink.runtime.entrypoint.ClusterEntrypoint.runCluster(ClusterEntrypoint.java:224)
+job-cluster_1 | at org.apache.flink.runtime.entrypoint.ClusterEntrypoint.lambda$startCluster$0(ClusterEntrypoint.java:172)
+job-cluster_1 | at org.apache.flink.runtime.security.NoOpSecurityContext.runSecured(NoOpSecurityContext.java:30)
+job-cluster_1 | at org.apache.flink.runtime.entrypoint.ClusterEntrypoint.startCluster(ClusterEntrypoint.java:171)
+job-cluster_1 | ... 2 more
+job-cluster_1 | Caused by: org.apache.flink.util.FlinkException: Could not load the provided entrypoint class.
+job-cluster_1 | at org.apache.flink.container.entrypoint.ClassPathJobGraphRetriever.createPackagedProgram(ClassPathJobGraphRetriever.java:119)
+job-cluster_1 | at org.apache.flink.container.entrypoint.ClassPathJobGraphRetriever.retrieveJobGraph(ClassPathJobGraphRetriever.java:96)
+job-cluster_1 | at org.apache.flink.runtime.dispatcher.JobDispatcherFactory.createDispatcher(JobDispatcherFactory.java:62)
+job-cluster_1 | at org.apache.flink.runtime.dispatcher.JobDispatcherFactory.createDispatcher(JobDispatcherFactory.java:41)
+job-cluster_1 | at org.apache.flink.runtime.entrypoint.component.AbstractDispatcherResourceManagerComponentFactory.create(AbstractDispatcherResourceManagerComponentFactory.java:184)
+job-cluster_1 | ... 6 more
+job-cluster_1 | Caused by: java.lang.ClassNotFoundException: org.apache.flink.streaming.examples.wordcount.WordCount
+job-cluster_1 | at java.net.URLClassLoader.findClass(URLClassLoader.java:382)
+job-cluster_1 | at java.lang.ClassLoader.loadClass(ClassLoader.java:424)
+job-cluster_1 | at sun.misc.Launcher$AppClassLoader.loadClass(Launcher.java:349)
+job-cluster_1 | at java.lang.ClassLoader.loadClass(ClassLoader.java:357)
+job-cluster_1 | at org.apache.flink.container.entrypoint.ClassPathJobGraphRetriever.createPackagedProgram(ClassPathJobGraphRetriever.java:116)
+job-cluster_1 | ... 10 more
+
+This issue can be fixed by chown'ing the job.jar file to flink:flink in the Dockerfile.

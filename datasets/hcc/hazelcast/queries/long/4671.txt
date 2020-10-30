@@ -1,0 +1,231 @@
+Hi,
+
+while stress testing our application, we discovered two issues with using local near caches:
+1. Even on a single node, the local near cache is not synchronously invalidated after the map is modified.
+2. Also on a single node, it may happen that near cache invalidations are lost.
+
+To 1:
+I understand that you do not give full consistency guarantees when using a near cache, however I kind of expected that at least the local node always sees its latest changes.
+While adding full consistency guarantees on a distributed near cache might be very expensive (in terms of synchronization and operation latency), providing such guarantees on the local node only should be much cheaper.
+
+To 2:
+This is certainly a bug.
+
+Please find below a test case which shows both issues.
+
+If using a ConcurrentHashMap, the test always succeeds. If using a distributed Hazelcast map with local near cache enabled, the test either fails with
+  "Assertion violated."
+which means that the near cache showed old data, or the test fails with
+  "Near cache did _not_ become consistent."
+which means that even after waiting for some time, the near cache did not show the latest data - hence near cache invalidations were lost.
+
+It would be great to hear your opinion on 1 and a fix for 2 would be amazing! :-)
+
+Thanks and best,
+Lukas
+
+``` java
+package com.nm.test.hazelcast.nearcache;
+
+import com.hazelcast.config.*;
+import com.hazelcast.core.Hazelcast;
+import com.hazelcast.core.HazelcastInstance;
+import com.nm.test.hazelcast.TestHazelcast;
+import org.apache.log4j.BasicConfigurator;
+import org.apache.log4j.Logger;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import junit.framework.TestCase;
+
+/**
+ * A test to ensure the near cache eventually reflects the data from the map.
+ */
+public class TestLocalNearCache6 extends TestCase {
+
+    private static final Logger logger = Logger.getLogger(TestLocalNearCache6.class);
+
+    private static final int numGetters = 7;
+
+    private static final String mapName = "testMap" + TestLocalNearCache6.class.getSimpleName();
+
+    private static final String key = "key123";
+
+    private AtomicInteger valuePut = new AtomicInteger(0);
+
+    private AtomicBoolean stop = new AtomicBoolean(false);
+
+    private AtomicBoolean failed = new AtomicBoolean(false);
+
+    @Override
+    protected void setUp() throws Exception {
+
+        // configure logging
+        if (!TestHazelcast.loggingInitialized) {
+            TestHazelcast.loggingInitialized = true;
+            BasicConfigurator.configure();
+        }
+    }
+
+    public void testConsistentNearCache() throws Exception {
+
+        // create concurrent hash map
+        ConcurrentMap<String, String> map = new ConcurrentHashMap<String, String>();
+
+        // run test
+        testInternal(map);
+
+        // fail if failed
+        if (failed.get()) {
+            fail("Assertion violated.");
+        }
+    }
+
+    public void testConsistentNearCacheHz() throws Exception {
+
+        // create hazelcast config
+        Config config = new XmlConfigBuilder().build();
+        config.setProperty("hazelcast.logging.type", "log4j");
+
+        // configure near cache
+        NearCacheConfig nearCacheConfig = new NearCacheConfig();
+        nearCacheConfig.setCacheLocalEntries(true); // this enables caching of local entries
+        nearCacheConfig.setInMemoryFormat(InMemoryFormat.OBJECT);
+
+        // enable near cache
+        MapConfig mapConfig = config.getMapConfig(mapName);
+        mapConfig.setNearCacheConfig(nearCacheConfig);
+
+        // create Hazelcast instance
+        HazelcastInstance hcInstance = Hazelcast.newHazelcastInstance(config);
+
+        // get hazelcast map
+        ConcurrentMap<String, String> map = hcInstance.getMap(mapName);
+
+        // run test
+        testInternal(map);
+
+        // test eventually consistent
+        Thread.sleep(1000);
+        int valuePutLast = valuePut.get();
+        String valueMapStr = map.get(key);
+        int valueMap = Integer.parseInt(valueMapStr);
+
+        // stop hazelcast
+        hcInstance.getLifecycleService().terminate();
+
+        // test eventually consistent
+        if (valueMap < valuePutLast) {
+            String msg = "Near cache did *not* become consistent. (valueMap = " + valueMap + ", valuePut = " + valuePutLast + ")";
+            logger.warn(msg);
+            fail(msg);
+        }
+
+        // fail if failed
+        if (failed.get()) {
+            fail("Assertion violated.");
+        }
+    }
+
+    private void testInternal(ConcurrentMap<String, String> map) throws Exception {
+
+        // start 1 putter thread
+        Thread threadPut = new Thread(new PutRunnable(map), "put");
+        threadPut.start();
+        Thread.sleep(1000);
+
+        // start numGetters getter threads
+        List<Thread> threads = new ArrayList<Thread>();
+        for (int i = 0; i < numGetters; i++) {
+            Thread thread = new Thread(new GetRunnable(map), "get" + i);
+            threads.add(thread);
+        }
+        for (Thread thread : threads) {
+            thread.start();
+        }
+
+        // stop after 10s
+        int i = 0;
+        while (!stop.get() && i++ < 10) {
+            Thread.sleep(1000);
+        }
+        if (i == 20) {
+            logger.info("Problem did not occur within 10s.");
+        }
+        stop.set(true);
+        threadPut.join();
+        for (Thread thread : threads) {
+            thread.join();
+        }
+    }
+
+    private class PutRunnable implements Runnable {
+
+        private final ConcurrentMap<String, String> map;
+
+        public PutRunnable(ConcurrentMap<String, String> map) {
+            this.map = map;
+        }
+
+        @Override
+        public void run() {
+            logger.info(Thread.currentThread().getName() + " started.");
+            int i = 0;
+            while (!stop.get()) {
+
+                // put new value and update last state
+                // note: the value in the map/near cache is *always* larger or equal to valuePut
+                // assert: valueMap >= valuePut
+                i++;
+                map.put(key, String.valueOf(i));
+                valuePut.set(i);
+
+                // sleep
+                try {
+                    Thread.sleep(50);
+                } catch (InterruptedException e) {
+                    logger.warn("Interrupted: " + e.getMessage());
+                }
+            }
+            logger.info(Thread.currentThread().getName() + " performed " + i + " operations.");
+        }
+
+    }
+
+    private class GetRunnable implements Runnable {
+
+        private final ConcurrentMap<String, String> map;
+
+        public GetRunnable(ConcurrentMap<String, String> map) {
+            this.map = map;
+        }
+
+        @Override
+        public void run() {
+            logger.info(Thread.currentThread().getName() + " started.");
+            int n = 0;
+            while (!stop.get()) {
+
+                // compare value from near cache with last put value
+                int valuePutLast = valuePut.get();
+                String valueMapStr = map.get(key);
+                int valueMap = Integer.parseInt(valueMapStr);
+                n++;
+
+                // ensure assertion holds
+                if (valueMap < valuePutLast) {
+                    logger.warn("Assertion violated! (valueMap = " + valueMap + ", valuePut = " + valuePutLast + ")");
+                    failed.set(true);
+                    stop.set(true);
+                }
+            }
+            logger.info(Thread.currentThread().getName() + " performed " + n + " operations.");
+        }
+
+    }
+
+}
+```

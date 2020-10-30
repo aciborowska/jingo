@@ -1,0 +1,78 @@
+When executing a PasswordPolicyStateExtendedRequest with a ProxiedAuthV2RequestControl the created Future will wait forever because of a NullPointerException in the IO thread.
+
+Assume the following code:
+  PasswordPolicyStateExtendedRequest request = new PasswordPolicyStateExtendedRequest("cn=user-account,c=nl");
+
+  // Disable account
+  request.setAccountDisabledState(true);
+
+  // Add proxy control
+  request.addControl(ProxiedAuthV2RequestControl.newControl("dn:".concat("cn=app-proxy-account,c=nl")));
+
+  // Execute request and wait for result
+  PasswordPolicyStateExtendedResult result = connection.extendedRequest(request);
+
+When executed it blocks at:
+
+	sun.misc.Unsafe.park(Native Method)
+	java.util.concurrent.locks.LockSupport.park(LockSupport.java:156)
+	java.util.concurrent.locks.AbstractQueuedSynchronizer.parkAndCheckInterrupt(AbstractQueuedSynchronizer.java:811)
+	java.util.concurrent.locks.AbstractQueuedSynchronizer.doAcquireSharedInterruptibly(AbstractQueuedSynchronizer.java:969)
+	java.util.concurrent.locks.AbstractQueuedSynchronizer.acquireSharedInterruptibly(AbstractQueuedSynchronizer.java:1281)
+	com.forgerock.opendj.util.AsynchronousFutureResult$Sync.innerGet(AsynchronousFutureResult.java:161)
+	com.forgerock.opendj.util.AsynchronousFutureResult.get(AsynchronousFutureResult.java:337)
+	org.forgerock.opendj.ldap.AbstractAsynchronousConnection.extendedRequest(AbstractAsynchronousConnection.java:154)
+	org.forgerock.opendj.ldap.AbstractConnection.extendedRequest(AbstractConnection.java:375)
+	com.forgerock.opendj.util.ConnectionDecorator.extendedRequest(ConnectionDecorator.java:323)
+	com.forgerock.opendj.util.ConnectionDecorator.extendedRequest(ConnectionDecorator.java:323)
+	org.forgerock.opendj.ldap.FixedConnectionPool$PooledConnection.extendedRequest(FixedConnectionPool.java:356)
+
+
+
+The IO thread throws a NullPointerException:
+
+4-apr-2012 15:11:17 org.glassfish.grizzly.filterchain.DefaultFilterChain execute
+WARNING: Exception during FilterChain execution
+java.lang.NullPointerException
+	at org.forgerock.opendj.asn1.ASN1.getReader(ASN1.java:117)
+	at org.forgerock.opendj.asn1.ASN1.getReader(ASN1.java:98)
+	at com.forgerock.opendj.ldap.extensions.PasswordPolicyStateExtendedRequest$ResultDecoder.decodeExtendedResult(PasswordPolicyStateExtendedRequest.java:274)
+	at com.forgerock.opendj.ldap.extensions.PasswordPolicyStateExtendedRequest$ResultDecoder.decodeExtendedResult(PasswordPolicyStateExtendedRequest.java:233)
+	at com.forgerock.opendj.ldap.LDAPExtendedFutureResultImpl.decodeResult(LDAPExtendedFutureResultImpl.java:92)
+	at com.forgerock.opendj.ldap.LDAPClientFilter$1.handleExtendedResult0(LDAPClientFilter.java:481)
+	at com.forgerock.opendj.ldap.LDAPClientFilter$1.extendedResult(LDAPClientFilter.java:287)
+	at com.forgerock.opendj.ldap.LDAPClientFilter$1.extendedResult(LDAPClientFilter.java:73)
+	at com.forgerock.opendj.ldap.LDAPReader.decodeExtendedResult(LDAPReader.java:968)
+	at com.forgerock.opendj.ldap.LDAPReader.decodeProtocolOp(LDAPReader.java:1439)
+	at com.forgerock.opendj.ldap.LDAPReader.decode(LDAPReader.java:172)
+	at com.forgerock.opendj.ldap.LDAPClientFilter.handleRead(LDAPClientFilter.java:615)
+	at org.glassfish.grizzly.filterchain.ExecutorResolver$9.execute(ExecutorResolver.java:119)
+	at org.glassfish.grizzly.filterchain.DefaultFilterChain.executeFilter(DefaultFilterChain.java:286)
+	at org.glassfish.grizzly.filterchain.DefaultFilterChain.executeChainPart(DefaultFilterChain.java:223)
+	at org.glassfish.grizzly.filterchain.DefaultFilterChain.execute(DefaultFilterChain.java:155)
+	at org.glassfish.grizzly.filterchain.DefaultFilterChain.process(DefaultFilterChain.java:134)
+	at org.glassfish.grizzly.ProcessorExecutor.execute(ProcessorExecutor.java:78)
+	at org.glassfish.grizzly.nio.transport.TCPNIOTransport.fireIOEvent(TCPNIOTransport.java:829)
+	at org.glassfish.grizzly.strategies.AbstractIOStrategy.fireIOEvent(AbstractIOStrategy.java:103)
+	at org.glassfish.grizzly.strategies.WorkerThreadIOStrategy.run0(WorkerThreadIOStrategy.java:111)
+	at org.glassfish.grizzly.strategies.WorkerThreadIOStrategy.access$100(WorkerThreadIOStrategy.java:55)
+	at org.glassfish.grizzly.strategies.WorkerThreadIOStrategy$WorkerThreadRunnable.run(WorkerThreadIOStrategy.java:131)
+	at org.glassfish.grizzly.threadpool.AbstractThreadPool$Worker.doWork(AbstractThreadPool.java:508)
+	at org.glassfish.grizzly.threadpool.AbstractThreadPool$Worker.run(AbstractThreadPool.java:488)
+	at java.lang.Thread.run(Thread.java:680)
+
+And the OpenDJ access log shows the following messages:
+[04/Apr/2012:15:11:17 +0200] CONNECT conn=248 from=192.168.20.184:54799 to=172.19.145.146:50636 protocol=LDAPS
+[04/Apr/2012:15:11:18 +0200] BIND REQ conn=248 op=0 msgID=1 type=SIMPLE dn="cn=app-proxy-account,c=nl"
+[04/Apr/2012:15:11:18 +0200] BIND RES conn=248 op=0 msgID=1 result=0 authDN="cn=app-proxy-account,c=nl" etime=1
+[04/Apr/2012:15:11:18 +0200] SEARCH REQ conn=248 op=1 msgID=2 base="" scope=baseObject filter="(objectClass=*)" attrs="1.1"
+[04/Apr/2012:15:11:18 +0200] SEARCH RES conn=248 op=1 msgID=2 result=0 nentries=1 etime=1
+[04/Apr/2012:15:11:18 +0200] SEARCH REQ conn=248 op=2 msgID=3 base="cn=user-account,c=nl" scope=baseObject filter="(objectClass=organizationalPerson)" attrs="isMemberOf"
+[04/Apr/2012:15:11:18 +0200] SEARCH RES conn=248 op=2 msgID=3 result=0 nentries=1 authzDN="cn=user-account,c=nl" etime=1
+[04/Apr/2012:15:11:18 +0200] EXTENDED REQ conn=248 op=3 msgID=4 name="Password Policy State" oid="1.3.6.1.4.1.26027.1.6.1"
+[04/Apr/2012:15:11:18 +0200] EXTENDED RES conn=248 op=3 msgID=4 result=12 message="Unable to process the request for extended operation 1.3.6.1.4.1.26027.1.6.1 because it contained an unsupported critical control with OID 2.16.840.1.113730.3.4.18" etime=0
+[04/Apr/2012:15:11:18 +0200] DISCONNECT conn=248 reason="Protocol Error" msg="The client sent a request to the Directory Server that could not be properly decoded as an LDAP message:  javax.net.ssl.SSLException: Inbound closed before receiving peer's close_notify: possible truncation attack?"
+
+I think the PasswordPolicyStateExtendedRequest should check for null-results. Same thing for GetConnectionIDExtendedRequest. (See PasswordPolicyStateExtendedRequest.RequestDecoder, GetConnectionIDExtendedRequest.ResultDecoder and PasswordPolicyStateExtendedRequest.ResultDecoder)
+
+The cause of the null-result has something to do with missing acis, but should not result in nullpointerexceptions.

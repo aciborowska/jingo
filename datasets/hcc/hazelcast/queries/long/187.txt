@@ -1,0 +1,264 @@
+When custom loader is used with write behind, every time store is called in loader and then remove on locked map, value for key is read from store and not from map. Consequently put/set/update is overridden and data is lost.
+
+This is the same as issue 816 from old google code issue system, except that lock on map is used.
+
+Here is example of test code that produces error within 20 seconds:
+
+"
+public class HzIssue816plusGlobalLock {
+    public volatile static CounterHolder counterHolder = new CounterHolder(-1);
+
+```
+static HazelcastInstance hzInstance;
+
+public static void main(String[] args) {
+    String key = "1";
+
+    HzIssue816plusGlobalLock hzIssue816plusLock = new HzIssue816plusGlobalLock();
+    HashMapStore<String, CounterHolder> store = new HashMapStore<String, CounterHolder>();
+
+    Config c = new Config();
+    c.getMapConfig("test").setMapStoreConfig(new MapStoreConfig().setEnabled(true).setWriteDelaySeconds(2).setImplementation(store));
+
+    hzInstance = Hazelcast.init(c);
+
+    IMap<String, CounterHolder> mapSerKey = Hazelcast.getMap("test");
+
+    CounterHolder newCounterHolder = new CounterHolder(26);
+    mapSerKey.set(key, newCounterHolder, 0, null);
+    HzIssue816plusGlobalLock.counterHolder = newCounterHolder;
+
+    try { Thread.sleep(3000); } catch (InterruptedException e) { }
+
+    ExecutorService exec = Executors.newCachedThreadPool();
+
+    List<TestMapThread> threads = new ArrayList<TestMapThread>();
+
+    int numberOfThreads = 1;
+    for (int th = 1; th < numberOfThreads+1; th++) {
+        TestMapThread testMapThread = hzIssue816plusLock.new TestMapThread(mapSerKey, "t"+th, th*100);
+        exec.submit(testMapThread);
+
+        threads.add(testMapThread);
+        try { Thread.sleep(100); } catch (InterruptedException e) { }
+    }
+
+    int secondsToWait = 20;
+    for (int i = 0; i < secondsToWait; i++) {
+        try { Thread.sleep(TimeUnit.SECONDS.toMillis(1)); } catch (InterruptedException e) { }
+    }
+
+    for (TestMapThread testMapThread : threads) {
+        testMapThread.cancel();
+    }
+
+    exec.shutdown();
+    try {
+        exec.awaitTermination(300, TimeUnit.SECONDS);
+    } catch (InterruptedException e1) {
+        e1.printStackTrace();
+    }
+
+    hzInstance.getLifecycleService().shutdown();
+}
+
+public class TestMapThread implements Callable {
+    final String key = "1";
+
+    private IMap<String, CounterHolder> mapSerKey;
+    private int counter;
+    private String name;
+
+    private volatile boolean cancelled;
+
+    public TestMapThread(IMap<String, CounterHolder> mapSerKey,  String name, int counter) {
+        this.mapSerKey = mapSerKey;
+        this.counter = counter;
+        this.name = name;
+    }
+
+    @Override
+    public Object call() throws Exception {
+        int errorCounter = 0;
+
+        while (!cancelled) {
+            try {
+
+                mapSerKey.lock(key);
+                randomThreadSleep(5, 50);
+                //GET
+                CounterHolder counterHolder = mapSerKey.get(key);
+
+                if (counterHolder != null) {
+                    if (counterHolder.getCounter() != HzIssue816plusGlobalLock.counterHolder.getCounter()) {
+                        errorCounter++;
+
+                        System.err.println("Thread: "+name+" OOOOOPPPPPPAAAASSSSSSSSSAAAAAAAA WRONG: value is: " + counterHolder.getCounter()+" should be: "+HzIssue816plusGlobalLock.counterHolder.getCounter()+" number of errors: "+errorCounter);                           
+                    } else {
+                        System.out.println("Thread: "+name+" Values OK!");
+                    }
+                } else {
+                    System.out.println("Thread: "+name+" Not Found counter, is OK!");
+                }
+                CounterHolder newCounterHolder = new CounterHolder(HzIssue816plusGlobalLock.counterHolder.getCounter()+counter);
+                mapSerKey.put(key, newCounterHolder);
+                HzIssue816plusGlobalLock.counterHolder = newCounterHolder;
+
+            } finally {
+                mapSerKey.unlock(key);
+            }
+
+            randomThreadSleep(5, 20);
+
+            try {
+                mapSerKey.lock(key);
+                randomThreadSleep(5, 23);
+                if (getRandomBetween(1, 100) > 95) {
+                    //REMOVE
+                    mapSerKey.remove(key);
+                    System.out.println("Thread: "+name+" Counter REMOVED!");
+                }
+            } finally {
+                mapSerKey.unlock(key);
+            }
+
+            counter++;
+        }
+        if (errorCounter == 0) {
+            System.out.println("Thread: "+name+" No errors detected!");
+        } else {
+            System.err.println("----------------------------------------------- ");
+            System.err.println("Thread: "+name+" --------------------- Number of wrong reads: " + errorCounter);
+            System.err.println("----------------------------------------------- ");
+        }
+        return null;
+    }
+
+    public void cancel() {
+        cancelled = true;
+    }
+
+    public void randomThreadSleep(int min, int max) {
+        if (!cancelled) {
+            try { Thread.sleep(getRandomBetween(min, max)); } catch (InterruptedException e) { }
+        }
+    }
+
+    public int getRandomBetween(int min, int max) {
+        Random randomNumbers = new Random();
+        return min + randomNumbers.nextInt(max-min);
+    }
+
+}
+
+ static class HashMapStore<K,V> implements MapStore<K,V> {
+        private final Map<K,V> map = new HashMap<K, V>();
+```
+
+//          private Random randomNumbers = new Random();
+//          private int min = 25; //min miliseconds
+//          private int max = 1500; //max miliseconds
+
+```
+        public HashMapStore() {
+        }
+
+        public void store(final K key, final V value) {
+            System.out.println("--------- STORE: " + key + " : " + value);
+```
+
+//              try { Thread.sleep(min + randomNumbers.nextInt(max-min)); } catch (InterruptedException e) { }
+                map.put(key, value);
+            }
+
+```
+        public void storeAll(final Map<K, V> kvMap) {
+            System.out.println("STORE-ALL: " + kvMap);
+```
+
+//              try { Thread.sleep(min + randomNumbers.nextInt(max-min)); } catch (InterruptedException e) { }
+                map.putAll(kvMap);
+            }
+
+```
+        public void delete(final K key) {
+            System.out.println("DELETE: " + key);
+```
+
+//              try { Thread.sleep(min + randomNumbers.nextInt(max-min)); } catch (InterruptedException e) { }
+                map.remove(key);
+            }
+
+```
+        public void deleteAll(final Collection<K> keys) {
+            System.out.println("DELETE-ALL: " + keys);
+```
+
+//              try { Thread.sleep(min + randomNumbers.nextInt(max-min)); } catch (InterruptedException e) { }
+                for (K key : keys) {
+                    delete(key);
+                }
+            }
+
+```
+        public V load(final K key) {
+```
+
+//              System.out.println("LOAD: " + key );
+//              try { Thread.sleep(min + randomNumbers.nextInt(max-min)); } catch (InterruptedException e) { }
+                return map.get(key);
+            }
+
+```
+        public Map<K, V> loadAll(final Collection<K> keys) {
+            System.out.println("LOAD-ALL: " + keys);
+            Map<K,V> m = new HashMap<K, V>();
+```
+
+//              try { Thread.sleep(min + randomNumbers.nextInt(max-min)); } catch (InterruptedException e) { }
+                for (K key : keys) {
+                    m.put(key, load(key));
+                }
+                return m;
+            }
+
+```
+        public Set<K> loadAllKeys() {
+            System.out.println("LOAD-ALL-KEYS");
+```
+
+//              try { Thread.sleep(min + randomNumbers.nextInt(max-min)); } catch (InterruptedException e) { }
+                return null;
+            }
+        }
+}
+
+public class CounterHolder implements Serializable {
+
+```
+/**
+ * 
+ */
+private static final long serialVersionUID = 8215867173788097781L;
+
+private int counter;
+
+public CounterHolder(int counter) {
+    this.counter = counter;
+}
+
+public int getCounter() {
+    return counter;
+}
+
+public String toString() {
+    return ""+counter;
+}
+```
+
+}
+"
+
+I'm deeply disappointed about how many bugs hazelcast have on such core functionality.
+
+Regards, Igor Novak

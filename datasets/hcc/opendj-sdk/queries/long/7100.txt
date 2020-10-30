@@ -1,0 +1,67 @@
+dsbackup fails to take backups while JE is deleting log files.
+ Steps to reproduce:
+ 1. Setup DS with the evaluation profile but do not start the server.
+ 2. Change the JE log file size to 1 mb and start the server: 
+
+
+$ dsconfig set-backend-prop \
+          --backend-name dsEvaluation \
+          --set db-log-file-max:1mb \
+          --offline \
+          --no-prompt
+$ start-ds
+
+
+ 3. Run addrate which, given the max JE log file size, will force JE to create and delete files very often:
+
+$ cat addrate.template
+define suffix=dc=example,dc=com
+define maildomain=example.com
+
+branch: [suffix]
+
+branch: ou=People,[suffix]
+subordinateTemplate: person
+
+template: person
+rdnAttr: uid
+objectClass: top
+objectClass: person
+objectClass: organizationalPerson
+objectClass: inetOrgPerson
+givenName: <first>
+sn: <last>
+cn: {givenName} {sn}
+initials: {givenName:1}<random:chars:ABCDEFGHIJKLMNOPQRSTUVWXYZ:1>{sn:1}
+employeeNumber: <sequential:0>
+uid: user.{employeeNumber}
+mail: {uid}@[maildomain]
+userPassword: password
+telephoneNumber: <random:telephone>
+homePhone: <random:telephone>
+pager: <random:telephone>
+mobile: <random:telephone>
+street: <random:numeric:5> <file:streets> Street
+l: <file:cities>
+st: <file:states>
+postalCode: <random:numeric:5>
+postalAddress: {cn}${street}${l}, {st}  {postalCode}
+description: This is the description for {cn}.
+
+$ addrate -p 1389 -D "uid=admin" -w password -f -c 10 -C random addrate.template
+
+
+4. Try to backup dsEvaluation:
+
+$ dsbackup create -h localhost -p 4444 -w password -X --backendName dsEvaluation --backupDirectory bak
+Backup task 20200414104126096 scheduled to start immediately
+[14/Apr/2020:12:41:26 +0200] severity="NOTICE" msgCount=0 msgID=org.opends.messages.backend-413 message="Backup task 20200414104126096 started execution"
+[14/Apr/2020:12:41:26 +0200] severity="NOTICE" msgCount=1 msgID=org.opends.messages.backup--1 message="Starting backup for backend 'dsEvaluation'"
+[14/Apr/2020:12:41:38 +0200] severity="NOTICE" msgCount=2 msgID=org.opends.messages.backup--1 message="Deleting corrupted file from backup storage"
+[14/Apr/2020:12:41:38 +0200] severity="ERROR" msgCount=3 msgID=org.opends.messages.backup--1 message="An error occurred while attempting to backup backend 'dsEvaluation': IO error: /Users/cyril/deploy/opendj/db/dsEvaluation/0000014e.jdb"
+[14/Apr/2020:12:41:38 +0200] severity="ERROR" msgCount=4 msgID=org.opends.messages.backup--1 message="The backup process failed with one or more errors"
+[14/Apr/2020:12:41:38 +0200] severity="NOTICE" msgCount=5 msgID=org.opends.messages.backend-414 message="Backup task 20200414104126096 finished execution in the state Stopped by error"
+Backup task 20200414104126096 did not complete successfully
+
+
+ 5. If this does not fail the first time, try taking other backups.

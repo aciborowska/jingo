@@ -1,0 +1,171 @@
+Description
+
+Using 2 ways DS replicated topology. After generating some load (add/delete ldap operations) on both DS1 and DS2 during 24 minutes, the number of entries between the two instances diverges.
+Summary
+
+	2 replicated DS instance deployed in GKE cluster with ds-only forgeops profile
+	1000 000 entries
+	test scenario : running client 1 and client 2 in parallel during 24 minutes
+	replication-purge-delay : 3 d
+
+
+
+DS version
+
+
+forgerock@ds-idrepo-0:/opt/opendj$ dsconfig --version
+7.0.0-SNAPSHOT (revision 0e86d5739ced9e7438da0fa0856efeab04bf9235)
+
+
+
+Client 1
+
+	duration : 24 min
+	tool : addrate
+	command :
+
+addrate --noPropertiesFile -p 1389 -h ds-idrepo-0.ds-idrepo -D \"uid=admin\" -w password -i 10 -S -C off -c 1 -t 1 -F /results/ldif_template_add"
+
+
+
+
+
+
+	content of /results/ldif_template_add
+
+define suffix=ou=identities
+define maildomain=ou=identities
+
+branch: [suffix]
+
+branch: ou=add_then_delete,ou=identities
+subordinateTemplate: person
+
+template: person
+rdnAttr: uid
+objectClass: top
+objectClass: person
+objectClass: organizationalPerson
+objectClass: inetOrgPerson
+givenName: <first>
+sn: <last>
+employeeNumber: <sequential:0>
+cn: {givenName} {sn}
+uid: add_del.{employeeNumber}
+mail: {uid}@[maildomain]
+telephoneNumber: <random:telephone>
+
+
+
+
+
+Client 2
+
+
+	duration : 24 min
+	tool : locust
+	description : Plant seed on master and check time to replicate across pods
+	steps :
+	
+		step 1 : Get a random master (primary_master) to perform the ldap operations
+		step 2 : Bind on all masters
+		step 3 : Add a seed entry to primary_master : cn="Seed USERTORE_HOST:USERSTORE_PORT TIME_STAMP"
+		step 4 : Search seed entry on all masters
+		step 5 : Modify description attribute
+		step 6 : Search modification is replicated on all masters
+		step 7 : Modify rdn
+		step 8 : Search modified entry on all masters
+		step 9 : Delete seed entry on primary_master
+		step 10 : Make sure seed entry has been deleted on all masters
+		step 11 : Unbind on all masters
+	
+	
+
+
+
+Investigations
+
+After the test ran, waiting some time and check the number of entries and some replication properties
+ds-mon-base-dn-entry-count
+
+kubectl exec ds-idrepo-0 -- /opt/opendj/bin/ldapsearch --noPropertiesFile -p 1389 -D uid=admin -w password -b ds-mon-base-dn=ou=identities,ds-cfg-backend-id=amIdentityStore,cn=backends,cn=monitor objectclass=* ds-mon-base-dn-entry-count
+dn: ds-mon-base-dn=ou=identities,ds-cfg-backend-id=amIdentityStore,cn=backends,cn=monitor
+ds-mon-base-dn-entry-count: 591191
+
+kubectl exec ds-idrepo-1 -- /opt/opendj/bin/ldapsearch --noPropertiesFile -p 1389 -D uid=admin -w password -b ds-mon-base-dn=ou=identities,ds-cfg-backend-id=amIdentityStore,cn=backends,cn=monitor objectclass=* ds-mon-base-dn-entry-count
+dn: ds-mon-base-dn=ou=identities,ds-cfg-backend-id=amIdentityStore,cn=backends,cn=monitor
+ds-mon-base-dn-entry-count: 591194
+
+
+DS2 has 3 more entries compared to DS1
+lastchangenumber
+
+kubectl exec ds-idrepo-0 -- /opt/opendj/bin/ldapsearch --noPropertiesFile -p 1389 -D uid=admin -w password -b  -s base (objectclass=*) lastchangenumber
+lastchangenumber: 654907
+
+kubectl exec ds-idrepo-1 -- /opt/opendj/bin/ldapsearch --noPropertiesFile -p 1389 -D uid=admin -w password -b  -s base (objectclass=*) lastchangenumber
+lastchangenumber: 654907
+
+
+ds-sync-state
+
+kubectl exec ds-idrepo-0 -- /opt/opendj/bin/ldapsearch --noPropertiesFile -p 1389 -D uid=admin -w password -b ou=identities -s base (objectclass=*) ds-sync-state
+ds-sync-state: 010b01711b927c1b000a1966ds-idrepo-0
+ds-sync-state: 010b01711b79b56d000000abds-idrepo-1
+kubectl exec ds-idrepo-1 -- /opt/opendj/bin/ldapsearch --noPropertiesFile -p 1389 -D uid=admin -w password -b ou=identities -s base (objectclass=*) ds-sync-state
+ds-sync-state: 010b01711b927c1b000a1966ds-idrepo-0
+ds-sync-state: 010b01711b79b56d000000abds-idrepo-1
+
+
+
+Get the 3 entries on DS2 (which are not on DS1)
+
+
+$ diff -c /tmp/ds1 /tmp/ds2
+*** /tmp/ds1	Fri Mar 27 12:22:12 2020
+--- /tmp/ds2	Fri Mar 27 12:22:06 2020
+***************
+*** 1182376,1182381 ****
+--- 1182376,1182387 ----
+  dn: ou=seeds,ou=identities
++ dn: cn=seed ds-idrepo-0.ds-idrepo:1389 20200327-10:23:39.216346,ou=seeds,ou=identities
++
++ dn: cn=seed ds-idrepo-0.ds-idrepo:1389 20200327-10:23:40.914996,ou=seeds,ou=identities
++
++ dn: cn=seed ds-idrepo-0.ds-idrepo:1389 20200327-10:32:07.503270,ou=seeds,ou=identities
++
+  dn: cn=seed ds-idrepo-0.ds-idrepo:1389 20200327-10:38:31.002133,ou=seeds,ou=identities
+  dn: cn=seed ds-idrepo-0.ds-idrepo:1389 20200327-10:38:31.015550,ou=seeds,ou=identities
+
+
+
+These entries come from client2 load. 
+ The created entries have been replicated but seems replication did wrong on client 2 step 7 : the client changed rdn on DS1 and i would expect to find on DS2 
+cn=seed ds-idrepo-0.ds-idrepo:1389 20200327-10:38:31.002133_new
+ instead of
+cn=seed ds-idrepo-0.ds-idrepo:1389 20200327-10:38:31.002133
+
+locust client 2 python code step 7 : https://stash.forgerock.org/projects/QA/repos/lodestar/browse/shared/docker/locust/simulations/ds/ldap-seed.py#94
+
+May be the entry (with new rdn) on DS1 has been successfully deleted but not replicated as the corresponding entry on DS2 has old rdn 
+
+How to reproduce
+
+
+	checkout lodestar
+	configure lodestar
+	run four way pyrock test :
+
+cd pyrock
+cd tests/usecases/four_ways/conf_OPENDJXXX.yaml tests/usecases/four_ways/conf.yaml
+./run.py -p ds-only --us four_ways
+
+
+
+
+
+Notes
+
+	I can not reproduce the problem if i only run client 2 without client1. Seems it need some traffic to make it fails
+	this test worked last summer
+

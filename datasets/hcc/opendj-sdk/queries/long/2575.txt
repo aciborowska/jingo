@@ -1,0 +1,160 @@
+Here is a script that demonstrates a couple of issues, can be used to compare with 2.6.3 and is easy to repeat:
+
+
+
+#!/bin/bash
+
+echo_and_run() { echo "\$ $@" ; "$@" ; }
+
+opendj/bin/stop-ds
+rm -rf opendj
+
+if [[ $1 == "2.6" ]]; then
+        unzip OpenDJ-2.6.3.zip
+else
+        unzip OpenDJ-4.0.0.zip
+fi
+
+cd opendj
+./setup -b "dc=example,dc=com" -d 10000 --ldapPort 1389 -S --adminConnectorPort 4444 -w cangetinam -h opendj2.example.com --acceptLicense -n
+
+if [[ $1 == "2.6" ]]; then
+   bin/dsconfig create-local-db-vlv-index \
+          --backend-name userRoot \
+          --set base-dn:dc=example,dc=com \
+          --set filter:\(employeeNumber=*\) \
+          --set scope:whole-subtree \
+          --set sort-order:+employeeNumber \
+          --type generic \
+          --index-name TestVLV1 \
+          --hostname opendj2.example.com \
+          --port 4444 \
+          --bindDN cn=Directory\ Manager \
+          --bindPassword cangetinam -X \
+          --no-prompt
+else
+   bin/dsconfig create-backend-vlv-index -D "cn=Directory Manager" -w cangetinam -p 4444 \
+          --backend-name userRoot \
+          --set base-dn:dc=example,dc=com \
+          --set filter:\(employeeNumber=*\) \
+          --set scope:whole-subtree \
+          --set sort-order:+employeeNumber \
+          --type generic \
+          --index-name TestVLV1 \
+          --no-prompt -X
+fi
+
+bin/rebuild-index --rebuildDegraded -b dc=example,dc=com -D "cn=Directory Manager" -w cangetinam -X
+
+echo "#################################"
+echo
+echo_and_run bin/ldapsearch -p 1389 -b "dc=example,dc=com" -D "cn=Directory Manager" -w cangetinam --sortOrder "+employeeNumber" -G 0:9:1:0 "(employeeNumber=*)" employeeNumber
+
+echo "#################################"
+echo
+echo_and_run bin/ldapsearch -p 1389 -b "dc=example,dc=com" -D "cn=Directory Manager" -w cangetinam --sortOrder "+employeeNumber" -G 4:0:10:0 "(employeeNumber=*)" employeeNumber
+
+
+echo "#################################"
+echo
+echo_and_run bin/ldapsearch -p 1389 -b "dc=example,dc=com" -D "cn=Directory Manager" -w cangetinam --sortOrder "+employeeNumber" -G 0:19:1:0 "(employeeNumber=*)" employeeNumber debugsearchindex
+
+
+
+Here is the output on 2.6.3:
+
+
+
+#################################
+
+$ bin/ldapsearch -p 1389 -b dc=example,dc=com -D cn=Directory Manager -w cangetinam --sortOrder +employeeNumber -G 0:9:1:0 (employeeNumber=*) employeeNumber
+dn: uid=user.0,ou=People,dc=example,dc=com
+employeeNumber: 0
+
+dn: uid=user.1,ou=People,dc=example,dc=com
+employeeNumber: 1
+
+dn: uid=user.10,ou=People,dc=example,dc=com
+employeeNumber: 10
+
+dn: uid=user.100,ou=People,dc=example,dc=com
+employeeNumber: 100
+
+dn: uid=user.1000,ou=People,dc=example,dc=com
+employeeNumber: 1000
+
+dn: uid=user.1001,ou=People,dc=example,dc=com
+employeeNumber: 1001
+
+dn: uid=user.1002,ou=People,dc=example,dc=com
+employeeNumber: 1002
+
+dn: uid=user.1003,ou=People,dc=example,dc=com
+employeeNumber: 1003
+
+dn: uid=user.1004,ou=People,dc=example,dc=com
+employeeNumber: 1004
+
+dn: uid=user.1005,ou=People,dc=example,dc=com
+employeeNumber: 1005
+
+# VLV Target Offset:  1
+# VLV Content Count:  10000
+#################################
+
+$ bin/ldapsearch -p 1389 -b dc=example,dc=com -D cn=Directory Manager -w cangetinam --sortOrder +employeeNumber -G 4:0:10:0 (employeeNumber=*) employeeNumber
+dn: uid=user.1001,ou=People,dc=example,dc=com
+employeeNumber: 1001
+
+dn: uid=user.1002,ou=People,dc=example,dc=com
+employeeNumber: 1002
+
+dn: uid=user.1003,ou=People,dc=example,dc=com
+employeeNumber: 1003
+
+dn: uid=user.1004,ou=People,dc=example,dc=com
+employeeNumber: 1004
+
+dn: uid=user.1005,ou=People,dc=example,dc=com
+employeeNumber: 1005
+
+# VLV Target Offset:  10
+# VLV Content Count:  10000
+#################################
+
+$ bin/ldapsearch -p 1389 -b dc=example,dc=com -D cn=Directory Manager -w cangetinam --sortOrder +employeeNumber -G 0:19:1:0 (employeeNumber=*) employeeNumber debugsearchindex
+dn: cn=debugsearch
+debugsearchindex: vlv=[INDEX:vlv.TestVLV1][COUNT:10000] final=[COUNT:20]
+
+# VLV Target Offset:  1
+# VLV Content Count:  10000
+
+
+
+Output on current trunk (21Dec2015):
+
+
+
+#################################
+
+$ bin/ldapsearch -p 1389 -b dc=example,dc=com -D cn=Directory Manager -w cangetinam --sortOrder +employeeNumber -G 0:9:1:0 (employeeNumber=*) employeeNumber
+dn: uid=user.0,ou=People,dc=example,dc=com
+employeeNumber: 0
+
+# VLV Target Offset:  1
+# VLV Content Count:  0
+#################################
+
+$ bin/ldapsearch -p 1389 -b dc=example,dc=com -D cn=Directory Manager -w cangetinam --sortOrder +employeeNumber -G 4:0:10:0 (employeeNumber=*) employeeNumber
+SEARCH operation failed
+Result Code:  80 (Other)
+Additional Information:  java.lang.IllegalArgumentException: maxCount must be positive: -4
+#################################
+
+$ bin/ldapsearch -p 1389 -b dc=example,dc=com -D cn=Directory Manager -w cangetinam --sortOrder +employeeNumber -G 0:19:1:0 (employeeNumber=*) employeeNumber debugsearchindex
+dn: cn=debugsearch
+debugsearchindex: vlv=[INDEX:vlv.TestVLV1][COUNT:1] final=[COUNT:1]
+
+# VLV Target Offset:  1
+# VLV Content Count:  0
+

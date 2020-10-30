@@ -1,0 +1,57 @@
+The following exception is thrown when a client registers a message listener against a reliable topic, the cluster is shutdown and time elapses that is greater than the value of `hazelcast.client.invocation.timeout.seconds`:
+
+```
+WARNING: hz.client_0 [dev] [3.9.3] Terminating MessageListener com.wneild.hazelcast.ListenerIntegrationTest$$Lambda$3/1161382705@124a67e6 on topic: topic. Reason: Unhandled exception, message: ClientInvocation{clientMessage = ClientMessage{length=55, correlationId=27, operation=Ringbuffer.readMany, messageType=190a, partitionId=85, isComplete=true, isRetryable=true, isEvent=false, writeOffset=0}, objectName = _hz_rb_topic, target = partition 85, sendConnection = ClientConnection{alive=false, connectionId=1, channel=NioChannel{0.0.0.0/0.0.0.0:63848->/127.0.0.1:5701}, remoteEndpoint=[10.128.42.209]:5701, lastReadTime=2018-04-23 20:08:05.647, lastWriteTime=2018-04-23 20:08:05.649, closedTime=2018-04-23 20:08:05.647, lastHeartbeatRequested=never, lastHeartbeatReceived=never, connected server version=3.9.3}} timed out because exception occurred after client invocation timeout 1000 ms. Current time: 2018-04-23 20:08:06.750. Start time: 2018-04-23 20:08:05.531. Total elapsed time: 1220 ms. 
+com.hazelcast.core.OperationTimeoutException: ClientInvocation{clientMessage = ClientMessage{length=55, correlationId=27, operation=Ringbuffer.readMany, messageType=190a, partitionId=85, isComplete=true, isRetryable=true, isEvent=false, writeOffset=0}, objectName = _hz_rb_topic, target = partition 85, sendConnection = ClientConnection{alive=false, connectionId=1, channel=NioChannel{0.0.0.0/0.0.0.0:63848->/127.0.0.1:5701}, remoteEndpoint=[10.128.42.209]:5701, lastReadTime=2018-04-23 20:08:05.647, lastWriteTime=2018-04-23 20:08:05.649, closedTime=2018-04-23 20:08:05.647, lastHeartbeatRequested=never, lastHeartbeatReceived=never, connected server version=3.9.3}} timed out because exception occurred after client invocation timeout 1000 ms. Current time: 2018-04-23 20:08:06.750. Start time: 2018-04-23 20:08:05.531. Total elapsed time: 1220 ms. 
+	at com.hazelcast.client.spi.impl.ClientInvocation.newOperationTimeoutException(ClientInvocation.java:309)
+	at com.hazelcast.client.spi.impl.ClientInvocation.notifyException(ClientInvocation.java:216)
+	at com.hazelcast.client.spi.impl.ClientInvocation.invokeOnSelection(ClientInvocation.java:160)
+	at com.hazelcast.client.spi.impl.ClientInvocation.retry(ClientInvocation.java:178)
+	at com.hazelcast.client.spi.impl.ClientInvocation.run(ClientInvocation.java:166)
+	at java.util.concurrent.Executors$RunnableAdapter.call(Executors.java:511)
+	at java.util.concurrent.FutureTask.run(FutureTask.java:266)
+	at java.util.concurrent.ScheduledThreadPoolExecutor$ScheduledFutureTask.access$201(ScheduledThreadPoolExecutor.java:180)
+	at java.util.concurrent.ScheduledThreadPoolExecutor$ScheduledFutureTask.run(ScheduledThreadPoolExecutor.java:293)
+	at com.hazelcast.util.executor.LoggingScheduledExecutor$LoggingDelegatingFuture.run(LoggingScheduledExecutor.java:160)
+	at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1149)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:624)
+	at java.lang.Thread.run(Thread.java:748)
+	at com.hazelcast.util.executor.HazelcastManagedThread.executeRun(HazelcastManagedThread.java:64)
+	at com.hazelcast.util.executor.HazelcastManagedThread.run(HazelcastManagedThread.java:80)
+Caused by: java.io.IOException: Owner connection is not available!
+	at com.hazelcast.client.connection.nio.ClientConnectionManagerImpl.getConnection(ClientConnectionManagerImpl.java:357)
+	at com.hazelcast.client.connection.nio.ClientConnectionManagerImpl.getOrTriggerConnect(ClientConnectionManagerImpl.java:344)
+	at com.hazelcast.client.spi.impl.SmartClientInvocationService.getOrTriggerConnect(SmartClientInvocationService.java:73)
+	at com.hazelcast.client.spi.impl.SmartClientInvocationService.invokeOnPartitionOwner(SmartClientInvocationService.java:48)
+	at com.hazelcast.client.spi.impl.ClientInvocation.invokeOnSelection(ClientInvocation.java:150)
+	... 12 more
+```
+
+Here is a failing test that demonstrates this behaviour:
+
+```
+@Test
+    public void shouldReestablishListenerOnClusterRestart() throws InterruptedException {
+        HazelcastInstance hzMember = Hazelcast.newHazelcastInstance();
+        ClientConfig clientConfig = new ClientConfig();
+        clientConfig.setProperty("hazelcast.client.invocation.timeout.seconds", "1");
+        HazelcastInstance hzClient = HazelcastClient.newHazelcastClient(clientConfig);
+        AtomicReference<String> value = new AtomicReference<>();
+
+        hzClient.<String>getReliableTopic(TOPIC_NAME).addMessageListener(message -> value.set(message.getMessageObject()));
+
+        hzMember.getReliableTopic(TOPIC_NAME).publish(TOPIC_MESSAGE_ONE);
+        Thread.sleep(100L);
+        assertEquals(TOPIC_MESSAGE_ONE, value.get());
+        hzMember.shutdown();
+        Thread.sleep(1000L); // if we wait for hazelcast.client.invocation.timeout.seconds then the listener doesn't work any more
+        hzMember = Hazelcast.newHazelcastInstance();
+        hzMember.getReliableTopic(TOPIC_NAME).publish(TOPIC_MESSAGE_TWO);
+        Thread.sleep(100L);
+        assertEquals(TOPIC_MESSAGE_TWO, value.get());
+    }
+```
+
+My expectation would be that the message listener is re-established when the client's connection to the cluster is re-established, rather than being terminated.
+
+This is using Hazelcast 3.9.3

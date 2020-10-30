@@ -1,0 +1,32 @@
+We may lost data when rescaling job from incremental checkpoint because of the following code.
+
+
+try (RocksIteratorWrapper iterator = getRocksIterator(restoreDb, columnFamilyHandle)) {
+
+   int startKeyGroup = stateBackend.getKeyGroupRange().getStartKeyGroup();
+   byte[] startKeyGroupPrefixBytes = new byte[stateBackend.keyGroupPrefixBytes];
+   for (int j = 0; j < stateBackend.keyGroupPrefixBytes; ++j) {
+      startKeyGroupPrefixBytes[j] = (byte) (startKeyGroup >>> ((stateBackend.keyGroupPrefixBytes - j - 1) * Byte.SIZE));
+   }
+
+   iterator.seek(startKeyGroupPrefixBytes);
+
+   while (iterator.isValid()) {
+
+      int keyGroup = 0;
+      for (int j = 0; j < stateBackend.keyGroupPrefixBytes; ++j) {
+         keyGroup = (keyGroup << Byte.SIZE) + iterator.key()[j];
+      }
+
+      if (stateBackend.keyGroupRange.contains(keyGroup)) {
+         stateBackend.db.put(targetColumnFamilyHandle,
+            iterator.key(), iterator.value());
+      }
+
+      iterator.next();
+   }
+}
+
+
+
+For every state handle to fetch the target data, we seek(state.keyGroupRange.getStartKeyGroup()), so the iterator could be INVALID immediately if the state handle's start key group is bigger that state.keyGroupRange.getStartKeyGroup(). Then, data lost...

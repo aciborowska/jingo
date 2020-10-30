@@ -1,0 +1,39 @@
+During several tests where we simulated failure conditions, we have observed that on HCFS systems where the data stream is of type FSDataOutputStream, Flink will issue hflush() and not hsync() which results in data loss.
+
+In the class StreamWriterBase.java the code below will execute hsync if the output stream is of type HdfsDataOutputStream but not for streams of type FSDataOutputStream.  Is this by design?
+
+
+protected void hflushOrSync(FSDataOutputStream os) throws IOException {
+try {
+// At this point the refHflushOrSync cannot be null,
+// since register method would have thrown if it was.
+this.refHflushOrSync.invoke(os);
+if (os instanceof HdfsDataOutputStream) {
+				((HdfsDataOutputStream) os).hsync(EnumSet.of(HdfsDataOutputStream.SyncFlag.UPDATE_LENGTH));
+			}
+		} catch (InvocationTargetException e) {
+String msg = "Error while trying to hflushOrSync!";
+LOG.error(msg + " " + e.getCause());
+Throwable cause = e.getCause();
+if (cause != null && cause instanceof IOException) {
+throw (IOException) cause;
+			}
+throw new RuntimeException(msg, e);
+		} catch (Exception e) {
+String msg = "Error while trying to hflushOrSync!";
+LOG.error(msg + " " + e);
+throw new RuntimeException(msg, e);
+		}
+	}
+
+
+
+Could a potential fix me to perform a sync even on streams of type FSDataOutputStream?
+
+
+ if (os instanceof HdfsDataOutputStream) {
+                                ((HdfsDataOutputStream) os).hsync(EnumSet.of(HdfsDataOutputStream.SyncFlag.UPDATE_LENGTH));
+                        } else if (os instanceof FSDataOutputStream) {
+                                os.hsync();
+                        }
+

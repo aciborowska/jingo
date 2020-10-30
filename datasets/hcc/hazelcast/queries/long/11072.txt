@@ -1,0 +1,149 @@
+I've encountered an issue with Hazelcast 3.8.x / 3.9 EA, with the following jcache exception being raised by a Hazelcast member joining the cluster:
+
+```
+Exception in thread "hz._hzInstance_1_dev.cached.thread-1" com.hazelcast.cache.CacheNotExistsException: Couldn't find cache config with name cache_142
+	at com.hazelcast.cache.impl.AbstractCacheService.checkCacheSimpleConfig(AbstractCacheService.java:217)
+	at com.hazelcast.cache.impl.AbstractCacheService.createDistributedObject(AbstractCacheService.java:197)
+	at com.hazelcast.spi.impl.proxyservice.impl.ProxyRegistry.doCreateProxy(ProxyRegistry.java:191)
+	at com.hazelcast.spi.impl.proxyservice.impl.ProxyRegistry.createProxy(ProxyRegistry.java:184)
+	at com.hazelcast.spi.impl.proxyservice.impl.operations.PostJoinProxyOperation$1.run(PostJoinProxyOperation.java:63)
+	at com.hazelcast.util.executor.CachedExecutorServiceDelegate$Worker.run(CachedExecutorServiceDelegate.java:228)
+	at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1142)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:617)
+	at java.lang.Thread.run(Thread.java:745)
+	at com.hazelcast.util.executor.HazelcastManagedThread.executeRun(HazelcastManagedThread.java:64)
+	at com.hazelcast.util.executor.HazelcastManagedThread.run(HazelcastManagedThread.java:80)
+Aug 11, 2017 9:29:17 AM com.hazelcast.cache.impl.CacheService
+```
+
+I have 2 members configured in a cluster. 
+
+Member 1 is in a loop
+- Creates jcache (with unique name)
+- sleep 1 sec
+- Schedules destroy of cache 10 secs later
+- sleep 1 sec
+
+Member 2
+- starts up
+- sleeps for 10 secs
+- shuts down
+
+Occasionally member 2 will raise the "CacheNotExistsException" for one or more of the active jcaches created by Member 1 during cluster synchronization(?)
+
+I've been running on Linux, and issue occurs on both: centos 6 and Ubuntu 16.4.
+
+For reproduction, I've attached a test program (jcache-versions.tar.gz
+[jcache-versions.tar.gz](https://github.com/hazelcast/hazelcast/files/1217312/jcache-versions.tar.gz)
+) that should reproduce the issue
+
+Reproduction steps
+
+1. Unpack jcache-versions.tar.gz test program on two linux machines with Java 8.
+2. Edit conf/cache_versions_hazelcast.xml on both machines, to configure host names/ip addresses for the cluster
+3. On machine 1 - bin/jcache-versions.bash 
+4. On machine 2 - while :; do bin/jcache-versions.bash 1 1; sleep 1; done
+
+After a while, should see the issue on machine 2
+e.g.
+
+```
+Starting Hazelcast connection
+Aug 11, 2017 9:39:06 AM com.hazelcast.config.AbstractXmlConfigHelper
+WARNING: Name of the hazelcast schema location incorrect using default
+Aug 11, 2017 9:39:07 AM com.hazelcast.instance.AddressPicker
+WARNING: [LOCAL] [dev] [3.9-EA] You configured your member address as host name. Please be aware of that your dns can be spoofed. Make sure that your dns configurations are correct.
+Aug 11, 2017 9:39:07 AM com.hazelcast.instance.AddressPicker
+INFO: [LOCAL] [dev] [3.9-EA] Resolving domain name 'sw-eng-app1' to address(es): [10.7.5.228]
+Aug 11, 2017 9:39:07 AM com.hazelcast.instance.AddressPicker
+WARNING: [LOCAL] [dev] [3.9-EA] You configured your member address as host name. Please be aware of that your dns can be spoofed. Make sure that your dns configurations are correct.
+Aug 11, 2017 9:39:07 AM com.hazelcast.instance.AddressPicker
+INFO: [LOCAL] [dev] [3.9-EA] Resolving domain name 'sw-eng-app2' to address(es): [10.7.5.117]
+Aug 11, 2017 9:39:07 AM com.hazelcast.instance.AddressPicker
+INFO: [LOCAL] [dev] [3.9-EA] Interfaces is disabled, trying to pick one address from TCP-IP config addresses: [sw-eng-app2/10.7.5.117, sw-eng-app1/10.7.5.228]
+Aug 11, 2017 9:39:07 AM com.hazelcast.instance.AddressPicker
+INFO: [LOCAL] [dev] [3.9-EA] Prefer IPv4 stack is true.
+Aug 11, 2017 9:39:07 AM com.hazelcast.instance.AddressPicker
+INFO: [LOCAL] [dev] [3.9-EA] Picked [sw-eng-app2]:5710, using socket ServerSocket[addr=/0:0:0:0:0:0:0:0,localport=5710], bind any local is true
+Aug 11, 2017 9:39:07 AM com.hazelcast.system
+INFO: [sw-eng-app2]:5710 [dev] [3.9-EA] Hazelcast 3.9-EA (20170704 - f594093) starting at [sw-eng-app2]:5710
+Aug 11, 2017 9:39:07 AM com.hazelcast.system
+INFO: [sw-eng-app2]:5710 [dev] [3.9-EA] Copyright (c) 2008-2017, Hazelcast, Inc. All Rights Reserved.
+Aug 11, 2017 9:39:07 AM com.hazelcast.system
+INFO: [sw-eng-app2]:5710 [dev] [3.9-EA] Configured Hazelcast Serialization version: 1
+Aug 11, 2017 9:39:07 AM com.hazelcast.spi.impl.operationservice.impl.BackpressureRegulator
+INFO: [sw-eng-app2]:5710 [dev] [3.9-EA] Backpressure is disabled
+Aug 11, 2017 9:39:08 AM com.hazelcast.instance.Node
+INFO: [sw-eng-app2]:5710 [dev] [3.9-EA] Creating TcpIpJoiner
+Aug 11, 2017 9:39:09 AM com.hazelcast.spi.impl.operationexecutor.impl.OperationExecutorImpl
+INFO: [sw-eng-app2]:5710 [dev] [3.9-EA] Starting 2 partition threads
+Aug 11, 2017 9:39:09 AM com.hazelcast.spi.impl.operationexecutor.impl.OperationExecutorImpl
+INFO: [sw-eng-app2]:5710 [dev] [3.9-EA] Starting 3 generic threads (1 dedicated for priority tasks)
+Aug 11, 2017 9:39:09 AM com.hazelcast.core.LifecycleService
+INFO: [sw-eng-app2]:5710 [dev] [3.9-EA] [sw-eng-app2]:5710 is STARTING
+Aug 11, 2017 9:39:09 AM com.hazelcast.nio.tcp.TcpIpConnector
+INFO: [sw-eng-app2]:5710 [dev] [3.9-EA] Connecting to sw-eng-app1/10.7.5.228:5710, timeout: 0, bind-any: true
+Aug 11, 2017 9:39:09 AM com.hazelcast.nio.tcp.TcpIpConnectionManager
+INFO: [sw-eng-app2]:5710 [dev] [3.9-EA] Established socket connection between /10.7.5.117:55634 and sw-eng-app1/10.7.5.228:5710
+Aug 11, 2017 9:39:15 AM com.hazelcast.system
+INFO: [sw-eng-app2]:5710 [dev] [3.9-EA] Cluster version set to 3.9
+Aug 11, 2017 9:39:15 AM com.hazelcast.internal.cluster.ClusterService
+INFO: [sw-eng-app2]:5710 [dev] [3.9-EA] 
+
+Members {size:2, ver:76} [
+	Member [sw-eng-app1]:5710 - 67187ad3-86ca-4d05-8dab-3ac8e823c76d
+	Member [sw-eng-app2]:5710 - f4c1900b-f6bc-4f89-b816-d6874ccfb4b9 this
+]
+
+Aug 11, 2017 9:39:15 AM com.hazelcast.cache.impl.CacheService
+INFO: [sw-eng-app2]:5710 [dev] [3.9-EA] Added cache config: CacheConfig{name='cache_440', managerPrefix='/hz/', inMemoryFormat=BINARY, backupCount=0, hotRestart=HotRestartConfig{enabled=false, fsync=false}}
+Aug 11, 2017 9:39:15 AM com.hazelcast.cache.impl.CacheService
+INFO: [sw-eng-app2]:5710 [dev] [3.9-EA] Added cache config: CacheConfig{name='cache_439', managerPrefix='/hz/', inMemoryFormat=BINARY, backupCount=0, hotRestart=HotRestartConfig{enabled=false, fsync=false}}
+Aug 11, 2017 9:39:15 AM com.hazelcast.cache.impl.CacheService
+INFO: [sw-eng-app2]:5710 [dev] [3.9-EA] Added cache config: CacheConfig{name='cache_438', managerPrefix='/hz/', inMemoryFormat=BINARY, backupCount=0, hotRestart=HotRestartConfig{enabled=false, fsync=false}}
+Aug 11, 2017 9:39:15 AM com.hazelcast.cache.impl.CacheService
+INFO: [sw-eng-app2]:5710 [dev] [3.9-EA] Added cache config: CacheConfig{name='cache_437', managerPrefix='/hz/', inMemoryFormat=BINARY, backupCount=0, hotRestart=HotRestartConfig{enabled=false, fsync=false}}
+Aug 11, 2017 9:39:15 AM com.hazelcast.cache.impl.CacheService
+INFO: [sw-eng-app2]:5710 [dev] [3.9-EA] Added cache config: CacheConfig{name='cache_436', managerPrefix='/hz/', inMemoryFormat=BINARY, backupCount=0, hotRestart=HotRestartConfig{enabled=false, fsync=false}}
+Exception in thread "hz._hzInstance_1_dev.cached.thread-2" com.hazelcast.cache.CacheNotExistsException: Couldn't find cache config with name cache_440
+	at com.hazelcast.cache.impl.AbstractCacheService.checkCacheSimpleConfig(AbstractCacheService.java:217)
+	at com.hazelcast.cache.impl.AbstractCacheService.createDistributedObject(AbstractCacheService.java:197)
+	at com.hazelcast.spi.impl.proxyservice.impl.ProxyRegistry.doCreateProxy(ProxyRegistry.java:191)
+	at com.hazelcast.spi.impl.proxyservice.impl.ProxyRegistry.createProxy(ProxyRegistry.java:184)
+	at com.hazelcast.spi.impl.proxyservice.impl.operations.PostJoinProxyOperation$1.run(PostJoinProxyOperation.java:63)
+	at com.hazelcast.util.executor.CachedExecutorServiceDelegate$Worker.run(CachedExecutorServiceDelegate.java:228)
+	at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1142)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:617)
+	at java.lang.Thread.run(Thread.java:745)
+	at com.hazelcast.util.executor.HazelcastManagedThread.executeRun(HazelcastManagedThread.java:64)
+	at com.hazelcast.util.executor.HazelcastManagedThread.run(HazelcastManagedThread.java:80)
+Aug 11, 2017 9:39:16 AM com.hazelcast.cache.impl.CacheService
+INFO: [sw-eng-app2]:5710 [dev] [3.9-EA] Added cache config: CacheConfig{name='cache_441', managerPrefix='/hz/', inMemoryFormat=BINARY, backupCount=0, hotRestart=HotRestartConfig{enabled=false, fsync=false}}
+Aug 11, 2017 9:39:17 AM com.hazelcast.cache.impl.CacheService
+INFO: [sw-eng-app2]:5710 [dev] [3.9-EA] Removed cache config: CacheConfig{name='cache_436', managerPrefix='/hz/', inMemoryFormat=BINARY, backupCount=0, hotRestart=HotRestartConfig{enabled=false, fsync=false}}
+Aug 11, 2017 9:39:18 AM com.hazelcast.core.LifecycleService
+INFO: [sw-eng-app2]:5710 [dev] [3.9-EA] [sw-eng-app2]:5710 is STARTED
+Starting Destroy cache scheduler
+Aug 11, 2017 9:39:18 AM com.hazelcast.cache.impl.CacheService
+INFO: [sw-eng-app2]:5710 [dev] [3.9-EA] Added cache config: CacheConfig{name='cache_442', managerPrefix='/hz/', inMemoryFormat=BINARY, backupCount=0, hotRestart=HotRestartConfig{enabled=false, fsync=false}}
+Aug 11, 2017 9:39:19 AM com.hazelcast.cache.impl.CacheService
+INFO: [sw-eng-app2]:5710 [dev] [3.9-EA] Removed cache config: CacheConfig{name='cache_437', managerPrefix='/hz/', inMemoryFormat=BINARY, backupCount=0, hotRestart=HotRestartConfig{enabled=false, fsync=false}}
+Aug 11, 2017 9:39:20 AM com.hazelcast.cache.impl.CacheService
+INFO: [sw-eng-app2]:5710 [dev] [3.9-EA] Added cache config: CacheConfig{name='cache_443', managerPrefix='/hz/', inMemoryFormat=BINARY, backupCount=0, hotRestart=HotRestartConfig{enabled=false, fsync=false}}
+Aug 11, 2017 9:39:21 AM com.hazelcast.cache.impl.CacheService
+INFO: [sw-eng-app2]:5710 [dev] [3.9-EA] Removed cache config: CacheConfig{name='cache_438', managerPrefix='/hz/', inMemoryFormat=BINARY, backupCount=0, hotRestart=HotRestartConfig{enabled=false, fsync=false}}
+Aug 11, 2017 9:39:22 AM com.hazelcast.cache.impl.CacheService
+INFO: [sw-eng-app2]:5710 [dev] [3.9-EA] Added cache config: CacheConfig{name='cache_444', managerPrefix='/hz/', inMemoryFormat=BINARY, backupCount=0, hotRestart=HotRestartConfig{enabled=false, fsync=false}}
+Aug 11, 2017 9:39:23 AM com.hazelcast.cache.impl.CacheService
+INFO: [sw-eng-app2]:5710 [dev] [3.9-EA] Removed cache config: CacheConfig{name='cache_439', managerPrefix='/hz/', inMemoryFormat=BINARY, backupCount=0, hotRestart=HotRestartConfig{enabled=false, fsync=false}}
+Aug 11, 2017 9:39:24 AM com.hazelcast.cache.impl.CacheService
+INFO: [sw-eng-app2]:5710 [dev] [3.9-EA] Added cache config: CacheConfig{name='cache_445', managerPrefix='/hz/', inMemoryFormat=BINARY, backupCount=0, hotRestart=HotRestartConfig{enabled=false, fsync=false}}
+Aug 11, 2017 9:39:25 AM com.hazelcast.cache.impl.CacheService
+INFO: [sw-eng-app2]:5710 [dev] [3.9-EA] Removed cache config: CacheConfig{name='cache_440', managerPrefix='/hz/', inMemoryFormat=BINARY, backupCount=0, hotRestart=HotRestartConfig{enabled=false, fsync=false}}
+Aug 11, 2017 9:39:26 AM com.hazelcast.cache.impl.CacheService
+INFO: [sw-eng-app2]:5710 [dev] [3.9-EA] Added cache config: CacheConfig{name='cache_446', managerPrefix='/hz/', inMemoryFormat=BINARY, backupCount=0, hotRestart=HotRestartConfig{enabled=false, fsync=false}}
+Aug 11, 2017 9:39:27 AM com.hazelcast.cache.impl.CacheService
+INFO: [sw-eng-app2]:5710 [dev] [3.9-EA] Removed cache config: CacheConfig{name='cache_441', managerPrefix='/hz/', inMemoryFormat=BINARY, backupCount=0, hotRestart=HotRestartConfig{enabled=false, fsync=false}}
+Stopping Destroy cache scheduler
+Stopping Hazelcast connection
+```

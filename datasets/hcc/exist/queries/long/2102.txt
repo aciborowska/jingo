@@ -1,0 +1,115 @@
+### What is the problem
+
+In a search application I'm building, I encountered an NPE when using `util:expand` to expand hits in a query that includes hits on Lucene full text and ngram indexes. 
+
+### What did you expect
+
+[The documentation](https://exist-db.org/exist/apps/doc/kwic) indicates that Lucene full text and ngram indexes both support match highlighting, so it should be possible to apply `util:expand` to a node that contains hits from both index types. Doing so should certainly not cause an NPE.
+
+### Describe how to reproduce or add a test
+
+The following query will reproduce the error, in the form of 3 tests wrapped in try-catch blocks. While test 1 is correct, tests 2 and 3 trigger an NPE:
+
+```xquery
+xquery version "3.1";
+
+(: setup :)
+let $data := 
+    <root>
+        <x>Hello</x>
+        <y>Hello</y>
+    </root>
+let $xconf := 
+    <collection xmlns="http://exist-db.org/collection-config/1.0">
+        <index>
+            <lucene>
+                <text qname="x"/>
+            </lucene>
+            <ngram qname="y"/>
+        </index>
+    </collection>
+let $xconf-col := xmldb:create-collection("/db/system/config/db", "temp")
+let $store-xconf := xmldb:store($xconf-col, "collection.xconf", $xconf)
+let $data-col := xmldb:create-collection("/db", "temp")
+let $store-data := xmldb:store($data-col, "test.xml", $data)
+
+(: the heart of the test :)
+let $q := "Hello"
+let $doc := doc($store-data)
+let $x-hits := $doc/root[ft:query(x, $q)]
+let $y-hits := $doc/root[ngram:contains(y, $q)]
+let $hits := ($x-hits | $y-hits)
+return
+    <tests>
+        <test n="1">{ try { util:expand($x-hits) } catch * { $err:code } }</test>
+        <test n="2">{ try { util:expand($y-hits) } catch * { $err:code } }</test>
+        <test n="3">{ try { util:expand($hits)   } catch * { $err:code } }</test>
+    </tests>
+```
+
+The results I would have expected:
+
+```xml
+<tests>
+    <test n="1">
+        <root>
+            <x><exist:match xmlns:exist="http://exist.sourceforge.net/NS/exist">Hello</exist:match></x>
+            <y>Hello</y>
+        </root>
+    </test>
+    <test n="2">
+        <root>
+            <x>Hello</x>
+            <y><exist:match xmlns:exist="http://exist.sourceforge.net/NS/exist">Hello</exist:match></y>
+        </root>
+    </test>
+    <test n="3">
+        <root>
+            <x><exist:match xmlns:exist="http://exist.sourceforge.net/NS/exist">Hello</exist:match></x>
+            <y><exist:match xmlns:exist="http://exist.sourceforge.net/NS/exist">Hello</exist:match></y>
+        </root>
+    </test>
+</tests>
+```
+
+The actual results:
+
+```xml
+<tests>
+    <test n="1">
+        <root>
+            <x><exist:match xmlns:exist="http://exist.sourceforge.net/NS/exist">Hello</exist:match></x>
+            <y>Hello</y>
+        </root>
+    </test>
+    <test n="2">java:java.lang.NullPointerException</test>
+    <test n="3">java:java.lang.NullPointerException</test>
+</tests>
+```
+
+To obtain a full stack trace of the NPE, remove the try-catch block from the 2nd or 3rd test. The key portion from of the trace from exist.log is:
+
+```text
+2018-08-09 01:18:30,855 [qtp2027762133-72] ERROR (XQueryServlet.java [process]:552) - null 
+java.lang.NullPointerException: null
+	at org.exist.indexing.lucene.LuceneMatchListener.scanMatches(LuceneMatchListener.java:217) ~[exist-index-lucene.jar:4.3.1]
+	at org.exist.indexing.lucene.LuceneMatchListener.startElement(LuceneMatchListener.java:128) ~[exist-index-lucene.jar:4.3.1]
+	at org.exist.indexing.AbstractMatchListener.startElement(AbstractMatchListener.java:100) ~[exist.jar:4.3.1]
+	at org.exist.indexing.ngram.NGramIndexWorker$NGramMatchListener.startElement(NGramIndexWorker.java:770) ~[exist-index-ngram.jar:4.3.1]
+	at org.exist.storage.serializers.NativeSerializer.serializeToReceiver(NativeSerializer.java:271) ~[exist.jar:4.3.1]
+	at org.exist.storage.serializers.NativeSerializer.serializeToReceiver(NativeSerializer.java:273) ~[exist.jar:4.3.1]
+	at org.exist.storage.serializers.NativeSerializer.serializeToReceiver(NativeSerializer.java:99) ~[exist.jar:4.3.1]
+	at org.exist.storage.serializers.Serializer.serializeToReceiver(Serializer.java:1065) ~[exist.jar:4.3.1]
+	at org.exist.storage.serializers.Serializer.toSAX(Serializer.java:870) ~[exist.jar:4.3.1]
+	at org.exist.dom.persistent.NodeProxy.toSAX(NodeProxy.java:712) ~[exist.jar:4.3.1]
+	at org.exist.xquery.functions.util.Expand.eval(Expand.java:113) ~[exist.jar:4.3.1]
+```
+
+### Context information
+
+- eXist-db version + Git Revision hash: eXist 4.3.1 release (3b195797a2c2f35913891412859b06d94f189229)
+- Java version: 10.0.2+13
+- Operating system: macOS 10.13.6
+- 32 or 64 bit: 64 bit
+- How is eXist-db installed? DMG
+- Any custom changes in e.g. conf.xml: none

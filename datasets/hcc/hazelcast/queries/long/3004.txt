@@ -1,0 +1,31 @@
+Hi guys, 
+
+We're evaluating Hazelcast 3.3 RC1 as a distributed Hiberante 3 cache for a big legacy system. During the integration tests, we found interesting issue - at some moment, the second level caching simply stops working. There is no activity in management center and all cached elements are evicted from the memory. 
+
+Despite that, application continues to work, but Hazelcast second level cache implementation doesn't cache anything anymore. And in the application logs we see lots of DistributedObjectDestroyedException's triggered by ClientMapProxy.getContext().
+
+ClientProxy:
+    protected final ClientContext getContext() {
+        final ClientContext ctx = context;
+        if (ctx == null) {
+            throw new DistributedObjectDestroyedException(serviceName, objectName); <-- here
+        }
+        return ctx;
+    }
+
+After further analysis, we found out that this problem caused by Hibernate cache flush, which can be triggered e.g. by native SQL update query executed via Hibernate session. 
+
+On the low level, Hibernate cache flush triggers IMapRegionCache.clear(), and implementation here doesn't look correct, because it leaves the "map" field in the inconsistent state (context = null) and prevents any further use of it. 
+
+IMapRegionCache:
+    public void clear() {
+        // clear all cache and destroy proxies
+        // when a new operation done over this proxy
+        // Hazelcast will initialize and create map again.
+        map.destroy();   <--- leaves map.context = null, which leads to DistributedObjectDestroyedException's in the ClientMapProxy.getContext()
+        // create Hazelcast internal proxies, has no effect on map operations
+        hazelcastInstance.getMap(name); <--- initializes new ClientMapProxy instance, but result is not used
+    }
+
+Cheers,
+Pavel

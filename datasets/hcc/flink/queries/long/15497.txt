@@ -1,0 +1,55 @@
+As we described in the doc: https://ci.apache.org/projects/flink/flink-docs-release-1.9/dev/table/sql.html#top-n
+
+when rank number is not required, we can reduce some output, like unnecessary retract messages. 
+
+Here is an example which can re-produce:
+
+
+val data = List(
+  ("aaa", 97.0, 200.0),
+  ("bbb", 67.0, 200.0),
+  ("bbb", 162.0, 200.0)
+)
+
+val ds = failingDataSource(data).toTable(tEnv, 'guid, 'a, 'b)
+tEnv.registerTable("T", ds)
+
+val aggreagtedTable = tEnv.sqlQuery(
+  """
+    |select guid,
+    |    sum(a) as reached_score,
+    |    sum(b) as max_score,
+    |    sum(a) / sum(b) as score
+    |from T group by guid
+    |""".stripMargin
+)
+
+tEnv.registerTable("T2", aggreagtedTable)
+
+val sql =
+  """
+    |SELECT guid, reached_score, max_score, score
+    |FROM (
+    |  SELECT *,
+    |      ROW_NUMBER() OVER (ORDER BY score DESC) as rank_num
+    |  FROM T2)
+    |WHERE rank_num <= 5
+  """.stripMargin
+
+val sink = new TestingRetractSink
+tEnv.sqlQuery(sql).toRetractStream[Row].addSink(sink).setParallelism(1)
+env.execute()
+
+
+In this case, the output is:
+
+
+(true,aaa,97.0,200.0,0.485)
+(true,bbb,67.0,200.0,0.335) 
+(false,bbb,67.0,200.0,0.335) 
+(true,bbb,229.0,400.0,0.5725) 
+(false,aaa,97.0,200.0,0.485) 
+(true,aaa,97.0,200.0,0.485)
+
+
+But the last 2 messages are unnecessary. 

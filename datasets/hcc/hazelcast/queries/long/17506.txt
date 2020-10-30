@@ -1,0 +1,49 @@
+With the change in https://github.com/hazelcast/hazelcast/pull/17212, `ExceptionUtil.rethrow()` started to wrap `RuntimeException` too. But this can lead to indeterminate number of wrapping, which makes it difficult to work with.
+
+For example, following code creates a `HazelcastException` with a cause depth of `10`:
+
+```java
+Throwable t = new MemberLeftException();
+for (int i = 0; i < 10; i++) {
+    try {
+        throw ExceptionUtil.rethrow(t);
+    } catch (Throwable e) {
+        t = e;
+    }
+}
+
+while (t != null) {
+    System.err.println(t.getClass().getName());
+    t = t.getCause();
+}
+```
+
+Output:
+```
+com.hazelcast.core.HazelcastException
+com.hazelcast.core.HazelcastException
+com.hazelcast.core.HazelcastException
+com.hazelcast.core.HazelcastException
+com.hazelcast.core.HazelcastException
+com.hazelcast.core.HazelcastException
+com.hazelcast.core.HazelcastException
+com.hazelcast.core.HazelcastException
+com.hazelcast.core.HazelcastException
+com.hazelcast.core.HazelcastException
+com.hazelcast.core.MemberLeftException
+```
+
+There are too many places in the code, we catch the `Throwable` and rethrow it via `ExceptionUtil.rethrow()`. Also in many places, we catch the exception and inspect for the type of the `Throwable` itself or its cause. But with this change it's unknown that how many layers of cause we should inspect to see the actual cause. 
+
+For example, following `catch` block in `ClusterStateManager.changeClusterState(..)` fails to catch `MemberLeftException`, because it's wrapped by one more level inside `HazelcastException`:
+
+```java
+} catch (Throwable e) {
+    tx.rollback();
+    notifyAfterStateChange(oldState, requestedState, isTransient);
+    if (e instanceof TargetNotMemberException || e.getCause() instanceof MemberLeftException) {
+        throw new IllegalStateException("Cluster members changed during state change!", e);
+    }
+    throw ExceptionUtil.rethrow(e);
+}
+```

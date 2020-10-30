@@ -1,0 +1,113 @@
+On version 3.10.3, it seems that sometimes the read operation doesn't return in a timely when there are multiple concurrent readers. The subsequent read call only returns after operation timeout has passed.
+
+Test below passes when the marked line is commented out. 
+
+```
+package test;
+
+import com.hazelcast.config.Config;
+import com.hazelcast.config.EventJournalConfig;
+import com.hazelcast.core.EntryEventType;
+import com.hazelcast.core.ExecutionCallback;
+import com.hazelcast.core.HazelcastInstance;
+import com.hazelcast.core.IMap;
+import com.hazelcast.internal.journal.EventJournalReader;
+import com.hazelcast.map.journal.EventJournalMapEvent;
+import com.hazelcast.projection.Projections;
+import com.hazelcast.ringbuffer.ReadResultSet;
+import com.hazelcast.spi.properties.GroupProperty;
+import com.hazelcast.test.AssertTask;
+import com.hazelcast.test.HazelcastParallelClassRunner;
+import com.hazelcast.test.HazelcastTestSupport;
+import com.hazelcast.test.annotation.Repeat;
+import com.hazelcast.util.function.Consumer;
+import com.hazelcast.util.function.Predicate;
+import org.junit.Before;
+import org.junit.Test;
+import org.junit.runner.RunWith;
+
+import java.util.Arrays;
+import java.util.HashSet;
+import java.util.concurrent.CopyOnWriteArrayList;
+
+import static org.junit.Assert.assertEquals;
+
+@RunWith(HazelcastParallelClassRunner.class)
+public class EventJournalTest extends HazelcastTestSupport {
+    private static final int JOURNAL_CAPACITY = 1000;
+    private IMap<String, Integer> map;
+    private String MAP_NAME = "test";
+    private EventJournalReader<EventJournalMapEvent<String, Integer>> reader;
+    private HazelcastInstance hz;
+
+    @Before
+    public void setUp() {
+        Config config = new Config();
+
+        EventJournalConfig journalConfig = new EventJournalConfig()
+                .setMapName("*")
+                .setCapacity(JOURNAL_CAPACITY)
+                .setEnabled(true);
+        config.addEventJournalConfig(journalConfig);
+        config.setProperty("hazelcast.partition.count", "1");
+        config.setProperty(GroupProperty.OPERATION_CALL_TIMEOUT_MILLIS.getName(), "60000");
+        hz = this.createHazelcastInstance(config);
+
+        map = hz.getMap(MAP_NAME);
+        reader = (EventJournalReader<EventJournalMapEvent<String, Integer>>) map;
+    }
+
+    @Test
+    @Repeat(1000)
+    public void test() {
+        for (int i = 1; i <= 3; i++) {
+            map.put("1", i);
+        }
+
+        // test passes when this line is commented out
+        readFromJournal(0, e -> e.getType() == EntryEventType.ADDED, e -> { });
+
+        CopyOnWriteArrayList<Integer> updates = new CopyOnWriteArrayList<>();
+        readFromJournal(0, e -> e.getType() == EntryEventType.UPDATED, e -> {
+            updates.add(e.getNewValue());
+            if (e.getNewValue() < 100) {
+                map.put(e.getKey(), e.getNewValue() * 100);
+            }
+        });
+
+        assertTrueEventually(new AssertTask() {
+            @Override
+            public void run() {
+                System.out.println(updates);
+                assertEquals(new HashSet<>(Arrays.asList(2, 3, 200, 300)), new HashSet<>(updates));
+            }
+        });
+    }
+
+    private void readFromJournal(long seq,
+                                 Predicate<EventJournalMapEvent<String, Integer>> predicate,
+                                 Consumer<EventJournalMapEvent<String, Integer>> consumer
+    ) {
+        reader.readFromEventJournal(
+                seq,
+                1,
+                16,
+                0,
+                predicate, Projections.identity()
+        ).andThen(new ExecutionCallback<ReadResultSet<EventJournalMapEvent<String, Integer>>>() {
+            @Override
+            public void onResponse(ReadResultSet<EventJournalMapEvent<String, Integer>> response) {
+                readFromJournal(response.getNextSequenceToReadFrom(), predicate, consumer);
+                for (EventJournalMapEvent<String, Integer> event : response) {
+                    consumer.accept(event);
+                }
+            }
+
+            @Override
+            public void onFailure(Throwable t) {
+                t.printStackTrace();
+            }
+        });
+    }
+}
+```

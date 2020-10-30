@@ -1,0 +1,29 @@
+We have been experiencing that HZ clients shutdown in case of an IP change of one or more of the configured node (DNS) addresses. 
+
+Steps that led to the problem:
+1. Cluster with two nodes
+2. Clients are configured to access cluster nodes via FQDN
+3. Shutdown of both cluster nodes
+4. (clients try to reconnect)
+5. Cluster nodes come up again
+6. During startup, cluster nodes get new (private) IP addresses, which are registered at the DNS service
+7. It seems that there is a small time window where the FQDN has no IP assigned/configured at the DNS service, because accessing `InetAddress address = inetSocketAddress.getAddress();` https://github.com/hazelcast/hazelcast/blob/3.3.4/hazelcast/src/main/java/com/hazelcast/nio/Address.java#L198 evaluates to null. Since this exception is nowhere handled, `ClusterListenerThread.run` shuts down the client https://github.com/hazelcast/hazelcast/blob/3.3.4/hazelcast-client/src/main/java/com/hazelcast/client/spi/impl/ClusterListenerThread.java#L83-L94. 
+
+We are experiencing this issue with 3.3.1, but as far as I can see the code in the master (i.e., 3.4) is the same. 
+
+I would suggest to handle the exception directly here https://github.com/hazelcast/hazelcast/blob/3.4/hazelcast-client/src/main/java/com/hazelcast/client/spi/impl/ClusterListenerThread.java#L258-L260, but this may also have an impact on initial connection attempts (where it may be desired to quit immediately).
+
+_full stacktrace_
+
+``` java
+java.lang.IllegalArgumentException: Can't resolve address: hz0.example.com:5701
+    at com.hazelcast.nio.Address.resolve(Address.java:200) ~[hazelcast-3.3.1.jar:3.3.1]
+    at com.hazelcast.nio.Address.<init>(Address.java:69) ~[hazelcast-3.3.1.jar:3.3.1]
+    at com.hazelcast.client.spi.impl.ClusterListenerThread.connectToOne(ClusterListenerThread.java:246) ~[hazelcast-client-3.3.1.jar:3.3.1]
+    at com.hazelcast.client.spi.impl.ClusterListenerThread.run(ClusterListenerThread.java:79) ~[hazelcast-client-3.3.1.jar:3.3.1]
+java.lang.IllegalArgumentException: Can't resolve address: hz0.example.com:5701
+    at com.hazelcast.nio.Address.resolve(Address.java:200)
+    at com.hazelcast.nio.Address.<init>(Address.java:69)
+    at com.hazelcast.client.spi.impl.ClusterListenerThread.connectToOne(ClusterListenerThread.java:246)
+    at com.hazelcast.client.spi.impl.ClusterListenerThread.run(ClusterListenerThread.java:79)
+```

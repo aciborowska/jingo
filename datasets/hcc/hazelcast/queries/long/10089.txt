@@ -1,0 +1,78 @@
+We have client-server interaction based on MulticastDiscoveryStrategy. 
+
+Let's say we have **_appC_** (client) and **_appS_** (server). 
+Several instances of **_appC_** go to **_appS_** instances via hazelcast client using `MulticastDiscoveryStrategy` (only one way). When we need to restart one node of **_appS_** we usually have discovery troubles. Hazelcast can't find other nodes of **_appS_** which are live and available. And new node stays alone, split brain occur. After some restarts (from 0 to 10 and more), node successfully joins cluster. 
+
+Here is out  part of hazelcast.xml for appS (the server)
+``` xml
+    <properties>
+        <property name="hazelcast.discovery.enabled">true</property>
+    </properties>
+    <group>
+        <name>appS</name>
+        <password>appSPass</password>
+    </group>
+
+    <network>
+        <port auto-increment="true" port-count="100">5701</port>
+        <outbound-ports>
+            <ports>0</ports>
+        </outbound-ports>
+        <join>
+            <discovery-strategies>
+                <discovery-strategy class="com.hazelcast.spi.discovery.multicast.MulticastDiscoveryStrategy" enabled="true">
+                    <properties>
+                        <property name="group">224.2.2.8</property>
+                        <property name="port">54324</property>
+                    </properties>
+                </discovery-strategy>
+            </discovery-strategies>
+        </join>
+    </network>
+```
+And part of hazelcast.xml for _**appC**_ (uses to connect to server)
+
+``` xml
+    <properties>
+        <property name="hazelcast.discovery.enabled">true</property>
+        <property name="hazelcast.client.invocation.timeout.seconds">1</property>
+    </properties>
+
+    <group>
+        <name>appS</name>
+        <password>appSPass</password>
+    </group>
+
+    <network>
+        <smart-routing>true</smart-routing>
+        <redo-operation>true</redo-operation>
+
+        <connection-attempt-limit>0</connection-attempt-limit>
+        <connection-attempt-period>500</connection-attempt-period>
+        <connection-timeout>1000</connection-timeout>
+
+        <discovery-strategies>
+            <discovery-strategy class="com.hazelcast.spi.discovery.multicast.MulticastDiscoveryStrategy" enabled="true">
+                <properties>
+                    <property name="group">224.2.2.8</property>
+                    <property name="port">54324</property>
+                </properties>
+            </discovery-strategy>
+        </discovery-strategies>
+    </network>
+
+```
+
+After some debugging, we noticed that `MulticastDiscoveryReceiver` on _**appS**_ can catches data from **_appC_** during initialization. And it leads to splitbrain issue and discovery failure. 
+Next investigation took us to `MulticastDiscoveryStrategy.start` method. There we have a new thread creation for multicast porposes. And the thread should be created only if this node isn't a client. 
+And looks like here is the problem. Based on the code, isClient is always false. 
+
+So client application multicasting information about the server it connects to. And new node of the server can catch this data for discovery. 
+
+If this is true, fix is simple. `MulticastDiscoveryStrategy.initializeMulticastSocket` need to contain:
+```java
+ // code 
+            if (discoveryNode == null) {
+                isClient = true;
+            }
+```

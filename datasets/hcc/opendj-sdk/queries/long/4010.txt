@@ -1,0 +1,40 @@
+Found with OpenDJ 4.1.0 rev  (719bee22c14)
+
+Scenario:
+
+
+	we setup 2 DJs and 2 RSs, import some data in DJs in a new backend and enable replication between all the instances for this backend.
+	We set replication group for DSs and RSs, in order to have DJ1/RS1 in group id 1 and DJ2/RS2 in group id 2.
+	we initialize replication
+	then we setup a proxy server to forward request with a preference to group id 1:
+
+${INSTANCE4}/opendj/setup proxy-server --replicationServer localhost:${INSTANCE5_LDAPS_PORT} --replicationPreferredGroupId 1 --trustAll --loadBalancingAlgorithm least-requests -h localhost -p ${INSTANCE4_LDAP_PORT} -D ${INSTANCE4_ROOT_DN} -w ${INSTANCE4_ROOT_PWD} --proxyUserBindDn cn=proxy,dc=com --proxyUserBindPassword password --adminConnectorPort ${INSTANCE4_ADMIN_PORT}  -O
+
+
+	we start this proxy and create the proxy user bind dn on DJs, with acis so that it forwards requests.
+	we wait for the primary server to be seen online by the proxy, this primary server is expected to be DJ1, which is in group id 1:
+
+${INSTANCE4}/opendj/bin/ldapsearch -h localhost -p ${INSTANCE4_LDAP_PORT} -D ${INSTANCE4_ROOT_DN} -w ${INSTANCE4_ROOT_PWD} -b "cn=monitor"  "ds-backend-id=proxyRoot" ds-proxy-backend-partition
+
+dn: cn=proxyRoot Backend,cn=monitor
+ds-proxy-backend-partition: {"id":"Replication Service Discovery Mechanism","primaryServers":[{"hostPort":"localhost:1389","online":true}],"secondaryServers":[{"hostPort":"localhost:1390","online":true}]}
+
+
+it looks as expected.
+
+
+
+But when searching for an entry through the proxy, the request is forwarded to the second DJ:
+
+${INSTANCE4}/opendj/bin/ldapsearch -h localhost -p ${INSTANCE4_LDAP_PORT} -D "uid=scarter,ou=people,dc=example,dc=com" -w sprain -b "uid=tmorris,ou=people,dc=example,dc=com"  "(objectclass=*)" 
+
+in DJ1 ldap-access.audit.json: nothing related to tmorris is logged
+in DJ2:
+grep tmorris ../DJ2/opendj/logs/*
+../DJ2/opendj/logs/ldap-access.audit.json:{"eventName":"DJ-LDAP","client":{"ip":"127.0.0.1","port":47055},"server":{"ip":"127.0.0.1","port":1390},"request":{"protocol":"LDAP","operation":"SEARCH","connId":16,"msgId":4,"dn":"uid=tmorris,ou=people,dc=example,dc=com","scope":"sub","filter":"(objectClass=*)","attrs":["ALL"]},"transactionId":"0","response":{"status":"SUCCESSFUL","statusCode":"0","elapsedTime":5,"elapsedTimeUnits":"MILLISECONDS","nentries":1},"timestamp":"2017-04-27T13:18:31.032Z","_id":"f3dda07b-7367-4cfa-a858-3ab897647693-899"}
+
+
+
+Why is this entry forwarded to the secondary server and not the primary while this one is online?
+
+script in attachment to reproduce the issue.

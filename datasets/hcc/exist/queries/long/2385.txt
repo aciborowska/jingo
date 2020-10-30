@@ -1,0 +1,61 @@
+The following XQuery causes a `NullPointerException`:
+
+```xquery
+declare namespace io = "http://io";
+
+(: IO version of get-char :)
+declare function local:get-char() as map(*) {
+  local:create-io(function($realworld as element(io:realworld)) {
+    ($realworld,
+       123)
+  })
+};
+
+(: IO version of put-char :)
+declare function local:put-char($codepoint as xs:integer) as map(*) {
+  local:create-io(function($realworld as element(io:realworld)) {
+    ($realworld,
+        ())
+  })
+};
+
+declare function local:create-io($apply-fn as function(element(io:realworld)) as item()+) as map(*) {
+  map {
+    'apply': $apply-fn,
+    'bind' : function($binder as function(item()*) as map(*)) as map(*) {
+      let $bound-apply-fn := function($realworld) {
+        let $io-res := $apply-fn($realworld)
+        let $new-world := $io-res[1]
+        let $res := subsequence($io-res, 2)
+        return
+          $binder($res)("apply")($new-world)
+      }
+      return
+        local:create-io($bound-apply-fn)
+    }
+  }
+};
+
+let $x :=
+        local:get-char()
+          ?bind(local:put-char#1)
+return $x?apply(<io:realworld/>)
+```
+
+The query should return the value `<io:realworld xmlns:io="http://io"/>` as it does in both BaseX and Saxon.
+
+In eXist-db the following Java stacktrace is the result of the NPE:
+```
+Exception in thread "java-admin-client-0.query-0" java.lang.NullPointerException
+	at org.exist.xquery.AnalyzeContextInfo.<init>(AnalyzeContextInfo.java:70)
+	at org.exist.xquery.DynamicFunctionCall.eval(DynamicFunctionCall.java:73)
+	at org.exist.xquery.LetExpr.eval(LetExpr.java:99)
+	at org.exist.xquery.UserDefinedFunction.eval(UserDefinedFunction.java:162)
+	at org.exist.xquery.FunctionCall$DeferredFunctionCallImpl.execute(FunctionCall.java:434)
+	at org.exist.xquery.DeferredFunctionCall.realize(DeferredFunctionCall.java:57)
+	at org.exist.xquery.DeferredFunctionCall.isEmpty(DeferredFunctionCall.java:199)
+	at org.exist.xmldb.LocalResourceSet.<init>(LocalResourceSet.java:58)
+	at org.exist.xmldb.LocalXPathQueryService.execute(LocalXPathQueryService.java:224)
+```
+
+The problem seems to be that `Expr#analyze` is not called on the body of the `UserDefinedFunction`.

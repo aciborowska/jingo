@@ -1,0 +1,45 @@
+Look like we need to develop another fix for Issue #988. The problem is the same:
+
+```
+SEVERE: [10.0.0.107]:5702 [dev] Lock is not owned by the transaction! -> Owner: 2c5b7f39-578a-4805-a817-9925c06b2308, thread-id: 1
+com.hazelcast.transaction.TransactionException: Lock is not owned by the transaction! -> Owner: 2c5b7f39-578a-4805-a817-9925c06b2308, thread-id: 1
+    at com.hazelcast.multimap.txn.TxnPrepareBackupOperation.run(TxnPrepareBackupOperation.java:51)
+    at com.hazelcast.spi.impl.OperationServiceImpl.doRunOperation(OperationServiceImpl.java:274)
+    at com.hazelcast.spi.impl.OperationServiceImpl.runOperation(OperationServiceImpl.java:184)
+    at com.hazelcast.spi.impl.Backup.run(Backup.java:87)
+    at com.hazelcast.spi.impl.OperationServiceImpl.doRunOperation(OperationServiceImpl.java:274)
+    at com.hazelcast.spi.impl.OperationServiceImpl.access$800(OperationServiceImpl.java:52)
+    at com.hazelcast.spi.impl.OperationServiceImpl$RemoteOperationProcessor.run(OperationServiceImpl.java:744)
+    at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1145)
+    at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:615)
+    at java.lang.Thread.run(Thread.java:724)
+    at com.hazelcast.spi.impl.OperationServiceImpl$OperationThread.run(OperationServiceImpl.java:791)
+```
+
+Test case depends on some race condition and sometimes work on first try. For my machine exception always appears on second loop cycle and sometimes on first. Try adding more cycles in case there is a problem with reproduction of the issue.
+
+```
+    @Test
+    public void testError3() throws InterruptedException {
+        Long key = 1L;
+        Long value = 1L;
+        String mapName = "myMultimap";
+
+        HazelcastInstance instance1 = Hazelcast.newHazelcastInstance();
+        HazelcastInstance instance2 = Hazelcast.newHazelcastInstance();
+
+        for (int i=0; i<2; i++) {
+            TransactionContext ctx1 = instance1.newTransactionContext();
+            ctx1.beginTransaction();
+            BaseMultiMap<Long, Long> txProfileTasks1 = ctx1.getMultiMap(mapName);
+            txProfileTasks1.put(key, value);
+            ctx1.commitTransaction();
+
+            TransactionContext ctx2 = instance2.newTransactionContext();
+            ctx2.beginTransaction();
+            BaseMultiMap<Long, Long> txProfileTasks2 = ctx2.getMultiMap(mapName);
+            txProfileTasks2.remove(key, value);
+            ctx2.commitTransaction();
+        }
+    }
+```

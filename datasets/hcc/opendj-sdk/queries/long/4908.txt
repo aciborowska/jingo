@@ -1,0 +1,78 @@
+We are hitting a perf degradation of more than 5% (which is a limit in our tests) in following scenario.
+
+Scenario
+
+Two sets of servers:
+
+	5.5.0 (2 servers in DSRS mode)
+	6.0.0-SNAPSHOT (2 servers in DSRS mode)
+
+
+
+With each set of servers we run following steps:
+
+	Setup servers and enable replication between them
+	Add 160000 entries, 10000 groups and 1000 of nested groups
+	Run a modrate in background
+	
+
+modrate -h pyforge.example.com -p 1390 -D "cn=Directory Manager" -w password -d 1860 -S -B 60 -c 10 -t 4 -i 18 -F -b "cn=Group1 {1},ou=Groups,dc=example,dc=com" -g "rand(0,4999)" -g "rand(0,79999)" "uniquemember: uid=user1.{2},ou=People1,dc=example,dc=com"
+
+
+
+
+
+	Run a searchrate in background
+	
+
+searchrate -h pyforge.example.com -p 1390 -D "cn=Directory Manager" -w password -d 1860 -b "ou=People1,dc=example,dc=com" -S -F -B 60 -c 10 -i 18 -t 4 -g "rand(0,79999)" "(uid=user1.{1})" isMemberOf
+
+
+
+
+ 
+
+At the end we check we didn't hit any error and check the average throughput of both sets:
+
+	At this point we are hitting more than 5% degradation:
+	
+		 Average throughput 1360.300000 for version 6.0.0-SNAPSHOT is lower than average throughput 1611.500000 of version 5.5.0 with more than 5 %. The difference is: 251.2. The difference is above 5.0% limit (74.295).
+	
+	
+
+
+
+ 
+
+EDIT:
+During further investigation I noticed that with 6.0.0-SNAPSHOT we have some important messages in output of start-ds:
+first instance:
+
+[20/Mar/2018:19:50:41 +0100] category=BACKEND severity=NOTICE msgID=513 msg=The database backend userRoot containing 177006 entries has started
+[20/Mar/2018:19:50:41 +0100] category=BACKEND severity=WARNING msgID=642 msg=The server is performing an unindexed internal search request with base DN 'dc=example,dc=com', scope 'sub', and filter '(&(|(objectClass=groupOfNames)(objectClass=groupOfUniqueNames)(objectClass=groupOfEntries))(!(objectClass=ds-virtual-static-group)))'. Unindexed internal searches are usually unexpected and could impact performance. Please verify that that backend's indexes are configured correctly for these search parameters
+
+second instance:
+
+[20/Mar/2018:19:50:58 +0100] category=SYNC severity=NOTICE msgID=204 msg=Replication server RS(4050) started listening for new connections on address 0.0.0.0 port 8992
+[20/Mar/2018:19:50:58 +0100] category=SYNC severity=NOTICE msgID=62 msg=Directory server DS(1454) has connected to replication server RS(4050) for domain "cn=schema" at 172.16.204.14:8992 with generation ID 8408
+[20/Mar/2018:19:50:59 +0100] category=SYNC severity=NOTICE msgID=62 msg=Directory server DS(13107) has connected to replication server RS(4050) for domain "cn=admin data" at 172.16.204.14:8992 with generation ID 161620
+[20/Mar/2018:19:50:59 +0100] category=SYNC severity=NOTICE msgID=62 msg=Directory server DS(6048) has connected to replication server RS(4050) for domain "uid=Monitor" at 172.16.204.14:8992 with generation ID 12638
+[20/Mar/2018:19:50:59 +0100] category=SYNC severity=WARNING msgID=146 msg=Directory server DS(29897) at comte.internal.forgerock.com/172.16.204.14:37910 presented generation ID 19360656 for domain "dc=example,dc=com", but the generation ID of this replication server RS(4050) is 48. This usually indicates that one or more directory servers in the replication topology have not been initialized with the same data, and re-initialization is required
+[20/Mar/2018:19:50:59 +0100] category=SYNC severity=WARNING msgID=96 msg=Directory server DS(29897) has connected to replication server RS(4050) for domain "dc=example,dc=com" at 172.16.204.14:8992, but the generation IDs do not match, indicating that a full re-initialization is required. The local (DS) generation ID is 19360656 and the remote (RS) generation ID is 48
+
+and also lot of following messages:
+
+[20/Mar/2018:19:50:59 +0100] category=SYNC severity=WARNING msgID=136 msg=Replication server RS(4050) not sending update 000001624480dd870fae00001775 for domain "dc=example,dc=com" to directory server DS(29897) at comte.internal.forgerock.com/172.16.204.14:37910 because its generation ID 19360656 is different to the local generation ID 48
+
+
+NOTE:
+
+	templates for LDIF files attached
+	version and revision: 6.0.0-SNAPSHOT ad0b1ea6b63
+
+
+
+
+There is also a stress test to reproduce, but it should be run on a lab machine.
+
+./run-pybot.py -v -c perf -s perf_comparison.GroupComparison -t ModRate_And_SearchRate_NestedGroups OpenDJ

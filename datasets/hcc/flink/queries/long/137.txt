@@ -1,0 +1,130 @@
+Description:
+-----------------
+
+
+	added the 'nephele-yarn' module
+
+
+	implemented the 'InstanceManager' interface
+
+
+
+
+	added the 'nephele-common-yarn' module
+
+
+	implemented the client API, 'YarnJobClient.java'
+	implemented simple demo job, 'eu.stratosphere.nephele.example.yarn'
+
+
+
+
+	rewritten the 'DiscoveryService.java' (by Daniel)
+
+
+
+
+	added in the 'JobManager.java' an additional execution mode 'YARN'
+
+
+
+
+	TaskManager can now determine IPC/DATA ports, if it is bootstrapped in a yarn container
+
+
+	multiple TMs can exist on a single cluster node
+
+
+
+
+	a lot of minor changes
+
+
+
+YARN Integration:
+--------------------------
+
+Two resource managers, in concrete MESOS and YARN, were examined that provide the capability to run multiple instances of the data parallel execution framework Stratosphere alongside other applications (e.g. Hadoop, Hyracks) in a cluster/cloud infrastructure to efficiently share common computing resources. After a detailed analysis of both frameworks we believe that YARN has several significant advantages over MESOS which are listed in the following:
+
+
+	YARN is primarily written in Java. MESOS is written in C++.
+	YARN uses simple unix processes as computing resource abstraction. MESOS uses Linux containers that imply a high overhead.
+	YARN integrates pluggable resource schedulers.
+	YARN is able to directly handle rack and machine locality in resource requests.
+	YARN is going to be the basis for Hadoop MapReduce going forward and other frameworks (e.g. Hyracks).
+
+
+
+Due to its essential advantages we decided to integrate the YARN cluster manager in the Stratosphere scheduling kernel, instead of the MESOS framework. To understand the integration mechanism of YARN in Stratosphere do we need to depict the core components of both frameworks
+
+YARN core components:
+------------------------------------
+
+
+	ResourceManager (RM): The central component in YARN. The RM exists as singleton instance in the infrastructure and manages all available computing resources. It acts as pure resource negotiator for all concurrent running systems.
+
+
+
+
+	NodeManager (NM): On every node in the infrastructure runs a NM instance that runs a liveness protocol and do the concrete container allocation with permission of the RM.
+
+
+
+
+	ApplicationMaster (AM): The AM exists per running job and is responsible for allocating/scheduling worker containers (by requesting the RM) and monitoring the job lifecycle.
+
+
+
+
+	YARN Client: The client submits the job in form of starting an AM instance and handing over the concrete executable job. It also performs monitoring of the running jobs.
+
+
+
+Stratosphere core components:
+----------------------------------------------
+
+
+	JobManager (JM): The JM is the central component in Stratosphere’s execution layer Nephele and is responsible for allocating resources (part of a subcomponent called InstanceManager) and scheduling/monitoring submitted jobs.
+
+
+
+
+	TaskManager (TM): The TM has similar responsibilities as the NodeManager in YARN and also executes jobs in cooperation with other TMs.
+
+
+
+
+	Job Client: Submits a job and monitors the job execution.
+
+
+
+Nephele-YARN Interaction:
+---------------------------------------
+
+In the integration of YARN in Nephele we operate YARN as a a meta-level framework that encloses certain components of Nephele. This approach has the advantage that the current code base of Nephele is not dramatically changed and needs only to be extended. A further and more important advantage is the clean process isolation among multiple concurrent Stratosphere instances and other applications (e.g. Hadoop, Hyracks).
+
+The sequence diagram depicts the basic interaction:
+![yarn_nephele_seqdia|https://f.cloud.github.com/assets/5525371/1298201/64f55e46-30f0-11e3-9bad-57203b00c881.png)
+
+Interaction Description: The Client establishes a YARN context and requests an ApplicationMaster container. Inside the allocated container, a new instance of Stratosphere’s JobManager is created. The client submits a Stratosphere Job to the JobManager instance, which delegates the resource requests to its own InstanceManager subcomponent, which is a YARN-based implementation of the Nephele InstanceManager interface. The resource requests are then delegated from there to the YARN ResourceManage node, that actually allocates the required containers (if available]. Inside each allocated container a Stratosphere TaskManager is bootstrapped which receives and executes tasks of the submitted job from the the JobManager.
+
+![yarn_nephele_component_interaction|https://f.cloud.github.com/assets/5525371/1298189/1ac85602-30f0-11e3-9fd5-cd3993b38ce3.png)
+
+1.) Client sends a request to the YARN Resource Manager to create an Application Master (AM)
+2.) ResourceManager (RM) creates the AM container. The JobManager is bootstrapped inside the AM. (via a shell command that was defined in the Client-RM request). The JobManager is started in YARN mode, with the YARN InstanceManager.
+3.) Client sends a Job to the JobManager. The JobManager determines the resource needs.
+4.) The JobManagers calls the RM (via InstanceManager.requestInstance) and allocated the determined number of containers.
+5.) RM starts the YARN containers. The TaskManagers are bootstrapped inside these containers. The TaskManager have to determine their RPC and data ports (because containers can be scheduled to the same node).
+6.) The boostrapped TaskManagers are registered by the JobManager via the first heart-beat signal.
+7.] The JobManager can begin to schedule the execution verticies on the TaskManagers.
+
+
+
+---------------- Imported from GitHub ----------------
+Url: https://github.com/stratosphere/stratosphere/pull/137
+Created by: TobiasHerb
+Labels: 
+Milestone: Release 0.4
+Assignee: rmetzger
+Created at: Wed Oct 09 16:39:23 CEST 2013
+State: closed

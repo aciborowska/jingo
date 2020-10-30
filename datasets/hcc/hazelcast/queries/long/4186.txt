@@ -1,0 +1,113 @@
+##### Found in version: 3.2.5
+##### Steps to reproduce
+- Launch couple cluster members with the code below. Default configuration is ok, no overrides needed.
+  Cluster member code:
+
+``` java
+public class Member {
+    public static void main(String[] args) throws Exception {
+
+        HazelcastInstance hz = Hazelcast.newHazelcastInstance();
+
+        final IMap<Integer, String> commands = hz.getMap("commands");
+        commands.addLocalEntryListener(new EntryAdapter<Integer, String>() {
+            @Override
+            public void entryAdded(EntryEvent<Integer, String> event) {
+                commands.put(event.getKey(), "processed");
+                System.out.println("Got command " + event.getKey() + ": value=" + event.getValue() + ". Processed.");
+            }
+        });
+    }
+}
+```
+- Launch cluster client with the code below. Default configuration is ok, no overrides needed.
+
+``` java
+public class Client {
+    public static void main(String[] args) throws Exception {
+
+        ClientConfig clientConfig = new ClientConfig().addAddress("127.0.0.1");
+        HazelcastInstance client = HazelcastClient.newHazelcastClient(clientConfig);
+
+        final IMap<Integer, String> commands = client.getMap("commands");
+
+        new Thread() {
+            @Override
+            public void run() {
+                while (!Thread.currentThread().isInterrupted()) {
+                    try {
+                        Thread.sleep(5 * 1000);
+
+                        int key = (int)Math.round(Math.random()*100);
+                        System.out.println("Sending command: " + key + "...");
+                        commands.put(key, "sent");
+
+                    } catch (Exception e) {
+                        e.printStackTrace();
+                    }
+                }
+
+            }
+        }.start();
+
+        commands.addEntryListener(new EntryAdapter<Integer, String>() {
+            @Override
+            public void entryUpdated(EntryEvent<Integer, String> event) {
+                System.out.println("Result for command " + event.getKey() + ": was=" + event.getOldValue() + ", now=" + event.getValue());
+                commands.remove(event.getKey());
+            }
+        }, true);
+    }
+}
+```
+- Now that the client connected to the cluster client-clister interaction looks apprx. as follows:
+
+_Client_
+
+```
+Sending command: 28...
+Result for command 28: was=sent, now=processed
+Sending command: 2...
+Result for command 2: was=sent, now=processed
+```
+
+_Member-1_
+
+```
+Got command 28: value=sent. Processed.
+```
+
+_Member-2_
+
+```
+Got command 2: value=sent. Processed.
+```
+- Emulate network issues so that cluster members cannot interact with each other for some period of time (seconds). By default members are binded to ports 5701 and 5702.
+  You can use tcpkill for example `tcpkill -i lo port 5701 or port 5702`.
+- Stop network issues emulation. Let members join the cluster back and wait for a client reconnection.
+- Sometimes subsequent behaviour looks as described below. Issue is not always reproduced.
+
+_Client_
+
+```
+Sending command: 54...
+Sending command: 10...
+Sending command: 32...
+...
+// no responses at all
+```
+
+_Member-1_
+
+```
+Got command 54: value=sent. Processed.
+Got command 10: value=sent. Processed.
+```
+
+_Member-2_
+
+```
+Got command 32: value=sent. Processed.
+```
+- Debugging showed that a member responsible for client notification did this over a stale ClientEndpoint (TCP connection).
+  But client had a new connection established by that moment.

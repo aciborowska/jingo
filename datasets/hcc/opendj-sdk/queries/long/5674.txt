@@ -1,0 +1,54 @@
+Problem
+
+When the DJ LoadBalancer implementation is used with the following with a pre-binded authentication user, there seems to be failure cases that lead to continuous connection leak.
+As a client OPENDJ sdk usage there seems to be issues trying to use the newFailoverLoadBalancer+newFailoverLoadBalancer+LdapClient.
+
+
+
+       Options options = Options.defaultOptions();
+       if (username != null) {
+           options = options.set(AUTHN_BIND_REQUEST,
+                     newSimpleBindRequest(username, password));
+       }
+       List<LdapClient> ldapClients = new ArrayList<>();
+       LdapClient primaryClient = newFixedConnectionPool(
+                 newLdapClient(serverName, port, options), 1);
+       ldapClients.add(primaryClient);
+       LdapClient LBClient = newFailoverLoadBalancer(ldapClients,options);
+       LdapConnectionFactory factory = new LdapConnectionFactory(LBClient);
+       Connection c = factory.getConnection();
+      // do a search and close all (obviously this connection is not usable
+      // but thee is background leakage that grows non-stop
+
+
+When using the above with a wrong username/or password there is a background retry of these connections that causes leak
+
+io.reactivex.internal.operators.single.SingleDoOnSuccess.subscribeActual(SingleDoOnSuccess.java:35)
+	at io.reactivex.Single.subscribe(Single.java:3096)
+	at io.reactivex.Single.subscribe(Single.java:3082)
+	at org.forgerock.opendj.ldap.LoadBalancer$MonitoredLdapClient.checkIfAvailable(LoadBalancer.java:296)
+	at org.forgerock.opendj.ldap.LoadBalancer$MonitoredLdapClient.access$1700(LoadBalancer.java:259)
+	at org.forgerock.opendj.ldap.LoadBalancer.checkIfServersAreOnline(LoadBalancer.java:417)
+	at java.util.concurrent.Executors$RunnableAdapter.call(Executors.java:511)
+	at java.util.concurrent.FutureTask.runAndReset(FutureTask.java:308)
+
+
+Run the attached testcase, but monitor the netstat or lsof to see that connection growth happens to DJ.
+
+Affected versions
+tested on DJ6. Tested on DJ6.5 (client libs) but no improvement
+
+Testcase
+
+Use the attached testcase and monitoring the connection to DJ even after the connection is closed.
+
+Expected
+ No connection leak
+
+Currently
+ Connection growth leak even if there is no activity. The background checkIfAvailable in LoadBalancer is repeated get call and leaks connection regularly
+Analysis
+
+If there is no wrong password or if no newFailoverLoadBalancer is used this issue is not seen.
+
+Side concerns: It has been reported that this is one of the cases of leakage but there seems to be reported that even there is no issue with password, it is felt that if there is some exceptions, it is possible that connection leakage happens (so hopefully the solution here will also fix other related causes).

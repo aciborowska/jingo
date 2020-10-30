@@ -1,0 +1,31 @@
+On startup a customer DS was observed to take a very long time in the buildAndPublishMissingChanges() code. It blocked shutdowns.
+
+It was observed from the internal searches that the searchForChangedEntries() was searching between CSNs 10 seconds apart but with two different server IDs.
+
+
+
+[27/Jun/2017:01:06:03 -0400] SEARCH REQ conn=-1 op=3962357 msgID=3962358 base="dc=example,dc=com" scope=wholeSubtree filter="(&(ds-sync-hist>=dummy:0000015cd10fac3a29fe0001aac5)(ds-sync-hist<=dummy:0000015cd10fd34a2b74ffffffff))" attrs="ds-sync-hist,entryuuid,*"
+
+
+
+We also observed that the searchForChangedEntries() code was very slow and returning a large number of entries.
+
+
+
+[27/Jun/2017:01:06:02 -0400] SEARCH RES conn=-1 op=3797578 msgID=3797579 result=0 nentries=2496762 unindexed etime=12589244
+
+
+
+Analysis of the code in LDAPReplicationDomain.buildAndPublishMissingChanges() suggests the following may be happening.
+
+
+	A "correct" searchForChangedEntries() occurs with local startCSN and endCSN values, which returns a number of entries with changes from this and other servers.
+	EntryHistorical.generateFakeOperations() is called on each search result, which converts all of these into FakeOperations. The last faked operation happens to have a CSN from another server.
+	All these fake operations are replayed.
+	Back in buildAndPublishMissingChanges(), we set the new startCSN to the last fake operation's "remote" CSN, and restart the loop.
+	We now call searchForChangedEntries() again, with the "remote" startCSN, and a correct local endCSN - computed using getServerId(). At this point the search will go unindexed and return a large number of entries.
+
+
+
+We have not seen access logging which shows the initial search going wrong.
+

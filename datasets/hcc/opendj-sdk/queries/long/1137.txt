@@ -1,0 +1,75 @@
+The problem observed is that the SimplePagedResultsControl does not appear to return a
+correct control cookie when performing a paged query.
+
+The search in this example was:
+
+
+Search Request: SearchRequest(name=ou=famrecords,ou=openam-session,ou=tokens,
+dc=openam,dc=forgerock,dc=org, scope=sub, dereferenceAliasesPolicy=never, 
+sizeLimit=0, timeLimit=0, typesOnly=false, filter=(&(objectClass=frCoreToken)
+(&(coreTokenExpirationDate<=20130906160258.603+0100))), attributes=[coreTokenId], 
+controls=[SimplePagedResultsControl(oid=1.2.840.113556.1.4.319, criticality=true, 
+size=50, cookie=)])
+
+
+
+In the access logs we can see the search appears as unindexed because of the volume of
+results being returned by the query:
+
+
+[06/Sep/2013:16:46:47 +0100] SEARCH REQ conn=13 op=17255 msgID=17256 
+base="ou=famrecords,ou=openam-session,ou=tokens,dc=openam,dc=forgerock,dc=org" 
+scope=wholeSubtree filter="(&(objectClass=frCoreToken)
+(&(coreTokenExpirationDate<=20130906164647.376+0100)))" attrs="coreTokenId"
+[06/Sep/2013:16:46:47 +0100] SEARCH RES conn=13 op=17255 msgID=17256 result=0 
+nentries=50 unindexed etime=153
+
+
+
+The issue with what is going on here is that the decoder for the control is returning
+an empty bytestring for the control cookie.
+
+The following is the code for this example.
+
+
+    public Collection<Entry> executeRawResults() throws CoreTokenException {
+        // Prepare the search
+        Filter ldapFilter = getLDAPFilter();
+        SearchRequest searchRequest = Requests.newSearchRequest(
+                constants.getTokenDN(),
+                SearchScope.WHOLE_SUBTREE,
+                ldapFilter,
+                requestedAttributes);
+        searchRequest.setSizeLimit(sizeLimit);
+
+        if (isPagingResults()) {
+            searchRequest = searchRequest.addControl(SimplePagedResultsControl.newControl(true, pageSize, pagingCookie));
+        }
+
+        // Perform the search
+        Collection<Entry> entries = handler.performSearch(searchRequest);
+
+        if (isPagingResults()) {
+            try {
+                SimplePagedResultsControl control = searchRequest.getControl(
+                        SimplePagedResultsControl.DECODER, new DecodeOptions());
+                pagingCookie = control.getCookie();
+            } catch (DecodeException e) {
+                throw new CoreTokenException("Failed to decode Paging Cookie", e);
+            }
+        }
+
+        if (DEBUG.messageEnabled()) {
+            DEBUG.message(MessageFormat.format(
+                    CoreTokenConstants.DEBUG_HEADER +
+                    "Query: matched {0} results\n" +
+                    "Search Request: {1}\n" +
+                    "Filter: {2}",
+                    entries.size(),
+                    searchRequest,
+                    ldapFilter.toString()));
+        }
+
+        return entries;
+    }
+

@@ -1,0 +1,46 @@
+Found using  OpenDJ 2.8.0 revision 12414 (which pdb and file-based changelog).
+
+Scenario:
+************
+1. install 2 servers
+2. import 100002 entries on the first server
+3. enable and initialize replication
+4. check that the servers are in sync with dsreplication status command
+
+$ DJ1/opendj/bin/dsreplication status -h myhost -p 4444 -b o=example -I admin -w password --script-friendly -X -n
+o=example	myhost:4444	100002	true	18887	24942	8989	0		false
+o=example	myhost:4445	100002	true	1327	3784	8990	0		false
+
+
+5. run addrate tool to do add and delete on the first server during 10mins  (addrate.template in attachment)
+
+$ SDK/bin/addrate -h myhost -p 1389 -D "cn=Directory Manager" -w password -d 600 -S -C random -c 10 -i 60 -s 10000 /tmp/addrate.template
+
+
+5. after the addrate, check that the servers are in sync with dsreplication status
+
+$ DJ1/opendj/bin/dsreplication status -h myhost -p 4444 -b o=example -I admin -w password --script-friendly -X -n
+o=example	myhost:4444	100002	true	18887	24942	8989	0		false
+o=example	myhost:4445	101400	true	1327	3784	8990	0		false
+
+
+
+=> on the first server we have the expected number of entry (corresponding to the initial data)
+=> but on the second server we have a difference of 1398 entries and not missing changes
+
+I compared the changelog of both instances and no differences found.
+
+I compared the backend of both instances and found a difference of 1398 entries (entries missing on the second server).
+
+In the access log of the second server, I noticed some DELETE ops (1572 in total) which have failed:
+
+...
+[05/Jun/2015:14:27:22 +0200] DELETE conn=-1 op=714148 msgID=714149 dn="uid=user.321026,ou=People,o=example" type=synchronization result=32 message="Entry uid=user.321026,ou=People,o=example does not exist in the Directory Server" etime=0
+[05/Jun/2015:14:27:22 +0200] DELETE conn=-1 op=714177 msgID=714178 dn="uid=user.319686,ou=People,o=example" type=synchronization result=32 message="Entry uid=user.319686,ou=People,o=example does not exist in the Directory Server" etime=0
+[05/Jun/2015:14:27:22 +0200] DELETE conn=-1 op=714218 msgID=714219 dn="uid=user.327740,ou=People,o=example" type=synchronization result=32 message="Entry uid=user.327740,ou=People,o=example does not exist in the Directory Server" etime=0
+[05/Jun/2015:14:27:22 +0200] DELETE conn=-1 op=714234 msgID=714235 dn="uid=user.326643,ou=People,o=example" type=synchronization result=32 message="Entry uid=user.326643,ou=People,o=example does not exist in the Directory Server" etime=0
+...
+
+
+
+I also compared the 1398 entries not deleted on the second server and the 1572 entries for which the delete failed (access log) and no match.

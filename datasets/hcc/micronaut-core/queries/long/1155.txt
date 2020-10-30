@@ -1,0 +1,104 @@
+The problem we are seeing is with Swagger generation in Micronaut when it comes to authenticated routes. It works well for GET and DELETE routes, but for POST and PUT routes the Authentication Principal is generated into the request body. While they in the GET/DELETE case are ignored.
+This gives problems when trying to use the generated swagger file to do code generation with swagger-codegen project.
+
+### Steps to Reproduce
+
+1. Add OpenAPI annotation to Micronaut Application class with a Tag annotation
+
+```
+@OpenAPIDefinition(
+        info = @Info(
+                title = "Hello Security API",
+                version = "1.0",
+                description = "Public API for testing Micronat OpenAPI/Swagger for authenticated routes"
+        ),
+        servers = { @Server(url = "https://example.com") },
+        tags = {@Tag(name = "/hello")}
+)
+public class Application {
+    public static void main(String[] args) {
+        Micronaut.run(Application.class);
+    }
+}
+```
+2. Add a controller with the same Tag annotation as in step 1
+3. Add an authenticated  POST route to the controller
+
+```
+    @Secured(SecurityRule.IS_AUTHENTICATED)
+    @Tag(name = "/hello")
+    @Controller("/")
+    public class HelloController {
+        @Produces(MediaType.TEXT_PLAIN)
+        @Post("/authenticated")
+        public String authenticated(Authentication authentication, GameReference gameReference) {
+            return authentication.getName() + " is authenticated with game reference: " + gameReference;
+        }
+    }
+```
+
+4. Setup swagger generation in build.gradle with:
+ annotationProcessor "io.micronaut.configuration:micronaut-openapi"
+
+5. Run: "gradle clean build" and look at the generated swagger YAML
+
+### Expected Behaviour
+
+The generated swagger file at:
+build/classes/java/main/META-INF/swagger/hello-security-api-1.0.yml
+should not have the Authentication Principal built into the request body.
+
+### Actual Behaviour
+
+The generated swagger file at:
+build/classes/java/main/META-INF/swagger/hello-security-api-1.0.yml
+has the Authentication Principal built into the request body. It looks like this:
+https://github.com/Discordia/hello-security/blob/master/hello-security-api-1.0.yml
+
+The path part is the interesting part:
+
+    paths:
+      /authenticated:
+        post:
+           tags:
+           - /hello
+           operationId: authenticated
+           parameters: []
+          requestBody:
+            content:
+              application/json:
+                schema:
+                  type: object
+                  properties:
+                    authentication:
+                      $ref: '#/components/schemas/Authentication'
+                    gameReference:
+                      $ref: '#/components/schemas/GameReference'
+            required: true
+           responses:
+            default:
+               content:
+                text/plain:
+                   schema:
+                    type: string
+
+
+I have also tried to use a Parameter hidden annotation before the Authentication Principal but it did not help. Like this:
+
+```
+     @Post("/authenticated")
+     public String authenticated(@Parameter(hidden = true) Authentication authentication, GameReference gameReference) {
+            return authentication.getName() + " is authenticated with game reference: " + gameReference;
+        }
+```
+
+### Environment Information
+
+- **Operating System**: MacOs 10.14
+- **Micronaut Version:** 1.0.3
+- **JDK Version:** 11.0.1
+
+### Example Application
+
+https://github.com/Discordia/hello-security
+

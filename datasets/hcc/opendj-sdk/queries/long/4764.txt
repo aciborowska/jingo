@@ -1,0 +1,52 @@
+I set up the servlet to use "bind": "sasl-plain", and set "authzIdTemplate": "dn:{username}"
+
+I then attempted to authenticate via curl:
+
+
+$ curl curl http://uid=user.1,ou=people,dc=example,dc=com:password@localhost:8080/rest/api/users/user.0
+
+
+
+However an error was returned:
+
+
+{"code":400,"reason":"Bad Request","message":"Invalid DN Syntax: The provided value \"dn:uid=user.1\\,ou=people\\,dc=example\\,dc=com\" could not be parsed as a valid distinguished name because character ':' at position 2 is not allowed in an attribute name"}
+
+
+This doesn't seem correct. The SaslPlainStrategy code runs format on the entire authcIdTemplate value, and should probably be running on a substring after the leading "dn:"
+
+The config.json and source code also seem confused about authentication vs authorization.
+
+config.json
+
+                // Authentication identity template containing a single {username} which will be replaced by the authenticating
+                // user's name. (i.e: u:{username})
+                "authzIdTemplate": "dn:{username}"
+
+
+
+SaslPlainStrategy.java
+
+    /**
+     * Create a new SASLPlainStrategy.
+     *
+     * @param connectionFactory
+     *            Factory used to get {@link Connection} receiving the sasl-bind requests
+     * @param authcIdTemplate
+     *            Authentication identity template containing a single %s which will be replaced by the authenticating
+     *            user's name. (i.e: (u:%s)
+     * @param schema
+     *            Schema used to perform DN validation.
+     * @throws NullPointerException
+     *             If a parameter is null
+     */
+    SaslPlainStrategy(final ConnectionFactory connectionFactory, final Schema schema, final String authcIdTemplate) {
+[...]
+    private Promise<SecurityContext, LdapException> doSaslPlainBind(final Connection connection,
+                                                                    final Context parentContext, final String authzId,
+                                                                    final String password) throws LdapException {
+        final String authcId = formatter.apply(authzId);
+        return connection
+                .bindAsync(newPlainSaslBindRequest(authcId, password.toCharArray(), null)
+                            .addControl(AuthorizationIdentityRequestControl.newControl(true)))
+

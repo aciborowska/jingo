@@ -1,0 +1,65 @@
+Hi,
+
+We have recently experienced a critical failure on all our nodes with Hazelcast 3.7.3.
+
+Hazelcast was working well but the first symptom occured during the Serialization of one of our object that needed to be added to an IMap (there was a DateTimeParseException), and then we got this stacktrace : 
+
+```
+ com.hazelcast.nio.serialization.HazelcastSerializationException: Problem while reading DataSerializable, namespace: 1, id: 1, class: 'null', exception: Text '-999999999-01-01T00:00' could not be parsed, unparsed text found at index 16
+	at com.hazelcast.internal.serialization.impl.DataSerializableSerializer.rethrowReadException(DataSerializableSerializer.java:165)
+	at com.hazelcast.internal.serialization.impl.DataSerializableSerializer.readInternal(DataSerializableSerializer.java:154)
+	at com.hazelcast.internal.serialization.impl.DataSerializableSerializer.read(DataSerializableSerializer.java:104)
+	at com.hazelcast.internal.serialization.impl.DataSerializableSerializer.read(DataSerializableSerializer.java:54)
+	at com.hazelcast.internal.serialization.impl.StreamSerializerAdapter.read(StreamSerializerAdapter.java:48)
+	at com.hazelcast.internal.serialization.impl.AbstractSerializationService.toObject(AbstractSerializationService.java:172)
+	at com.hazelcast.map.impl.record.Records.tryStoreIntoCache(Records.java:149)
+	at com.hazelcast.map.impl.record.Records.getValueOrCachedValue(Records.java:118)
+	at com.hazelcast.map.impl.recordstore.AbstractRecordStore.saveIndex(AbstractRecordStore.java:146)
+	at com.hazelcast.map.impl.recordstore.DefaultRecordStore.putInternal(DefaultRecordStore.java:742)
+	at com.hazelcast.map.impl.recordstore.DefaultRecordStore.set(DefaultRecordStore.java:920)
+	at com.hazelcast.map.impl.operation.SetOperation.run(SetOperation.java:44)
+	at com.hazelcast.spi.impl.operationservice.impl.OperationRunnerImpl.run(OperationRunnerImpl.java:181)
+	at com.hazelcast.spi.impl.operationexecutor.impl.OperationThread.process(OperationThread.java:122)
+	at com.hazelcast.spi.impl.operationexecutor.impl.OperationThread.run(OperationThread.java:102)
+	at ------ submitted from ------.(Unknown Source)
+	at com.hazelcast.spi.impl.operationservice.impl.InvocationFuture.resolve(InvocationFuture.java:111)
+	at com.hazelcast.spi.impl.operationservice.impl.InvocationFuture.resolveAndThrow(InvocationFuture.java:74)
+	at com.hazelcast.spi.impl.AbstractInvocationFuture.get(AbstractInvocationFuture.java:158)
+	at com.hazelcast.map.impl.proxy.MapProxySupport.invokeOperation(MapProxySupport.java:376)
+	at com.hazelcast.map.impl.proxy.MapProxySupport.setInternal(MapProxySupport.java:432)
+	at com.hazelcast.map.impl.proxy.MapProxyImpl.set(MapProxyImpl.java:183)
+	at com.hazelcast.map.impl.proxy.MapProxyImpl.set(MapProxyImpl.java:173)
+```
+
+Ok, that's not critical, this error should have been painless : the serialization failed, we lose the data and that's it...
+**But, unfortunately this was the beginning of a lot of other errors which arise from it**
+
+After this error occured (HazelcastSerializationException) then we got a lot of other errors of this kind (on every nodes !) : 
+
+```
+2016-11-29 21:45:36 ERROR com.hazelcast.core.OperationTimeoutException: EntryOperation invocation failed to complete due to operation-heartbeat-timeout. Current time: 2016-11-29 21:45:36.309. Total elapsed time: 120526 ms. Last operation heartbeat: never. Last operation heartbeat from member: 2016-11-29 21:45:27.309. Invocation{op=com.hazelcast.map.impl.operation.EntryOperation{serviceName='hz:impl:mapService', identityHash=796337671, partitionId=259, replicaIndex=0, callId=0, invocationTime=1480455815783 (2016-11-29 21:43:35.783), waitTimeout=-1, callTimeout=60000, name=activeSession}, tryCount=250, tryPauseMillis=500, invokeCount=1, callTimeoutMillis=60000, firstInvocationTimeMs=1480455815783, firstInvocationTime='2016-11-29 21:43:35.783', lastHeartbeatMillis=0, lastHeartbeatTime='1970-01-01 00:00:00.000', target=[xx.xx.xx.xx]:5900, pendingResponse={VOID}, backupsAcksExpected=0, backupsAcksReceived=0, connection=null}
+	at com.hazelcast.spi.impl.operationservice.impl.InvocationFuture.newOperationTimeoutException(InvocationFuture.java:150)
+	at com.hazelcast.spi.impl.operationservice.impl.InvocationFuture.resolve(InvocationFuture.java:98)
+	at com.hazelcast.spi.impl.operationservice.impl.InvocationFuture.resolveAndThrow(InvocationFuture.java:74)
+	at com.hazelcast.spi.impl.AbstractInvocationFuture.get(AbstractInvocationFuture.java:158)
+	at com.hazelcast.map.impl.proxy.MapProxySupport.executeOnKeyInternal(MapProxySupport.java:1024)
+	at com.hazelcast.map.impl.proxy.MapProxyImpl.executeOnKeyInternal(MapProxyImpl.java:82)
+	at com.hazelcast.map.impl.proxy.MapProxyImpl.executeOnKey(MapProxyImpl.java:684)
+```
+
+All the nodes went down after a couple of hours because of the CPU consumption caused by Hazelcast (see below) :
+
+![image](https://cloud.githubusercontent.com/assets/4062869/20809116/01737124-b7d3-11e6-94b1-6d80ae46ab18.png)
+
+The first HazelcastSerializationException happened just before the CPU increase.
+We can assure you that the two errors are linked to each other because we tried our tests on our environments : it is when the error occurs that Hazelcast begins to get carried away.
+Without this "little" HazelcastSerializationException everything is going well so far...
+
+We have seen other tickets talking about the HeartBeat system issues  : could it be related?
+(see : https://github.com/hazelcast/hazelcast/pull/9287 or https://github.com/hazelcast/hazelcast/pull/9286)
+
+Every nodes crashed and it was pretty critical for us ... **Is there a way to avoid that kind of behavior** (OperationTimeoutException) ? We need to be sure that this will not happen again if another HazelcastSerializationException occured ...
+
+1. How this happened ? 
+2. Why all Hazelcast node went down ?
+

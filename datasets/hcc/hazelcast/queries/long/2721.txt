@@ -1,0 +1,292 @@
+Hi,
+
+while testing with the current master branch, I found that the context class loader is only set on the first 3 cached operation threads, but not on most others.
+
+The reason for that is, that
+
+if hz.X.cached.thread-? threads are created by hz.X.partition-operation.thread-? threads then _no_ context class loader is set. However,
+
+if hz.X.cached.thread-? threads are created by the hz.X.scheduled thread then the web app class loader - or simply the context class loader when the hazelcast instance is created - is set.
+
+A possible workaround is to explicitly set the class loader on the Config object:
+
+``` java
+Config.setClassLoader(classLoader);
+```
+
+Below is a test which reproduces the issue.
+
+Cheers,
+Lukas
+
+``` java
+package com.nm.test.hazelcast.mapstore;
+
+import com.hazelcast.config.*;
+import com.hazelcast.config.MapStoreConfig.InitialLoadMode;
+import com.hazelcast.core.Hazelcast;
+import com.hazelcast.core.HazelcastInstance;
+import com.hazelcast.core.IMap;
+import com.nm.test.hazelcast.TestHazelcast;
+import com.nm.test.hazelcast.utils.InMemoryMapStore;
+import org.apache.log4j.BasicConfigurator;
+import org.apache.log4j.Logger;
+import java.util.Map.Entry;
+import java.util.TreeMap;
+import junit.framework.TestCase;
+
+/**
+ * A test to ensure the context classloader is set in all cached operation threads.
+ */
+public class TestMapStore12 extends TestCase {
+
+    private static final Logger logger = Logger.getLogger(TestMapStore12.class);
+
+    private static final String mapName = "testMap" + TestMapStore12.class.getSimpleName();
+
+    private static final int writeDelaySeconds = 5;
+
+    private static final int preloadSize = 200;
+
+    @Override
+    protected void setUp() throws Exception {
+
+        // configure logging
+        if (!TestHazelcast.loggingInitialized) {
+            TestHazelcast.loggingInitialized = true;
+            BasicConfigurator.configure();
+        }
+    }
+
+    public void testCtxClassLoaderDefault() throws Exception {
+        contextClassLoaderTest(false);
+    }
+
+    public void testCtxClassLoaderExplicit() throws Exception {
+        contextClassLoaderTest(true);
+    }
+
+    private void contextClassLoaderTest(boolean setOnConfig) {
+
+        // create hazelcast config
+        Config config = new XmlConfigBuilder().build();
+        config.setProperty("hazelcast.logging.type", "log4j");
+
+        // set class loader
+        ClassLoader ctxClassLoader = Thread.currentThread().getContextClassLoader();
+        if (setOnConfig) {
+            config.setClassLoader(ctxClassLoader);
+        }
+        logger.info("Context class loader: " + ctxClassLoader);
+
+        // get map config
+        MapConfig mapConfig = config.getMapConfig(mapName);
+
+        // create shared map store implementation
+        final InMemoryMapStore store = new InMemoryMapStore(true, 50, false);
+        store.preload(preloadSize);
+
+        // configure map store
+        MapStoreConfig mapStoreConfig = new MapStoreConfig();
+        mapStoreConfig.setEnabled(true);
+        mapStoreConfig.setInitialLoadMode(InitialLoadMode.EAGER);
+        mapStoreConfig.setWriteDelaySeconds(writeDelaySeconds);
+        mapStoreConfig.setClassName(null);
+        mapStoreConfig.setImplementation(store);
+        mapConfig.setMapStoreConfig(mapStoreConfig);
+
+        // create hazelcast instance
+        HazelcastInstance hcInstance = Hazelcast.newHazelcastInstance(config);
+
+        // try-finally to stop hazelcast instance
+        try {
+
+            // call size
+            IMap<String, String> map = hcInstance.getMap(mapName);
+            int size = map.size();
+            logger.info(mapName + " size = " + size);
+
+        } finally {
+            hcInstance.getLifecycleService().shutdown();
+        }
+
+        // print context class loaders
+        TreeMap<String, Boolean> contextClassLoaders = store.getContextClassLoaders();
+        for (Entry<String, Boolean> entry : contextClassLoaders.entrySet()) {
+            logger.info("Context class loader: " + entry.getKey() + ": " + entry.getValue());
+        }
+
+        // test if all load threads had a context class loader set
+        for (Boolean hasCtxClassLoader : contextClassLoaders.values()) {
+            if (!hasCtxClassLoader.booleanValue()) {
+                fail("No context class loader set.");
+            }
+        }
+
+        // log done
+        logger.info("Test done.");
+    }
+
+}
+
+
+package com.nm.test.hazelcast.utils;
+
+import com.hazelcast.core.MapStore;
+import org.apache.log4j.Logger;
+import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
+
+public class InMemoryMapStore implements MapStore<String, String> {
+
+    private static final Logger logger = Logger.getLogger(InMemoryMapStore.class);
+
+    // ----------------------------------------------------------------- config
+
+    private final boolean infoOnLoad;
+
+    private final int msPerLoad;
+
+    private final boolean sleepBeforeLoadAllKeys;
+
+    // ------------------------------------------------------------------ state
+
+    private final ConcurrentHashMap<String, String> store = new ConcurrentHashMap<String, String>();
+
+    private final AtomicInteger countLoadAllKeys = new AtomicInteger(0);
+
+    private final ConcurrentHashMap<String, Boolean> contextClassLoaders = new ConcurrentHashMap<String, Boolean>();
+
+    // ----------------------------------------------------------- construction
+
+    public InMemoryMapStore() {
+        this.infoOnLoad = true;
+        this.msPerLoad = -1;
+        this.sleepBeforeLoadAllKeys = false;
+    }
+
+    public InMemoryMapStore(boolean infoOnLoad, int msPerLoad, boolean sleepBeforeLoadAllKeys) {
+        this.infoOnLoad = infoOnLoad;
+        this.msPerLoad = msPerLoad;
+        this.sleepBeforeLoadAllKeys = sleepBeforeLoadAllKeys;
+    }
+
+    public void preload(int size) {
+        for (int i = 0; i < size; i++) {
+            store.put("k" + i, "v" + i);
+        }
+    }
+
+    // ---------------------------------------------------------------- getters
+
+    public int getCountLoadAllKeys() {
+        return countLoadAllKeys.get();
+    }
+
+    public TreeMap<String, Boolean> getContextClassLoaders() {
+        return new TreeMap<String, Boolean>(contextClassLoaders);
+    }
+
+    // ----------------------------------------------------- MapStore interface
+
+    @Override
+    public String load(String key) {
+
+        // log
+        if (infoOnLoad) {
+            logger.info("load(" + key + ") called.");
+        }
+
+        // sleep
+        if (msPerLoad > 0) {
+            Sleep.sleep(msPerLoad, false);
+        }
+
+        // remember if context class loader was present
+        Thread thread = Thread.currentThread();
+        ClassLoader contextClassLoader = thread.getContextClassLoader();
+        contextClassLoaders.putIfAbsent(thread.getName(), new Boolean(contextClassLoader != null));
+
+        return store.get(key);
+    }
+
+    @Override
+    public Map<String, String> loadAll(Collection<String> keys) {
+
+        // log
+        List<String> keysList = new ArrayList<String>(keys);
+        Collections.sort(keysList);
+        if (infoOnLoad) {
+            logger.info("loadAll(" + keysList + ") called.");
+        }
+
+        // remember if context class loader was present
+        Thread thread = Thread.currentThread();
+        ClassLoader contextClassLoader = thread.getContextClassLoader();
+        contextClassLoaders.putIfAbsent(thread.getName(), new Boolean(contextClassLoader != null));
+
+        Map<String, String> result = new HashMap<String, String>();
+        for (String key : keys) {
+
+            // sleep
+            if (msPerLoad > 0) {
+                Sleep.sleep(msPerLoad, false);
+            }
+
+            String value = store.get(key);
+            if (value != null) {
+                result.put(key, value);
+            }
+        }
+        return result;
+    }
+
+    @Override
+    public Set<String> loadAllKeys() {
+
+        // sleep 5s to highlight asynchronous behavior
+        if (sleepBeforeLoadAllKeys) {
+            Sleep.sleep(5000, true);
+        }
+
+        countLoadAllKeys.incrementAndGet();
+        logger.info("loadAllKeys() called (count now = " + countLoadAllKeys.get() + ").");
+        Set<String> result = new HashSet<String>(store.keySet());
+        List<String> resultList = new ArrayList<String>(result);
+        Collections.sort(resultList);
+        logger.info("loadAllKeys result: size = " + result.size() + ", keys = " + resultList + ".");
+        return result;
+    }
+
+    @Override
+    public void store(String key, String value) {
+        logger.info("store(" + key + ") called.");
+        store.put(key, value);
+    }
+
+    @Override
+    public void storeAll(Map<String, String> map) {
+        TreeSet<String> setSorted = new TreeSet<String>(map.keySet());
+        logger.info("storeAll(" + setSorted + ") called.");
+        store.putAll(map);
+    }
+
+    @Override
+    public void delete(String key) {
+        logger.info("delete(" + key + ") called.");
+        store.remove(key);
+    }
+
+    @Override
+    public void deleteAll(Collection<String> keys) {
+        List<String> keysList = new ArrayList<String>(keys);
+        Collections.sort(keysList);
+        logger.info("deleteAll(" + keysList + ") called.");
+        for (String key : keys) {
+            store.remove(key);
+        }
+    }
+
+}
+```

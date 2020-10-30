@@ -1,0 +1,88 @@
+## Bug Report
+
+### Which version of ShardingSphere did you use?
+
+4.0.0-RC3-SNAPSHOT
+
+### Which project did you use? Sharding-JDBC or Sharding-Proxy?
+
+Sharding-JDBC
+
+### Expected behavior
+
+associated query and decrypt successully.
+
+### Actual behavior
+
+```
+Exception in thread "main" javax.crypto.IllegalBlockSizeException: Input length must be multiple of 16 when decrypting with padded cipher
+	at com.sun.crypto.provider.CipherCore.doFinal(CipherCore.java:936)
+	at com.sun.crypto.provider.CipherCore.doFinal(CipherCore.java:847)
+	at com.sun.crypto.provider.AESCipher.engineDoFinal(AESCipher.java:446)
+	at javax.crypto.Cipher.doFinal(Cipher.java:2165)
+	at org.apache.shardingsphere.core.strategy.encrypt.impl.AESShardingEncryptor.decrypt(AESShardingEncryptor.java:72)
+	at org.apache.shardingsphere.core.execute.sql.execute.result.StreamQueryResult.decrypt(StreamQueryResult.java:164)
+	at org.apache.shardingsphere.core.execute.sql.execute.result.StreamQueryResult.getValue(StreamQueryResult.java:72)
+	at org.apache.shardingsphere.core.merge.dql.common.StreamMergedResult.getValue(StreamMergedResult.java:49)
+	at org.apache.shardingsphere.shardingjdbc.jdbc.core.resultset.EncryptResultSet.getString(EncryptResultSet.java:181)
+	at org.apache.shardingsphere.example.core.jdbc.repository.OrderItemRepositoryImpl.getOrderItems(OrderItemRepositoryImpl.java:114)
+	at org.apache.shardingsphere.example.core.jdbc.repository.OrderItemRepositoryImpl.selectAll(OrderItemRepositoryImpl.java:101)
+	at org.apache.shardingsphere.example.core.jdbc.service.OrderServiceImpl.printData(OrderServiceImpl.java:152)
+	at org.apache.shardingsphere.example.core.jdbc.service.OrderServiceImpl.processSuccess(OrderServiceImpl.java:95)
+	at org.apache.shardingsphere.example.core.api.ExampleExecuteTemplate.run(ExampleExecuteTemplate.java:29)
+	at org.apache.shardingsphere.example.orchestration.raw.jdbc.JavaConfigurationExampleMain.main(JavaConfigurationExampleMain.java:60)
+```
+
+### Reason analyze (If you can)
+
+the join tables has same column name, the column in first table is encrypted and in second not encrypted, but encryptor will try to decrypt the second table's column.
+
+### Steps to reproduce the behavior, such as: SQL to execute, sharding rule configuration, when exception occur etc.
+
+- encrypt configuration:
+```
+    private EncryptRuleConfiguration getEncryptRuleConfiguration() {
+        EncryptRuleConfiguration result = new EncryptRuleConfiguration();
+        Properties properties = new Properties();
+        properties.setProperty("aes.key.value", "123456");
+        EncryptorRuleConfiguration aesRuleConfiguration = new EncryptorRuleConfiguration("aes", properties);
+        EncryptColumnRuleConfiguration columnConfigAes = new EncryptColumnRuleConfiguration("", "status", "", "status_encryptor");
+        Map<String, EncryptColumnRuleConfiguration> columns = new HashMap<>();
+        EncryptTableRuleConfiguration tableConfig = new EncryptTableRuleConfiguration(columns);
+        columns.put("status", columnConfigAes);
+        tableConfig.getColumns().putAll(columns);
+        result.getEncryptors().put("status_encryptor", aesRuleConfiguration);
+        result.getTables().put("t_order", tableConfig);
+        return result;
+    }
+```
+
+- table structure:
+```
+CREATE TABLE IF NOT EXISTS t_order (
+  order_id   BIGINT NOT NULL AUTO_INCREMENT,
+  user_id    INT    NOT NULL,
+  address_id BIGINT NOT NULL,
+  status     VARCHAR(50),
+  PRIMARY KEY (order_id)
+)
+
+CREATE TABLE IF NOT EXISTS t_order_item (
+  order_item_id BIGINT NOT NULL AUTO_INCREMENT,
+  order_id      BIGINT NOT NULL,
+  user_id       INT    NOT NULL,
+  status        VARCHAR(50),
+  PRIMARY KEY (order_item_id)
+)
+```
+
+- sql:
+```
+SELECT i.* FROM t_order o, t_order_item i WHERE o.order_id = i.order_id
+```
+
+### Example codes for reproduce this issue (such as a github link).
+
+https://github.com/apache/incubator-shardingsphere-example
+
+module orchestration-raw-jdbc-example

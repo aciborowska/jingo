@@ -1,0 +1,173 @@
+I am using hazelcast 3.7.3 both server & client APIs with AWS discovery,  on both server & client side I am able to identify members. Server side all the operations put/get/delete works fine but on client side when it tries to do put operation it fails when uses get()/put()/delete() operations on map complaining that it can't open a connection where as values() and clear() operations works just fine. So I can safely conclude that it's not a connectivity issue for sure as I can see the members in the log in client application. It fails only when client tries to do some operations on the map.
+
+I did some googling and people have recommended of many things like setting enabled=true, inside-aws=true etc but everything I have configured looks just right as per documentation. I have tested both with configuration and programmatic way but same result.
+
+This looks like a bug to me, can someone please take a quick look at it and let me know what's wrong.  
+
+```
+<beans xmlns="http://www.springframework.org/schema/beans"
+	xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:context="http://www.springframework.org/schema/context"
+	xmlns:hz="http://www.hazelcast.com/schema/spring"
+	xsi:schemaLocation="http://www.springframework.org/schema/beans http://www.springframework.org/schema/beans/spring-beans.xsd
+              http://www.hazelcast.com/schema/spring http://www.hazelcast.com/schema/spring/hazelcast-spring.xsd">
+
+	<hz:client id="sampleHazelcastClient">
+
+		<hz:group name="${sample.hz.group.name}" password="${sample.hz.group.pwd}" />
+
+		<hz:properties>
+			<hz:property name="hazelcast.socket.bind.any">${sample.hz.socket.bind.any:true}</hz:property>
+			<hz:property name="hazelcast.socket.client.bind.any">${sample.hz.socket.client.bind.any:true}</hz:property>
+
+			<hz:property name="hazelcast.client.shuffle.member.list">${sample.hz.client.shuffle.member.list:true}</hz:property>
+			<hz:property name="hazelcast.client.heartbeat.timeout">${sample.hz.client.heartbeat.timeout:60000}</hz:property>
+			<hz:property name="hazelcast.client.heartbeat.interval">${sample.hz.client.heartbeat.interval:5000}</hz:property>
+			<hz:property name="hazelcast.client.event.thread.count">${sample.hz.client.event.thread.count:5}</hz:property>
+			<hz:property name="hazelcast.client.event.queue.capacity">${sample.hz.client.event.queue.capacity:1000000}</hz:property>
+			<hz:property name="hazelcast.client.invocation.timeout.seconds">${sample.hz.client.invocation.timeout.seconds:120}</hz:property>
+			<hz:property name="hazelcast.logging.type">${sample.hz.logging.type:slf4j}</hz:property>
+		</hz:properties>
+
+		<hz:network connection-attempt-limit="${sample.hz.client.connection.attempt.limit}"
+			connection-attempt-period="${sample.hz.client.connection.attempt.period}"
+			connection-timeout="${sample.hz.client.connection.timeout}"
+			redo-operation="true" smart-routing="true">
+            	
+			<hz:aws enabled="${sample.hz.aws.enabled:true}"
+				inside-aws="true"
+				access-key="${sample.hz.aws.access.key}"
+				secret-key="${sample.hz.aws.secret.key}" 
+				iam-role="${sample.hz.aws.iam.role}"
+				region="${sample.hz.aws.region:us-east-1}" 
+				host-header="${sample.hz.aws.host.header:ec2.amazonaws.com}"
+				security-group-name="${sample.hz.aws.security.group.name}" 
+				tag-key="${sample.hz.aws.tag.key}"
+				tag-value="${sample.hz.aws.tag.value}" 
+				connection-timeout-seconds="${sample.hz.aws.conn.timeout:30}" />
+
+		</hz:network>
+	</hz:client>
+
+</beans>
+```
+
+In client code HazelcastInstance on client is auto wired as a spring bean and 
+
+```
+	@Autowired @Qualifier("sampleHazelcastClient")
+	private HazelcastInstance hazelcastClient;
+
+        public void someMethod(){
+               // DO SOME MAP UPDATES USING 'hazelcastClient' spring bean auto wired 
+
+        }
+```
+
+Also with programmatic approach 
+
+
+```
+               ClientConfig clientConfig = new ClientConfig();
+               ClientNetworkConfig clientNetworkConfig = new ClientNetworkConfig();
+	       ClientAwsConfig config =new ClientAwsConfig(); 
+               config.setEnabled(true);
+               config.setInsideAws(true);
+
+               PropertiesReaderUtil propsReader = PropertiesReaderUtil.getInstance();
+
+		String secKey = propsReader.getAsString("sample.hz.aws.secret.key", null);
+		if(secKey!=null && !secKey.isEmpty()){
+			config.setSecretKey(secKey) ;
+		}
+
+		String accKey = propsReader.getAsString("sample.hz.aws.access.key", null);
+		if(accKey !=null && !accKey.isEmpty()){
+			config.setAccessKey(accKey);
+		}
+
+		String iAMRole = propsReader.getAsString("sample.hz.aws.iam.role", null);
+		if(iAMRole !=null && !iAMRole.isEmpty()){
+			config.setIamRole(iAMRole);
+		}
+
+		String region = propsReader.getAsString("sample.hz.aws.region", "us-east-1");
+		config.setRegion(region);
+
+		String hostHeader = propsReader.getAsString("sample.hz.aws.host.header", null);
+		if(hostHeader !=null && !hostHeader.isEmpty()){
+			config.setHostHeader(hostHeader);
+		}
+
+		String secGrpName = propsReader.getAsString("sample.hz.aws.security.group.name", null);
+		if(secGrpName !=null && !secGrpName.isEmpty()){
+			config.setSecurityGroupName(secGrpName);
+		}
+
+		String tagKey = propsReader.getAsString("sample.hz.aws.tag.key", null);
+		if(tagKey!=null && !tagKey.isEmpty()){
+			config.setTagKey(tagKey);
+		}
+
+		String tagVal =propsReader.getAsString("sample.hz.aws.tag.value", null);
+		if(tagVal !=null && !tagVal.isEmpty()){
+			config.setTagValue(tagVal);
+		}
+
+		int connTimeout =propsReader.getAsInteger("sample.hz.aws.conn.timeout", 30);
+		config.setConnectionTimeoutSeconds(connTimeout);
+		
+		GroupConfig groupConfig = new GroupConfig();
+		String grpName = propsReader.getAsString("sample.hz.group.name", "dev");
+		groupConfig.setName(grpName);
+		
+		String grpPwd = propsReader.getAsString("sample.hz.group.pwd", "dev-pass");
+		groupConfig.setPassword(grpPwd);
+		
+		clientConfig.setGroupConfig(groupConfig);
+		clientConfig.setNetworkConfig(clientNetworkConfig.setAwsConfig(awsConfig));
+
+               HazelcastInstance hazelcastInstance = HazelcastClient.newHazelcastClient(clientConfig);
+              
+               // DO SOME MAP UPDATES HERE
+```
+
+Here is the error that's thrown while doing the map updates from client APIs ( NOTE : it gives error for  client on get()/put()/delete() where as values()/clear() works well, all operations on server side instance works perfectly fine though)
+
+```
+java.io.IOException: No available connection to address [10.1.50.168]:5701 "}
+com.hazelcast.core.HazelcastException: java.io.IOException: No available connection to address [10.1.50.168]:5701
+        at com.hazelcast.util.ExceptionUtil.peel(ExceptionUtil.java:73) ~[hazelcast-all-3.7.3.jar:3.7.3]
+        at com.hazelcast.util.ExceptionUtil.peel(ExceptionUtil.java:63) ~[hazelcast-all-3.7.3.jar:3.7.3]
+        at com.hazelcast.util.ExceptionUtil.peel(ExceptionUtil.java:52) ~[hazelcast-all-3.7.3.jar:3.7.3]
+        at com.hazelcast.util.ExceptionUtil.rethrow(ExceptionUtil.java:83) ~[hazelcast-all-3.7.3.jar:3.7.3]
+        at com.hazelcast.client.spi.ClientProxy.invokeOnPartition(ClientProxy.java:155) ~[hazelcast-all-3.7.3.jar:3.7.3]
+        at com.hazelcast.client.spi.ClientProxy.invoke(ClientProxy.java:147) ~[hazelcast-all-3.7.3.jar:3.7.3]
+        at com.hazelcast.client.proxy.ClientMapProxy.putInternal(ClientMapProxy.java:457) ~[hazelcast-all-3.7.3.jar:3.7.3]
+        at com.hazelcast.client.proxy.ClientMapProxy.put(ClientMapProxy.java:451) ~[hazelcast-all-3.7.3.jar:3.7.3]
+        at com.hazelcast.client.proxy.ClientMapProxy.put(ClientMapProxy.java:253) ~[hazelcast-all-3.7.3.jar:3.7.3]
+
+
+Caused by: java.io.IOException: No available connection to address [10.1.50.168]:5701
+        at com.hazelcast.client.spi.impl.ClientSmartInvocationServiceImpl.getOrTriggerConnect(ClientSmartInvocationServiceImpl.java:87) ~[hazelcast-all-3.7.3.jar:3.7.3]
+        at com.hazelcast.client.spi.impl.ClientSmartInvocationServiceImpl.invokeOnPartitionOwner(ClientSmartInvocationServiceImpl.java:46) ~[hazelcast-all-3.7.3.jar:3.7.3]
+        at com.hazelcast.client.spi.impl.ClientInvocation.invokeOnSelection(ClientInvocation.java:142) ~[hazelcast-all-3.7.3.jar:3.7.3]
+        at com.hazelcast.client.spi.impl.ClientInvocation.invoke(ClientInvocation.java:122) ~[hazelcast-all-3.7.3.jar:3.7.3]
+        at com.hazelcast.client.spi.impl.ClientInvocation.run(ClientInvocation.java:153) ~[hazelcast-all-3.7.3.jar:3.7.3]
+        at java.util.concurrent.Executors$RunnableAdapter.call(Executors.java:511) ~[?:1.8.0_102]
+        at java.util.concurrent.FutureTask.run(FutureTask.java:266) ~[?:1.8.0_102]
+        at java.util.concurrent.ScheduledThreadPoolExecutor$ScheduledFutureTask.access$201(ScheduledThreadPoolExecutor.java:180) ~[?:1.8.0_102]
+        at java.util.concurrent.ScheduledThreadPoolExecutor$ScheduledFutureTask.run(ScheduledThreadPoolExecutor.java:293) ~[?:1.8.0_102]
+        at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1142) ~[?:1.8.0_102]
+        at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:617) ~[?:1.8.0_102]
+        at java.lang.Thread.run(Thread.java:745) ~[?:1.8.0_102]
+        at com.hazelcast.util.executor.HazelcastManagedThread.executeRun(HazelcastManagedThread.java:76) ~[hazelcast-all-3.7.3.jar:3.7.3]
+        at com.hazelcast.util.executor.HazelcastManagedThread.run(HazelcastManagedThread.java:92) ~[hazelcast-all-3.7.3.jar:3.7.3]
+        at ------ submitted from ------.(Unknown Source) ~[?:?]
+        at com.hazelcast.client.spi.impl.ClientInvocationFuture.resolveAndThrow(ClientInvocationFuture.java:74) ~[hazelcast-all-3.7.3.jar:3.7.3]
+        at com.hazelcast.client.spi.impl.ClientInvocationFuture.resolveAndThrow(ClientInvocationFuture.java:30) ~[hazelcast-all-3.7.3.jar:3.7.3]
+        at com.hazelcast.spi.impl.AbstractInvocationFuture.get(AbstractInvocationFuture.java:158) ~[hazelcast-all-3.7.3.jar:3.7.3]
+        at com.hazelcast.client.spi.ClientProxy.invokeOnPartition(ClientProxy.java:153) ~[hazelcast-all-3.7.3.jar:3.7.3]
+        ... 56 more
+
+```
+

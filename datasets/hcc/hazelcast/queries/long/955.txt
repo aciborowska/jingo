@@ -1,0 +1,63 @@
+The issue is demonstrated by the following junit:
+
+<pre>
+public class IdleTest {
+  private static final String CACHE_NAME = "mycache";
+  private static final int TIME_TO_IDLE_SECONDS = 1;
+  private static final int TIME_TO_LIVE_SECONDS = 3 * TIME_TO_IDLE_SECONDS;
+
+  private static final long TIME_TO_IDLE_MILLIS = TIME_TO_IDLE_SECONDS * 1000;
+  private static final long TIME_TO_LIVE_MILLIS = TIME_TO_LIVE_SECONDS * 1000;
+
+  private HazelcastInstance instance;
+
+  @Test
+  public void idleWithGet() throws Exception {
+    final String key = "key1";
+    final Integer value = 1;
+    IMap<String, Integer> map = instance.getMap(CACHE_NAME);
+
+    map.put(key, value);
+    assertEquals(value, map.get(key));
+    Thread.sleep(2 * TIME_TO_IDLE_MILLIS);
+    assertNull(map.get(key));
+
+    long totalSleepMillis = 0;
+    final long sleepMillis = TIME_TO_IDLE_MILLIS / 2;
+    map.put(key, value);
+    while (totalSleepMillis < 2 * TIME_TO_LIVE_MILLIS) {
+      Thread.sleep(sleepMillis);
+      totalSleepMillis += sleepMillis;
+
+      System.out.println("sleep=" + totalSleepMillis);
+      //this should reset time to idle
+      assertEquals("Disappeared after " + totalSleepMillis, value, map.get(key));
+    }
+    assertEquals(value, map.get(key));
+  }
+
+  @Before
+  public void startUp() {
+    Config config = new Config();
+    //disable all networking
+    config.getNetworkConfig().getJoin().getMulticastConfig().setEnabled(false);
+    config.getNetworkConfig().getJoin().getTcpIpConfig().setEnabled(false);
+    config.getNetworkConfig().getJoin().getAwsConfig().setEnabled(false);
+    // set idle
+    config.getMapConfig(CACHE_NAME).setMaxIdleSeconds(TIME_TO_IDLE_SECONDS);
+    config.getMapConfig(CACHE_NAME).setTimeToLiveSeconds(TIME_TO_LIVE_SECONDS);
+    instance = Hazelcast.newHazelcastInstance(config);
+  }
+
+  @After
+  public void tearDown() {
+    try {
+      if (instance != null) {
+        instance.getLifecycleService().shutdown();
+      }
+    } finally {
+      instance = null;
+    }
+  }
+}
+</pre>

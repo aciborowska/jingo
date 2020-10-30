@@ -1,0 +1,375 @@
+Hi @ahmetmircik ,
+
+I was testing 3.5.5-SNAPSHOT this morning and discovered a new NPE which you might have introduced with the fix for #7059 
+
+``` java
+Exception in thread "cached2" java.lang.NullPointerException
+    at com.hazelcast.map.impl.mapstore.writebehind.CoalescedWriteBehindQueue.removeFirstOccurrence(CoalescedWriteBehindQueue.java:86)
+    at com.hazelcast.map.impl.mapstore.writebehind.CoalescedWriteBehindQueue.removeFirstOccurrence(CoalescedWriteBehindQueue.java:36)
+    at com.hazelcast.map.impl.mapstore.writebehind.SynchronizedWriteBehindQueue.removeFirstOccurrence(SynchronizedWriteBehindQueue.java:69)
+    at com.hazelcast.map.impl.mapstore.writebehind.StoreWorker.removeFinishedStoreOperationsFromQueues(StoreWorker.java:143)
+    at com.hazelcast.map.impl.mapstore.writebehind.StoreWorker.run(StoreWorker.java:109)
+    at com.hazelcast.util.executor.CachedExecutorServiceDelegate$Worker.run(CachedExecutorServiceDelegate.java:209)
+    at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1146)
+    at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:615)
+    at java.lang.Thread.run(Thread.java:701)
+    at com.hazelcast.util.executor.HazelcastManagedThread.executeRun(HazelcastManagedThread.java:76)
+    at com.hazelcast.util.executor.HazelcastManagedThread.run(HazelcastManagedThread.java:92)
+```
+
+The following test reproduces the problem. And, as can be seen from the operation counts at the end of each test, the NPE leads to more operations being executed - which is bad for the storage system...
+
+``` java
+package com.nm.test.hazelcast.mapstore;
+
+import com.hazelcast.config.Config;
+import com.hazelcast.config.MapConfig;
+import com.hazelcast.config.MapStoreConfig;
+import com.hazelcast.config.XmlConfigBuilder;
+import com.hazelcast.core.Hazelcast;
+import com.hazelcast.core.HazelcastInstance;
+import com.hazelcast.core.IMap;
+import com.nm.test.hazelcast.TestHazelcast;
+import com.nm.test.hazelcast.utils.CountingMapStore;
+import com.nm.test.hazelcast.utils.Sleep;
+import org.apache.log4j.BasicConfigurator;
+import org.apache.log4j.Logger;
+import junit.framework.TestCase;
+
+/**
+ * A test to ensure exceptions in store()/delete() will be retried indefinitely.
+ */
+public class TestMapStore18 extends TestCase {
+
+    private static final Logger logger = Logger.getLogger(TestMapStore18.class);
+
+    private static final String mapName = "testMap" + TestMapStore18.class.getSimpleName();
+
+    private static final int writeDelaySeconds = 5;
+
+    @Override
+    protected void setUp() throws Exception {
+
+        // configure logging
+        if (!TestHazelcast.loggingInitialized) {
+            TestHazelcast.loggingInitialized = true;
+            BasicConfigurator.configure();
+        }
+    }
+
+    public void testExceptionInStore() throws Exception {
+        final String mapName = TestMapStore18.mapName + "S";
+
+        // create hazelcast config
+        Config config = new XmlConfigBuilder().build();
+        config.setProperty("hazelcast.logging.type", "log4j");
+        config.setProperty("hazelcast.version.check.enabled", "false");
+
+        // disable multicast for faster startup
+        config.getNetworkConfig().getJoin().getMulticastConfig().setEnabled(false);
+
+        // create map store
+        CountingMapStore store = new CountingMapStore(10, 10);
+
+        // configure map store
+        MapStoreConfig mapStoreConfig = new MapStoreConfig();
+        mapStoreConfig.setEnabled(true);
+        mapStoreConfig.setWriteDelaySeconds(writeDelaySeconds);
+        mapStoreConfig.setClassName(null);
+        mapStoreConfig.setImplementation(store);
+        MapConfig mapConfig = config.getMapConfig(mapName);
+        mapConfig.setMapStoreConfig(mapStoreConfig);
+
+        // start hazelcast instance
+        HazelcastInstance hcInstance = Hazelcast.newHazelcastInstance(config);
+
+        // --------------------------------------------------------------- {1s}
+
+        // print counts
+        store.printCounts("Before");
+
+        // execute put
+        IMap<String, String> map = hcInstance.getMap(mapName);
+        map.put("keyA", "valueA");
+
+        // wait for store to finish (delay + (11 retries) + 3)
+        Sleep.sleep(1000 * (writeDelaySeconds + 11 + 3), true);
+
+        // -------------------------------------------------------------- {20s}
+
+        // check counts
+        store.printCounts("After");
+        int numStore = store.countStore.get();
+        try {
+            assertTrue("Wrong number of store() calls: " + numStore, numStore == 11);
+        } finally {
+
+            // shutdown hazelcast instance
+            hcInstance.getLifecycleService().terminate();
+        }
+
+        // log done
+        logger.info("Test done.");
+    }
+
+    public void testExceptionInDelete() throws Exception {
+        final String mapName = TestMapStore18.mapName + "D";
+
+        // create hazelcast config
+        Config config = new XmlConfigBuilder().build();
+        config.setProperty("hazelcast.logging.type", "log4j");
+        config.setProperty("hazelcast.version.check.enabled", "false");
+
+        // disable multicast for faster startup
+        config.getNetworkConfig().getJoin().getMulticastConfig().setEnabled(false);
+
+        // create map store
+        CountingMapStore store = new CountingMapStore(0, 10);
+
+        // configure map store
+        MapStoreConfig mapStoreConfig = new MapStoreConfig();
+        mapStoreConfig.setEnabled(true);
+        mapStoreConfig.setWriteDelaySeconds(writeDelaySeconds);
+        mapStoreConfig.setClassName(null);
+        mapStoreConfig.setImplementation(store);
+        MapConfig mapConfig = config.getMapConfig(mapName);
+        mapConfig.setMapStoreConfig(mapStoreConfig);
+
+        // start hazelcast instance
+        HazelcastInstance hcInstance = Hazelcast.newHazelcastInstance(config);
+
+        // -------------------------------------------------------------- {21s}
+
+        // print counts
+        store.printCounts("Before");
+
+        // execute put
+        IMap<String, String> map = hcInstance.getMap(mapName);
+        map.put("keyA", "valueA");
+
+        // wait for store to finish
+        Sleep.sleep(1000 * (writeDelaySeconds + 3), true);
+
+        // -------------------------------------------------------------- {29s}
+
+        // execute remove
+        map.remove("keyA");
+
+        // wait for delete to finish (delay + (11 retries) + 3
+        Sleep.sleep(1000 * (writeDelaySeconds + 11 + 3), true);
+
+        // -------------------------------------------------------------- {48s}
+
+        // check counts
+        store.printCounts("After");
+        int numDelete = store.countDelete.get();
+        try {
+            assertTrue("Wrong number of delete() calls: " + numDelete, numDelete == 11);
+        } finally {
+
+            // shutdown hazelcast instance
+            hcInstance.getLifecycleService().terminate();
+        }
+
+        // log done
+        logger.info("Test done.");
+    }
+
+}
+
+package com.nm.test.hazelcast.utils;
+
+import com.hazelcast.core.MapStore;
+import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
+
+/**
+ * A map store which counts the different operations.
+ * <p>
+ * Furthermore it can be configured to throw exceptions in store/storeAll/delete/deleteAll.
+ */
+public class CountingMapStore implements MapStore<String, String> {
+
+    // ---------------------------------------------------------------- counters
+
+    public AtomicInteger countLoadAllKeys = new AtomicInteger();
+
+    public AtomicInteger countLoad = new AtomicInteger();
+
+    public AtomicInteger countLoadAll = new AtomicInteger();
+
+    public AtomicInteger countStore = new AtomicInteger();
+
+    public AtomicInteger countStoreAll = new AtomicInteger();
+
+    public AtomicInteger countDelete = new AtomicInteger();
+
+    public AtomicInteger countDeleteAll = new AtomicInteger();
+
+    public AtomicInteger countNumberStore = new AtomicInteger();
+
+    public AtomicInteger countNumberDelete = new AtomicInteger();
+
+    // ---------------------------------------------------------------- members
+
+    private ConcurrentHashMap<String, String> store = new ConcurrentHashMap<String, String>();
+
+    private int numExceptionsInStore;
+
+    private int numExceptionsInDelete;
+
+    private boolean exceptionInStoreAll;
+
+    private boolean exceptionInDeleteAll;
+
+    // ----------------------------------------------------------- construction
+
+    public CountingMapStore() {
+        this.exceptionInStoreAll = false;
+        this.exceptionInDeleteAll = false;
+    }
+
+    public CountingMapStore(boolean exceptionInStoreAll, boolean exceptionInDeleteAll) {
+        this.exceptionInStoreAll = exceptionInStoreAll;
+        this.exceptionInDeleteAll = exceptionInDeleteAll;
+    }
+
+    public CountingMapStore(int numExceptionsInStore, int numExceptionsInDelete) {
+        this.numExceptionsInStore = numExceptionsInStore;
+        this.numExceptionsInDelete = numExceptionsInDelete;
+        this.exceptionInStoreAll = true;
+        this.exceptionInDeleteAll = true;
+    }
+
+    // ----------------------------------------------------- MapStore interface
+
+    @Override
+    public Set<String> loadAllKeys() {
+        countLoadAllKeys.incrementAndGet();
+        return new HashSet<String>(store.keySet());
+    }
+
+    @Override
+    public String load(String key) {
+        countLoad.incrementAndGet();
+        return store.get(key);
+    }
+
+    @Override
+    public Map<String, String> loadAll(Collection<String> keys) {
+        countLoadAll.incrementAndGet();
+        Map<String, String> result = new HashMap<String, String>();
+        for (String key : keys) {
+            String value = store.get(key);
+            if (value != null) {
+                result.put(key, value);
+            }
+        }
+        return result;
+    }
+
+    @Override
+    public void store(String key, String value) {
+        countStore.incrementAndGet();
+        countNumberStore.incrementAndGet();
+        if (numExceptionsInStore > 0) {
+            numExceptionsInStore--;
+            throw new RuntimeException("Exception in store().");
+        }
+        store.put(key, value);
+    }
+
+    @Override
+    public void storeAll(Map<String, String> map) {
+        countStoreAll.incrementAndGet();
+        countNumberStore.addAndGet(map.size());
+        store.putAll(map);
+        if (exceptionInStoreAll) {
+            throw new RuntimeException("Exception in storeAll().");
+        }
+    }
+
+    @Override
+    public void delete(String key) {
+        countDelete.incrementAndGet();
+        countNumberDelete.incrementAndGet();
+        if (numExceptionsInDelete > 0) {
+            numExceptionsInDelete--;
+            throw new RuntimeException("Exception in delete().");
+        }
+        store.remove(key);
+    }
+
+    @Override
+    public void deleteAll(Collection<String> keys) {
+        countDeleteAll.incrementAndGet();
+        countNumberDelete.addAndGet(keys.size());
+        for (String key : keys) {
+            store.remove(key);
+        }
+        if (exceptionInDeleteAll) {
+            throw new RuntimeException("Exception in deleteAll().");
+        }
+    }
+
+    /**
+     * Get number of entries in store.
+     */
+    public int size() {
+        return store.size();
+    }
+
+    // ---------------------------------------------------------------- helpers
+
+    public void printCounts(String title) {
+        StringBuilder buf = new StringBuilder();
+        buf.append(title + ":\n");
+        buf.append("- num load all keys = " + countLoadAllKeys.get() + "\n");
+        buf.append("- num load          = " + countLoad.get() + "\n");
+        buf.append("- num load all      = " + countLoadAll.get() + "\n");
+        buf.append("- num store         = " + countStore.get() + "\n");
+        buf.append("- num store all     = " + countStoreAll.get() + "\n");
+        buf.append("- num delete        = " + countDelete.get() + "\n");
+        buf.append("- num delete all    = " + countDeleteAll.get() + "\n");
+        buf.append("- count store       = " + countNumberStore.get() + "\n");
+        buf.append("- count delete      = " + countNumberDelete.get() + "\n");
+        System.out.println(buf.toString());
+    }
+
+}
+
+package com.nm.test.hazelcast.utils;
+
+import org.apache.log4j.Logger;
+
+public class Sleep {
+
+    private static final Logger logger = Logger.getLogger(Sleep.class);
+
+    /**
+     * Tries to sleep for the desired number of milliseconds, throwing a
+     * RuntimeException in case the thread is interrupted.
+     * 
+     * @param ms Number of milliseconds to sleep
+     * @param log true to log, false otherwise.
+     */
+    public static void sleep(long ms, boolean log) {
+        if (ms <= 0) {
+            return;
+        }
+        try {
+            Thread.sleep(ms);
+            if (log) {
+                logger.info("Slept " + (ms / 1000) + "s.");
+            }
+        } catch (InterruptedException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+}
+```
+
+Thanks for looking into this and best,
+Lukas

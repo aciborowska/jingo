@@ -1,0 +1,157 @@
+**Describe the bug**
+
+As described by @simar0at [on exist-open](https://markmail.org/message/ztqnqujfb2gbbais):
+
+> I just had a bad and strange experience with some of the lesser popular
+> setups I think that still are in the docs:
+> 
+> A controller.xql containing this
+> 
+> ```xquery
+> if (ends-with($exist:resource, ".xml")) then
+>      <dispatch xmlns="http://exist.sourceforge.net/NS/exist">
+>          <view>
+>              <forward servlet="XSLTServlet">
+>                  <set-attribute name="xslt.stylesheet"
+> value="{$exist:root}{$exist:controller}/null_transform.xsl"/>
+>              </forward>
+>          </view>
+>          <cache-control cache="no"/>
+>      </dispatch>
+> ```
+> 
+> with input xml
+> 
+> ```xml
+> <test>
+>    <strange xml:id="strange" xml:base="./"/>
+> </test>
+> ```
+> 
+> and an identity transform null-transform.xsl
+> 
+> ```xml
+> <xsl:stylesheet version="3.0"
+> xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+>    <xsl:mode on-no-match="shallow-copy" />
+> </xsl:stylesheet>
+> ```
+> 
+> yields
+> 
+> ```xml
+> <test>
+>    <strange xmlns:xm="http://www.w3.org/XML/1998/namespace"
+> xm:id="strange" xm:base="./"/>
+> </test>
+> ```
+> 
+> And this is something that a SAX parser for example will refuse to
+> process again because of this strange binding of the xml namespace to a
+> new prefix.
+> 
+> Any ideas why this happens?
+
+**Expected behavior**
+
+The XSLT servlet should not produce XML with an invalid `xm` namespace prefix for the reserved `http://www.w3.org/XML/1998/namespace` namespace URI.
+
+**To Reproduce**
+
+The following XQSuite demonstrates that directly calling transform:transform produces the expected result, while the same transformation processed by the XSLTServlet produces an unexpected result. Here is the test result:
+
+```xml
+<testsuite package="http://exist-db.org/xquery/test" timestamp="2020-05-15T16:38:07.728-04:00"
+    tests="2" failures="0" errors="1" pending="0" time="PT0.024S">
+    <testcase name="directly-transform" class="t:directly-transform"/>
+    <testcase name="pass-through-controller" class="t:pass-through-controller">
+        <error type="err:FODC0005"
+            message="Invalid argument to fn:doc or fn:doc-available. exerr:ERROR Error while parsing XML: The prefix &#34;xml&#34; cannot be bound to any namespace other than its usual namespace; neither can the namespace for &#34;xml&#34; be bound to any prefix other than &#34;xml&#34;."
+        />
+    </testcase>
+</testsuite>
+```
+
+The test:
+
+```xquery
+xquery version "3.1";
+
+module namespace t="http://exist-db.org/xquery/test";
+
+declare namespace test="http://exist-db.org/xquery/xqsuite";
+
+declare variable $t:XML := document {
+    <test>
+       <strange xml:id="foo"/>
+    </test>
+};
+
+declare variable $t:XSL := document {
+    <xsl:stylesheet xmlns:xsl="http://www.w3.org/1999/XSL/Transform" version="3.0">
+        <xsl:mode on-no-match="shallow-copy"/>
+    </xsl:stylesheet>
+};
+
+declare variable $t:CONTROLLER := ``[xquery version "3.1";
+
+if (ends-with($exist:resource, ".xml")) then
+     <dispatch xmlns="http://exist.sourceforge.net/NS/exist">
+         <view>
+             <forward servlet="XSLTServlet">
+                 <set-attribute name="xslt.stylesheet" value="{$exist:root}{$exist:controller}/test.xsl"/>
+             </forward>
+         </view>
+         <cache-control cache="no"/>
+     </dispatch>
+ 
+else
+    ()
+]``;
+
+declare
+    %test:setUp
+function t:setup() {
+    let $testCol := xmldb:create-collection("/db/apps", "test")
+    return
+        (
+            xmldb:store("/db/apps/test", "test.xml", $t:XML),
+            xmldb:store("/db/apps/test", "test.xsl", $t:XSL),
+            xmldb:store("/db/apps/test", "controller.xql", $t:CONTROLLER),
+            sm:chmod(xs:anyURI("/db/apps/test/controller.xql"), "o+x")
+        )
+};
+
+declare
+    %test:tearDown
+function t:tearDown() {
+    xmldb:remove("/db/apps/test")
+};
+
+declare
+    %test:assertEquals('foo')
+function t:pass-through-controller() {
+    doc("http://localhost:8080/exist/apps/test/test.xml")//@xml:id/string()
+};
+
+declare
+    %test:assertEquals('foo')
+function t:directly-transform() {
+    let $node-tree := doc("/db/apps/test/test.xml")
+    let $stylesheet := doc("/db/apps/test/test.xsl")
+    let $parameters := ()
+    return
+        transform:transform($node-tree, $stylesheet, $parameters)//@xml:id/string()
+};
+```
+
+To run this in test, save it to the database as `/db/test.xq`, and trigger the test via this query: https://github.com/eXist-db/eXide/issues/224#issuecomment-536747255.
+
+**Context (please always complete the following information):**
+ - OS: macOS 10.13.6
+ - eXist-db version: 5.2.0
+ - Java version: 1.8.0_242 (Zulu 8.44.0.11-CA-macosx) (build 1.8.0_242-b20)
+
+**Additional context**
+- How is eXist-db installed? DMG
+- Any custom changes in e.g. `conf.xml`? none

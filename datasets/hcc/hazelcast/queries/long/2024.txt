@@ -1,0 +1,89 @@
+I'm starting two nodes with a map that uses a MapStore. The loadAll takes more than 10 seconds. This causes com.hazelcast.spi.exception.RetryableHazelcastException: Map is not ready!!! and the method geMap never returns. I'm using 3.2 RC1 but it is also reproducible in 3.1.x. I've tried solution mentioned in #1707 but it happens the same. Here is a sample code. Launch 2 of this at the same time:
+
+package hz;
+
+import com.hazelcast.config._;
+import com.hazelcast.core._;
+
+import java.io.IOException;
+import java.util.*;
+import java.util.logging.Level;
+import java.util.logging.LogManager;
+
+/**
+- Created by diego on 3/14/14.
+  */
+  public class HzBug {
+  
+  public static void main(String[] args) throws InterruptedException, IOException {
+  
+  ```
+  final Config config = new Config();
+  final NetworkConfig nc = config.getNetworkConfig();
+  
+  nc.setPort(7001);
+  nc.setPortAutoIncrement(true);
+  
+  final MapConfig mapConfig = new MapConfig("map1");
+  final MapConfig mapConfig2 = new MapConfig("map2");
+  
+  config.addMapConfig(mapConfig);
+  config.addMapConfig(mapConfig2);
+  final MapStoreConfig mapStoreConfig = new MapStoreConfig();
+  mapStoreConfig.setInitialLoadMode(MapStoreConfig.InitialLoadMode.EAGER);
+  mapConfig.setMapStoreConfig(mapStoreConfig.setImplementation(new MyMapLoader()));
+  final MapStoreConfig mapStoreConfig1 = new MapStoreConfig();
+  mapStoreConfig1.setInitialLoadMode(MapStoreConfig.InitialLoadMode.EAGER);
+  mapConfig2.setMapStoreConfig(mapStoreConfig1.setImplementation(new MyMapLoader()));
+  
+  
+  config.getGroupConfig().setName("mygroup");
+  
+  LogManager.getLogManager().getLogger("global").setLevel(Level.ALL);
+  final HazelcastInstance hazelcastInstance = Hazelcast.newHazelcastInstance(config);
+  final Collection<Object> map1 = hazelcastInstance.getMap("map1").values();
+  
+  System.out.println("map1.size() = " + map1.size());
+  ```
+  
+  //        hazelcastInstance.shutdown();
+  
+  }
+  
+  private static class MyMapLoader implements MapLoader<String, String> {
+      private final HashMap<String, String> values = new HashMap<>();
+  
+  ```
+  MyMapLoader(){
+      for (int i = 0; i < 1000;i++) values.put("Key"+i,String.valueOf(i));
+  }
+  @Override
+  public String load(String key) {
+      return values.get(key);
+  }
+  
+  @Override
+  public Map<String, String> loadAll(Collection<String> keys) {
+      Map<String, String> result = new HashMap<>();
+      for (String key : keys) {
+          result.put(key, values.get(key));
+          try {
+              Thread.sleep(100);
+          } catch (InterruptedException e) {
+              e.printStackTrace();
+          }
+      }
+      return result;
+  }
+  
+  @Override
+  public Set<String> loadAllKeys() {
+      final HashSet<String> strings = new HashSet<>();
+  
+      for (int i = 0; i < 1000;i++) strings.add("Key"+i);
+      return strings;
+  }
+  ```
+  
+  }
+  }

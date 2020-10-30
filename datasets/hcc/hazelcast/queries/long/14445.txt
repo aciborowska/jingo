@@ -1,0 +1,52 @@
+Similar issues have been reported a few times. In the case here I have been able to trace this down to the code in SetOperation.   It is not setting `dataOldValue` because my IMap has no query cache.  However, I do have event listeners registered.  
+
+## Current code
+
+```java
+    @Override
+    public void run() {
+        Object oldValue = recordStore.set(dataKey, dataValue, ttl, maxIdle);
+        newRecord = oldValue == null;
+
+        if (recordStore.hasQueryCache()) {   //<< Need to also check if any eventService registrations exist
+            dataOldValue = mapServiceContext.toData(oldValue);
+        }
+    }
+```
+
+## Workaround
+As a temporary workaround I have changed the `SetOperation` to the following and it works fine.  Its not optimal because it desterilizes even if there are no listeners.
+
+```java
+    @Override
+    public void run() {
+        dataOldValue = mapServiceContext.toData(recordStore.set(dataKey, dataValue, ttl, maxIdle));
+    }
+```
+
+## The Stack Trace
+
+```
+16:36:30.952 [hz._hzInstance_1_snet.partition-operation.thread-8] ERROR [] c.h.m.i.o.SetOperation-[127.0.0.1]:5701 [xxx] [3.11.1] null
+java.lang.NullPointerException: null
+    at com.hazelcast.query.impl.CachedQueryEntry.getTargetObject(CachedQueryEntry.java:105) ~[hazelcast-3.11.1.jar:3.11.1]
+    at com.hazelcast.query.impl.QueryableEntry.extractAttributeValue(QueryableEntry.java:81) ~[hazelcast-3.11.1.jar:3.11.1]
+    at com.hazelcast.query.impl.QueryableEntry.getAttributeValue(QueryableEntry.java:48) ~[hazelcast-3.11.1.jar:3.11.1]
+    at com.hazelcast.query.impl.predicates.AbstractPredicate.readAttributeValue(AbstractPredicate.java:133) ~[hazelcast-3.11.1.jar:3.11.1]
+    at com.hazelcast.query.impl.predicates.AbstractPredicate.apply(AbstractPredicate.java:58) ~[hazelcast-3.11.1.jar:3.11.1]
+    at com.hazelcast.query.PredicateBuilder.apply(PredicateBuilder.java:51) ~[hazelcast-3.11.1.jar:3.11.1]
+    at com.hazelcast.map.impl.query.QueryEventFilter.eval(QueryEventFilter.java:54) ~[hazelcast-3.11.1.jar:3.11.1]
+    at com.hazelcast.map.impl.event.AbstractFilteringStrategy.evaluateQueryEventFilter(AbstractFilteringStrategy.java:77) ~[hazelcast-3.11.1.jar:3.11.1]
+    at com.hazelcast.map.impl.event.QueryCacheNaturalFilteringStrategy.processQueryEventFilterWithAlternativeEventType(QueryCacheNaturalFilteringStrategy.java:162) ~[hazelcast-3.11.1.jar:3.11.1]
+    at com.hazelcast.map.impl.event.QueryCacheNaturalFilteringStrategy.doFilter(QueryCacheNaturalFilteringStrategy.java:124) ~[hazelcast-3.11.1.jar:3.11.1]
+    at com.hazelcast.map.impl.event.MapEventPublisherImpl.publishEvent(MapEventPublisherImpl.java:233) ~[hazelcast-3.11.1.jar:3.11.1]
+    at com.hazelcast.map.impl.event.MapEventPublisherImpl.publishEvent(MapEventPublisherImpl.java:187) ~[hazelcast-3.11.1.jar:3.11.1]
+    at com.hazelcast.map.impl.operation.BasePutOperation.afterRun(BasePutOperation.java:53) ~[hazelcast-3.11.1.jar:3.11.1]
+    at com.hazelcast.map.impl.operation.SetOperation.afterRun(SetOperation.java:51) ~[hazelcast-3.11.1.jar:3.11.1]
+    at com.hazelcast.spi.impl.operationservice.impl.OperationRunnerImpl.afterRun(OperationRunnerImpl.java:299) [hazelcast-3.11.1.jar:3.11.1]
+    at com.hazelcast.spi.impl.operationservice.impl.OperationRunnerImpl.call(OperationRunnerImpl.java:213) [hazelcast-3.11.1.jar:3.11.1]
+    at com.hazelcast.spi.impl.operationservice.impl.OperationRunnerImpl.run(OperationRunnerImpl.java:197) [hazelcast-3.11.1.jar:3.11.1]
+    at com.hazelcast.spi.impl.operationexecutor.impl.OperationThread.process(OperationThread.java:147) [hazelcast-3.11.1.jar:3.11.1]
+    at com.hazelcast.spi.impl.operationexecutor.impl.OperationThread.process(OperationThread.java:125) [hazelcast-3.11.1.jar:3.11.1]
+    at com.hazelcast.spi.impl.operationexecutor.impl.OperationThread.run(OperationThread.java:110) [hazelcast-3.11.1.jar:3.11.1]
+```

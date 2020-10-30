@@ -1,0 +1,73 @@
+We have tried to upgrade from Hazelcast 3.2.3 to 3.3.1. 
+
+When running our integration-tests a lot of tests are now failing, and digging a bit further into this, it seems that Predicates that used to return entries from a map, no longer does so. 
+(downgrading to 3.2.3 makes all tests green again)
+
+Example. 
+
+```
+public static Predicate isOwnerIdAndEnrollmentBefore(long ownerId, LocalDate date) {
+    EntryObject e = entry();
+    return e.get(OWNER_ID).equal(ownerId).and(e.get(ENROLLMENT_DATE).lessThan(date));
+}
+```
+
+The problem is the code **e.get(ENROLLMENT_DATE).lessThan(date)**
+If we remove this AND clause, the predicate returns values in the map (although too many).
+When using the AND clause, no values are found. 
+And as mentioned, this works in 3.2.3. 
+
+ENROLLMENT_DATE is a field in our pojo, a joda-time LocalDate. This is serialized as a long in the maps (with kryo).
+
+I set a breakpoint a epsMap.values(<mypredicate>) and stepped into hazelcast source from there
+
+This is from com.hazelcast.query.impl.IndexImpl.
+
+```
+@Override
+public Set<QueryableEntry> getSubRecords(ComparisonType comparisonType, Comparable searchedValue) {
+    MultiResultSet results = new MultiResultSet();
+    if (attributeType != null) {
+        indexStore.getSubRecords(results, comparisonType, convert(searchedValue));
+    }
+    return results;
+}
+```
+
+**the predicate query returns 0 results as the attributeType is null**
+I believe the type should be org.joda.time.LocalDate
+This is the predicate query string: 
+PredicateBuilder{
+(ownerId=165 AND enrollmentDate<2013-01-01)
+}
+
+When querying for a Long, the attributeType is not null, but LONG ->  (com.hazelcast.query.impl.AttributeType@8708}"LONG"
+This is the predicate query string: 
+PredicateBuilder{
+ownerId=165
+}
+
+This is from the v.3.2.2 tag
+
+```
+public Set<QueryableEntry> getSubRecords(ComparisonType comparisonType, Comparable   searchedValue) {
+    MultiResultSet results = new MultiResultSet();
+    indexStore.getSubRecords(results, comparisonType, convert(searchedValue));
+    return results;
+}
+```
+
+So my conclusion is that this null-check is introduced in 3.3 and therefore predicates for types other than the ones in com.hazelcast.query.impl.AttributeType will not work. 
+For the record, both attributes are indexed.
+When removing the index for the LocalDate attribute, the tests run without failures. 
+So it has to do with index queries
+
+I have also checked out the code for version 3.3.2 from github and removed the attributeType check and then built locally.
+
+My tests are now running fine.  
+
+And by the way. LocalDate is implementing Comparable via
+-> public interface ReadablePartial extends Comparable<ReadablePartial> 
+
+See 
+https://groups.google.com/forum/#!topic/hazelcast/9WI90W7dYOk

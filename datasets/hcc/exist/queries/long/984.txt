@@ -1,0 +1,38 @@
+I ran into this when debugging an index that I have, where I found that my `StreamListener` was only  receiving nodes in `ReindexMode.STORE` mode while I was expecting that a reindex would first call `NativeBroker.dropIndex()` (Triggering and index op with `ReindexMode.REMOVE_ALL_NODES`) then scan nodes for storage.
+
+While just doing `STORE` is more efficient, it seems it would cause bugs. For instance, consider the situation where the logic for pluggable index was updated that narrowed the scope of what the index was storing. Without a `dropIndex` call first on reindex it is conceivable that data would be left in the index that is no longer valid. 
+
+Consider the following document:
+
+``` xml
+<root>
+  <one some-att="test"/>
+  <two some-att="test-2"/>
+  <three some-other-att="three"/>
+</root>
+```
+
+For instance consider an index that operated on all nodes that contained the attribute `some-att`, the index might look like:
+
+```
+"test" => doc-id+node-id
+"test-2" => doc-id+node-id
+```
+
+Then consider that index is updated to instead operate on attribute `some-other-att` and ignore `some-att`:
+
+```
+"test" => doc-id+node-id
+"test-2" => doc-id+node-id
+"three" => doc-id+node-id
+```
+
+Since there is no `dropIndex()` call, this index now contains two entires that should have been removed.
+
+Is this intentional? Should I be handing this case in my index differently somehow?
+
+Perhaps there should be a REINDEX mode so that we could still do a single pass on the document, but the index worker would understand that it could treat this as a REMOVE/STORE and handle it more appropriatly. 
+
+In addition this would let indexes perform optimizations where they could detect data already in the storage and skip having to store it again and invalidating any caches, I can think of a few scenarios where this would result in potentially huge performance gains.
+
+Thanks

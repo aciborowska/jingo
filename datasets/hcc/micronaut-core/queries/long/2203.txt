@@ -1,0 +1,51 @@
+### Task List
+
+- [x] Steps to reproduce provided
+- [x] Stacktrace (if present) provided
+- [x] Example that reproduces the problem uploaded to Github
+- [x] Full description of the issue provided (see below)
+
+### Steps to Reproduce
+
+1. With http client (netty), query an endpoint that returns an error (status code >= 400)
+2. Use `httpClient.toBlocking().exchange(httpReq, argType, errorArgType)`
+3. The response is received as an exception `ex`; `ex.getResponse().getBody(errorArgType)` always returns an empty optional.
+
+### Expected Behaviour
+
+ * When errorArgType is specified, `ex.getResponse().getBody(errorArgType)` should return the already deserialized body of the response. 
+ * When no errorArgType is specified, `ex.getResponse().getBody(errorArgType)` or `ex.getResponse().getBody(errorArgType)` must succeed and (re)deserialize the bytebuf. 
+
+### Actual Behaviour
+
+* `ex.getResponse().getBody(errorArgType)` always returns an empty optional.
+* `ex.getResponse().getBody(classType)` returns an empty optional when no errorArgType was specified in the `exchange` call.
+
+Call stack showing the issue:
+ 1. For the error flow, a custom `HttpClientErrorDecoder` unpacks the class from the `Argument`: https://github.com/micronaut-projects/micronaut-core/blob/master/http-client/src/main/java/io/micronaut/http/client/DefaultHttpClient.java#L1815
+ 2. `HttpClientResponseException` calls `HttpResponse.getBody` with the class type: https://github.com/micronaut-projects/micronaut-core/blob/master/http-client/src/main/java/io/micronaut/http/client/exceptions/HttpClientResponseException.java#L93
+ 3. getBody with class type repacks the class in an argument: https://github.com/micronaut-projects/micronaut-core/blob/master/http-client/src/main/java/io/micronaut/http/client/FullNettyClientHttpResponse.java#L136 information has been lost at this point. The original argument was a parametrized generic; the repacked one is no longer a parametrized generic.
+ 4. Actual getBody implementation further below uses a map to cache results by type/class. Calling `getBody` from app code with the arg type will never match the non-parametrized generic repacked Argument that is in the cache.
+
+### Environment Information
+
+- **Operating System**: Mac OS Mojave.
+- **Micronaut Version:** 1.2.3
+- **JDK Version:** 8, 11
+
+### Example Application
+
+https://github.com/fabienrenaud/micronaut-bug-http-client-error-decoder:
+ * [App](https://github.com/fabienrenaud/micronaut-bug-http-client-error-decoder/blob/master/src/main/java/bug/micronaut/App.java)
+ * [AppTest](https://github.com/fabienrenaud/micronaut-bug-http-client-error-decoder/blob/master/src/test/java/bug/micronaut/AppTest.java#L29)
+
+```
+> gradle test
+bug.micronaut.AppTest > withoutErrorType() STANDARD_OUT
+    optBody1: false
+    optBody2: false
+
+bug.micronaut.AppTest > withErrorType() STANDARD_OUT
+    optBody1: false
+    optBody2: true
+```

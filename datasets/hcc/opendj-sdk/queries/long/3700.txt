@@ -1,0 +1,97 @@
+Found with Opendj 4.0.0 rev (5c4ca03fc8f)
+
+We setup a server and import some data.
+
+Then we configure ssl and startTLS, trustsore is in JKS format while keystore is in PKCS12.
+
+	we create a new server certificate in a new server-keystore, we export it then import it in a client-truststore
+	we generate 2 client certificates in a client keystore, export them and import them in server truststore.
+	we configure ssl and tls
+
+/tmp/DJ1/opendj/bin/dsconfig -h localhost -p 4445 -D "cn=myself" -w password -X set-key-manager-provider-prop --provider-name "PKCS12" --set key-store-file:/tmp/DJ1/opendj/config/server-keystore --set key-store-type:"PKCS12" --reset key-store-pin-file --set key-store-pin:serverpassword --set enabled:true -n
+
+/tmp/DJ1/opendj/bin/dsconfig -h localhost -p 4445 -D "cn=myself" -w password -X create-trust-manager-provider --provider-name "JKS" --type file-based --set enabled:true --set trust-store-type:"JKS" --set trust-store-file:/tmp/DJ1/opendj/config/server-truststore --set trust-store-pin:serverpassword -n
+
+/tmp/DJ1/opendj/bin/dsconfig -h localhost -p 4445 -D "cn=myself" -w password -X set-connection-handler-prop --handler-name "LDAPS Connection Handler" --set ssl-cert-nickname:server-cert2 --set trust-manager-provider:"JKS" --set key-manager-provider:"PKCS12" --set listen-port:1637 --set enabled:true --set use-ssl:true -n
+
+/tmp/DJ1/opendj/bin/dsconfig -h localhost -p 4445 -D "cn=myself" -w password -X set-connection-handler-prop --handler-name "LDAP Connection Handler" --set ssl-cert-nickname:server-cert2 --set trust-manager-provider:"JKS" --set key-manager-provider:"PKCS12" --set allow-start-tls:true -n
+
+
+
+
+
+
+	we check that this configuration works:
+
+/tmp/DJ1/opendj/bin/ldapsearch -h localhost -p 1637 -D "cn=myself" -w password -b "dc=example,dc=com" --useSSL -X "(objectclass=*)"
+
+/tmp/DJ1/opendj/bin/ldapsearch -h localhost -p 1390 -D "cn=myself" -w password -b "dc=example,dc=com" --useStartTLS -X "(objectclass=*)"
+
+
+
+
+
+
+	we copy the binary part from client-cert-1-rfc.txt to user1_cert.ldif so as to create a user with strong authentication:
+
+dn: uid=client-cert-1,dc=example,dc=com
+objectclass:top
+objectclass:organizationalperson
+objectclass:inetorgperson
+objectclass:person
+objectclass:ds-certificate-user
+objectclass:strongAuthenticationUser
+userCertificate;binary:: 
+<binary certificate>
+givenname:client-cert-1
+sn:client-cert-1
+cn:client-cert-1
+
+
+
+
+
+
+	we add this user: (and same for user2)
+
+/tmp/DJ1/opendj/bin/ldapmodify -h localhost -p 1390 -D "cn=myself" -w password  -f /tmp/user1_cert.ldif
+
+
+
+
+
+
+	We add an index for ds-certificate-fingerprint
+	We add this field to the user with a fingerprint-algorithm:MD5
+
+/usr/bin/keytool -list -v -keystore "/tmp/client-keystore"  -storepass "password"  -alias "client-cert-1" -storetype PKCS12
+0A:57:15:BF:77:25:D5:5F:A3:13:61:EB:86:1D:2A:54
+7B:17:20:AC:D8:F9:BF:EF:2C:8E:33:BC:4D:6C:C7:06:DB:B5:A4:CF
+
+/tmp/DJ1/opendj/bin/dsconfig -h localhost -p 4445 -D "cn=myself" -w password -X set-certificate-mapper-prop --mapper-name "fingerPrint Mapper" --set fingerprint-attribute:ds-certificate-fingerprint --set fingerprint-algorithm:MD5 -n
+
+/tmp/DJ1/opendj/bin/ldapmodify -h localhost -p 1390 -D "cn=myself" -w password
+dn: uid=client-cert-1,dc=example,dc=com
+changetype: modify
+add: ds-certificate-fingerprint
+ds-certificate-fingerprint: 0A:57:15:BF:77:25:D5:5F:A3:13:61:EB:86:1D:2A:54
+
+same thing for user2
+
+
+
+
+
+
+	we perform a search with sasl external mechanism:
+
+/tmp/DJ1/opendj/bin/ldapsearch -h localhost -p 1637  -o mech=EXTERNAL -b "dc=com" -s base -E -K /tmp/client-keystore -N client-cert-1 -P /local/GIT/pyforge/results/20170201-151531/security_group/tmp/client-truststore -W password -Z --countEntries "(objectclass=*)"
+
+returned 89
+
+An error occurred while parsing the command-line arguments:  ERROR:  Unable to
+perform SSL initialization:  java.io.IOException: Invalid keystore format
+
+
+
+

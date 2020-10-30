@@ -1,0 +1,16 @@
+This is one of those replication bugs. 
+
+I observed the behaviour when leaving two replicated servers running while putting the laptop to sleep before leaving in the evening and waking it the morning after.
+ On wake up the two java process are around 300% CPU (on my 4 core HyperThread CPU).
+
+From the logs I see
+
+[11/Jan/2019:10:01:34 +0100] category=SYNC severity=ERROR msgID=211 msg=The connection from this replication server RS(Alice) to directory server DS(Alice) at 127.0.0.1/127.0.0.1:63861 for domain "dc=example,dc=com" has failed
+[11/Jan/2019:10:01:34 +0100] category=SYNC severity=ERROR msgID=180 msg=Directory server DS(Alice) encountered an error while receiving changes for domain "dc=example,dc=com" from replication server RS(Alice) at 127.0.0.1:8989. The connection will be closed, and this directory server will now try to connect to another replication server
+
+
+most likely because of a TCP timeout.
+ From there the DS' broker should try to reconnect by calling reStart(), having set connectedRS to NO_CONNECTED_RS.
+ Unluckily at the same time, CTHeartbeatPublisherThread wants to publish a heartbeat, since it is way past the heartbeat interval; publishing a message in ReplicationBroker.publish() is done in a retry loop, where now the session does not exist, since there is no RS, and retryOnFailure is true.
+ In the meantime, reStart() tries to reconnect to an RS, by calling connectAsDataServer() who wants to "Stop any existing heartbeat monitor and changeTime publisher from a previous session".
+ Since at least CTHeartbeatPublisherThread is looping, it will not reconnect.

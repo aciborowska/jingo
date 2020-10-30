@@ -1,0 +1,34 @@
+Hazelcast Version: 3.8.1
+
+We are using hazelcast queues in combination with persistence using a QueueStore implementation. 
+I noticed unexpected behaviour regarding the bulk-load configuration parameter of the QueueStore configuration and the maxElements parameter of the queue's drainTo method.
+
+I wrote a simple test project to demonstrate the issue: https://github.com/GustavGans81/hazelcastbugdemo
+(The QueueStore implementation in this test uses [ChronicleMap](https://github.com/OpenHFT/Chronicle-Map) to store the items in a file on disk but that should not be relevant to the issue).
+
+The unit test BugTest.drainToTest() configures a hazelcast queue with bulk-load 4.
+Next it fills the queue with 10 elements and drains 8 elements with drainTo(list, 8).
+All the calls to the QueueStore implementation are logged.
+
+When running the test I would expect two calls to loadAll() each loading a bulk of 4 different elements resulting in a log output like this:
+```
+Calling loadAll for: [1, 2, 3, 4]
+Calling loadAll for: [5, 6, 7, 8]
+Calling deleteAll for 8 entries
+```
+
+Instead it results in this output:
+```
+Calling loadAll for: [1, 2, 3, 4]
+Calling loadAll for: [1, 2, 3, 5]
+Calling loadAll for: [1, 2, 3, 6]
+Calling loadAll for: [1, 2, 3, 7]
+Calling loadAll for: [8, 1, 2, 3]
+Calling deleteAll for 8 entries
+```
+
+This means loadAll is called once for the first bulk and then called again **for every other single element** that has to be loaded.
+In our production scenario we load thousands of entries with drainTo resulting in thousands of calls to loadAll causing really slow performance.
+
+Our temporary workaround is to use the exact same size for bulk-load and maxEntries parameters, causing only one bulk to be loaded on every drainTo() call.
+Of course having this kind of non-obvious coupling between general configuration and specific method calls is not a stable long-lasting solution.

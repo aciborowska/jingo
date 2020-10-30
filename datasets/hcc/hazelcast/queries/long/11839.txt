@@ -1,0 +1,41 @@
+The operation queue can get the same operation enqueued several times. Consequently, the `WaitSet#queue` can get multiple `WaitSetEntry` instances with the same `WaitSetEntry#op` fields. This happens when an operation is retried because of multiple reasons concurrently (one could be the periodic retry task and the other is a `MemberLeftException` set by the `OnMemberLeftTask`).
+
+Because we have the same operation parked twice, one `WaitSetEntry` will be unparked and the operation will be completed because of one notifier. An another notifier (or even the same notifier) will unpark a different `WaitSetEntry` instance, containing the same operation, and the operation will be completed twice.
+
+Then we get:
+```
+com.hazelcast.spi.exception.ResponseAlreadySentException: NormalResponse already responseReceived for callback: Invocation{op=com.hazelcast.concurrent.semaphore.operations.AcquireOperation{serviceName='hz:impl:semaphoreService', identityHash=1233404311, partitionId=3, replicaIndex=0, callId=-11, invocationTime=1511263609695 (2017-11-21 12:26:49.695), waitTimeout=-1, callTimeout=60000, name=f732fd6d-bf53-4488-8aaa-1411900df906}, tryCount=250, tryPauseMillis=500, invokeCount=4, callTimeoutMillis=60000, firstInvocationTimeMs=1511263609640, firstInvocationTime='2017-11-21 12:26:49.640', lastHeartbeatMillis=0, lastHeartbeatTime='1970-01-01 01:00:00.000', target=[127.0.0.1]:5004, pendingResponse={VOID}, backupsAcksExpected=0, backupsAcksReceived=0, connection=null}, current-response: NormalResponse{callId=11, urgent=false, value=true, backupAcks=1}
+	at com.hazelcast.spi.impl.operationservice.impl.Invocation.sendResponse(Invocation.java:189) ~[classes/:?]
+	at com.hazelcast.spi.Operation.sendResponse(Operation.java:360) ~[classes/:?]
+	at com.hazelcast.spi.impl.operationservice.impl.OperationRunnerImpl.sendResponse(OperationRunnerImpl.java:287) [classes/:?]
+	at com.hazelcast.spi.impl.operationservice.impl.OperationRunnerImpl.handleResponse(OperationRunnerImpl.java:278) [classes/:?]
+	at com.hazelcast.spi.impl.operationservice.impl.OperationRunnerImpl.run(OperationRunnerImpl.java:195) [classes/:?]
+	at com.hazelcast.spi.impl.operationexecutor.impl.OperationExecutorImpl.run(OperationExecutorImpl.java:406) [classes/:?]
+	at com.hazelcast.spi.impl.operationservice.impl.OperationServiceImpl.run(OperationServiceImpl.java:288) [classes/:?]
+	at com.hazelcast.spi.impl.operationparker.impl.WaitSet.unpark(WaitSet.java:104) [classes/:?]
+	at com.hazelcast.spi.impl.operationparker.impl.OperationParkerImpl.unpark(OperationParkerImpl.java:114) [classes/:?]
+	at com.hazelcast.spi.impl.operationservice.impl.OperationRunnerImpl.afterRun(OperationRunnerImpl.java:299) [classes/:?]
+	at com.hazelcast.spi.impl.operationservice.impl.OperationRunnerImpl.run(OperationRunnerImpl.java:196) [classes/:?]
+	at com.hazelcast.spi.impl.operationservice.impl.OperationRunnerImpl.run(OperationRunnerImpl.java:409) [classes/:?]
+	at com.hazelcast.spi.impl.operationexecutor.impl.OperationThread.process(OperationThread.java:115) [classes/:?]
+	at com.hazelcast.spi.impl.operationexecutor.impl.OperationThread.run(OperationThread.java:100) [classes/:?]
+```
+
+This bug was harder to achieve in 3.8 since the `OnMemberLeftTask` was triggered with a delay
+```
+    void onMemberLeft(MemberImpl member) {
+        // postpone notifying invocations since real response may arrive in the mean time.
+        scheduler.schedule(new OnMemberLeftTask(member), ON_MEMBER_LEFT_DELAY_MILLIS, MILLISECONDS);
+    }
+```
+And the `InvocationRetryTask` was scheduled with a fixed delay:
+```
+context.invocationMonitor.schedule(retryTask, tryPauseMillis);
+```
+
+A couple of fix candidates:
+- deduplicating the operation on the level of the operation queue. This is perhaps best since we affect operations that are not parked as well
+- add a `valid` flag to the operation and check it in the `WaitSetEntry#isValid` method
+- add some other check in the `WaitSetEntry#isValid` method, e.g. `op.getInvocationTime() == 0` or `op.getRawCallId() < 0`
+
+Related: https://github.com/hazelcast/hazelcast/issues/11818

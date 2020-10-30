@@ -1,0 +1,145 @@
+We are using Hazelcast 3.9.2
+2 nodes cluster runs on:
+Windows Server 2012 R2 Standard
+with Oracle JAVA_VERSION="1.8.0_144"
+from 2 to 20 clients runs on separate VMs:
+3.10.0-327.28.3.el7.x86_64 `#`1 SMP Fri Aug 12 13:21:05 EDT 2016 x86_64 x86_64 x86_64 GNU/Linux
+with IBM JAVA_VERSION="1.7.1_64"
+
+hazelcast.xml snippet:
+```xml
+	<map name="lock*">
+		<in-memory-format>BINARY</in-memory-format>
+		<statistics-enabled>true</statistics-enabled>
+		<backup-count>1</backup-count>
+		<eviction-policy>NONE</eviction-policy>
+	</map>
+```
+That's our hazelcast-client.xml
+```xml
+<hazelcast-client xmlns="http://www.hazelcast.com/schema/client-config" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.hazelcast.com/schema/client-config file:///C:/caching/hazelcast-client-config-3.9.xsd">
+	<group>
+		<name>OUR_GROUP_NAME</name>
+	</group>
+	<properties>
+		<property name="hazelcast.client.shuffle.member.list">true</property>
+		<property name="hazelcast.client.heartbeat.timeout">60000</property>
+		<property name="hazelcast.client.heartbeat.interval">5000</property>
+		<property name="hazelcast.client.event.thread.count">10</property>
+		<property name="hazelcast.client.event.queue.capacity">1000000</property>
+		<property name="hazelcast.client.invocation.timeout.seconds">35</property>
+		<property name="hazelcast.client.statistics.enabled">true</property>
+	</properties>
+	<network>
+		<cluster-members>
+			<address>tvlcacheqa1.blqa.qa:5709</address>
+			<address>tvlcacheqa2.blqa.qa:5709</address>
+		</cluster-members>
+        <smart-routing>true</smart-routing>
+        <redo-operation>true</redo-operation>
+        <connection-attempt-period>15000</connection-attempt-period>
+        <connection-attempt-limit>1048576</connection-attempt-limit>
+	<socket-options>
+            <tcp-no-delay>false</tcp-no-delay>
+            <keep-alive>true</keep-alive>
+            <reuse-address>true</reuse-address>
+            <linger-seconds>5</linger-seconds>
+            <timeout>-1</timeout>
+            <buffer-size>64</buffer-size>
+        </socket-options>
+	</network>
+	
+	<near-cache name="cache*">
+		<in-memory-format>OBJECT</in-memory-format>
+		<invalidate-on-change>true</invalidate-on-change>
+		<time-to-live-seconds>1800</time-to-live-seconds>
+		<max-idle-seconds>1800</max-idle-seconds>
+		<eviction eviction-policy="LRU" max-size-policy="ENTRY_COUNT" size="10000"/>
+	</near-cache>	
+</hazelcast-client>
+```
+> Every preference that not mentioned above are DEFAULT and we do not make preference changes in code.
+
+In batch processing we run this code on some clients concurrently:
+```java
+synchronizer.startSyncSection(key, 100);
+try {
+     doSomeCriticalStuff();
+} finally {
+     synchronizer.endSyncSection(key);
+}
+```
+this is our Synchronizer implementation based on Hazelcast IMap features:
+
+```java
+	@Override
+	public void startSynchedSection(MultiKey<?> key, long obtainLockTimeoutInMs, long releaseLockTimeoutInMs) {
+
+		keyNullCheck(key);
+		obtainLockTimeoutInMs = Math.max(obtainLockTimeoutInMs, minimumObtainLockTimeoutInMs);
+		this.logger.debug("Is about to lock {}, timeout to lock:{}ms, release timeout:{}ms", key, obtainLockTimeoutInMs, releaseLockTimeoutInMs);
+		long start = System.currentTimeMillis();
+		if (isClusterReady()) {
+			boolean locked = false;
+			try {
+				locked = this.locks.tryLock(key.toString(), obtainLockTimeoutInMs, TimeUnit.MILLISECONDS, releaseLockTimeoutInMs, TimeUnit.MILLISECONDS);
+			} catch (InterruptedException e) {
+				long end = System.currentTimeMillis();
+				String exceptionMessage = "Timeout. Failed to obtain lock on " + key + " after " + (end - start) + " ms.";
+				throw new TechnicalException(exceptionMessage, e);
+			}
+			long end = System.currentTimeMillis();
+			if (!locked) {
+				String exceptionMessage = "Timeout. Failed to obtain lock on " + key + " after " + (end - start) + " ms.";
+				this.logger.debug("startSynchedSection - Lock-> {} NOT Acquired in Thread={}", key.toString(), Thread.currentThread().getName());
+				throw new SyncTimeoutException(exceptionMessage);
+			}
+			int lockCounter = incrementLockCounter(key.toString());
+			this.logger.debug("startSynchedSection - Lock-> {} Acquired in Thread={} with count {}", key.toString(), Thread.currentThread().getName(),
+				lockCounter);
+		} else {
+			throw new SyncTimeoutException(CLUSTER_NOT_READY_EXCEPTION);
+		}
+	}
+
+	/** Note This should be called in a FINALLY section!!! */
+	@Override
+	public void endSynchedSection(MultiKey<?> key) {
+		keyNullCheck(key);
+		int lockCounterBefore = getThreadLocalCounter(key.toString()).get();
+		if (lockCounterBefore == 0) {
+			this.logger.warn("endSynchedSection - Lock-> {} is not owned by current Thread={}. Failed to unlock", key, Thread.currentThread().getName());
+			return;
+		}
+		try {
+			this.logger.debug("endSynchedSection - Lock-> {} before RELEASE in Thread={} with count {}", key, Thread.currentThread().getName(),
+				lockCounterBefore);
+			int lockCounterAfter = decrementLockCounter(key.toString());
+			if (this.locks.isLocked(key.toString())) {
+				this.locks.unlock(key.toString());
+			}
+			this.logger.debug("endSynchedSection - Lock-> {} after RELEASE in Thread={} with count {}", key, Thread.currentThread().getName(),
+				lockCounterAfter);
+		} catch (OperationTimeoutException e) {
+			this.logger.warn("endSynchedSection - Lock-> {} was not released properly in Hazelcast because of exception:\n{}\n in Thread={}", key, e
+				.getMessage(), Thread.currentThread().getName());
+		}
+	}
+```
+
+Sometimes (very often when we run our batches) thread get stuck on this IMap call:
+```java
+locked = this.locks.tryLock(key.toString(), obtainLockTimeoutInMs, TimeUnit.MILLISECONDS, releaseLockTimeoutInMs, TimeUnit.MILLISECONDS);
+```
+where `this.locks` is:
+```java
+private IMap<String, String> locks;
+```
+## Although we set `obtainLockTimeoutInMs = 100ms` thread may be hung over 2 minutes!
+
+Unfortunately, we can't reproduce this situation, but we use Dynatrace tool where we see such reports:
+![hz2](https://user-images.githubusercontent.com/12655866/39583818-a0d80978-4ef9-11e8-9fd6-1d4fbda31caf.PNG)
+
+![hz1](https://user-images.githubusercontent.com/12655866/39579704-128d9286-4ef0-11e8-90e2-070c4db18964.PNG)
+
+I looked through every cluster node logs and did not found something special. I looked for the same issues but found only #3635 and it's not my case. We are just starting to use Hazelcast in our project and our decision to stay with Hazelcast depends on solving this problem. :wink:

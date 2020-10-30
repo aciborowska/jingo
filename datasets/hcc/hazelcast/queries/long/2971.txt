@@ -1,0 +1,90 @@
+## Problem
+
+On single core machines Hazelcast clients get into deadlocks. Problem exists on AWS t1.micro machine as client and does not on m3.large ones. So I think the core count is the root cause.
+
+This is a serious problem as we cannot use micro instances anymore and have to use m3.large ones which cost 8x.
+
+Affected Version: 3.3-EA2
+## Settings to reproduce
+
+Create a new Java/Maven project and add the following dependency:
+
+```
+<dependency>
+    <groupId>de.cinovo.cloudconductor</groupId>
+    <artifactId>cloudconductor-client</artifactId>
+    <version>1.0</version>
+</dependency>
+```
+
+Create a test class with the following main method:
+
+```
+    public static void main(String[] args) {
+        // Use same settings as server node
+        // The cluster group name
+        System.setProperty(ICCClientConstants.HZ_GROUP_NAME, "10.10.6.17:8090");
+        // The ip and port of the server node
+        System.setProperty(ICCClientConstants.HZ_HOST, "10.10.6.17:8091");
+
+        String clientName = Long.toString(System.currentTimeMillis());
+        System.err.println("I am " + clientName);
+
+        // leader stuff
+        try {
+            final ICCLeaderManager lm = CCAccess.getConnector().createLeaderManager(clientName, "foobar");
+            lm.addCallback(new ICCLeaderCallback() {
+
+                public void selectedOtherLeader(ICCGroupMember member) {
+                    System.err.println("Leader is other: " + member.getClientName());
+                }
+
+                public void selectedAsLeader() {
+                    System.err.println("selectedAsLeader is called");
+                    System.err.println("Leader is me " + "(" + lm.isLeader() + ")");
+                    System.err.println("BUG DID NOT HAPPEN");
+                }
+            });
+            lm.register();
+            System.err.println("Am I leader? " + lm.isLeader());
+        } catch (UnknownHostException e) {
+            e.printStackTrace();
+        }
+
+        // group stuff
+        try {
+            ICCGroupManager gm = CCAccess.getConnector().createGroupManager(clientName, "huihui");
+            gm.addCallback(new ICCGroupCallback() {
+
+                public void memberRemoved(ICCGroupMember member) {
+                    System.err.println("Removed member: " + member.getClientName());
+                }
+
+                public void memberPropertiesChanged(ICCGroupMember member) {
+                    System.err.println("Changed member: " + member.getClientName());
+                }
+
+                public void memberAdded(ICCGroupMember member) {
+                    System.err.println("Added member: " + member.getClientName());
+                }
+            });
+            gm.register();
+        } catch (UnknownHostException e) {
+            e.printStackTrace();
+        }
+
+        while (true) {
+            try {
+                Thread.sleep(100000);
+            } catch (InterruptedException e) {
+                // TODO Auto-generated catch block
+                e.printStackTrace();
+            }
+        }
+    }
+```
+
+Start a hazelcast server node and change the settings at the top of the test class.
+Then start the test class, stop it and start it again. You should get a console output "BUG DID NOT HAPPEN".
+
+If you now start the test class on a machine with only one single core the listener blocks at lm.getLeader() and only "selectedAsLeader is called" is printed to the error stream.

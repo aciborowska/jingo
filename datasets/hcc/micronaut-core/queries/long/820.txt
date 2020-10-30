@@ -1,0 +1,206 @@
+There appear to be a couple issues around kafka producers.  When running the following test there is a race condition with the advice where the default bean hasn't been created yet.  I have included the block from the advice that has the issue.  This is triggered due to me attempting to provide a default serializer for the producers.  Moreover, even if I patch in my code in the comments the key and value serializers aren't being bound from the test. 
+
+The bean`DefaultKafkaProducerConfiguration` does not exist due to this condition on it's configuration `@Requires(missingProperty = KafkaProducerConfiguration.PREFIX + ".default")`.
+
+I checked the consumer and it appears for the default the key and value deserializer is null and uses default as well even when providing config.
+
+<img width="1156" alt="screen shot 2018-10-31 at 11 15 35 am" src="https://user-images.githubusercontent.com/691357/47803502-a99a4b80-dd00-11e8-99ed-0f049067d7a0.png">
+
+<img width="1346" alt="screen shot 2018-10-31 at 11 09 07 am" src="https://user-images.githubusercontent.com/691357/47803503-a99a4b80-dd00-11e8-8b32-5dc35c2ec052.png">
+
+
+#### Stacktrace
+
+``` bash
+No bean of type [io.micronaut.configuration.kafka.config.DefaultKafkaProducerConfiguration] exists. Ensure the class is declared a bean and if you are using Java or Kotlin make sure you have enabled annotation processing.
+io.micronaut.context.exceptions.NoSuchBeanException: No bean of type [io.micronaut.configuration.kafka.config.DefaultKafkaProducerConfiguration] exists. Ensure the class is declared a bean and if you are using Java or Kotlin make sure you have enabled annotation processing.
+	at io.micronaut.context.DefaultBeanContext.getBeanInternal(DefaultBeanContext.java:1590)
+	at io.micronaut.context.DefaultBeanContext.getBean(DefaultBeanContext.java:512)
+	at io.micronaut.configuration.kafka.intercept.KafkaClientIntroductionAdvice.lambda$getProducer$13(KafkaClientIntroductionAdvice.java:546)
+	at java.util.concurrent.ConcurrentHashMap.computeIfAbsent(ConcurrentHashMap.java:1660)
+	at io.micronaut.configuration.kafka.intercept.KafkaClientIntroductionAdvice.getProducer(KafkaClientIntroductionAdvice.java:535)
+	at io.micronaut.configuration.kafka.intercept.KafkaClientIntroductionAdvice.intercept(KafkaClientIntroductionAdvice.java:129)
+	at io.micronaut.aop.MethodInterceptor.intercept(MethodInterceptor.java:41)
+	at io.micronaut.aop.chain.InterceptorChain.proceed(InterceptorChain.java:147)
+	at io.micronaut.retry.intercept.RecoveryInterceptor.intercept(RecoveryInterceptor.java:74)
+	at io.micronaut.aop.MethodInterceptor.intercept(MethodInterceptor.java:41)
+	at io.micronaut.aop.chain.InterceptorChain.proceed(InterceptorChain.java:147)
+	at io.micronaut.configuration.kafka.serde.ProducerSpec.broken spec(ProducerSpec.groovy:51)
+
+```
+
+#### KafkaClientIntroductionAdvice Advice Code
+``` java
+String producerId = producerKey.id;
+            AbstractKafkaProducerConfiguration configuration;
+            if (producerId != null) {
+                Optional<KafkaProducerConfiguration> namedConfig = beanContext.findBean(KafkaProducerConfiguration.class, Qualifiers.byName(producerId));
+                if (namedConfig.isPresent()) {
+                    configuration = namedConfig.get();
+                } else {
+                    configuration = beanContext.getBean(DefaultKafkaProducerConfiguration.class);
+                }
+            } else {
+               //this line throws a bean not found exception as the DefaultKafkaProducerConfiguration does not exist when I provide a kafka.producers.default config
+                configuration = beanContext.getBean(DefaultKafkaProducerConfiguration.class);
+            }
+
+            /*
+           // this code "fixes" the issue by checking for bean
+            } else {
+                if(beanContext.findBean(DefaultKafkaProducerConfiguration.class).isPresent()){
+                    configuration = beanContext.getBean(DefaultKafkaProducerConfiguration.class);
+                } else {
+                    Optional<KafkaProducerConfiguration> optionalKafkaProducerConfiguration = beanContext.findBean(KafkaProducerConfiguration.class, Qualifiers.byName("default"));
+                    if(optionalKafkaProducerConfiguration.isPresent()){
+                         configuration = optionalKafkaProducerConfiguration.get();
+                     } else {
+                        configuration = new DefaultKafkaProducerConfiguration(beanContext.findBean(KafkaDefaultConfiguration.class).orElse(null));
+                    }
+                }
+            }
+             */
+```
+
+#### Test To Reproduce
+``` java
+package io.micronaut.configuration.kafka.serde
+
+import io.micronaut.configuration.kafka.KafkaConsumerFactory
+import io.micronaut.configuration.kafka.KafkaProducerFactory
+import io.micronaut.configuration.kafka.annotation.KafkaClient
+import io.micronaut.configuration.kafka.annotation.KafkaKey
+import io.micronaut.configuration.kafka.annotation.KafkaListener
+import io.micronaut.configuration.kafka.annotation.OffsetReset
+import io.micronaut.configuration.kafka.annotation.Topic
+import io.micronaut.configuration.kafka.config.AbstractKafkaConfiguration
+import io.micronaut.configuration.kafka.config.KafkaConsumerConfiguration
+import io.micronaut.configuration.kafka.config.KafkaProducerConfiguration
+import io.micronaut.context.ApplicationContext
+import io.micronaut.core.util.CollectionUtils
+import io.micronaut.messaging.annotation.SendTo
+import org.apache.kafka.common.serialization.BytesDeserializer
+import org.apache.kafka.common.serialization.BytesSerializer
+import spock.lang.AutoCleanup
+import spock.lang.Shared
+import spock.lang.Specification
+import spock.util.concurrent.PollingConditions
+
+import java.util.concurrent.ConcurrentLinkedDeque
+
+class ProducerSpec extends Specification {
+
+    public static final String TOPIC_BLOCKING = "ProducerSpec-users-blocking"
+    public static final String TOPIC_QUANTITY = "ProducerSpec-users-quantity"
+
+    @Shared
+    @AutoCleanup
+    ApplicationContext context = ApplicationContext.run(
+            CollectionUtils.mapOf(
+                    "kafka.schema.registry.url", "http://localhot:8081",
+                    "kafka.producers.named.key.serializer", "org.apache.kafka.common.serialization.StringSerializer",
+                    "kafka.producers.named.value.serializer", "org.apache.kafka.common.serialization.StringSerializer",
+                    "kafka.producers.default.key.serializer", "org.apache.kafka.common.serialization.StringSerializer",
+                    "kafka.producers.default.key-serializer", "org.apache.kafka.common.serialization.StringSerializer",
+                    "kafka.producers.default.keySerializer", "org.apache.kafka.common.serialization.StringSerializer",
+                    "kafka.producers.default.value.serializer", "org.apache.kafka.common.serialization.StringSerializer",
+                    "kafka.producers.default.value-serializer", "org.apache.kafka.common.serialization.StringSerializer",
+                    "kafka.producers.default.valueSerializer", "org.apache.kafka.common.serialization.StringSerializer",
+                    "kafka.consumers.default.key.deserializer", "org.apache.kafka.common.serialization.StringDeserializer",
+                    "kafka.consumers.default.key-deserializer", "org.apache.kafka.common.serialization.StringDeserializer",
+                    "kafka.consumers.default.keyDeserializer", "org.apache.kafka.common.serialization.StringDeserializer",
+                    "kafka.consumers.default.value.deserializer", "org.apache.kafka.common.serialization.StringDeserializer",
+                    "kafka.consumers.default.value-deserializer", "org.apache.kafka.common.serialization.StringDeserializer",
+                    "kafka.consumers.default.valueDeserializer", "org.apache.kafka.common.serialization.StringDeserializer",
+                    "kafka.bootstrap.servers", 'localhost:${random.port}',
+                    AbstractKafkaConfiguration.EMBEDDED, true,
+                    AbstractKafkaConfiguration.EMBEDDED_TOPICS, [
+                    TOPIC_BLOCKING
+            ]
+            )
+    )
+
+    def "test KafkaProducers serializers but skip advice wiring"() {
+        given:
+        context.getBean(KafkaProducerFactory)
+        context.getBean(KafkaConsumerFactory)
+        context.getBean(UserClient)
+        context.getBean(NamedClient)
+
+        when:
+        Collection<KafkaProducerConfiguration> kafkaProducers = context.getBeansOfType(KafkaProducerConfiguration)
+        Collection<KafkaConsumerConfiguration> kafkaConsumers = context.getBeansOfType(KafkaConsumerConfiguration)
+
+        then: 'The default ser/deser should probably be instances of configured items'
+        boolean found1 = false
+        kafkaProducers?.each { KafkaProducerConfiguration configuration ->
+            println configuration
+            println configuration.keySerializer
+            println configuration.valueSerializer
+            if (configuration.keySerializer.orElse(new BytesSerializer()).getClass().name.contains("StringSerializer") &&
+                    configuration.valueSerializer.orElse(new BytesSerializer()).getClass().name.contains("StringSerializer")) {
+                found1 = true
+            }
+        }
+        assert found1
+
+        boolean found2 = false
+        kafkaConsumers?.each { KafkaConsumerConfiguration configuration ->
+            println configuration.keyDeserializer
+            println configuration.valueDeserializer
+            if (configuration.keyDeserializer.orElse(new BytesDeserializer()).getClass().name.contains("StringDeserializer") &&
+                    configuration.valueDeserializer.orElse(new BytesDeserializer()).getClass().name.contains("StringDeserializer")) {
+                found2 = true
+            }
+        }
+        assert found2
+    }
+
+    def "broken spec"() {
+        given:
+        UserClient client = context.getBean(UserClient)
+        UserListener userListener = context.getBean(UserListener)
+        userListener.users.clear()
+        userListener.keys.clear()
+        PollingConditions conditions = new PollingConditions(timeout: 30, delay: 1)
+
+        when:
+        client.sendUser("Bob", "Robert")
+
+        then:
+        conditions.eventually {
+            userListener.keys.size() == 1
+            userListener.keys.iterator().next() == "Bob"
+            userListener.users.size() == 1
+            userListener.users.iterator().next() == "Robert"
+        }
+    }
+
+    @KafkaClient(acks = KafkaClient.Acknowledge.ALL, id = "named")
+    static interface NamedClient {
+        @Topic(ProducerSpec.TOPIC_BLOCKING)
+        String sendUser(@KafkaKey String name, String user)
+    }
+
+    @KafkaClient(acks = KafkaClient.Acknowledge.ALL)
+    static interface UserClient {
+        @Topic(ProducerSpec.TOPIC_BLOCKING)
+        String sendUser(@KafkaKey String name, String user)
+    }
+
+    @KafkaListener(offsetReset = OffsetReset.EARLIEST)
+    static class UserListener {
+        Queue<String> users = new ConcurrentLinkedDeque<>()
+        Queue<String> keys = new ConcurrentLinkedDeque<>()
+
+        @Topic(ProducerSpec.TOPIC_BLOCKING)
+        @SendTo(ProducerSpec.TOPIC_QUANTITY)
+        String receive(@KafkaKey String key, String user) {
+            users << user
+            keys << key
+            return user
+        }
+    }
+
+}
+```

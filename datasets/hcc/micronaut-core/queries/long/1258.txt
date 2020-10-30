@@ -1,0 +1,46 @@
+It seems that example from the [docs](https://docs.micronaut.io/latest/guide/index.html#jsonBinding) doesn't work.
+I have the following code in controller:
+```java
+ @Put("/mapping")
+ public Mono<HttpResponse<?>> updateMapping(@Body Mono<Map<String, Object>> updatedMapping)
+    {
+        return updatedMapping.doOnNext(stringObjectMap -> System.out.println(stringObjectMap))
+                   .thenReturn(HttpResponse.ok());
+```
+which produces the following stack trace when invoked:
+```
+java.lang.NullPointerException: null
+	at io.micronaut.http.server.netty.jackson.JsonContentProcessor.doOnSubscribe(JsonContentProcessor.java:86)
+	at io.micronaut.core.async.processor.SingleSubscriberProcessor.doOnSubscribe(SingleSubscriberProcessor.java:135)
+	at io.micronaut.core.async.subscriber.CompletionAwareSubscriber.onSubscribe(CompletionAwareSubscriber.java:39)
+	at io.micronaut.http.netty.reactive.HandlerPublisher.provideSubscriber(HandlerPublisher.java:229)
+	at io.micronaut.http.netty.reactive.HandlerPublisher.lambda$subscribe$0(HandlerPublisher.java:130)
+	at io.netty.util.concurrent.AbstractEventExecutor.safeExecute(AbstractEventExecutor.java:163)
+	at io.netty.util.concurrent.SingleThreadEventExecutor.runAllTasks(SingleThreadEventExecutor.java:404)
+	at io.netty.channel.nio.NioEventLoop.run(NioEventLoop.java:465)
+	at io.netty.util.concurrent.SingleThreadEventExecutor$5.run(SingleThreadEventExecutor.java:884)
+	at io.netty.util.concurrent.FastThreadLocalRunnable.run(FastThreadLocalRunnable.java:30)
+	at java.lang.Thread.run(Thread.java:748)
+```
+
+It seems that problem is at _io.micronaut.http.server.netty.jackson.JsonContentProcessor:73_, jacksonProcessor is not being initialized due to `!Publishers.isSingle(targetType)` condition
+```java
+ if (subscriber instanceof TypedSubscriber) {
+            TypedSubscriber typedSubscriber = (TypedSubscriber) subscriber;
+            Argument typeArgument = typedSubscriber.getTypeArgument();
+
+            Class targetType = typeArgument.getType();
+           if (Publishers.isConvertibleToPublisher(targetType) && !Publishers.isSingle(targetType)) { // 73-th 
+                Optional<Argument<?>> genericArgument = typeArgument.getFirstTypeVariable();
+                if (genericArgument.isPresent() && !Iterable.class.isAssignableFrom(genericArgument.get().getType())) {
+                    // if the generic argument is not a iterable type them stream the array into the publisher
+                    this.jacksonProcessor = new JacksonProcessor(jsonFactory, true);
+                } else {
+                    this.jacksonProcessor = new JacksonProcessor(jsonFactory);
+                }
+            }
+        } else {
+            this.jacksonProcessor = new JacksonProcessor(jsonFactory);
+        }
+```
+And with `Flux<Map<String, Object>>` as controller's parameter it works correctly.

@@ -1,0 +1,201 @@
+In case of multiple entry `EntryProcessor` (`MultipleEntryOperation` and `PartitionWideEntryOperation`), the processor will execute on the entry regardless if it is locked or not.
+
+Currently the entire EntryProcessor is run on the partition thread so in theory we could check if all affected entries are locked and park the operation if so. On unlock & notification we re-check and again park the operation until all affected entries are unlocked. This sounds simple but would require a special `WaitNotifyKey` for a partition wide-notification and it would require some changes in the operation system since it now expects that one notification can notify a single waiting key.
+
+With the introduction of EP `Offloadable` the situation is more complex since the EP can now be interleaved with other operations (also lock and unlock). This is why we need to check if the entry is locked before running the EP logic on every key. If the entry is locked, there are two possible approaches:
+
+1. Park the EP operation. This requires substantial changes in the operation system since the operation isn't supposed to be parked/unparked after it started running.
+2. Create a EntryOperation for the locked key and continue processing the unlocked keys. Once the EntryOperation is finished update the value on the multiple-entry operation and check if all entries have been processed. This is more in line with existing operations where parts of the work are forked onto other operations and using callbacks we notify the parent operation (e.g. in WAN - `WanSyncOperation`).
+
+These tests demonstrate the difference introduced by adding `Offloadable` interface for EP which relies on locking keys for entry update.
+
+```java
+@RunWith(HazelcastParallelClassRunner.class)
+@Category({QuickTest.class, ParallelTest.class})
+public class MixedEntryProcessorsTest extends HazelcastTestSupport {
+
+    public static final String MAP_NAME = "EntryProcessorOffloadableTest";
+
+    private HazelcastInstance[] instances;
+
+    @Override
+    public Config getConfig() {
+        Config config = super.getConfig();
+        MapConfig mapConfig = new MapConfig(MAP_NAME);
+        mapConfig.setInMemoryFormat(OBJECT);
+        mapConfig.setBackupCount(1);
+        config.addMapConfig(mapConfig);
+        return config;
+    }
+
+    @Before
+    public void before() {
+        TestHazelcastInstanceFactory factory = createHazelcastInstanceFactory(3);
+        instances = factory.newInstances(getConfig());
+    }
+
+    @Test
+    public void withOffloading() {
+        runTest(true);
+    }
+
+    @Test
+    public void withoutOffloading() {
+        runTest(false);
+    }
+
+    private void runTest(final boolean offload) {
+        final String key = generateKeyOwnedBy(instances[0]);
+        final int initialMoney = 100000;
+        User user = new User(initialMoney, 0, 0);
+
+        final IMap<Object, Object> map = instances[1].getMap(MAP_NAME);
+        map.put(key, user);
+        int boughtItems = 0;
+
+        for (int i = 0; i < 100; i++) {
+            map.executeOnEntries(new BuyItem());
+            boughtItems++;
+        }
+
+        final AtomicBoolean shouldRun = new AtomicBoolean(true);
+        spawn(new Runnable() {
+            @Override
+            public void run() {
+                map.executeOnKey(key, new CalculateBalance(offload));
+                shouldRun.set(false);
+            }
+        });
+
+        while (shouldRun.get()) {
+            map.executeOnEntries(new BuyItem());
+            boughtItems++;
+        }
+
+        map.executeOnKey(key, new CalculateBalance(offload));
+        final User o = (User) map.get(key);
+        System.out.println("CHECKING " + o);
+        Assert.assertEquals(boughtItems, o.paidItems);
+    }
+
+
+    private static class User implements Serializable {
+
+        public int money;
+        public int itemsToPay;
+        public int paidItems;
+
+        User() {
+        }
+
+        public User(int money, int itemsToPay, int paidItems) {
+            this.money = money;
+            this.itemsToPay = itemsToPay;
+            this.paidItems = paidItems;
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            if (this == o) {
+                return true;
+            }
+            if (o == null || getClass() != o.getClass()) {
+                return false;
+            }
+
+            User user = (User) o;
+
+            if (money != user.money) {
+                return false;
+            }
+            if (itemsToPay != user.itemsToPay) {
+                return false;
+            }
+            return paidItems == user.paidItems;
+        }
+
+        @Override
+        public int hashCode() {
+            int result = money;
+            result = 31 * result + itemsToPay;
+            result = 31 * result + paidItems;
+            return result;
+        }
+
+        @Override
+        public String toString() {
+            final StringBuffer sb = new StringBuffer("User{");
+            sb.append("money=").append(money);
+            sb.append(", itemsToPay=").append(itemsToPay);
+            sb.append(", paidItems=").append(paidItems);
+            sb.append('}');
+            return sb.toString();
+        }
+    }
+
+    private static class BuyItem implements EntryProcessor<String, User>, EntryBackupProcessor<String, User> {
+        @Override
+        public Object process(final Map.Entry<String, User> entry) {
+            final User value = entry.getValue();
+            value.itemsToPay++;
+            entry.setValue(value);
+            return value;
+        }
+
+        @Override
+        public EntryBackupProcessor<String, User> getBackupProcessor() {
+            return this;
+        }
+
+        @Override
+        public void processBackup(Map.Entry<String, User> entry) {
+            process(entry);
+        }
+    }
+
+    private static class CalculateBalance implements EntryProcessor<String, User>,
+            Offloadable,
+            EntryBackupProcessor<String, User> {
+        private boolean offload;
+
+        public CalculateBalance() {
+        }
+
+        public CalculateBalance(boolean offload) {
+            this.offload = offload;
+        }
+
+        @Override
+        public Object process(final Map.Entry<String, User> entry) {
+            // this is going to take a long time
+            try {
+                TimeUnit.SECONDS.sleep(1);
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            }
+            final User value = entry.getValue();
+            value.money -= value.itemsToPay;
+            value.paidItems += value.itemsToPay;
+            value.itemsToPay = 0;
+            entry.setValue(value);
+            return value;
+        }
+
+        @Override
+        public EntryBackupProcessor<String, User> getBackupProcessor() {
+            return this;
+        }
+
+        @Override
+        public String getExecutorName() {
+            return offload ? Offloadable.DEFAULT_ASYNC_EXECUTOR : Offloadable.NO_OFFLOADING;
+        }
+
+        @Override
+        public void processBackup(Map.Entry<String, User> entry) {
+            process(entry);
+        }
+    }
+
+}
+```

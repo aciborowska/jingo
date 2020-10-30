@@ -1,0 +1,38 @@
+All `onResponse()` calls on a `MultiExecutionCallback` should be made before `onComplete()` is called. There exists a race condition in `ExecutionCallbackAdapterFactory` which permits `onComplete()` to be called before all `onReponse()` calls are made.
+
+The normal sequence of events, for a scenario involving two threads and two calls backs looks like this (these calls all occur in `ExecutionCallbackAdapterFactory.onResponse()`):
+
+**T1:** placeResponse()
+**T1:** triggerOnResponse()
+**T1:** triggerOnComplete() **(Exits without making the onComplete() callback)**
+T2: placeResponse()
+T2: triggerOnResponse()
+T2: triggerOnComplete() **(Makes the onComplete() callback)**
+
+The above results in the expected behaviour. The below order of execution results in the defective behaviour:
+**T1:** placeResponse()
+**T1:** triggerOnResponse()
+T2: placeResponse() **(fulfils the requirement for onComplete() to run)**
+**T1:** triggerOnComplete() **(Makes the onComplete() callback)**
+T2: triggerOnResponse()
+T2: triggerOnComplete() **(do nothing - onComplete() callback already made)**
+
+The fix is quite simple; make the triggerOnResponse() response call before placeResponse()
+
+```
+diff --git a/hazelcast/src/main/java/com/hazelcast/executor/impl/ExecutionCallbackAdapterFactory.java b/hazelcast/src/main/java/com/hazelcast/executor/impl/ExecutionCallbackAdapterFactory.java
+index d1322a4..421db80 100644
+--- a/hazelcast/src/main/java/com/hazelcast/executor/impl/ExecutionCallbackAdapterFactory.java
++++ b/hazelcast/src/main/java/com/hazelcast/executor/impl/ExecutionCallbackAdapterFactory.java
+@@ -55,8 +55,8 @@ class ExecutionCallbackAdapterFactory {
+     private void onResponse(Member member, Object response) {
+         assertNotDone();
+         assertIsMember(member);
+-        placeResponse(member, response);
+         triggerOnResponse(member, response);
++        placeResponse(member, response);
+         triggerOnComplete();
+     }
+```
+
+Problem has been experienced in 3.4.2 but still exists in master at the time of raising this issue.

@@ -1,0 +1,130 @@
+It looks like after disabling/removing a replicated suffix there is some residual impact on searching using draft method of obtaining changenumbers. 
+
+Some replication.ecl functional tests are failing:
+
+example, testid: ecl_changenumbers_001
+
+I have on server A, three suffixes:
+
+	o=example
+	o=new_suffix_repl
+	o=new_suffix_no_repl
+
+
+
+On server B, two suffixes:
+
+	o=example,
+	o=new_suffix_repl
+
+
+
+o=example and o=new_suffix_repl are replicated.
+
+After i disabled replication and removed suffix on "o=new_suffix_repl".
+Local suffix "o=new_suffix_no_repl" is then also removed.
+Re-import the data by stop-ds, import ldif on "o=example", re - start-ds.
+I see that after i add new entries under o=example on both servers, when I search with a changeLogCookie the cookies are correctly returned, but if I search for changeNumber under "cn=changelog" (aka draft mode) I am getting "unwilling to perform - Full resync required" proposing incorrect cookie.
+
+Steps:
+
+dsreplication pre-external-initialization -n -Q -X -h opendj-testing -p 11444 -b "o=new_suffix_repl" -I "admin" -w "admin"
+
+dsreplication disable -n -Q -X -h opendj-testing -p 11444 -b "o=new_suffix_repl" -I "admin" -w "admin"
+
+dsconfig set-backend-prop --backend-name "userRoot" --remove "base-dn:o=new_suffix_repl" -h opendj-testing -p 11444 -D "cn=directory manager" -w "secret12" -n -X
+
+dsconfig set-backend-prop --backend-name "userRoot" --remove "base-dn:o=new_suffix_no_repl" -h opendj-testing -p 11444 -D "cn=directory manager" -w "secret12" -n -X
+
+dsreplication disable -n -Q -X -h opendj-testing -p 22444 -b "o=new_suffix_repl" -I "admin" -w "admin
+
+dsconfig set-backend-prop --backend-name "userRoot" --remove "base-dn:o=new_suffix_repl" -h opendj-testing -p 22444 -D "cn=directory manager" -w "secret12" -n -X
+
+dsreplication pre-external-initialization -n -Q -X -h opendj-testing -p 11444 -b "o=example" -I "admin" -w "admin"
+
+stop-ds -h opendj-testing -p 11444 -X -D "cn=directory manager" -w "secret12"
+
+bin/import-ldif -l Example.ldif -n userRoot
+
+start-ds
+
+dsreplication initialize-all -n -Q -X -h opendj-testing -p 11444 -b "o=example" -I "admin" -w "admin"
+
+dsconfig set-replication-server-prop --provider-name "Multimaster Synchronization" --set "replication-purge-delay:120 s" -h opendj-testing -p 11444 -D "cn=directory manager" -w "secret12" -n -X
+
+dsconfig set-replication-server-prop --provider-name "Multimaster Synchronization" --set "replication-purge-delay:120 s" -h opendj-testing -p 22444 -D "cn=directory manager" -w "secret12" -n -X
+
+dsreplication status -n -X -s -h opendj-testing -p 11444 -b "o=example" -I "admin" -w "admin"
+Base DN o=example
+Replication Enabled
+-
+Server: opendj-testing:11444
+Entries: 160
+Missing Changes: 0
+Age of oldest missing change: N/A
+Replication Port: 11112
+Security: Disabled
+-
+Server: opendj-testing:22444
+Entries: 160
+Missing Changes: 0
+Age of oldest missing change: N/A
+Replication Port: 22222
+Security: Disabled
+
+ldapmodify -a -h opendj-testing -p 11389 -D "cn=directory manager" -w "secret12" <<EOF
+dn: cn=Change1,ou=People,o=example
+objectclass:top
+objectclass:organizationalperson
+objectclass:inetorgperson
+objectclass:person
+sn:Change1
+description:this is change 1
+uid:change1
+EOF
+
+ldapmodify -a -h opendj-testing -p 11389 -D "cn=directory manager" -w "secret12" <<EOF
+dn: cn=Change1,ou=People,o=example
+objectclass:top
+objectclass:organizationalperson
+objectclass:inetorgperson
+objectclass:person
+sn:Change2
+description:this is change 2
+uid:change2
+EOF
+
+ldapsearch -h opendj-testing -D "cn=directory manager" -w secret12 -b "cn=changelog" -J "1.3.6.1.4.1.26027.1.5.4:false:;" -p 11389 -T "objectclass=*" changeLogCookie
+dn: cn=changelog
+
+# Public changelog exchange control(1.3.6.1.4.1.26027.1.5.4): o=example:000001317f92d2b5020000000001;
+dn: replicationCSN=000001317f92d2b5020000000001,o=example,cn=changelog
+changeLogCookie: o=example:000001317f92d2b5020000000001;
+
+# Public changelog exchange control(1.3.6.1.4.1.26027.1.5.4): o=example:000001317f92d2b5020000000001 000001317f92d81535a700000001;
+dn: replicationCSN=000001317f92d81535a700000001,o=example,cn=changelog
+changeLogCookie: o=example:000001317f92d2b5020000000001 000001317f92d81535a700000001;
+
+ldapsearch -h opendj-testing -D "cn=directory manager" -w secret12 -b "cn=changelog" -J "1.3.6.1.4.1.26027.1.5.4:false:;" -p 22389 -T "objectclass=*" changeLogCookie
+
+dn: cn=changelog
+
+# Public changelog exchange control(1.3.6.1.4.1.26027.1.5.4): o=example:000001317f92d2b5020000000001;
+dn: replicationCSN=000001317f92d2b5020000000001,o=example,cn=changelog
+changeLogCookie: o=example:000001317f92d2b5020000000001;
+
+# Public changelog exchange control(1.3.6.1.4.1.26027.1.5.4): o=example:000001317f92d2b5020000000001 000001317f92d81535a700000001;
+dn: replicationCSN=000001317f92d81535a700000001,o=example,cn=changelog
+changeLogCookie: o=example:000001317f92d2b5020000000001 000001317f92d81535a700000001;
+
+ldapsearch -h opendj-testing -D "cn=directory manager" -w secret12 -b "cn=changelog" -p 11389 -T "objectclass=*" changeNumber
+
+SEARCH operation failed
+Result Code: 53 (Unwilling to Perform)
+Additional Information: Full resync required. Reason: The provided cookie contains unknown replicated domain {o=new_suffix_repl=}. Possible cookie: <o=example:000001317f7d0f8e020000000017 000001317f7b313535a700000003;>
+
+ldapsearch -h opendj-testing -D "cn=directory manager" -w secret12 -s base -b "" -p 11389 -T "objectclass=*" lastChangeNumber
+
+dn:
+lastChangeNumber: 57
+

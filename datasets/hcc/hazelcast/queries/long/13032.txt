@@ -1,0 +1,64 @@
+The issue was originally investigated in hazelcast/hazelcast-enterprise#2089
+
+Cluster version `UNKNOWN` used in `ObjectDataVersion` instance causes the `SplitBrainJoinMessage.writeData` (in 3.9.4) doesn't write the `memberListVersion` field, but 3.10 members expect it and fail to read it.
+
+@vbekiaris found the root cause for the issue:
+> The trouble with `SplitBrainJoinMessage` is that even though it is Versioned, it is serialized/deserialized raw (via object.read/writeData) within `SplitBrainMergeValidationOp` instead of properly going through serialization service (in/out.read/writeObject(object)) -> `Versioned` interface is not taken into account. I think the fix in 3.10.1 would require to use TargetAware serialization as currently 3.10 always reads/writes the member list version, while in 3.9 it is conditional based on version.
+
+Problem occured in following CI build for instance:
+https://hazelcast-l337.ci.cloudbees.com/view/split/job/split-multi-v/3/console
+
+```
+WARNING: [10.0.0.106]:5701 [HZ] [3.9.4] Error during join check!
+java.util.concurrent.ExecutionException: com.hazelcast.nio.serialization.HazelcastSerializationException: java.io.EOFException: Cannot read 4 bytes!
+    at com.hazelcast.spi.impl.operationservice.impl.InvocationFuture.resolveAndThrowIfException(InvocationFuture.java:92)
+    at com.hazelcast.spi.impl.AbstractInvocationFuture.get(AbstractInvocationFuture.java:183)
+    at com.hazelcast.internal.cluster.impl.AbstractJoiner.sendSplitBrainJoinMessage(AbstractJoiner.java:408)
+    at com.hazelcast.cluster.impl.TcpIpJoiner.searchForOtherClusters(TcpIpJoiner.java:518)
+    at com.hazelcast.internal.cluster.impl.SplitBrainHandler.searchForOtherClusters(SplitBrainHandler.java:75)
+    at com.hazelcast.internal.cluster.impl.SplitBrainHandler.run(SplitBrainHandler.java:42)
+    at com.hazelcast.spi.impl.executionservice.impl.DelegateAndSkipOnConcurrentExecutionDecorator$DelegateDecorator.run(DelegateAndSkipOnConcurrentExecutionDecorator.java:66)
+    at com.hazelcast.util.executor.CachedExecutorServiceDelegate$Worker.run(CachedExecutorServiceDelegate.java:227)
+    at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1152)
+    at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:622)
+    at java.lang.Thread.run(Thread.java:748)
+    at com.hazelcast.util.executor.HazelcastManagedThread.executeRun(HazelcastManagedThread.java:64)
+    at com.hazelcast.util.executor.HazelcastManagedThread.run(HazelcastManagedThread.java:80)
+Caused by: com.hazelcast.nio.serialization.HazelcastSerializationException: java.io.EOFException: Cannot read 4 bytes!
+    at com.hazelcast.internal.serialization.impl.SerializationUtil.handleException(SerializationUtil.java:63)
+    at com.hazelcast.internal.serialization.impl.AbstractSerializationService.toObject(AbstractSerializationService.java:197)
+    at com.hazelcast.spi.impl.NodeEngineImpl.toObject(NodeEngineImpl.java:322)
+    at com.hazelcast.spi.impl.operationservice.impl.OperationRunnerImpl.run(OperationRunnerImpl.java:390)
+    at com.hazelcast.spi.impl.operationexecutor.impl.OperationThread.process(OperationThread.java:115)
+    at com.hazelcast.spi.impl.operationexecutor.impl.OperationThread.run(OperationThread.java:100)
+    at ------ submitted from ------.(Unknown Source)
+    at com.hazelcast.spi.impl.operationservice.impl.InvocationFuture.resolve(InvocationFuture.java:127)
+    at com.hazelcast.spi.impl.operationservice.impl.InvocationFuture.resolveAndThrowIfException(InvocationFuture.java:79)
+    ... 12 more
+```
+and
+```
+SEVERE: [10.0.0.31]:5701 [HZ] [3.10] Failed to process packet: Packet{partitionId=-1, conn=Connection[id=10, /10.0.0.31:38268->/10.0.0.106:5701, endpoint=[10.0.0.106]:5701, alive=tr
+ue, type=MEMBER], rawFlags=10001, isUrgent=true, packetType=OPERATION, typeSpecificFlags=[isResponse=false, isOpControl=false]} on hz._hzInstance_1_HZ.generic-operation.thread-1
+com.hazelcast.nio.serialization.HazelcastSerializationException: java.io.EOFException: Cannot read 4 bytes!
+    at com.hazelcast.internal.serialization.impl.SerializationUtil.handleException(SerializationUtil.java:63)
+    at com.hazelcast.internal.serialization.impl.AbstractSerializationService.toObject(AbstractSerializationService.java:197)
+    at com.hazelcast.spi.impl.NodeEngineImpl.toObject(NodeEngineImpl.java:322)
+    at com.hazelcast.spi.impl.operationservice.impl.OperationRunnerImpl.run(OperationRunnerImpl.java:390)
+    at com.hazelcast.spi.impl.operationexecutor.impl.OperationThread.process(OperationThread.java:115)
+    at com.hazelcast.spi.impl.operationexecutor.impl.OperationThread.run(OperationThread.java:100)
+Caused by: java.io.EOFException: Cannot read 4 bytes!
+    at com.hazelcast.internal.serialization.impl.ByteArrayObjectDataInput.checkAvailable(ByteArrayObjectDataInput.java:642)
+    at com.hazelcast.internal.serialization.impl.ByteArrayObjectDataInput.readInt(ByteArrayObjectDataInput.java:275)
+    at com.hazelcast.internal.serialization.impl.ByteArrayObjectDataInput.readInt(ByteArrayObjectDataInput.java:269)
+    at com.hazelcast.internal.cluster.impl.SplitBrainJoinMessage.readData(SplitBrainJoinMessage.java:73)
+    at com.hazelcast.internal.cluster.impl.operations.SplitBrainMergeValidationOp.readInternal(SplitBrainMergeValidationOp.java:185)
+    at com.hazelcast.spi.Operation.readData(Operation.java:669)
+    at com.hazelcast.internal.serialization.impl.EnterpriseDataSerializableSerializer.readIdentifiedDataSerializable(EnterpriseDataSerializableSerializer.java:152)
+    at com.hazelcast.internal.serialization.impl.EnterpriseDataSerializableSerializer.doRead(EnterpriseDataSerializableSerializer.java:130)
+    at com.hazelcast.internal.serialization.impl.EnterpriseDataSerializableSerializer.read(EnterpriseDataSerializableSerializer.java:124)
+    at com.hazelcast.internal.serialization.impl.EnterpriseDataSerializableSerializer.read(EnterpriseDataSerializableSerializer.java:52)
+    at com.hazelcast.internal.serialization.impl.StreamSerializerAdapter.read(StreamSerializerAdapter.java:48)
+    at com.hazelcast.internal.serialization.impl.AbstractSerializationService.toObject(AbstractSerializationService.java:191)
+    ... 4 more
+```

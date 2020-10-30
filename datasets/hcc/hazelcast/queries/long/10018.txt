@@ -1,0 +1,57 @@
+Hello, I was just testing hazelcast-hibernate3 [3.8] 2nd Level cache and came across a potential issue, which is also present in 3.6 and probably other subsequent versions.
+
+Either the class **com.hazelcast.hibernate.serialization.Value** should implement hashCode/equals or one should document to avoid OBJECT format for **org.hibernate.cache.UpdateTimestampsCache** region.
+
+Consider the following flow:
+
+**1**. Insert Entity A
+**2**. Perform cacheable criteria on A
+**3**. Repeat 2 (_N_ times)
+
+The expected result is one query cache miss at 2 and N cache hits at 3. All is well and good unless one is using **com.hazelcast.hibernate.HazelcastCacheRegionFactory** (IMap based cache) and OBJECT format is explicit declared in hazelcast-config.xml, e.g.,
+
+```xml
+<map name="org.hibernate.cache.UpdateTimestampsCache">
+  <eviction-policy>LRU</eviction-policy>
+  <in-memory-format>OBJECT</in-memory-format>
+  <max-size>500</max-size>
+  <time-to-live-seconds>0</time-to-live-seconds>
+  <max-idle-seconds>0</max-idle-seconds>
+  <read-backup-data>false</read-backup-data>
+</map>
+```
+
+The problem is that hibernate will do the following:
+
+- If query cache is enabled, hibernate will call **UpdateTimestampsCache::preinvalidate**. This method will place the timestamp associated with query regions according to cache config's TTL (or 1h if ttl=0) in the future.
+- After **1** completes, hibernate will call **UpdateTimestampsCache::invalidate**, which should place the timestamps closer to the System clock. However, the following code branch
+
+```java
+if (map.replace(key, previousEntry, newValue)) { 
+  return true; //---> EXPECTED in this case!
+}
+```
+
+at **com.hazelcast.hibernate.distributed.IMapRegionCache::put**, which internally uses a **ReplaceIfSameOperation**, will fail because the operation in turn depends on **com.hazelcast.map.impl.record.ObjectRecordFactory**, whose implementation relies on Java equals contract:
+
+```java
+   @Override
+    public boolean isEquals(Object value1, Object value2) {
+        Object v1 = value1 instanceof Data ? serializationService.toObject(value1) : value1;
+        Object v2 = value2 instanceof Data ? serializationService.toObject(value2) : value2;
+        if (v1 == null && v2 == null) {
+            return true;
+        }
+        if (v1 == null) {
+            return false;
+        }
+        if (v2 == null) {
+            return false;
+        }
+        return v1.equals(v2);
+    }
+```
+
+Since **UpdateTimestampsCache::invalidate** fails, timestamps associated with the regions are much farther than they should really be and even if the query results are cached in **2** and successfully loaded in **3**, they will be discarded because **UpdateTimestampsCache::isUpToDate** will always return false (see **org.hibernate.cache.StandardQueryCache::get**)
+
+Since UpdateTimestampsCache methods are heavily executed when 2nd level Query Cache is enabled and it usually holds very few records (entity names and associations), it's a very good use case for OBJECT in-memory-format (possibly combined with near-cache).

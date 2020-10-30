@@ -1,0 +1,129 @@
+When running a slim downed version of the wordcount example, I am seeing some very strange logging behavior when running using the K8's setup described on the site. Essentially, every log line before the env.execute() shows up and every log line after does not (verified both through the UI, and by grepping within the container itself through K8s). 
+
+ 
+
+Running the code below displays the following output: 
+
+ 
+ 2020-03-07 23:14:06,967 INFO _TOKEN_LOG_1
+ 2020-03-07 23:14:06,968 INFO _TOKEN_LOG_2
+ 2020-03-07 23:14:06,968 INFO _TOKEN_LOG_3
+ 2020-03-07 23:14:06,970 INFO _TOKEN_LOG_4
+ 2020-03-07 23:14:06,970 INFO _TOKEN_LOG_5
+  
+
+The job completes successfully, but there is no sign of either a _TOKEN_LOG_6 nor a _TOKEN_LOG_ERROR, and the counts themselves don't print. I have tested a few permutations of this, and all logging stops as soon as an environment.execute* command is called.
+
+ 
+
+ 
+
+Any idea on what is happening to these logs?
+
+ 
+
+ 
+
+----------
+
+Repro steps:
+
+1) Setup K8's environment as per: 
+
+https://ci.apache.org/projects/flink/flink-docs-stable/ops/deployment/kubernetes.html
+
+2) Upload jar with code below
+
+3) Run jar with no arguments
+
+4) Observe that there is no printing of ___TOKEN_LOG_6 or _TOKEN_SOUT_6  in the K8's containers or on the UI. There is also no printing of an error.
+
+
+public static void main(String[] args) {
+    log.info("_TOKEN_LOG_1");
+    System.out.println("_TOKEN_SOUT_1");
+    // ExecutionEnvironment env = ExecutionEnvironment.getExecutionEnvironment();
+    ParameterTool params = ParameterTool.fromArgs(args);
+    final ExecutionEnvironment env = ExecutionEnvironment.getExecutionEnvironment();
+    log.info("_TOKEN_LOG_2");
+    System.out.println("_TOKEN_SOUT_2");
+    // make parameters available in the web interface
+    env.getConfig().setGlobalJobParameters(params);
+
+    // get default test text data
+    DataSet<String> text = getTextDataSet(env);
+    log.info("_TOKEN_LOG_3");
+    System.out.println("_TOKEN_SOUT_3");
+    DataSet<Tuple2<String, Integer>> counts =
+            // split up the lines in pairs (2-tuples) containing: (word,1)
+            text.flatMap(new Tokenizer())
+                    // group by the tuple field "0" and sum up tuple field "1"
+                    .groupBy(0)
+                    .sum(1);
+    log.info("_TOKEN_LOG_4");
+    System.out.println("_TOKEN_SOUT_4");
+    // emit result
+    if (params.has("output")) {
+        counts.writeAsCsv(params.get("output"), "\n", " ");
+        // execute program
+        try {
+            env.execute("WordCount Example");
+        } catch (Exception e) {
+            e.printStackTrace();
+            log.info("_TOKEN_LOG_ERROR", e);
+            System.out.println("_TOKEN_SOUT_ERROR" + e.toString());
+        }
+    } else {
+        log.info("_TOKEN_LOG_5");
+        System.out.println("_TOKEN_SOUT_5");
+        try {
+            counts.print();
+        } catch (Exception e) {
+            e.printStackTrace();
+            log.info("_TOKEN_LOG_ERROR2", e);
+            System.out.println("_TOKEN_SOUT_ERROR2" + e.toString());
+        }
+        log.info("_TOKEN_LOG_6");
+        System.out.println("_TOKEN_SOUT_6");
+    }
+}
+
+private static DataSet<String> getTextDataSet(ExecutionEnvironment env) {
+    // get default test text data
+    return env.fromElements(
+            "To be, or not to be,--that is the question:--",
+            "Whether 'tis nobler in the mind to suffer",
+            "The slings and arrows of outrageous fortune",
+            "Or to take arms against a sea of troubles,",
+            "And by opposing end them?--To die,--to sleep,--",
+            "No more; and by a sleep to say we end",
+            "The heartache, and the thousand natural shocks",
+            "That flesh is heir to,--'tis a consummation",
+            "Devoutly to be wish'd. To die,--to sleep;--",
+            "To sleep! perchance to dream:--ay, there's the rub;",
+            "For in that sleep of death what dreams may come,",
+            "When we have shuffled off this mortal coil,",
+            "Must give us pause: there's the respect",
+            "That makes calamity of so long life;",
+            "For who would bear the whips and scorns of time,",
+            "The oppressor's wrong, the proud man's contumely,",
+            "The pangs of despis'd love, the law's delay,",
+            "The insolence of office, and the spurns",
+            "That patient merit of the unworthy takes,",
+            "When he himself might his quietus make",
+            "With a bare bodkin? who would these fardels bear,",
+            "To grunt and sweat under a weary life,",
+            "But that the dread of something after death,--",
+            "The undiscover'd country, from whose bourn",
+            "No traveller returns,--puzzles the will,",
+            "And makes us rather bear those ills we have",
+            "Than fly to others that we know not of?",
+            "Thus conscience does make cowards of us all;",
+            "And thus the native hue of resolution",
+            "Is sicklied o'er with the pale cast of thought;",
+            "And enterprises of great pith and moment,",
+            "With this regard, their currents turn awry,",
+            "And lose the name of action.--Soft you now!",
+            "The fair Ophelia!--Nymph, in thy orisons",
+            "Be all my sins remember'd.");
+}

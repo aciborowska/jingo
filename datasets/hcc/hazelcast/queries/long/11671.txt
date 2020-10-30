@@ -1,0 +1,59 @@
+hazelcast 3.9
+Client uses near cache, read some value.
+If client loses connection (some network errors, etc), and reconnects, and server set new value, client still get old cached value. 
+Example:
+```
+import com.hazelcast.client.HazelcastClient;
+import com.hazelcast.client.config.ClientConfig;
+import com.hazelcast.config.Config;
+import com.hazelcast.config.NearCacheConfig;
+import com.hazelcast.core.Hazelcast;
+import com.hazelcast.core.HazelcastInstance;
+import com.hazelcast.instance.HazelcastInstanceProxy;
+import org.junit.Assert;
+import org.junit.Test;
+
+public class TestClientNearCache {
+
+	private static final String MAP = "SAMPLE";
+
+	@Test
+	public void testClientNearCacheAfterDisconnect() throws InterruptedException {
+		final Config config = new Config();
+		final HazelcastInstance server = Hazelcast.newHazelcastInstance(config);
+
+		final ClientConfig clientConfig = new ClientConfig();
+		clientConfig.addNearCacheConfig(new NearCacheConfig(MAP));
+
+		final HazelcastInstance client = HazelcastClient.newHazelcastClient(clientConfig);
+
+		try {
+			server.getMap(MAP).set(1L, "Test1");
+
+			// This value is stored in the cache
+			Assert.assertEquals("Test1", client.getMap(MAP).get(1L));
+
+			// Broke connection
+			((HazelcastInstanceProxy) server).getOriginal().node.getConnectionManager().stop();
+			Thread.sleep(5000);
+
+			// Restore connection
+			((HazelcastInstanceProxy) server).getOriginal().node.getConnectionManager().start();
+			Thread.sleep(5000);
+
+			// Set new value
+			server.getMap(MAP).set(1L, "Test2");
+			Thread.sleep(5000);
+
+			// Here test fails - still get cached value
+			Assert.assertEquals("Test2", client.getMap(MAP).get(1L));
+
+			Thread.sleep(3000);
+		} finally {
+			server.shutdown();
+		}
+	}
+
+}
+```
+It does not reproduce in 3.9-EA, but reproduces in 3.9

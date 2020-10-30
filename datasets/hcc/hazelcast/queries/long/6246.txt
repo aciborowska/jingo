@@ -1,0 +1,65 @@
+On Hazelcast 3.5.2, I found that calling IMap.evict() or IMap.evictAll() won't have any effect if we're using a MapStore with write-behind on that map.
+The entries will still stay on the map, even though evict() returns true.
+The expected behavior is the entry should be evicted **immediately** after evict() returns - any get() operation that follows should never be able to reach the evicted data.
+
+Here's a code sample to reproduce the issue:
+
+```
+package hazelcast;
+
+import com.hazelcast.config.Config;
+import com.hazelcast.config.MapStoreConfig;
+import com.hazelcast.core.Hazelcast;
+import com.hazelcast.core.HazelcastInstance;
+import com.hazelcast.core.IMap;
+import com.hazelcast.core.MapStore;
+
+import java.util.Collection;
+import java.util.Map;
+
+public class TestEvictMapStore {
+    static class DummyMapStore<K, V> implements MapStore<K, V> {
+        public void store(K key, V value) {}
+        public void storeAll(Map<K, V> map) {}
+        public void delete(K key) {}
+        public void deleteAll(Collection<K> keys) {}
+        public V load(K key) { return null; }
+        public Map<K, V> loadAll(Collection<K> keys) { return null; }
+        public Iterable<K> loadAllKeys() { return null; }
+    }
+
+    public static void main(String[] s) throws Exception {
+
+        Config config = new Config();
+        MapStoreConfig mapStoreConfig = new MapStoreConfig()
+                .setEnabled(true)
+                .setClassName("hazelcast.TestEvictMapStore$DummyMapStore")
+                .setWriteDelaySeconds(1);
+
+        config.getMapConfig("test_mapstore").setMapStoreConfig(mapStoreConfig);
+
+        HazelcastInstance instance = Hazelcast.newHazelcastInstance(config);
+
+        IMap<String, String> map = instance.getMap("test_mapstore");
+        map.put("key", "value");
+
+        boolean evicted = map.evict("key");
+        System.out.println("Evicting: " + evicted);
+
+        System.out.println("Value after eviction: " + map.get("key"));
+
+        Thread.sleep(2000);
+
+        System.out.println("Value after eviction and waiting: " + map.get("key"));
+
+        map.flush();
+
+        System.out.println("Value after flushing: " + map.get("key"));
+
+        instance.shutdown();
+    }
+}
+```
+
+At the end of this sample code, the entry is still present even after flushing the map.
+Note that if we disable the MapStore or set writeDelaySeconds to 0, the entry is evicted immediately and everything works as expected.

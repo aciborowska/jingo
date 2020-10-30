@@ -1,0 +1,66 @@
+`TransactionalMap` allows null value for `put` method which leads to  inconsistent state of the corresponding `IMap`.
+
+Below is an example which demonstrates this behavior.
+
+``` java
+public static void main(String[] args)
+{
+    HazelcastInstance hzInstance = Hazelcast.newHazelcastInstance();
+    IMap<String, String> map = hzInstance.getMap("map");
+
+    TransactionContext ctx = hzInstance.newTransactionContext();
+    ctx.beginTransaction();
+
+    TransactionalMap<String, String> txnMap = ctx.getMap("map");
+    txnMap.put("key", null);
+
+    System.out.println("transactional map size: " + txnMap.size());
+    System.out.println("transactional map keys: " + txnMap.keySet());
+    System.out.println("transactional map values: " + txnMap.values());
+
+    ctx.commitTransaction();
+
+    System.out.println("map size: " + map.size());
+    System.out.println("map keys: " + map.keySet());
+    System.out.println("map values: " + map.values());
+}
+```
+
+In version 3.6, this produces the following output:
+
+```
+transactional map size: 0
+transactional map keys: []
+transactional map values: []
+map size: 1
+map keys: []
+map values: []
+```
+
+Similar behavior also occurs on version 3.5.5.
+
+If you put multiple null values, with different keys, into the `TransactionalMap`, the `TransactionalMap` size/keys/values will remain the same, but the size of `IMap` will increase accordingly, with the keys/values remaining empty.
+
+Somewhat related to this issue is that `TransactionalMap` will throw a `NullPointerException` if the key is null. However, it is not due to a `Preconditions` check as is the case when a null key or value is used with `IMap`. I am not sure if this is intended behavior. Below is an example of the stack trace when I put a null key into a `TransactionalMap`.
+
+```
+Exception in thread "main" java.lang.NullPointerException
+    at com.hazelcast.partition.impl.InternalPartitionServiceImpl.getPartitionId(InternalPartitionServiceImpl.java:1477)
+    at com.hazelcast.map.impl.tx.TransactionalMapProxySupport.lockAndGet(TransactionalMapProxySupport.java:273)
+    at com.hazelcast.map.impl.tx.TransactionalMapProxySupport.lockAndGet(TransactionalMapProxySupport.java:260)
+    at com.hazelcast.map.impl.tx.TransactionalMapProxySupport.putInternal(TransactionalMapProxySupport.java:141)
+    at com.hazelcast.map.impl.tx.TransactionalMapProxy.put(TransactionalMapProxy.java:131)
+    at MyClass
+```
+
+If the transaction occurs on a client, I receive a `NullPointerException` with either a null key or value, with the following stack trace.
+
+```
+Exception in thread "main" java.lang.NullPointerException
+    at com.hazelcast.client.impl.protocol.util.ParameterUtil.calculateDataSize(ParameterUtil.java:35)
+    at com.hazelcast.client.impl.protocol.codec.TransactionalMapPutCodec$RequestParameters.calculateDataSize(TransactionalMapPutCodec.java:38)
+    at com.hazelcast.client.impl.protocol.codec.TransactionalMapPutCodec.encodeRequest(TransactionalMapPutCodec.java:52)
+    at com.hazelcast.client.proxy.txn.ClientTxnMapProxy.put(ClientTxnMapProxy.java:105)
+    at com.hazelcast.client.proxy.txn.ClientTxnMapProxy.put(ClientTxnMapProxy.java:100)
+    at MyClass
+```

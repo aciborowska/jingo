@@ -1,0 +1,86 @@
+### Steps to Reproduce
+
+1. Create AWS Lambda Java Function using mn cli version - 1.0.3
+2. Set 
+    1. micronaut.environment=aws,foo,bar,function in application.yml OR
+    2. MICRONAUT_ENVIRONMENTSaws,foo,bar,function in AWS Console
+3. Run the Lambda function
+4. Optionally Inject ApplicationContent to print activeEnvironments when lambda receives events.
+
+### Expected Behaviour
+All of the Environment sets should be displayed at startup and all the Beans configured conditionally using `@Requires(env="something")` should be initialized.
+
+### Actual Behaviour
+Only `function` environment is activated, and hence conditional Beans are not initialized.
+The test works just fine though. Ran test with multiple environments, it worked.
+
+### Environment Information
+
+- **Operating System**: Linux/Ubuntu
+- **Micronaut Version:** 1.0.3
+- **JDK Version:** Java8 from AWS Lambda
+
+### Code Snippet
+    @FunctionBean("mn-aws-fun")
+    public class MnUserFunction implements Function<APIGatewayProxyRequestEvent, APIGatewayProxyResponseEvent> {
+
+        private static final Logger logger = LoggerFactory.getLogger(MnUserFunction.class);
+        
+        private final ApplicationContext applicationContext;
+
+        public MnUserFunction(ApplicationContext applicationContext) {
+            this.applicationContext = applicationContext;
+        }
+
+        @Override
+        public APIGatewayProxyResponseEvent apply(APIGatewayProxyRequestEvent requestEvent) {
+
+            Environment environment = applicationContext.getEnvironment();
+            logger.info("Micronaut Function Started @ {}", new Date());
+            logger.info("Active Environment Profiles: {}", environment.getActiveNames().toString());
+
+            logger.info("ApiGateway Proxy Request Event: {}", requestEvent.toString());
+
+            return handleUserRequest(requestEvent);
+        }
+    }
+
+
+    @Factory
+    public class AwsServiceConfig {
+
+        @Bean
+        @Singleton
+        @Requires(env = "aws")
+        AmazonDynamoDB amazonDynamoProdDB() {
+            logger.info("Setting AWS Credentials from Attached Role attached to Lambda Function.");
+            logger.info("See this - https://docs.aws.amazon.com/sdk-for-java/v1/developer-guide/credentials.html");
+            return AmazonDynamoDBClient.builder().build();
+        }
+
+        @Bean
+        @Singleton
+        @Requires(notEnv = "aws")
+        AmazonDynamoDB amazonDynamoDevDB() {
+            logger.info("Setting EnvironmentVariableCredentialsProvider for AWS Credentials which would fetch credentials from Environment variables.");
+            logger.info("See this to set AWS Credentials Locally - https://docs.aws.amazon.com/sdk-for-java/v1/developer-guide/credentials.html");
+            return AmazonDynamoDBClientBuilder.standard()
+                    .withCredentials(new EnvironmentVariableCredentialsProvider()).build();
+        }
+    }
+
+### AWS Setup
+1. Environment variables
+        MICRONAUT_ENVIRONMENTS=aws,function
+2. Handler
+        io.micronaut.function.aws.MicronautRequestStreamHandler
+
+### AWS Console Logs
+    START RequestId: f42b1c7a-3c8f-4897-b4e5-59dd5b334123 Version: $LATEST
+    10:20:37.615 [main] INFO i.m.context.env.DefaultEnvironment - Established active environments: [function]
+    10:20:38.947 [main] INFO c.g.r.u.config.AwsServiceConfig - Setting EnvironmentVariableCredentialsProvider for AWS Credentials which would fetch credentials from Environment variables.
+    10:20:38.948 [main] INFO c.g.r.u.config.AwsServiceConfig - See this to set AWS Credentials Locally - https://docs.aws.amazon.com/sdk-for-java/v1/developer-guide/credentials.html
+    10:20:40.023 [main] INFO c.g.rawsanj.userapi.MnUserFunction - Micronaut Function Started @ Sun Jan 20 10:20:40 UTC 2019
+    10:20:40.026 [main] INFO c.g.rawsanj.userapi.MnUserFunction - Active Environment Profiles: [function]
+
+As per above setup, `amazonDynamoProdDB()` bean should have initialzed. and not the Dev one.

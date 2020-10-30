@@ -1,0 +1,48 @@
+Error happens then:
+1) Native session (managed by servlet container) has been invalidated
+2) Hazelcast session listener removed all related data from local maps, but session still exist in the cluster map.
+3) Response was committed and session was not touched during request handling. In my case by javax.servlet.http.HttpServletResponse#sendRedirect
+5) WebFilter calls
+ HazelcastHttpSession session = reqWrapper.getSession(false); //708
+6) And tries to recreate local session from the cluster
+// we already have the session in the cluster loading it...
+hazelcastSession = createNewSession(RequestWrapper.this, requestedSessionId); //389
+It creates a new session despite that "create" parameter is false on line 708.
+
+According to the Servlet specification:
+HttpServletRequest.html#getSession(boolean)
+To make sure the session is properly maintained, you must call this method before the response is committed. If the container is using cookies to maintain session integrity and is asked to create a new session when the response is committed, an IllegalStateException is thrown.
+
+HttpServletResponse#sendRedirect
+If the response has already been committed, this method throws an IllegalStateException. After using this method, the response should be considered to be committed and should not be written to.
+
+Stack strace:
+Jun 3, 2014 9:15:35 AM org.apache.catalina.core.StandardWrapperValve invoke
+java.lang.IllegalStateException: Cannot create a session after the response has been committed
+    at org.apache.catalina.connector.Request.doGetSession(Request.java:2924)
+    at org.apache.catalina.connector.Request.getSession(Request.java:2300)
+    at org.apache.catalina.connector.RequestFacade.getSession(RequestFacade.java:897)
+    at javax.servlet.http.HttpServletRequestWrapper.getSession(HttpServletRequestWrapper.java:229)
+    at com.hazelcast.web.WebFilter$RequestWrapper.getOriginalSession(WebFilter.java:334)
+    at com.hazelcast.web.WebFilter.createNewSession(WebFilter.java:231)
+    at com.hazelcast.web.WebFilter.access$1100(WebFilter.java:59)
+    at com.hazelcast.web.WebFilter$RequestWrapper.getSession(WebFilter.java:398)
+    at com.hazelcast.web.WebFilter.doFilter(WebFilter.java:708)
+    at org.springframework.web.filter.DelegatingFilterProxy.invokeDelegate(DelegatingFilterProxy.java:343)
+    at org.springframework.web.filter.DelegatingFilterProxy.doFilter(DelegatingFilterProxy.java:260)
+    at org.apache.catalina.core.ApplicationFilterChain.internalDoFilter(ApplicationFilterChain.java:241)
+    at org.apache.catalina.core.ApplicationFilterChain.doFilter(ApplicationFilterChain.java:208)
+    at org.apache.catalina.core.StandardWrapperValve.invoke(StandardWrapperValve.java:220)
+    at org.apache.catalina.core.StandardContextValve.invoke(StandardContextValve.java:122)
+    at org.apache.catalina.authenticator.AuthenticatorBase.invoke(AuthenticatorBase.java:501)
+    at org.apache.catalina.core.StandardHostValve.invoke(StandardHostValve.java:170)
+    at org.apache.catalina.valves.ErrorReportValve.invoke(ErrorReportValve.java:98)
+    at org.apache.catalina.valves.AccessLogValve.invoke(AccessLogValve.java:950)
+    at org.apache.catalina.core.StandardEngineValve.invoke(StandardEngineValve.java:116)
+    at org.apache.catalina.connector.CoyoteAdapter.service(CoyoteAdapter.java:408)
+    at org.apache.coyote.http11.AbstractHttp11Processor.process(AbstractHttp11Processor.java:1040)
+    at org.apache.coyote.AbstractProtocol$AbstractConnectionHandler.process(AbstractProtocol.java:607)
+    at org.apache.tomcat.util.net.JIoEndpoint$SocketProcessor.run(JIoEndpoint.java:313)
+    at java.util.concurrent.ThreadPoolExecutor$Worker.runTask(ThreadPoolExecutor.java:895)
+    at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:918)
+    at java.lang.Thread.run(Thread.java:662)

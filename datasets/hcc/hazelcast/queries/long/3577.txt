@@ -1,0 +1,214 @@
+We're using the Hazelcast 3.3 along with Bitronix transaction manager. 
+The problem occurs on shutting down a node, the code on another node is trying to commit a transaction and Hazelcast fails to complete backup operation. As result the threadFlag is left unchanged and leads the current thread to "Nested transactions are not allowed!" exceptions.
+
+We expect to have the transaction marked and successfully rolled back.
+
+The exception that says that Hazelcast failed to complete backup:
+
+```
+[dev] [3.3] Error during commit!
+java.util.concurrent.ExecutionException: com.hazelcast.core.HazelcastInstanceNotActiveException: Hazelcast instance is not active!
+    at com.hazelcast.spi.impl.BasicInvocationFuture.resolveApplicationResponseOrThrowException(BasicInvocationFuture.java:312)
+    at com.hazelcast.spi.impl.BasicInvocationFuture.get(BasicInvocationFuture.java:181)
+    at com.hazelcast.util.FutureUtil.executeWithDeadline(FutureUtil.java:314)
+    at com.hazelcast.util.FutureUtil.waitWithDeadline(FutureUtil.java:281)
+    at com.hazelcast.util.FutureUtil.waitWithDeadline(FutureUtil.java:254)
+    at com.hazelcast.transaction.impl.TransactionImpl.commit(TransactionImpl.java:298)
+    at com.hazelcast.transaction.impl.XAResourceImpl.commit(XAResourceImpl.java:134)
+    at bitronix.tm.twopc.Committer$CommitJob.commitResource(Committer.java:202)
+    at bitronix.tm.twopc.Committer$CommitJob.execute(Committer.java:191)
+    at bitronix.tm.twopc.executor.Job.run(Job.java:72)
+    at bitronix.tm.twopc.executor.SyncExecutor.submit(SyncExecutor.java:31)
+    at bitronix.tm.twopc.AbstractPhaseEngine.runJobsForPosition(AbstractPhaseEngine.java:121)
+    at bitronix.tm.twopc.AbstractPhaseEngine.executePhase(AbstractPhaseEngine.java:85)
+    at bitronix.tm.twopc.Committer.commit(Committer.java:86)
+    at bitronix.tm.BitronixTransaction.commit(BitronixTransaction.java:289)
+    at bitronix.tm.BitronixTransactionManager.commit(BitronixTransactionManager.java:143)
+    at xxx.NestedTransactionsTest$1T.run(NestedTransactionsTest.java:74)
+Caused by: com.hazelcast.core.HazelcastInstanceNotActiveException: Hazelcast instance is not active!
+    at com.hazelcast.spi.impl.BasicInvocation.engineActive(BasicInvocation.java:304)
+    at com.hazelcast.spi.impl.BasicInvocation.doInvoke(BasicInvocation.java:257)
+    at com.hazelcast.spi.impl.BasicInvocation.invoke(BasicInvocation.java:232)
+    at com.hazelcast.spi.impl.BasicOperationService.invokeOnPartition(BasicOperationService.java:244)
+    at com.hazelcast.map.tx.MapTransactionLog.commit(MapTransactionLog.java:76)
+    at com.hazelcast.transaction.impl.TransactionImpl.commit(TransactionImpl.java:296)
+    ... 11 more
+
+
+ ERROR bitronix.tm.twopc.AbstractPhaseEngine:179 - resource hazelcast failed on a Bitronix XID [3137322E32332E312E3333000000004463F88C0000BBDC : 3137322E32332E312E3333000000004463F8AE0000BD89]
+com.hazelcast.core.HazelcastInstanceNotActiveException: Hazelcast instance is not active!
+    at com.hazelcast.spi.impl.BasicInvocation.engineActive(BasicInvocation.java:304) ~[hazelcast-3.3.jar:3.3]
+    at com.hazelcast.spi.impl.BasicInvocation.doInvoke(BasicInvocation.java:257) ~[hazelcast-3.3.jar:3.3]
+    at com.hazelcast.spi.impl.BasicInvocation.invoke(BasicInvocation.java:232) ~[hazelcast-3.3.jar:3.3]
+    at com.hazelcast.spi.impl.BasicOperationService.invokeOnPartition(BasicOperationService.java:244) ~[hazelcast-3.3.jar:3.3]
+    at com.hazelcast.map.tx.MapTransactionLog.prepare(MapTransactionLog.java:63) ~[hazelcast-3.3.jar:3.3]
+    at com.hazelcast.transaction.impl.TransactionImpl.prepare(TransactionImpl.java:254) ~[hazelcast-3.3.jar:3.3]
+    at com.hazelcast.transaction.impl.XAResourceImpl.commit(XAResourceImpl.java:128) ~[hazelcast-3.3.jar:3.3]
+    at bitronix.tm.twopc.Committer$CommitJob.commitResource(Committer.java:202) ~[btm-2.1.4.jar:2.1.4]
+    at bitronix.tm.twopc.Committer$CommitJob.execute(Committer.java:191) ~[btm-2.1.4.jar:2.1.4]
+    at bitronix.tm.twopc.executor.Job.run(Job.java:72) ~[btm-2.1.4.jar:2.1.4]
+    at bitronix.tm.twopc.executor.SyncExecutor.submit(SyncExecutor.java:31) ~[btm-2.1.4.jar:2.1.4]
+    at bitronix.tm.twopc.AbstractPhaseEngine.runJobsForPosition(AbstractPhaseEngine.java:121) ~[btm-2.1.4.jar:2.1.4]
+    at bitronix.tm.twopc.AbstractPhaseEngine.executePhase(AbstractPhaseEngine.java:85) ~[btm-2.1.4.jar:2.1.4]
+    at bitronix.tm.twopc.Committer.commit(Committer.java:86) ~[btm-2.1.4.jar:2.1.4]
+    at bitronix.tm.BitronixTransaction.commit(BitronixTransaction.java:289) [btm-2.1.4.jar:2.1.4]
+    at bitronix.tm.BitronixTransactionManager.commit(BitronixTransactionManager.java:143) [btm-2.1.4.jar:2.1.4]
+    at xxx.NestedTransactionsTest$1T.run(NestedTransactionsTest.java:74) [test-classes/:na]
+```
+
+And failed to rollback:
+
+```
+[dev] [3.3] Error during tx rollback backup!
+java.util.concurrent.ExecutionException: com.hazelcast.core.HazelcastInstanceNotActiveException: Hazelcast instance is not active!
+    at com.hazelcast.spi.impl.BasicInvocationFuture.resolveApplicationResponseOrThrowException(BasicInvocationFuture.java:312)
+    at com.hazelcast.spi.impl.BasicInvocationFuture.get(BasicInvocationFuture.java:181)
+    at com.hazelcast.util.FutureUtil.executeWithDeadline(FutureUtil.java:314)
+    at com.hazelcast.util.FutureUtil.waitWithDeadline(FutureUtil.java:281)
+    at com.hazelcast.util.FutureUtil.waitWithDeadline(FutureUtil.java:254)
+    at com.hazelcast.transaction.impl.TransactionImpl.rollbackTxBackup(TransactionImpl.java:369)
+    at com.hazelcast.transaction.impl.TransactionImpl.rollback(TransactionImpl.java:333)
+    at com.hazelcast.transaction.impl.XAResourceImpl.rollback(XAResourceImpl.java:148)
+    at bitronix.tm.twopc.Rollbacker$RollbackJob.rollbackResource(Rollbacker.java:178)
+    at bitronix.tm.twopc.Rollbacker$RollbackJob.execute(Rollbacker.java:167)
+    at bitronix.tm.twopc.executor.Job.run(Job.java:72)
+    at bitronix.tm.twopc.executor.SyncExecutor.submit(SyncExecutor.java:31)
+    at bitronix.tm.twopc.AbstractPhaseEngine.runJobsForPosition(AbstractPhaseEngine.java:121)
+    at bitronix.tm.twopc.AbstractPhaseEngine.executePhase(AbstractPhaseEngine.java:85)
+    at bitronix.tm.twopc.Rollbacker.rollback(Rollbacker.java:76)
+    at bitronix.tm.BitronixTransaction.rollback(BitronixTransaction.java:327)
+    at bitronix.tm.BitronixTransactionManager.rollback(BitronixTransactionManager.java:152)
+    at xxxx.NestedTransactionsTest$1T.run(NestedTransactionsTest.java:78)
+Caused by: com.hazelcast.core.HazelcastInstanceNotActiveException: Hazelcast instance is not active!
+    at com.hazelcast.spi.impl.BasicInvocation.engineActive(BasicInvocation.java:304)
+    at com.hazelcast.spi.impl.BasicInvocation.doInvoke(BasicInvocation.java:257)
+    at com.hazelcast.spi.impl.BasicInvocation.invoke(BasicInvocation.java:232)
+    at com.hazelcast.spi.impl.BasicOperationService.invokeOnTarget(BasicOperationService.java:252)
+    at com.hazelcast.transaction.impl.TransactionImpl.rollbackTxBackup(TransactionImpl.java:362)
+    ... 12 more
+```
+
+After that the thread is unable to open a new transaction:
+
+```
+[dev] [3.3] Nested transactions are not allowed!
+java.lang.IllegalStateException: Nested transactions are not allowed!
+    at com.hazelcast.transaction.impl.TransactionImpl.begin(TransactionImpl.java:188)
+    at com.hazelcast.transaction.impl.XAResourceImpl.start(XAResourceImpl.java:63)
+    at bitronix.tm.internal.XAResourceHolderState.start(XAResourceHolderState.java:220)
+    at bitronix.tm.internal.XAResourceManager.enlist(XAResourceManager.java:111)
+    at bitronix.tm.BitronixTransaction.enlistResource(BitronixTransaction.java:130)
+    at xxx.NestedTransactionsTest.newTransaction(NestedTransactionsTest.java:122)
+```
+
+The test case that reproduces the issue is below. It depends on some of our proprietary code related to XA resource mangement, which I can't post.
+
+```
+    public void test() throws InterruptedException {
+        Config config = new XmlConfigBuilder().build();
+        config.getNetworkConfig().setPortAutoIncrement(true);
+        config.getNetworkConfig().getJoin().getMulticastConfig().setEnabled(true);
+        config.getNetworkConfig().getJoin().getMulticastConfig().setMulticastTimeoutSeconds(1);
+
+        HazelcastInstance hazelcast1 = Hazelcast.newHazelcastInstance(config);
+        HazelcastInstance hazelcast2 = Hazelcast.newHazelcastInstance(config);
+
+        class T extends Thread {
+            private int count;
+            private HazelcastInstance instance;
+            private TransactionManager txMgr;
+
+            T(int count, HazelcastInstance instance, TransactionManager txMgr) {
+                this.count = count;
+                this.instance = instance;
+                this.txMgr = txMgr;
+            }
+
+            @Override
+            public void run() {
+                for (int i = 0; i < count; ++i) {
+                    try {
+                        txMgr.begin();
+
+                        TransactionContext hzTxContext = newTransaction(txMgr, instance);
+
+                        hzTxContext.getMap("test").get((int) (Math.random() * 10));
+
+                        try {
+                            Thread.sleep(10);
+                        } catch (InterruptedException e) {
+                        }
+
+                        hzTxContext.getMap("test").set((int) (Math.random() * 10), (int) (Math.random() * 10));
+
+                        txMgr.commit();
+
+                    } catch (Throwable t) {
+                        try {
+                            txMgr.rollback();
+                        } catch (Exception ex1) {
+                            ex1.printStackTrace();
+                        }
+
+                        if(!(t instanceof HazelcastInstanceNotActiveException)) {
+                            t.printStackTrace();
+                        }
+                    }
+                }
+            }
+
+        }
+
+        int tc = 500;
+        T[] threads = new T[tc];
+        for (int i = 0; i < tc; i++) {
+            boolean even = i % 2 == 0;
+            threads[i] = new T(10000, even ? hazelcast1 : hazelcast2, even ? txn1 : txn2);
+            threads[i].start();
+        }
+
+        Thread.sleep(10000);
+
+        hazelcast2.shutdown();
+
+        for (int i = 0; i < tc; i++) {
+            threads[i].join();
+        }
+
+        hazelcast1.shutdown();
+    }
+
+    private static TransactionContext newTransaction(TransactionManager txManager, HazelcastInstance instance) {
+        try {
+            Transaction jtaTx = txManager.getTransaction();
+            if (jtaTx == null || jtaTx.getStatus() != Status.STATUS_ACTIVE) {
+                throw new IllegalStateException("A Hazelcast transaction shouldn't be created outside a JTA transaction.");
+            }
+
+            TransactionContext hzTxContext = instance.newTransactionContext();
+
+            final XAResource xaResource = hzTxContext.getXaResource();
+            HazelcastXAResourceProducer.registerXAResource(HazelcastXAResourceProducer.DEFAULT_PRODUCER_NAME, xaResource);
+            jtaTx.enlistResource(xaResource);
+            jtaTx.registerSynchronization(new Synchronization() {
+                @Override
+                public void beforeCompletion() {
+                }
+
+                @Override
+                public void afterCompletion(int status) {
+                    HazelcastXAResourceProducer.unregisterXAResource(HazelcastXAResourceProducer.DEFAULT_PRODUCER_NAME, xaResource);
+                }
+            });
+
+            return hzTxContext;
+        } catch (RollbackException | SystemException e) {
+            throw new IllegalStateException("Unable to create a new Hazelcast transaction.", e);
+        }
+    }
+
+```
+
+We've got a workaround solution by resetting the threadFlag in the finally block of com.hazelcast.transaction.impl.XAResourceImpl.commit method.
+
+We would really appreciate any feedback, comments or solution. Thank you! 

@@ -1,0 +1,53 @@
+On a Yarn cluster I start a yarn-session with a few containers and task slots.
+Then I fire a 'large' number of Flink batch jobs in sequence against this yarn session. It is the exact same job (java code) yet it gets different parameters.
+
+In this scenario it is exporting HBase tables to files in HDFS and the parameters are about which data from which tables and the name of the target directory.
+
+After running several dozen jobs the jobs submission started to fail and we investigated.
+
+We found that the cause was that on the Yarn node which was hosting the jobmanager the /tmp file system was full (4GB was 100% full).
+
+How ever the output of du -hcs /tmp showed only 200MB in use.
+
+We found that a very large file (we guess it is the jar of the job) was put in /tmp , used, deleted yet the file handle was not closed by the jobmanager.
+
+As soon as we killed the jobmanager the disk space was freed.
+
+The summary of the impact of this is that a yarn-session that receives enough jobs brings down the Yarn node for all users.
+
+See parts of the output we got from lsof below.
+
+
+COMMAND     PID      USER   FD      TYPE             DEVICE      SIZE       NODE NAME
+java      15034   nbasjes  550r      REG             253,17  66219695        245 /tmp/blobStore-fbe9c4cf-1f85-48cb-aad9-180e8d4ec7ce/incoming/temp-00000003 (deleted)
+java      15034   nbasjes  551r      REG             253,17  66219695        252 /tmp/blobStore-fbe9c4cf-1f85-48cb-aad9-180e8d4ec7ce/incoming/temp-00000007 (deleted)
+java      15034   nbasjes  552r      REG             253,17  66219695        267 /tmp/blobStore-fbe9c4cf-1f85-48cb-aad9-180e8d4ec7ce/incoming/temp-00000012 (deleted)
+java      15034   nbasjes  553r      REG             253,17  66219695        250 /tmp/blobStore-fbe9c4cf-1f85-48cb-aad9-180e8d4ec7ce/incoming/temp-00000005 (deleted)
+java      15034   nbasjes  554r      REG             253,17  66219695        288 /tmp/blobStore-fbe9c4cf-1f85-48cb-aad9-180e8d4ec7ce/incoming/temp-00000018 (deleted)
+java      15034   nbasjes  555r      REG             253,17  66219695        298 /tmp/blobStore-fbe9c4cf-1f85-48cb-aad9-180e8d4ec7ce/incoming/temp-00000025 (deleted)
+java      15034   nbasjes  557r      REG             253,17  66219695        254 /tmp/blobStore-fbe9c4cf-1f85-48cb-aad9-180e8d4ec7ce/incoming/temp-00000008 (deleted)
+java      15034   nbasjes  558r      REG             253,17  66219695        292 /tmp/blobStore-fbe9c4cf-1f85-48cb-aad9-180e8d4ec7ce/incoming/temp-00000019 (deleted)
+java      15034   nbasjes  559r      REG             253,17  66219695        275 /tmp/blobStore-fbe9c4cf-1f85-48cb-aad9-180e8d4ec7ce/incoming/temp-00000013 (deleted)
+java      15034   nbasjes  560r      REG             253,17  66219695        159 /tmp/blobStore-fbe9c4cf-1f85-48cb-aad9-180e8d4ec7ce/incoming/temp-00000002 (deleted)
+java      15034   nbasjes  562r      REG             253,17  66219695        238 /tmp/blobStore-fbe9c4cf-1f85-48cb-aad9-180e8d4ec7ce/incoming/temp-00000001 (deleted)
+java      15034   nbasjes  568r      REG             253,17  66219695        246 /tmp/blobStore-fbe9c4cf-1f85-48cb-aad9-180e8d4ec7ce/incoming/temp-00000004 (deleted)
+java      15034   nbasjes  569r      REG             253,17  66219695        255 /tmp/blobStore-fbe9c4cf-1f85-48cb-aad9-180e8d4ec7ce/incoming/temp-00000009 (deleted)
+java      15034   nbasjes  571r      REG             253,17  66219695        299 /tmp/blobStore-fbe9c4cf-1f85-48cb-aad9-180e8d4ec7ce/incoming/temp-00000026 (deleted)
+java      15034   nbasjes  572r      REG             253,17  66219695        293 /tmp/blobStore-fbe9c4cf-1f85-48cb-aad9-180e8d4ec7ce/incoming/temp-00000020 (deleted)
+java      15034   nbasjes  574r      REG             253,17  66219695        256 /tmp/blobStore-fbe9c4cf-1f85-48cb-aad9-180e8d4ec7ce/incoming/temp-00000010 (deleted)
+java      15034   nbasjes  575r      REG             253,17  66219695        302 /tmp/blobStore-fbe9c4cf-1f85-48cb-aad9-180e8d4ec7ce/incoming/temp-00000029 (deleted)
+java      15034   nbasjes  576r      REG             253,17  66219695        294 /tmp/blobStore-fbe9c4cf-1f85-48cb-aad9-180e8d4ec7ce/incoming/temp-00000021 (deleted)
+java      15034   nbasjes  577r      REG             253,17  66219695        262 /tmp/blobStore-fbe9c4cf-1f85-48cb-aad9-180e8d4ec7ce/incoming/temp-00000011 (deleted)
+java      15034   nbasjes  578r      REG             253,17  66219695        251 /tmp/blobStore-fbe9c4cf-1f85-48cb-aad9-180e8d4ec7ce/incoming/temp-00000006 (deleted)
+java      15034   nbasjes  580r      REG             253,17  66219695        295 /tmp/blobStore-fbe9c4cf-1f85-48cb-aad9-180e8d4ec7ce/incoming/temp-00000022 (deleted)
+java      15034   nbasjes  581r      REG             253,17  66219695        300 /tmp/blobStore-fbe9c4cf-1f85-48cb-aad9-180e8d4ec7ce/incoming/temp-00000027 (deleted)
+java      15034   nbasjes  582r      REG             253,17  66219695        188 /tmp/blobStore-fbe9c4cf-1f85-48cb-aad9-180e8d4ec7ce/cache/blob_e318d1698aa6e7dc91e5f4a9f8ba29781aebd8c4 (deleted)
+java      15034   nbasjes  585r      REG             253,17  66219695        279 /tmp/blobStore-fbe9c4cf-1f85-48cb-aad9-180e8d4ec7ce/incoming/temp-00000014 (deleted)
+java      15034   nbasjes  586r      REG             253,17  66219695        296 /tmp/blobStore-fbe9c4cf-1f85-48cb-aad9-180e8d4ec7ce/incoming/temp-00000023 (deleted)
+java      15034   nbasjes  588r      REG             253,17  66219695        301 /tmp/blobStore-fbe9c4cf-1f85-48cb-aad9-180e8d4ec7ce/incoming/temp-00000028 (deleted)
+java      15034   nbasjes  589r      REG             253,17  66219695        297 /tmp/blobStore-fbe9c4cf-1f85-48cb-aad9-180e8d4ec7ce/incoming/temp-00000024 (deleted)
+java      15034   nbasjes  598r      REG             253,17  66219695        280 /tmp/blobStore-fbe9c4cf-1f85-48cb-aad9-180e8d4ec7ce/incoming/temp-00000015 (deleted)
+java      15034   nbasjes  601r      REG             253,17  66219695        289 /tmp/blobStore-fbe9c4cf-1f85-48cb-aad9-180e8d4ec7ce/incoming/temp-00000016 (deleted)
+java      15034   nbasjes  604r      REG             253,17  66219695        284 /tmp/blobStore-fbe9c4cf-1f85-48cb-aad9-180e8d4ec7ce/incoming/temp-00000017 (deleted)
+
+

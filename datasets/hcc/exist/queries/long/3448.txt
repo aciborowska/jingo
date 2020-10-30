@@ -1,0 +1,117 @@
+**Describe the bug**
+
+It is possible to induce RESTXQ to fail a dependency check and cause system instability.
+
+**Expected behavior**
+
+A failed dependency check by RESTXQ should be registered once, and not cause an infinite loop, log bloat, and system instability. 
+
+**To Reproduce**
+
+Save the following query to `/db/test.xqm`:
+
+```xquery
+xquery version "3.1";
+
+module namespace test = "test";
+```
+
+Notice no problems in exist.log or restxq.log.
+
+Now, add the following line to the query and save it a 2nd time:
+
+```xquery
+import module namespace test = "test" at "test.xqm";
+```
+
+Again, notice no problems in exist.log or restxq.log. 
+
+Now, delete the added line, and save the query a 3rd time. 
+
+Now, notice the following two entries in restxq.log:
+
+> 2020-06-16 17:14:38,175 [qtp554346832-55] WARN  (ExistXqueryRegistry.java [recordMissingDependency]:428) - Module '/db/test.xqm' has a missing dependency on '/db/test.xqm'. Will re-examine if the missing module is added. 
+> 2020-06-16 17:14:38,179 [qtp554346832-55] INFO  (ExistXqueryRegistry.java [reexamineModulesWithResolvedDependencies]:321) - Missing dependency '/db/test.xqm' has been added to the database, re-examining '/db/test.xqm'... 
+
+In addition, the 2nd log line ("reexamineModules...") is repeated 1312 times in restxq.log. 
+
+In addition, the store fails, with the following error, reported in the Java admin client:
+
+```txt
+Failed to invoke method storeBinary in class org.exist.xmlrpc.RpcConnection: null
+
+org.xmldb.api.base.XMLDBException: Failed to invoke method storeBinary in class org.exist.xmlrpc.RpcConnection: null
+	at org.exist.xmldb.RemoteCollection.execute(RemoteCollection.java:127)
+	at org.exist.xmldb.RemoteCollection.store(RemoteCollection.java:545)
+	at org.exist.xmldb.RemoteCollection.storeResource(RemoteCollection.java:508)
+	at org.exist.xmldb.RemoteCollection.storeResource(RemoteCollection.java:469)
+	at org.exist.client.QueryDialog.saveToDb(QueryDialog.java:148)
+	at org.exist.client.QueryDialog.lambda$1(QueryDialog.java:168)
+	at javax.swing.AbstractButton.fireActionPerformed(AbstractButton.java:2022)
+	at javax.swing.AbstractButton$Handler.actionPerformed(AbstractButton.java:2348)
+	at javax.swing.DefaultButtonModel.fireActionPerformed(DefaultButtonModel.java:402)
+	at javax.swing.DefaultButtonModel.setPressed(DefaultButtonModel.java:259)
+	at javax.swing.plaf.basic.BasicButtonListener.mouseReleased(BasicButtonListener.java:252)
+	at java.awt.AWTEventMulticaster.mouseReleased(AWTEventMulticaster.java:289)
+	at java.awt.Component.processMouseEvent(Component.java:6539)
+	at javax.swing.JComponent.processMouseEvent(JComponent.java:3324)
+	at java.awt.Component.processEvent(Component.java:6304)
+	at java.awt.Container.processEvent(Container.java:2239)
+	at java.awt.Component.dispatchEventImpl(Component.java:4889)
+	at java.awt.Container.dispatchEventImpl(Container.java:2297)
+	at java.awt.Component.dispatchEvent(Component.java:4711)
+	at java.awt.LightweightDispatcher.retargetMouseEvent(Container.java:4904)
+	at java.awt.LightweightDispatcher.processMouseEvent(Container.java:4535)
+	at java.awt.LightweightDispatcher.dispatchEvent(Container.java:4476)
+	at java.awt.Container.dispatchEventImpl(Container.java:2283)
+	at java.awt.Window.dispatchEventImpl(Window.java:2746)
+	at java.awt.Component.dispatchEvent(Component.java:4711)
+	at java.awt.EventQueue.dispatchEventImpl(EventQueue.java:760)
+	at java.awt.EventQueue.access$500(EventQueue.java:97)
+	at java.awt.EventQueue$3.run(EventQueue.java:709)
+	at java.awt.EventQueue$3.run(EventQueue.java:703)
+	at java.security.AccessController.doPrivileged(Native Method)
+	at java.security.ProtectionDomain$JavaSecurityAccessImpl.doIntersectionPrivilege(ProtectionDomain.java:74)
+	at java.security.ProtectionDomain$JavaSecurityAccessImpl.doIntersectionPrivilege(ProtectionDomain.java:84)
+	at java.awt.EventQueue$4.run(EventQueue.java:733)
+	at java.awt.EventQueue$4.run(EventQueue.java:731)
+	at java.security.AccessController.doPrivileged(Native Method)
+	at java.security.ProtectionDomain$JavaSecurityAccessImpl.doIntersectionPrivilege(ProtectionDomain.java:74)
+	at java.awt.EventQueue.dispatchEvent(EventQueue.java:730)
+	at java.awt.EventDispatchThread.pumpOneEventForFilters(EventDispatchThread.java:205)
+	at java.awt.EventDispatchThread.pumpEventsForFilter(EventDispatchThread.java:116)
+	at java.awt.EventDispatchThread.pumpEventsForHierarchy(EventDispatchThread.java:105)
+	at java.awt.EventDispatchThread.pumpEvents(EventDispatchThread.java:101)
+	at java.awt.EventDispatchThread.pumpEvents(EventDispatchThread.java:93)
+	at java.awt.EventDispatchThread.run(EventDispatchThread.java:82)
+Caused by: org.apache.xmlrpc.XmlRpcException: Failed to invoke method storeBinary in class org.exist.xmlrpc.RpcConnection: null
+	at org.apache.xmlrpc.client.XmlRpcStreamTransport.readResponse(XmlRpcStreamTransport.java:197)
+	at org.apache.xmlrpc.client.XmlRpcStreamTransport.sendRequest(XmlRpcStreamTransport.java:156)
+	at org.apache.xmlrpc.client.XmlRpcHttpTransport.sendRequest(XmlRpcHttpTransport.java:143)
+	at org.apache.xmlrpc.client.XmlRpcSunHttpTransport.sendRequest(XmlRpcSunHttpTransport.java:69)
+	at org.apache.xmlrpc.client.XmlRpcClientWorker.execute(XmlRpcClientWorker.java:56)
+	at org.apache.xmlrpc.client.XmlRpcClient.execute(XmlRpcClient.java:167)
+	at org.apache.xmlrpc.client.XmlRpcClient.execute(XmlRpcClient.java:158)
+	at org.apache.xmlrpc.client.XmlRpcClient.execute(XmlRpcClient.java:147)
+	at org.exist.xmldb.RemoteCollection.execute(RemoteCollection.java:125)
+	... 42 more
+```
+
+exist.log reports only:
+
+```txt
+2020-06-16 18:33:39,762 [qtp749002377-52] WARN  (TransactionManager.java [close]:409) - Transaction was not committed or aborted, auto aborting! 
+```
+
+A 4th save triggers the same error, failure, and flood of 1,100+ error messages in xmlrpc.log.
+
+However, as soon as you disable RESTXQ (by commenting out the `<triggers>` element in `/db/system/config/db/collection.xconf` and running `xmldb:reindex("/db")`) and try to save the revised query, the XML-RPC errors, failures, and restxq.log warnings evaporate. 
+
+**Context (please always complete the following information):**
+ - OS: macOS 10.15.5
+ - eXist-db version: 5.2.0, 5.3.0-SNAPSHOT
+ - Java Version: JDK 1.8.0_252 (Zulu 8.46.0.19-CA-macosx) (build 1.8.0_252-b14)
+
+**Additional context**
+- How is eXist-db installed? 5.2.0 via DMG installer, 5.3.0-SNAPSHOT built from source 
+- Any custom changes in e.g. `conf.xml`? None.

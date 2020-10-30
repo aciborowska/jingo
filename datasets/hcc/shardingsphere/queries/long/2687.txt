@@ -1,0 +1,162 @@
+## Bug Report
+
+### Which version of ShardingSphere did you use?
+3.0.0
+
+### Which project did you use? Sharding-JDBC or Sharding-Proxy?
+Sharding-Proxy
+
+### Expected behavior
+I have a logic table 't' with 2 shards, actual table are 't_0' and 't_1'.
+When I excute "select code from t group by code" on Sharding-Proxy-3.0.0,
+it should returns code without duplicate.
+
+### Actual behavior
+but in fact, it returns duplicate records.
+
+### Reason analyze (If you can)
+My backend db is mysql5.7.  
+COLLATE is 'utf8mb4_unicode_ci'.
+
+The group-by merger may add 'order by code' clause for using stream merge,
+and the result set is sorted by case insensitive.
+But the merger compares value with case sensitive(because use java compareTo method).
+
+### Steps to reproduce the behavior, such as: SQL to execute, sharding rule configuration, when exception occur etc.
+
+
+
+#### sharding rule:
+
+```
+  tables:
+    t:
+      actualDataNodes: ds_${0}.t_${0..1}
+      tableStrategy:
+        inline:
+          shardingColumn: id
+          algorithmExpression: t_${id % 2}
+```
+
+#### prepare sql script:
+
+```
+CREATE TABLE `t_0` (
+	`id` INT NOT NULL,
+	`code` VARCHAR(40) NOT NULL,
+	PRIMARY KEY (`id`)
+)
+COLLATE='utf8mb4_unicode_ci'
+;
+CREATE TABLE `t_1` (
+	`id` INT NOT NULL,
+	`code` VARCHAR(40) NOT NULL,
+	PRIMARY KEY (`id`)
+)
+COLLATE='utf8mb4_unicode_ci'
+;
+insert into t values (11, '11035801128253');
+insert into t values (13, '110358011282f5');
+insert into t values (15, '110358011282G1');
+insert into t values (17, '110358011282H5');
+insert into t values (19, '110358011282T4');
+insert into t values (21, '110358011282U5');
+insert into t values (23, '110358011282z1');
+insert into t values (22, '110358011282D4');
+insert into t values (24, '110358011282E9');
+insert into t values (26, '110358011282h8');
+insert into t values (28, '110358011282I0');
+insert into t values (30, '110358011282l1');
+insert into t values (32, '110358011282O7');
+insert into t values (34, '110358011282P0');
+insert into t values (36, '110358011282T4');
+insert into t values (38, '110358011282w6');
+
+
+mysql> select 't_0' as tab, code from t_0;
++------+----------------+
+| tab  | code           |
++------+----------------+
+| t_0  | 110358011282D4 |
+| t_0  | 110358011282E9 |
+| t_0  | 110358011282h8 |
+| t_0  | 110358011282I0 |
+| t_0  | 110358011282l1 |
+| t_0  | 110358011282O7 |
+| t_0  | 110358011282P0 |
+| t_0  | 110358011282T4 |
+| t_0  | 110358011282w6 |
++------+----------------+
+9 rows in set (0.00 sec)
+
+mysql> select 't_1' as tab, code from t_1;
++------+----------------+
+| tab  | code           |
++------+----------------+
+| t_1  | 11035801128253 |
+| t_1  | 110358011282f5 |
+| t_1  | 110358011282G1 |
+| t_1  | 110358011282H5 |
+| t_1  | 110358011282T4 |
+| t_1  | 110358011282U5 |
+| t_1  | 110358011282z1 |
++------+----------------+
+7 rows in set (0.00 sec)
+```
+
+#### execute result  ( duplicate code is 110358011282T4 .)
+
+```
+mysql> select code from t group by code;
++----------------+
+| code           |
++----------------+
+| 11035801128253 |
+| 110358011282D4 |
+| 110358011282E9 |
+| 110358011282f5 |
+| 110358011282G1 |
+| 110358011282H5 |
+| 110358011282T4 |
+| 110358011282U5 |
+| 110358011282h8 |
+| 110358011282I0 |
+| 110358011282l1 |
+| 110358011282O7 |
+| 110358011282P0 |
+| 110358011282T4 |
+| 110358011282w6 |
+| 110358011282z1 |
++----------------+
+16 rows in set (0.01 sec)
+```
+
+I tried following SQL then I got right result.
+
+```
+mysql> select max(code) from t group by upper(code);
++----------------+
+| max(code)      |
++----------------+
+| 11035801128253 |
+| 110358011282D4 |
+| 110358011282E9 |
+| 110358011282f5 |
+| 110358011282G1 |
+| 110358011282H5 |
+| 110358011282h8 |
+| 110358011282I0 |
+| 110358011282l1 |
+| 110358011282O7 |
+| 110358011282P0 |
+| 110358011282T4 |
+| 110358011282U5 |
+| 110358011282w6 |
+| 110358011282z1 |
++----------------+
+15 rows in set (0.01 sec)
+
+```
+
+
+### Example codes for reproduce this issue (such as a github link).

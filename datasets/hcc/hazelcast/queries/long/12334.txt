@@ -1,0 +1,366 @@
+This issue raises when trying to use tcp join to form a cluster in a cloud foundry environment that supports container networking and has app service discovery support via dynamic DNS. DNS entries for new app instances are created once an app instance has successfully started. See here for a description of its use: https://github.com/cloudfoundry/cf-app-sd-release#app-developer-experience
+
+The instances starts as single member cluster, and establish connection to each other. But they cannot form a cluster. See the logs below.
+
+It looks like the second instance establishes connection to the first one using its IP address (before registering to DNS), and the first instance binds the connection. But after the start up, the first instance couldn't find the established connection it its `connectionsMap` in `TcpIpConnectionManager` since it looks for the hostname.  
+
+The origin of this issue is in this community topic: https://groups.google.com/d/topic/hazelcast/7GlXxcjwSaE/discussion
+
+DEBUG level logs from second instance: 
+```
+2018-02-12 13:09:57.788+0000 [] [vert.x-worker-thread-0] WARN  c.h.instance.DefaultAddressPicker - [LOCAL] [nimbus] [3.8.2] Cannot resolve hostname: '3.d5cd4a47-1e4c-4dc6-a850-c02421b4dfc7.apps.internal' 
+2018-02-12 13:09:57.793+0000 [] [vert.x-worker-thread-0] WARN  c.h.instance.DefaultAddressPicker - [LOCAL] [nimbus] [3.8.2] Cannot resolve hostname: '2.d5cd4a47-1e4c-4dc6-a850-c02421b4dfc7.apps.internal' 
+2018-02-12 13:09:57.794+0000 [] [vert.x-worker-thread-0] WARN  c.h.instance.DefaultAddressPicker - [LOCAL] [nimbus] [3.8.2] You configured your member address as host name. Please be aware of that your dns can be spoofed. Make sure that your dns configurations are correct. 
+2018-02-12 13:09:57.795+0000 [] [vert.x-worker-thread-0] INFO  c.h.instance.DefaultAddressPicker - [LOCAL] [nimbus] [3.8.2] Resolving domain name '0.d5cd4a47-1e4c-4dc6-a850-c02421b4dfc7.apps.internal' to address(es): [10.255.190.128] 
+2018-02-12 13:09:57.795+0000 [] [vert.x-worker-thread-0] INFO  c.h.instance.DefaultAddressPicker - [LOCAL] [nimbus] [3.8.2] Interfaces is disabled, trying to pick one address from TCP-IP config addresses: [10.255.98.168, 0.d5cd4a47-1e4c-4dc6-a850-c02421b4dfc7.apps.internal/10.255.190.128] 
+2018-02-12 13:09:57.795+0000 [] [vert.x-worker-thread-0] INFO  c.h.instance.DefaultAddressPicker - [LOCAL] [nimbus] [3.8.2] Prefer IPv4 stack is true. 
+2018-02-12 13:09:57.798+0000 [] [vert.x-worker-thread-0] INFO  c.h.instance.DefaultAddressPicker - [LOCAL] [nimbus] [3.8.2] Picked [10.255.98.168]:5701, using socket ServerSocket[addr=/10.255.98.168,localport=5701], bind any local is false 
+2018-02-12 13:09:57.805+0000 [] [vert.x-worker-thread-0] INFO  com.hazelcast.system - [10.255.98.168]:5701 [nimbus] [3.8.2] Hazelcast 3.8.2 (20170518 - a60f944) starting at [10.255.98.168]:5701 
+2018-02-12 13:09:57.805+0000 [] [vert.x-worker-thread-0] INFO  com.hazelcast.system - [10.255.98.168]:5701 [nimbus] [3.8.2] Copyright (c) 2008-2016, Hazelcast, Inc. All Rights Reserved. 
+2018-02-12 13:09:57.805+0000 [] [vert.x-worker-thread-0] INFO  com.hazelcast.system - [10.255.98.168]:5701 [nimbus] [3.8.2] Configured Hazelcast Serialization version : 1 
+2018-02-12 13:09:57.952+0000 [] [vert.x-worker-thread-0] INFO  c.h.s.i.o.impl.BackpressureRegulator - [10.255.98.168]:5701 [nimbus] [3.8.2] Backpressure is disabled 
+2018-02-12 13:09:58.255+0000 [] [vert.x-worker-thread-0] DEBUG c.h.internal.cluster.ClusterService - [10.255.98.168]:5701 [nimbus] [3.8.2] Updating members [Member [10.255.98.168]:5701 - dae3e9bf-1299-4239-a73d-3ffee33d4dbb this] 
+2018-02-12 13:09:58.272+0000 [] [vert.x-worker-thread-0] INFO  com.hazelcast.instance.Node - [10.255.98.168]:5701 [nimbus] [3.8.2] Creating TcpIpJoiner 
+2018-02-12 13:09:58.440+0000 [] [vert.x-worker-thread-0] INFO  c.h.s.i.o.impl.OperationExecutorImpl - [10.255.98.168]:5701 [nimbus] [3.8.2] Starting 4 partition threads 
+2018-02-12 13:09:58.440+0000 [] [vert.x-worker-thread-0] INFO  c.h.s.i.o.impl.OperationExecutorImpl - [10.255.98.168]:5701 [nimbus] [3.8.2] Starting 3 generic threads (1 dedicated for priority tasks) 
+2018-02-12 13:09:58.444+0000 [] [vert.x-worker-thread-0] INFO  com.hazelcast.core.LifecycleService - [10.255.98.168]:5701 [nimbus] [3.8.2] [10.255.98.168]:5701 is STARTING 
+2018-02-12 13:09:58.445+0000 [] [vert.x-worker-thread-0] DEBUG c.h.i.p.InternalPartitionService - [10.255.98.168]:5701 [nimbus] [3.8.2] Adding Member [10.255.98.168]:5701 - dae3e9bf-1299-4239-a73d-3ffee33d4dbb this 
+2018-02-12 13:09:58.446+0000 [] [vert.x-worker-thread-0] DEBUG c.h.i.n.n.NonBlockingIOThreadingModel - [10.255.98.168]:5701 [nimbus] [3.8.2] TcpIpConnectionManager configured with Non Blocking IO-threading model: 3 input threads and 3 output threads 
+2018-02-12 13:09:58.446+0000 [] [vert.x-worker-thread-0] DEBUG c.h.i.n.n.NonBlockingIOThreadingModel - [10.255.98.168]:5701 [nimbus] [3.8.2] IO threads selector mode is SELECT 
+2018-02-12 13:09:58.452+0000 [] [vert.x-worker-thread-0] WARN  c.hazelcast.cluster.impl.TcpIpJoiner - [10.255.98.168]:5701 [nimbus] [3.8.2] Cannot resolve hostname '3.d5cd4a47-1e4c-4dc6-a850-c02421b4dfc7.apps.internal'. Please make sure host is valid and reachable. 
+2018-02-12 13:09:58.454+0000 [] [vert.x-worker-thread-0] DEBUG c.hazelcast.cluster.impl.TcpIpJoiner - [10.255.98.168]:5701 [nimbus] [3.8.2] Error during resolving possible target! 
+java.net.UnknownHostException: 3.d5cd4a47-1e4c-4dc6-a850-c02421b4dfc7.apps.internal
+	at java.net.InetAddress.getAllByName0(InetAddress.java:1280) ~[na:1.8.0_152]
+	at java.net.InetAddress.getAllByName(InetAddress.java:1192) ~[na:1.8.0_152]
+	at java.net.InetAddress.getAllByName(InetAddress.java:1126) ~[na:1.8.0_152]
+	at java.net.InetAddress.getByName(InetAddress.java:1076) ~[na:1.8.0_152]
+	at com.hazelcast.nio.Address.<init>(Address.java:54) ~[hazelcast-3.8.2.jar:3.8.2]
+	at com.hazelcast.cluster.impl.TcpIpJoiner.addPossibleAddresses(TcpIpJoiner.java:466) [hazelcast-3.8.2.jar:3.8.2]
+	at com.hazelcast.cluster.impl.TcpIpJoiner.getPossibleAddresses(TcpIpJoiner.java:440) [hazelcast-3.8.2.jar:3.8.2]
+	at com.hazelcast.cluster.impl.TcpIpJoiner.joinViaPossibleMembers(TcpIpJoiner.java:134) [hazelcast-3.8.2.jar:3.8.2]
+	at com.hazelcast.cluster.impl.TcpIpJoiner.doJoin(TcpIpJoiner.java:93) [hazelcast-3.8.2.jar:3.8.2]
+	at com.hazelcast.internal.cluster.impl.AbstractJoiner.join(AbstractJoiner.java:135) [hazelcast-3.8.2.jar:3.8.2]
+	at com.hazelcast.instance.Node.join(Node.java:702) [hazelcast-3.8.2.jar:3.8.2]
+	at com.hazelcast.instance.Node.start(Node.java:393) [hazelcast-3.8.2.jar:3.8.2]
+	at com.hazelcast.instance.HazelcastInstanceImpl.<init>(HazelcastInstanceImpl.java:132) [hazelcast-3.8.2.jar:3.8.2]
+	at com.hazelcast.instance.HazelcastInstanceFactory.constructHazelcastInstance(HazelcastInstanceFactory.java:218) [hazelcast-3.8.2.jar:3.8.2]
+	at com.hazelcast.instance.HazelcastInstanceFactory.newHazelcastInstance(HazelcastInstanceFactory.java:176) [hazelcast-3.8.2.jar:3.8.2]
+	at com.hazelcast.instance.HazelcastInstanceFactory.newHazelcastInstance(HazelcastInstanceFactory.java:126) [hazelcast-3.8.2.jar:3.8.2]
+	at com.hazelcast.core.Hazelcast.newHazelcastInstance(Hazelcast.java:58) [hazelcast-3.8.2.jar:3.8.2]
+	at io.vertx.spi.cluster.hazelcast.HazelcastClusterManager.lambda$join$0(HazelcastClusterManager.java:161) [vertx-hazelcast-3.4.1.jar:na]
+	at io.vertx.core.impl.ContextImpl.lambda$executeBlocking$1(ContextImpl.java:271) ~[vertx-core-3.4.1.jar:na]
+	at io.vertx.core.impl.TaskQueue.lambda$new$0(TaskQueue.java:60) ~[vertx-core-3.4.1.jar:na]
+	at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1149) ~[na:1.8.0_152]
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:624) ~[na:1.8.0_152]
+	at java.lang.Thread.run(Thread.java:748) ~[na:1.8.0_152]
+2018-02-12 13:09:58.455+0000 [] [vert.x-worker-thread-0] DEBUG c.hazelcast.cluster.impl.TcpIpJoiner - [10.255.98.168]:5701 [nimbus] [3.8.2] [10.255.98.168]:5701 is local? true 
+2018-02-12 13:09:58.455+0000 [] [vert.x-worker-thread-0] WARN  c.hazelcast.cluster.impl.TcpIpJoiner - [10.255.98.168]:5701 [nimbus] [3.8.2] Cannot resolve hostname '2.d5cd4a47-1e4c-4dc6-a850-c02421b4dfc7.apps.internal'. Please make sure host is valid and reachable. 
+2018-02-12 13:09:58.455+0000 [] [vert.x-worker-thread-0] DEBUG c.hazelcast.cluster.impl.TcpIpJoiner - [10.255.98.168]:5701 [nimbus] [3.8.2] Error during resolving possible target! 
+java.net.UnknownHostException: 2.d5cd4a47-1e4c-4dc6-a850-c02421b4dfc7.apps.internal
+	at java.net.InetAddress.getAllByName0(InetAddress.java:1280) ~[na:1.8.0_152]
+	at java.net.InetAddress.getAllByName(InetAddress.java:1192) ~[na:1.8.0_152]
+	at java.net.InetAddress.getAllByName(InetAddress.java:1126) ~[na:1.8.0_152]
+	at java.net.InetAddress.getByName(InetAddress.java:1076) ~[na:1.8.0_152]
+	at com.hazelcast.nio.Address.<init>(Address.java:54) ~[hazelcast-3.8.2.jar:3.8.2]
+	at com.hazelcast.cluster.impl.TcpIpJoiner.addPossibleAddresses(TcpIpJoiner.java:466) [hazelcast-3.8.2.jar:3.8.2]
+	at com.hazelcast.cluster.impl.TcpIpJoiner.getPossibleAddresses(TcpIpJoiner.java:440) [hazelcast-3.8.2.jar:3.8.2]
+	at com.hazelcast.cluster.impl.TcpIpJoiner.joinViaPossibleMembers(TcpIpJoiner.java:134) [hazelcast-3.8.2.jar:3.8.2]
+	at com.hazelcast.cluster.impl.TcpIpJoiner.doJoin(TcpIpJoiner.java:93) [hazelcast-3.8.2.jar:3.8.2]
+	at com.hazelcast.internal.cluster.impl.AbstractJoiner.join(AbstractJoiner.java:135) [hazelcast-3.8.2.jar:3.8.2]
+	at com.hazelcast.instance.Node.join(Node.java:702) [hazelcast-3.8.2.jar:3.8.2]
+	at com.hazelcast.instance.Node.start(Node.java:393) [hazelcast-3.8.2.jar:3.8.2]
+	at com.hazelcast.instance.HazelcastInstanceImpl.<init>(HazelcastInstanceImpl.java:132) [hazelcast-3.8.2.jar:3.8.2]
+	at com.hazelcast.instance.HazelcastInstanceFactory.constructHazelcastInstance(HazelcastInstanceFactory.java:218) [hazelcast-3.8.2.jar:3.8.2]
+	at com.hazelcast.instance.HazelcastInstanceFactory.newHazelcastInstance(HazelcastInstanceFactory.java:176) [hazelcast-3.8.2.jar:3.8.2]
+	at com.hazelcast.instance.HazelcastInstanceFactory.newHazelcastInstance(HazelcastInstanceFactory.java:126) [hazelcast-3.8.2.jar:3.8.2]
+	at com.hazelcast.core.Hazelcast.newHazelcastInstance(Hazelcast.java:58) [hazelcast-3.8.2.jar:3.8.2]
+	at io.vertx.spi.cluster.hazelcast.HazelcastClusterManager.lambda$join$0(HazelcastClusterManager.java:161) [vertx-hazelcast-3.4.1.jar:na]
+	at io.vertx.core.impl.ContextImpl.lambda$executeBlocking$1(ContextImpl.java:271) ~[vertx-core-3.4.1.jar:na]
+	at io.vertx.core.impl.TaskQueue.lambda$new$0(TaskQueue.java:60) ~[vertx-core-3.4.1.jar:na]
+	at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1149) ~[na:1.8.0_152]
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:624) ~[na:1.8.0_152]
+	at java.lang.Thread.run(Thread.java:748) ~[na:1.8.0_152]
+2018-02-12 13:09:58.455+0000 [] [vert.x-worker-thread-0] DEBUG c.hazelcast.cluster.impl.TcpIpJoiner - [10.255.98.168]:5701 [nimbus] [3.8.2] [0.d5cd4a47-1e4c-4dc6-a850-c02421b4dfc7.apps.internal]:5701 is local? false 
+2018-02-12 13:09:58.455+0000 [] [vert.x-worker-thread-0] DEBUG c.hazelcast.cluster.impl.TcpIpJoiner - [10.255.98.168]:5701 [nimbus] [3.8.2] Will send master question to each address in: [[0.d5cd4a47-1e4c-4dc6-a850-c02421b4dfc7.apps.internal]:5701] 
+2018-02-12 13:09:58.456+0000 [] [vert.x-worker-thread-0] DEBUG c.hazelcast.cluster.impl.TcpIpJoiner - [10.255.98.168]:5701 [nimbus] [3.8.2] NOT sending master question to blacklisted endpoints: {} 
+2018-02-12 13:09:58.456+0000 [] [vert.x-worker-thread-0] DEBUG c.hazelcast.cluster.impl.TcpIpJoiner - [10.255.98.168]:5701 [nimbus] [3.8.2] Sending master question to [0.d5cd4a47-1e4c-4dc6-a850-c02421b4dfc7.apps.internal]:5701 
+2018-02-12 13:09:58.466+0000 [] [hz._hzInstance_1_nimbus.cached.thread-3] INFO  c.h.nio.tcp.InitConnectionTask - [10.255.98.168]:5701 [nimbus] [3.8.2] Connecting to 0.d5cd4a47-1e4c-4dc6-a850-c02421b4dfc7.apps.internal/10.255.190.128:5701, timeout: 0, bind-any: false 
+2018-02-12 13:09:58.470+0000 [] [hz._hzInstance_1_nimbus.cached.thread-3] INFO  c.h.nio.tcp.TcpIpConnectionManager - [10.255.98.168]:5701 [nimbus] [3.8.2] Established socket connection between /10.255.98.168:37853 and 0.d5cd4a47-1e4c-4dc6-a850-c02421b4dfc7.apps.internal/10.255.190.128:5701 
+2018-02-12 13:09:58.474+0000 [] [hz._hzInstance_1_nimbus.IO.thread-out-0] DEBUG c.h.n.t.SocketWriterInitializerImpl - [10.255.98.168]:5701 [nimbus] [3.8.2] Initializing SocketWriter WriteHandler with Cluster Protocol 
+2018-02-12 13:09:59.462+0000 [] [vert.x-worker-thread-0] DEBUG c.hazelcast.cluster.impl.TcpIpJoiner - [10.255.98.168]:5701 [nimbus] [3.8.2] Will send master question to each address in: [[0.d5cd4a47-1e4c-4dc6-a850-c02421b4dfc7.apps.internal]:5701] 
+2018-02-12 13:09:59.463+0000 [] [vert.x-worker-thread-0] DEBUG c.hazelcast.cluster.impl.TcpIpJoiner - [10.255.98.168]:5701 [nimbus] [3.8.2] NOT sending master question to blacklisted endpoints: {} 
+2018-02-12 13:09:59.463+0000 [] [vert.x-worker-thread-0] DEBUG c.hazelcast.cluster.impl.TcpIpJoiner - [10.255.98.168]:5701 [nimbus] [3.8.2] Sending master question to [0.d5cd4a47-1e4c-4dc6-a850-c02421b4dfc7.apps.internal]:5701 
+2018-02-12 13:10:00.463+0000 [] [vert.x-worker-thread-0] DEBUG c.hazelcast.cluster.impl.TcpIpJoiner - [10.255.98.168]:5701 [nimbus] [3.8.2] Will send master question to each address in: [[0.d5cd4a47-1e4c-4dc6-a850-c02421b4dfc7.apps.internal]:5701] 
+2018-02-12 13:10:00.463+0000 [] [vert.x-worker-thread-0] DEBUG c.hazelcast.cluster.impl.TcpIpJoiner - [10.255.98.168]:5701 [nimbus] [3.8.2] NOT sending master question to blacklisted endpoints: {} 
+2018-02-12 13:10:00.464+0000 [] [vert.x-worker-thread-0] DEBUG c.hazelcast.cluster.impl.TcpIpJoiner - [10.255.98.168]:5701 [nimbus] [3.8.2] Sending master question to [0.d5cd4a47-1e4c-4dc6-a850-c02421b4dfc7.apps.internal]:5701 
+2018-02-12 13:10:01.464+0000 [] [vert.x-worker-thread-0] DEBUG c.hazelcast.cluster.impl.TcpIpJoiner - [10.255.98.168]:5701 [nimbus] [3.8.2] Will send master question to each address in: [[0.d5cd4a47-1e4c-4dc6-a850-c02421b4dfc7.apps.internal]:5701] 
+2018-02-12 13:10:01.464+0000 [] [vert.x-worker-thread-0] DEBUG c.hazelcast.cluster.impl.TcpIpJoiner - [10.255.98.168]:5701 [nimbus] [3.8.2] NOT sending master question to blacklisted endpoints: {} 
+2018-02-12 13:10:01.464+0000 [] [vert.x-worker-thread-0] DEBUG c.hazelcast.cluster.impl.TcpIpJoiner - [10.255.98.168]:5701 [nimbus] [3.8.2] Sending master question to [0.d5cd4a47-1e4c-4dc6-a850-c02421b4dfc7.apps.internal]:5701 
+2018-02-12 13:10:02.465+0000 [] [vert.x-worker-thread-0] DEBUG c.hazelcast.cluster.impl.TcpIpJoiner - [10.255.98.168]:5701 [nimbus] [3.8.2] Will send master question to each address in: [[0.d5cd4a47-1e4c-4dc6-a850-c02421b4dfc7.apps.internal]:5701] 
+2018-02-12 13:10:02.465+0000 [] [vert.x-worker-thread-0] DEBUG c.hazelcast.cluster.impl.TcpIpJoiner - [10.255.98.168]:5701 [nimbus] [3.8.2] NOT sending master question to blacklisted endpoints: {} 
+2018-02-12 13:10:02.465+0000 [] [vert.x-worker-thread-0] DEBUG c.hazelcast.cluster.impl.TcpIpJoiner - [10.255.98.168]:5701 [nimbus] [3.8.2] Sending master question to [0.d5cd4a47-1e4c-4dc6-a850-c02421b4dfc7.apps.internal]:5701 
+2018-02-12 13:10:03.465+0000 [] [vert.x-worker-thread-0] DEBUG c.hazelcast.cluster.impl.TcpIpJoiner - [10.255.98.168]:5701 [nimbus] [3.8.2] This node will assume master role since no possible member where connected to. 
+2018-02-12 13:10:03.466+0000 [] [vert.x-worker-thread-0] INFO  com.hazelcast.system - [10.255.98.168]:5701 [nimbus] [3.8.2] Cluster version set to 3.8 
+2018-02-12 13:10:03.466+0000 [] [vert.x-worker-thread-0] DEBUG c.hazelcast.cluster.impl.TcpIpJoiner - [10.255.98.168]:5701 [nimbus] [3.8.2] PostJoin master: [10.255.98.168]:5701, isMaster: true 
+2018-02-12 13:10:03.466+0000 [] [vert.x-worker-thread-0] INFO  c.hazelcast.cluster.impl.TcpIpJoiner - [10.255.98.168]:5701 [nimbus] [3.8.2] 
+
+
+Members [1] {
+	Member [10.255.98.168]:5701 - dae3e9bf-1299-4239-a73d-3ffee33d4dbb this
+}
+
+```
+
+Debug level logs from the first instance:
+
+```
+2018-02-12 13:10:14.754+0000 [] [vert.x-worker-thread-0] WARN  c.h.instance.DefaultAddressPicker - [LOCAL] [nimbus] [3.8.2] Cannot resolve hostname: '3.d5cd4a47-1e4c-4dc6-a850-c02421b4dfc7.apps.internal' 
+2018-02-12 13:10:14.758+0000 [] [vert.x-worker-thread-0] WARN  c.h.instance.DefaultAddressPicker - [LOCAL] [nimbus] [3.8.2] Cannot resolve hostname: '1.d5cd4a47-1e4c-4dc6-a850-c02421b4dfc7.apps.internal' 
+2018-02-12 13:10:14.761+0000 [] [vert.x-worker-thread-0] WARN  c.h.instance.DefaultAddressPicker - [LOCAL] [nimbus] [3.8.2] Cannot resolve hostname: '2.d5cd4a47-1e4c-4dc6-a850-c02421b4dfc7.apps.internal' 
+2018-02-12 13:10:14.762+0000 [] [vert.x-worker-thread-0] INFO  c.h.instance.DefaultAddressPicker - [LOCAL] [nimbus] [3.8.2] Interfaces is disabled, trying to pick one address from TCP-IP config addresses: [10.255.190.128] 
+2018-02-12 13:10:14.762+0000 [] [vert.x-worker-thread-0] INFO  c.h.instance.DefaultAddressPicker - [LOCAL] [nimbus] [3.8.2] Prefer IPv4 stack is true. 
+2018-02-12 13:10:14.767+0000 [] [vert.x-worker-thread-0] INFO  c.h.instance.DefaultAddressPicker - [LOCAL] [nimbus] [3.8.2] Picked [10.255.190.128]:5701, using socket ServerSocket[addr=/10.255.190.128,localport=5701], bind any local is false 
+2018-02-12 13:10:14.775+0000 [] [vert.x-worker-thread-0] INFO  com.hazelcast.system - [10.255.190.128]:5701 [nimbus] [3.8.2] Hazelcast 3.8.2 (20170518 - a60f944) starting at [10.255.190.128]:5701 
+2018-02-12 13:10:14.775+0000 [] [vert.x-worker-thread-0] INFO  com.hazelcast.system - [10.255.190.128]:5701 [nimbus] [3.8.2] Copyright (c) 2008-2016, Hazelcast, Inc. All Rights Reserved. 
+2018-02-12 13:10:14.775+0000 [] [vert.x-worker-thread-0] INFO  com.hazelcast.system - [10.255.190.128]:5701 [nimbus] [3.8.2] Configured Hazelcast Serialization version : 1 
+2018-02-12 13:10:14.925+0000 [] [vert.x-worker-thread-0] INFO  c.h.s.i.o.impl.BackpressureRegulator - [10.255.190.128]:5701 [nimbus] [3.8.2] Backpressure is disabled 
+2018-02-12 13:10:15.228+0000 [] [vert.x-worker-thread-0] DEBUG c.h.internal.cluster.ClusterService - [10.255.190.128]:5701 [nimbus] [3.8.2] Updating members [Member [10.255.190.128]:5701 - 2b5c8d88-9db4-4405-bc9b-b40bef62d12d this] 
+2018-02-12 13:10:15.245+0000 [] [vert.x-worker-thread-0] INFO  com.hazelcast.instance.Node - [10.255.190.128]:5701 [nimbus] [3.8.2] Creating TcpIpJoiner 
+2018-02-12 13:10:15.397+0000 [] [vert.x-worker-thread-0] INFO  c.h.s.i.o.impl.OperationExecutorImpl - [10.255.190.128]:5701 [nimbus] [3.8.2] Starting 4 partition threads 
+2018-02-12 13:10:15.397+0000 [] [vert.x-worker-thread-0] INFO  c.h.s.i.o.impl.OperationExecutorImpl - [10.255.190.128]:5701 [nimbus] [3.8.2] Starting 3 generic threads (1 dedicated for priority tasks) 
+2018-02-12 13:10:15.401+0000 [] [vert.x-worker-thread-0] INFO  com.hazelcast.core.LifecycleService - [10.255.190.128]:5701 [nimbus] [3.8.2] [10.255.190.128]:5701 is STARTING 
+2018-02-12 13:10:15.401+0000 [] [vert.x-worker-thread-0] DEBUG c.h.i.p.InternalPartitionService - [10.255.190.128]:5701 [nimbus] [3.8.2] Adding Member [10.255.190.128]:5701 - 2b5c8d88-9db4-4405-bc9b-b40bef62d12d this 
+2018-02-12 13:10:15.407+0000 [] [vert.x-worker-thread-0] DEBUG c.h.i.n.n.NonBlockingIOThreadingModel - [10.255.190.128]:5701 [nimbus] [3.8.2] TcpIpConnectionManager configured with Non Blocking IO-threading model: 3 input threads and 3 output threads 
+2018-02-12 13:10:15.408+0000 [] [vert.x-worker-thread-0] DEBUG c.h.i.n.n.NonBlockingIOThreadingModel - [10.255.190.128]:5701 [nimbus] [3.8.2] IO threads selector mode is SELECT 
+2018-02-12 13:10:15.414+0000 [] [vert.x-worker-thread-0] WARN  c.hazelcast.cluster.impl.TcpIpJoiner - [10.255.190.128]:5701 [nimbus] [3.8.2] Cannot resolve hostname '3.d5cd4a47-1e4c-4dc6-a850-c02421b4dfc7.apps.internal'. Please make sure host is valid and reachable. 
+2018-02-12 13:10:15.418+0000 [] [vert.x-worker-thread-0] DEBUG c.hazelcast.cluster.impl.TcpIpJoiner - [10.255.190.128]:5701 [nimbus] [3.8.2] Error during resolving possible target! 
+java.net.UnknownHostException: 3.d5cd4a47-1e4c-4dc6-a850-c02421b4dfc7.apps.internal
+	at java.net.InetAddress.getAllByName0(InetAddress.java:1280) ~[na:1.8.0_152]
+	at java.net.InetAddress.getAllByName(InetAddress.java:1192) ~[na:1.8.0_152]
+	at java.net.InetAddress.getAllByName(InetAddress.java:1126) ~[na:1.8.0_152]
+	at java.net.InetAddress.getByName(InetAddress.java:1076) ~[na:1.8.0_152]
+	at com.hazelcast.nio.Address.<init>(Address.java:54) ~[hazelcast-3.8.2.jar:3.8.2]
+	at com.hazelcast.cluster.impl.TcpIpJoiner.addPossibleAddresses(TcpIpJoiner.java:466) [hazelcast-3.8.2.jar:3.8.2]
+	at com.hazelcast.cluster.impl.TcpIpJoiner.getPossibleAddresses(TcpIpJoiner.java:440) [hazelcast-3.8.2.jar:3.8.2]
+	at com.hazelcast.cluster.impl.TcpIpJoiner.joinViaPossibleMembers(TcpIpJoiner.java:134) [hazelcast-3.8.2.jar:3.8.2]
+	at com.hazelcast.cluster.impl.TcpIpJoiner.doJoin(TcpIpJoiner.java:93) [hazelcast-3.8.2.jar:3.8.2]
+	at com.hazelcast.internal.cluster.impl.AbstractJoiner.join(AbstractJoiner.java:135) [hazelcast-3.8.2.jar:3.8.2]
+	at com.hazelcast.instance.Node.join(Node.java:702) [hazelcast-3.8.2.jar:3.8.2]
+	at com.hazelcast.instance.Node.start(Node.java:393) [hazelcast-3.8.2.jar:3.8.2]
+	at com.hazelcast.instance.HazelcastInstanceImpl.<init>(HazelcastInstanceImpl.java:132) [hazelcast-3.8.2.jar:3.8.2]
+	at com.hazelcast.instance.HazelcastInstanceFactory.constructHazelcastInstance(HazelcastInstanceFactory.java:218) [hazelcast-3.8.2.jar:3.8.2]
+	at com.hazelcast.instance.HazelcastInstanceFactory.newHazelcastInstance(HazelcastInstanceFactory.java:176) [hazelcast-3.8.2.jar:3.8.2]
+	at com.hazelcast.instance.HazelcastInstanceFactory.newHazelcastInstance(HazelcastInstanceFactory.java:126) [hazelcast-3.8.2.jar:3.8.2]
+	at com.hazelcast.core.Hazelcast.newHazelcastInstance(Hazelcast.java:58) [hazelcast-3.8.2.jar:3.8.2]
+	at io.vertx.spi.cluster.hazelcast.HazelcastClusterManager.lambda$join$0(HazelcastClusterManager.java:161) [vertx-hazelcast-3.4.1.jar:na]
+	at io.vertx.core.impl.ContextImpl.lambda$executeBlocking$1(ContextImpl.java:271) ~[vertx-core-3.4.1.jar:na]
+	at io.vertx.core.impl.TaskQueue.lambda$new$0(TaskQueue.java:60) ~[vertx-core-3.4.1.jar:na]
+	at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1149) ~[na:1.8.0_152]
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:624) ~[na:1.8.0_152]
+	at java.lang.Thread.run(Thread.java:748) ~[na:1.8.0_152]
+2018-02-12 13:10:15.418+0000 [] [vert.x-worker-thread-0] WARN  c.hazelcast.cluster.impl.TcpIpJoiner - [10.255.190.128]:5701 [nimbus] [3.8.2] Cannot resolve hostname '1.d5cd4a47-1e4c-4dc6-a850-c02421b4dfc7.apps.internal'. Please make sure host is valid and reachable. 
+2018-02-12 13:10:15.418+0000 [] [vert.x-worker-thread-0] DEBUG c.hazelcast.cluster.impl.TcpIpJoiner - [10.255.190.128]:5701 [nimbus] [3.8.2] Error during resolving possible target! 
+java.net.UnknownHostException: 1.d5cd4a47-1e4c-4dc6-a850-c02421b4dfc7.apps.internal
+	at java.net.InetAddress.getAllByName0(InetAddress.java:1280) ~[na:1.8.0_152]
+	at java.net.InetAddress.getAllByName(InetAddress.java:1192) ~[na:1.8.0_152]
+	at java.net.InetAddress.getAllByName(InetAddress.java:1126) ~[na:1.8.0_152]
+	at java.net.InetAddress.getByName(InetAddress.java:1076) ~[na:1.8.0_152]
+	at com.hazelcast.nio.Address.<init>(Address.java:54) ~[hazelcast-3.8.2.jar:3.8.2]
+	at com.hazelcast.cluster.impl.TcpIpJoiner.addPossibleAddresses(TcpIpJoiner.java:466) [hazelcast-3.8.2.jar:3.8.2]
+	at com.hazelcast.cluster.impl.TcpIpJoiner.getPossibleAddresses(TcpIpJoiner.java:440) [hazelcast-3.8.2.jar:3.8.2]
+	at com.hazelcast.cluster.impl.TcpIpJoiner.joinViaPossibleMembers(TcpIpJoiner.java:134) [hazelcast-3.8.2.jar:3.8.2]
+	at com.hazelcast.cluster.impl.TcpIpJoiner.doJoin(TcpIpJoiner.java:93) [hazelcast-3.8.2.jar:3.8.2]
+	at com.hazelcast.internal.cluster.impl.AbstractJoiner.join(AbstractJoiner.java:135) [hazelcast-3.8.2.jar:3.8.2]
+	at com.hazelcast.instance.Node.join(Node.java:702) [hazelcast-3.8.2.jar:3.8.2]
+	at com.hazelcast.instance.Node.start(Node.java:393) [hazelcast-3.8.2.jar:3.8.2]
+	at com.hazelcast.instance.HazelcastInstanceImpl.<init>(HazelcastInstanceImpl.java:132) [hazelcast-3.8.2.jar:3.8.2]
+	at com.hazelcast.instance.HazelcastInstanceFactory.constructHazelcastInstance(HazelcastInstanceFactory.java:218) [hazelcast-3.8.2.jar:3.8.2]
+	at com.hazelcast.instance.HazelcastInstanceFactory.newHazelcastInstance(HazelcastInstanceFactory.java:176) [hazelcast-3.8.2.jar:3.8.2]
+	at com.hazelcast.instance.HazelcastInstanceFactory.newHazelcastInstance(HazelcastInstanceFactory.java:126) [hazelcast-3.8.2.jar:3.8.2]
+	at com.hazelcast.core.Hazelcast.newHazelcastInstance(Hazelcast.java:58) [hazelcast-3.8.2.jar:3.8.2]
+	at io.vertx.spi.cluster.hazelcast.HazelcastClusterManager.lambda$join$0(HazelcastClusterManager.java:161) [vertx-hazelcast-3.4.1.jar:na]
+	at io.vertx.core.impl.ContextImpl.lambda$executeBlocking$1(ContextImpl.java:271) ~[vertx-core-3.4.1.jar:na]
+	at io.vertx.core.impl.TaskQueue.lambda$new$0(TaskQueue.java:60) ~[vertx-core-3.4.1.jar:na]
+	at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1149) ~[na:1.8.0_152]
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:624) ~[na:1.8.0_152]
+	at java.lang.Thread.run(Thread.java:748) ~[na:1.8.0_152]
+2018-02-12 13:10:15.419+0000 [] [vert.x-worker-thread-0] DEBUG c.hazelcast.cluster.impl.TcpIpJoiner - [10.255.190.128]:5701 [nimbus] [3.8.2] [10.255.190.128]:5701 is local? true 
+2018-02-12 13:10:15.419+0000 [] [vert.x-worker-thread-0] WARN  c.hazelcast.cluster.impl.TcpIpJoiner - [10.255.190.128]:5701 [nimbus] [3.8.2] Cannot resolve hostname '2.d5cd4a47-1e4c-4dc6-a850-c02421b4dfc7.apps.internal'. Please make sure host is valid and reachable. 
+2018-02-12 13:10:15.419+0000 [] [vert.x-worker-thread-0] DEBUG c.hazelcast.cluster.impl.TcpIpJoiner - [10.255.190.128]:5701 [nimbus] [3.8.2] Error during resolving possible target! 
+java.net.UnknownHostException: 2.d5cd4a47-1e4c-4dc6-a850-c02421b4dfc7.apps.internal
+	at java.net.InetAddress.getAllByName0(InetAddress.java:1280) ~[na:1.8.0_152]
+	at java.net.InetAddress.getAllByName(InetAddress.java:1192) ~[na:1.8.0_152]
+	at java.net.InetAddress.getAllByName(InetAddress.java:1126) ~[na:1.8.0_152]
+	at java.net.InetAddress.getByName(InetAddress.java:1076) ~[na:1.8.0_152]
+	at com.hazelcast.nio.Address.<init>(Address.java:54) ~[hazelcast-3.8.2.jar:3.8.2]
+	at com.hazelcast.cluster.impl.TcpIpJoiner.addPossibleAddresses(TcpIpJoiner.java:466) [hazelcast-3.8.2.jar:3.8.2]
+	at com.hazelcast.cluster.impl.TcpIpJoiner.getPossibleAddresses(TcpIpJoiner.java:440) [hazelcast-3.8.2.jar:3.8.2]
+	at com.hazelcast.cluster.impl.TcpIpJoiner.joinViaPossibleMembers(TcpIpJoiner.java:134) [hazelcast-3.8.2.jar:3.8.2]
+	at com.hazelcast.cluster.impl.TcpIpJoiner.doJoin(TcpIpJoiner.java:93) [hazelcast-3.8.2.jar:3.8.2]
+	at com.hazelcast.internal.cluster.impl.AbstractJoiner.join(AbstractJoiner.java:135) [hazelcast-3.8.2.jar:3.8.2]
+	at com.hazelcast.instance.Node.join(Node.java:702) [hazelcast-3.8.2.jar:3.8.2]
+	at com.hazelcast.instance.Node.start(Node.java:393) [hazelcast-3.8.2.jar:3.8.2]
+	at com.hazelcast.instance.HazelcastInstanceImpl.<init>(HazelcastInstanceImpl.java:132) [hazelcast-3.8.2.jar:3.8.2]
+	at com.hazelcast.instance.HazelcastInstanceFactory.constructHazelcastInstance(HazelcastInstanceFactory.java:218) [hazelcast-3.8.2.jar:3.8.2]
+	at com.hazelcast.instance.HazelcastInstanceFactory.newHazelcastInstance(HazelcastInstanceFactory.java:176) [hazelcast-3.8.2.jar:3.8.2]
+	at com.hazelcast.instance.HazelcastInstanceFactory.newHazelcastInstance(HazelcastInstanceFactory.java:126) [hazelcast-3.8.2.jar:3.8.2]
+	at com.hazelcast.core.Hazelcast.newHazelcastInstance(Hazelcast.java:58) [hazelcast-3.8.2.jar:3.8.2]
+	at io.vertx.spi.cluster.hazelcast.HazelcastClusterManager.lambda$join$0(HazelcastClusterManager.java:161) [vertx-hazelcast-3.4.1.jar:na]
+	at io.vertx.core.impl.ContextImpl.lambda$executeBlocking$1(ContextImpl.java:271) ~[vertx-core-3.4.1.jar:na]
+	at io.vertx.core.impl.TaskQueue.lambda$new$0(TaskQueue.java:60) ~[vertx-core-3.4.1.jar:na]
+	at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1149) ~[na:1.8.0_152]
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:624) ~[na:1.8.0_152]
+	at java.lang.Thread.run(Thread.java:748) ~[na:1.8.0_152]
+2018-02-12 13:10:15.419+0000 [] [vert.x-worker-thread-0] DEBUG c.hazelcast.cluster.impl.TcpIpJoiner - [10.255.190.128]:5701 [nimbus] [3.8.2] This node will assume master role since no possible member where connected to. 
+2018-02-12 13:10:15.420+0000 [] [vert.x-worker-thread-0] INFO  com.hazelcast.system - [10.255.190.128]:5701 [nimbus] [3.8.2] Cluster version set to 3.8 
+2018-02-12 13:10:15.420+0000 [] [vert.x-worker-thread-0] DEBUG c.hazelcast.cluster.impl.TcpIpJoiner - [10.255.190.128]:5701 [nimbus] [3.8.2] PostJoin master: [10.255.190.128]:5701, isMaster: true 
+2018-02-12 13:10:15.420+0000 [] [vert.x-worker-thread-0] INFO  c.hazelcast.cluster.impl.TcpIpJoiner - [10.255.190.128]:5701 [nimbus] [3.8.2] 
+
+
+Members [1] {
+	Member [10.255.190.128]:5701 - 2b5c8d88-9db4-4405-bc9b-b40bef62d12d this
+}
+ 
+2018-02-12 13:10:15.443+0000 [] [vert.x-worker-thread-0] INFO  com.hazelcast.core.LifecycleService - [10.255.190.128]:5701 [nimbus] [3.8.2] [10.255.190.128]:5701 is STARTED 
+2018-02-12 13:10:15.517+0000 [] [vert.x-eventloop-thread-0] INFO  c.h.i.p.impl.PartitionStateManager - [10.255.190.128]:5701 [nimbus] [3.8.2] Initializing cluster partition table arrangement... 
+2018-02-12 13:10:15.523+0000 [] [vert.x-eventloop-thread-0] DEBUG c.h.i.p.InternalPartitionService - [10.255.190.128]:5701 [nimbus] [3.8.2] Publishing partition state, version: 272 
+
+<snip>Application-specific initialization logging - no hazelcast output</snip>
+
+
+2018-02-12 13:10:47.099+0000 [] [hz._hzInstance_1_nimbus.IO.thread-Acceptor] INFO  c.h.nio.tcp.SocketAcceptorThread - [10.255.190.128]:5701 [nimbus] [3.8.2] Accepting socket connection from /10.255.98.168:37853 
+2018-02-12 13:10:47.103+0000 [] [hz._hzInstance_1_nimbus.cached.thread-1] INFO  c.h.nio.tcp.TcpIpConnectionManager - [10.255.190.128]:5701 [nimbus] [3.8.2] Established socket connection between /10.255.190.128:5701 and /10.255.98.168:37853 
+2018-02-12 13:10:47.108+0000 [] [hz._hzInstance_1_nimbus.IO.thread-out-0] DEBUG c.h.n.t.SocketWriterInitializerImpl - [10.255.190.128]:5701 [nimbus] [3.8.2] Initializing SocketWriter WriteHandler with Cluster Protocol 
+2018-02-12 13:11:00.344+0000 [] [hz._hzInstance_1_nimbus.cached.thread-1] DEBUG c.h.i.p.InternalPartitionService - [10.255.190.128]:5701 [nimbus] [3.8.2] Publishing partition state, version: 272 
+2018-02-12 13:11:15.345+0000 [] [hz._hzInstance_1_nimbus.cached.thread-1] DEBUG c.h.i.p.InternalPartitionService - [10.255.190.128]:5701 [nimbus] [3.8.2] Publishing partition state, version: 272 
+2018-02-12 13:11:30.342+0000 [] [hz._hzInstance_1_nimbus.cached.thread-3] DEBUG c.h.i.p.InternalPartitionService - [10.255.190.128]:5701 [nimbus] [3.8.2] Publishing partition state, version: 272 
+2018-02-12 13:11:45.342+0000 [] [hz._hzInstance_1_nimbus.cached.thread-1] DEBUG c.h.i.p.InternalPartitionService - [10.255.190.128]:5701 [nimbus] [3.8.2] Publishing partition state, version: 272 
+2018-02-12 13:12:00.344+0000 [] [hz._hzInstance_1_nimbus.cached.thread-3] DEBUG c.h.i.p.InternalPartitionService - [10.255.190.128]:5701 [nimbus] [3.8.2] Publishing partition state, version: 272 
+2018-02-12 13:12:15.342+0000 [] [hz._hzInstance_1_nimbus.cached.thread-3] DEBUG c.h.i.p.InternalPartitionService - [10.255.190.128]:5701 [nimbus] [3.8.2] Publishing partition state, version: 272 
+2018-02-12 13:12:30.342+0000 [] [hz._hzInstance_1_nimbus.cached.thread-2] DEBUG c.h.i.p.InternalPartitionService - [10.255.190.128]:5701 [nimbus] [3.8.2] Publishing partition state, version: 272 
+2018-02-12 13:12:45.342+0000 [] [hz._hzInstance_1_nimbus.cached.thread-1] DEBUG c.h.i.p.InternalPartitionService - [10.255.190.128]:5701 [nimbus] [3.8.2] Publishing partition state, version: 272 
+2018-02-12 13:13:00.342+0000 [] [hz._hzInstance_1_nimbus.cached.thread-2] DEBUG c.h.i.p.InternalPartitionService - [10.255.190.128]:5701 [nimbus] [3.8.2] Publishing partition state, version: 272 
+2018-02-12 13:13:15.345+0000 [] [hz._hzInstance_1_nimbus.cached.thread-1] DEBUG c.h.i.p.InternalPartitionService - [10.255.190.128]:5701 [nimbus] [3.8.2] Publishing partition state, version: 272 
+2018-02-12 13:13:30.342+0000 [] [hz._hzInstance_1_nimbus.cached.thread-1] DEBUG c.h.i.p.InternalPartitionService - [10.255.190.128]:5701 [nimbus] [3.8.2] Publishing partition state, version: 272 
+2018-02-12 13:13:45.342+0000 [] [hz._hzInstance_1_nimbus.cached.thread-1] DEBUG c.h.i.p.InternalPartitionService - [10.255.190.128]:5701 [nimbus] [3.8.2] Publishing partition state, version: 272 
+2018-02-12 13:14:00.342+0000 [] [hz._hzInstance_1_nimbus.cached.thread-4] DEBUG c.h.i.p.InternalPartitionService - [10.255.190.128]:5701 [nimbus] [3.8.2] Publishing partition state, version: 272 
+2018-02-12 13:14:15.342+0000 [] [hz._hzInstance_1_nimbus.cached.thread-5] DEBUG c.h.i.p.InternalPartitionService - [10.255.190.128]:5701 [nimbus] [3.8.2] Publishing partition state, version: 272 
+2018-02-12 13:14:30.341+0000 [] [hz._hzInstance_1_nimbus.cached.thread-1] DEBUG c.h.i.p.InternalPartitionService - [10.255.190.128]:5701 [nimbus] [3.8.2] Publishing partition state, version: 272 
+2018-02-12 13:14:45.342+0000 [] [hz._hzInstance_1_nimbus.cached.thread-1] DEBUG c.h.i.p.InternalPartitionService - [10.255.190.128]:5701 [nimbus] [3.8.2] Publishing partition state, version: 272 
+2018-02-12 13:15:00.342+0000 [] [hz._hzInstance_1_nimbus.cached.thread-4] DEBUG c.h.i.p.InternalPartitionService - [10.255.190.128]:5701 [nimbus] [3.8.2] Publishing partition state, version: 272 
+2018-02-12 13:15:15.342+0000 [] [hz._hzInstance_1_nimbus.cached.thread-5] DEBUG c.h.i.p.InternalPartitionService - [10.255.190.128]:5701 [nimbus] [3.8.2] Publishing partition state, version: 272 
+2018-02-12 13:15:15.348+0000 [] [hz._hzInstance_1_nimbus.cached.thread-4] WARN  c.hazelcast.cluster.impl.TcpIpJoiner - [10.255.190.128]:5701 [nimbus] [3.8.2] Cannot resolve hostname '3.d5cd4a47-1e4c-4dc6-a850-c02421b4dfc7.apps.internal'. Please make sure host is valid and reachable. 
+2018-02-12 13:15:15.348+0000 [] [hz._hzInstance_1_nimbus.cached.thread-4] DEBUG c.hazelcast.cluster.impl.TcpIpJoiner - [10.255.190.128]:5701 [nimbus] [3.8.2] Error during resolving possible target! 
+java.net.UnknownHostException: 3.d5cd4a47-1e4c-4dc6-a850-c02421b4dfc7.apps.internal: Name or service not known
+	at java.net.Inet4AddressImpl.lookupAllHostAddr(Native Method) ~[na:1.8.0_152]
+	at java.net.InetAddress$2.lookupAllHostAddr(InetAddress.java:928) ~[na:1.8.0_152]
+	at java.net.InetAddress.getAddressesFromNameService(InetAddress.java:1323) ~[na:1.8.0_152]
+	at java.net.InetAddress.getAllByName0(InetAddress.java:1276) ~[na:1.8.0_152]
+	at java.net.InetAddress.getAllByName(InetAddress.java:1192) ~[na:1.8.0_152]
+	at java.net.InetAddress.getAllByName(InetAddress.java:1126) ~[na:1.8.0_152]
+	at java.net.InetAddress.getByName(InetAddress.java:1076) ~[na:1.8.0_152]
+	at com.hazelcast.nio.Address.<init>(Address.java:54) ~[hazelcast-3.8.2.jar:3.8.2]
+	at com.hazelcast.cluster.impl.TcpIpJoiner.addPossibleAddresses(TcpIpJoiner.java:466) [hazelcast-3.8.2.jar:3.8.2]
+	at com.hazelcast.cluster.impl.TcpIpJoiner.getPossibleAddresses(TcpIpJoiner.java:440) [hazelcast-3.8.2.jar:3.8.2]
+	at com.hazelcast.cluster.impl.TcpIpJoiner.searchForOtherClusters(TcpIpJoiner.java:505) [hazelcast-3.8.2.jar:3.8.2]
+	at com.hazelcast.internal.cluster.impl.SplitBrainHandler.searchForOtherClusters(SplitBrainHandler.java:75) [hazelcast-3.8.2.jar:3.8.2]
+	at com.hazelcast.internal.cluster.impl.SplitBrainHandler.run(SplitBrainHandler.java:42) [hazelcast-3.8.2.jar:3.8.2]
+	at com.hazelcast.spi.impl.executionservice.impl.DelegateAndSkipOnConcurrentExecutionDecorator$DelegateDecorator.run(DelegateAndSkipOnConcurrentExecutionDecorator.java:66) [hazelcast-3.8.2.jar:3.8.2]
+	at com.hazelcast.util.executor.CachedExecutorServiceDelegate$Worker.run(CachedExecutorServiceDelegate.java:228) [hazelcast-3.8.2.jar:3.8.2]
+	at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1149) [na:1.8.0_152]
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:624) [na:1.8.0_152]
+	at java.lang.Thread.run(Thread.java:748) [na:1.8.0_152]
+	at com.hazelcast.util.executor.HazelcastManagedThread.executeRun(HazelcastManagedThread.java:64) [hazelcast-3.8.2.jar:3.8.2]
+	at com.hazelcast.util.executor.HazelcastManagedThread.run(HazelcastManagedThread.java:80) [hazelcast-3.8.2.jar:3.8.2]
+2018-02-12 13:15:15.350+0000 [] [hz._hzInstance_1_nimbus.cached.thread-4] DEBUG c.hazelcast.cluster.impl.TcpIpJoiner - [10.255.190.128]:5701 [nimbus] [3.8.2] [1.d5cd4a47-1e4c-4dc6-a850-c02421b4dfc7.apps.internal]:5701 is local? false 
+2018-02-12 13:15:15.350+0000 [] [hz._hzInstance_1_nimbus.cached.thread-4] DEBUG c.hazelcast.cluster.impl.TcpIpJoiner - [10.255.190.128]:5701 [nimbus] [3.8.2] [10.255.190.128]:5701 is local? true 
+2018-02-12 13:15:15.353+0000 [] [hz._hzInstance_1_nimbus.cached.thread-4] WARN  c.hazelcast.cluster.impl.TcpIpJoiner - [10.255.190.128]:5701 [nimbus] [3.8.2] Cannot resolve hostname '2.d5cd4a47-1e4c-4dc6-a850-c02421b4dfc7.apps.internal'. Please make sure host is valid and reachable. 
+2018-02-12 13:15:15.353+0000 [] [hz._hzInstance_1_nimbus.cached.thread-4] DEBUG c.hazelcast.cluster.impl.TcpIpJoiner - [10.255.190.128]:5701 [nimbus] [3.8.2] Error during resolving possible target! 
+java.net.UnknownHostException: 2.d5cd4a47-1e4c-4dc6-a850-c02421b4dfc7.apps.internal: Name or service not known
+	at java.net.Inet4AddressImpl.lookupAllHostAddr(Native Method) ~[na:1.8.0_152]
+	at java.net.InetAddress$2.lookupAllHostAddr(InetAddress.java:928) ~[na:1.8.0_152]
+	at java.net.InetAddress.getAddressesFromNameService(InetAddress.java:1323) ~[na:1.8.0_152]
+	at java.net.InetAddress.getAllByName0(InetAddress.java:1276) ~[na:1.8.0_152]
+	at java.net.InetAddress.getAllByName(InetAddress.java:1192) ~[na:1.8.0_152]
+	at java.net.InetAddress.getAllByName(InetAddress.java:1126) ~[na:1.8.0_152]
+	at java.net.InetAddress.getByName(InetAddress.java:1076) ~[na:1.8.0_152]
+	at com.hazelcast.nio.Address.<init>(Address.java:54) ~[hazelcast-3.8.2.jar:3.8.2]
+	at com.hazelcast.cluster.impl.TcpIpJoiner.addPossibleAddresses(TcpIpJoiner.java:466) [hazelcast-3.8.2.jar:3.8.2]
+	at com.hazelcast.cluster.impl.TcpIpJoiner.getPossibleAddresses(TcpIpJoiner.java:440) [hazelcast-3.8.2.jar:3.8.2]
+	at com.hazelcast.cluster.impl.TcpIpJoiner.searchForOtherClusters(TcpIpJoiner.java:505) [hazelcast-3.8.2.jar:3.8.2]
+	at com.hazelcast.internal.cluster.impl.SplitBrainHandler.searchForOtherClusters(SplitBrainHandler.java:75) [hazelcast-3.8.2.jar:3.8.2]
+	at com.hazelcast.internal.cluster.impl.SplitBrainHandler.run(SplitBrainHandler.java:42) [hazelcast-3.8.2.jar:3.8.2]
+	at com.hazelcast.spi.impl.executionservice.impl.DelegateAndSkipOnConcurrentExecutionDecorator$DelegateDecorator.run(DelegateAndSkipOnConcurrentExecutionDecorator.java:66) [hazelcast-3.8.2.jar:3.8.2]
+	at com.hazelcast.util.executor.CachedExecutorServiceDelegate$Worker.run(CachedExecutorServiceDelegate.java:228) [hazelcast-3.8.2.jar:3.8.2]
+	at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1149) [na:1.8.0_152]
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:624) [na:1.8.0_152]
+	at java.lang.Thread.run(Thread.java:748) [na:1.8.0_152]
+	at com.hazelcast.util.executor.HazelcastManagedThread.executeRun(HazelcastManagedThread.java:64) [hazelcast-3.8.2.jar:3.8.2]
+	at com.hazelcast.util.executor.HazelcastManagedThread.run(HazelcastManagedThread.java:80) [hazelcast-3.8.2.jar:3.8.2]
+2018-02-12 13:15:15.353+0000 [] [hz._hzInstance_1_nimbus.cached.thread-4] DEBUG c.hazelcast.cluster.impl.TcpIpJoiner - [10.255.190.128]:5701 [nimbus] [3.8.2] Sending SplitBrainJoinMessage to [1.d5cd4a47-1e4c-4dc6-a850-c02421b4dfc7.apps.internal]:5701 
+2018-02-12 13:15:15.355+0000 [] [hz._hzInstance_1_nimbus.cached.thread-1] INFO  c.h.nio.tcp.TcpIpConnectionManager - [10.255.190.128]:5701 [nimbus] [3.8.2] Established socket connection between /10.255.190.128:52345 and 1.d5cd4a47-1e4c-4dc6-a850-c02421b4dfc7.apps.internal/10.255.98.168:5701 
+2018-02-12 13:15:15.356+0000 [] [hz._hzInstance_1_nimbus.IO.thread-out-1] DEBUG c.h.n.t.SocketWriterInitializerImpl - [10.255.190.128]:5701 [nimbus] [3.8.2] Initializing SocketWriter WriteHandler with Cluster Protocol 
+2018-02-12 13:15:20.402+0000 [] [hz._hzInstance_1_nimbus.cached.thread-4] DEBUG c.hazelcast.cluster.impl.TcpIpJoiner - [10.255.190.128]:5701 [nimbus] [3.8.2] Should merge to: null 
+2018-02-12 13:15:30.342+0000 [] [hz._hzInstance_1_nimbus.cached.thread-5] DEBUG c.h.i.p.InternalPartitionService - [10.255.190.128]:5701 [nimbus] [3.8.2] Publishing partition state, version: 272 
+2018-02-12 13:15:45.345+0000 [] [hz._hzInstance_1_nimbus.cached.thread-5] DEBUG c.h.i.p.InternalPartitionService - [10.255.190.128]:5701 [nimbus] [3.8.2] Publishing partition state, version: 272 
+2018-02-12 13:16:00.342+0000 [] [hz._hzInstance_1_nimbus.cached.thread-2] DEBUG c.h.i.p.InternalPartitionService - [10.255.190.128]:5701 [nimbus] [3.8.2] Publishing partition state, version: 272 
+2018-02-12 13:16:15.345+0000 [] [hz._hzInstance_1_nimbus.cached.thread-4] DEBUG c.h.i.p.InternalPartitionService - [10.255.190.128]:5701 [nimbus] [3.8.2] Publishing partition state, version: 272 
+2018-02-12 13:16:30.344+0000 [] [hz._hzInstance_1_nimbus.cached.thread-4] DEBUG c.h.i.p.InternalPartitionService - [10.255.190.128]:5701 [nimbus] [3.8.2] Publishing partition state, version: 272 
+2018-02-12 13:16:45.342+0000 [] [hz._hzInstance_1_nimbus.cached.thread-5] DEBUG c.h.i.p.InternalPartitionService - [10.255.190.128]:5701 [nimbus] [3.8.2] Publishing partition state, version: 272 
+2018-02-12 13:17:00.342+0000 [] [hz._hzInstance_1_nimbus.cached.thread-2] DEBUG c.h.i.p.InternalPartitionService - [10.255.190.128]:5701 [nimbus] [3.8.2] Publishing partition state, version: 272 
+2018-02-12 13:17:15.344+0000 [] [hz._hzInstance_1_nimbus.cached.thread-2] DEBUG c.h.i.p.InternalPartitionService - [10.255.190.128]:5701 [nimbus] [3.8.2] Publishing partition state, version: 272 
+2018-02-12 13:17:15.350+0000 [] [hz._hzInstance_1_nimbus.cached.thread-5] WARN  c.hazelcast.cluster.impl.TcpIpJoiner - [10.255.190.128]:5701 [nimbus] [3.8.2] Cannot resolve hostname '3.d5cd4a47-1e4c-4dc6-a850-c02421b4dfc7.apps.internal'. Please make sure host is valid and reachable. 
+2018-02-12 13:17:15.350+0000 [] [hz._hzInstance_1_nimbus.cached.thread-5] DEBUG c.hazelcast.cluster.impl.TcpIpJoiner - [10.255.190.128]:5701 [nimbus] [3.8.2] Error during resolving possible target! 
+java.net.UnknownHostException: 3.d5cd4a47-1e4c-4dc6-a850-c02421b4dfc7.apps.internal: Name or service not known
+	at java.net.Inet4AddressImpl.lookupAllHostAddr(Native Method) ~[na:1.8.0_152]
+	at java.net.InetAddress$2.lookupAllHostAddr(InetAddress.java:928) ~[na:1.8.0_152]
+	at java.net.InetAddress.getAddressesFromNameService(InetAddress.java:1323) ~[na:1.8.0_152]
+	at java.net.InetAddress.getAllByName0(InetAddress.java:1276) ~[na:1.8.0_152]
+	at java.net.InetAddress.getAllByName(InetAddress.java:1192) ~[na:1.8.0_152]
+	at java.net.InetAddress.getAllByName(InetAddress.java:1126) ~[na:1.8.0_152]
+	at java.net.InetAddress.getByName(InetAddress.java:1076) ~[na:1.8.0_152]
+	at com.hazelcast.nio.Address.<init>(Address.java:54) ~[hazelcast-3.8.2.jar:3.8.2]
+	at com.hazelcast.cluster.impl.TcpIpJoiner.addPossibleAddresses(TcpIpJoiner.java:466) [hazelcast-3.8.2.jar:3.8.2]
+	at com.hazelcast.cluster.impl.TcpIpJoiner.getPossibleAddresses(TcpIpJoiner.java:440) [hazelcast-3.8.2.jar:3.8.2]
+	at com.hazelcast.cluster.impl.TcpIpJoiner.searchForOtherClusters(TcpIpJoiner.java:505) [hazelcast-3.8.2.jar:3.8.2]
+	at com.hazelcast.internal.cluster.impl.SplitBrainHandler.searchForOtherClusters(SplitBrainHandler.java:75) [hazelcast-3.8.2.jar:3.8.2]
+	at com.hazelcast.internal.cluster.impl.SplitBrainHandler.run(SplitBrainHandler.java:42) [hazelcast-3.8.2.jar:3.8.2]
+	at com.hazelcast.spi.impl.executionservice.impl.DelegateAndSkipOnConcurrentExecutionDecorator$DelegateDecorator.run(DelegateAndSkipOnConcurrentExecutionDecorator.java:66) [hazelcast-3.8.2.jar:3.8.2]
+	at com.hazelcast.util.executor.CachedExecutorServiceDelegate$Worker.run(CachedExecutorServiceDelegate.java:228) [hazelcast-3.8.2.jar:3.8.2]
+	at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1149) [na:1.8.0_152]
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:624) [na:1.8.0_152]
+	at java.lang.Thread.run(Thread.java:748) [na:1.8.0_152]
+	at com.hazelcast.util.executor.HazelcastManagedThread.executeRun(HazelcastManagedThread.java:64) [hazelcast-3.8.2.jar:3.8.2]
+	at com.hazelcast.util.executor.HazelcastManagedThread.run(HazelcastManagedThread.java:80) [hazelcast-3.8.2.jar:3.8.2]
+2018-02-12 13:17:15.353+0000 [] [hz._hzInstance_1_nimbus.cached.thread-5] DEBUG c.hazelcast.cluster.impl.TcpIpJoiner - [10.255.190.128]:5701 [nimbus] [3.8.2] [1.d5cd4a47-1e4c-4dc6-a850-c02421b4dfc7.apps.internal]:5701 is local? false 
+2018-02-12 13:17:15.354+0000 [] [hz._hzInstance_1_nimbus.cached.thread-5] DEBUG c.hazelcast.cluster.impl.TcpIpJoiner - [10.255.190.128]:5701 [nimbus] [3.8.2] [10.255.190.128]:5701 is local? true 
+2018-02-12 13:17:15.356+0000 [] [hz._hzInstance_1_nimbus.cached.thread-5] WARN  c.hazelcast.cluster.impl.TcpIpJoiner - [10.255.190.128]:5701 [nimbus] [3.8.2] Cannot resolve hostname '2.d5cd4a47-1e4c-4dc6-a850-c02421b4dfc7.apps.internal'. Please make sure host is valid and reachable. 
+2018-02-12 13:17:15.356+0000 [] [hz._hzInstance_1_nimbus.cached.thread-5] DEBUG c.hazelcast.cluster.impl.TcpIpJoiner - [10.255.190.128]:5701 [nimbus] [3.8.2] Error during resolving possible target! 
+java.net.UnknownHostException: 2.d5cd4a47-1e4c-4dc6-a850-c02421b4dfc7.apps.internal: Name or service not known
+	at java.net.Inet4AddressImpl.lookupAllHostAddr(Native Method) ~[na:1.8.0_152]
+	at java.net.InetAddress$2.lookupAllHostAddr(InetAddress.java:928) ~[na:1.8.0_152]
+	at java.net.InetAddress.getAddressesFromNameService(InetAddress.java:1323) ~[na:1.8.0_152]
+	at java.net.InetAddress.getAllByName0(InetAddress.java:1276) ~[na:1.8.0_152]
+	at java.net.InetAddress.getAllByName(InetAddress.java:1192) ~[na:1.8.0_152]
+	at java.net.InetAddress.getAllByName(InetAddress.java:1126) ~[na:1.8.0_152]
+	at java.net.InetAddress.getByName(InetAddress.java:1076) ~[na:1.8.0_152]
+	at com.hazelcast.nio.Address.<init>(Address.java:54) ~[hazelcast-3.8.2.jar:3.8.2]
+	at com.hazelcast.cluster.impl.TcpIpJoiner.addPossibleAddresses(TcpIpJoiner.java:466) [hazelcast-3.8.2.jar:3.8.2]
+	at com.hazelcast.cluster.impl.TcpIpJoiner.getPossibleAddresses(TcpIpJoiner.java:440) [hazelcast-3.8.2.jar:3.8.2]
+	at com.hazelcast.cluster.impl.TcpIpJoiner.searchForOtherClusters(TcpIpJoiner.java:505) [hazelcast-3.8.2.jar:3.8.2]
+	at com.hazelcast.internal.cluster.impl.SplitBrainHandler.searchForOtherClusters(SplitBrainHandler.java:75) [hazelcast-3.8.2.jar:3.8.2]
+	at com.hazelcast.internal.cluster.impl.SplitBrainHandler.run(SplitBrainHandler.java:42) [hazelcast-3.8.2.jar:3.8.2]
+	at com.hazelcast.spi.impl.executionservice.impl.DelegateAndSkipOnConcurrentExecutionDecorator$DelegateDecorator.run(DelegateAndSkipOnConcurrentExecutionDecorator.java:66) [hazelcast-3.8.2.jar:3.8.2]
+	at com.hazelcast.util.executor.CachedExecutorServiceDelegate$Worker.run(CachedExecutorServiceDelegate.java:228) [hazelcast-3.8.2.jar:3.8.2]
+	at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1149) [na:1.8.0_152]
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:624) [na:1.8.0_152]
+	at java.lang.Thread.run(Thread.java:748) [na:1.8.0_152]
+	at com.hazelcast.util.executor.HazelcastManagedThread.executeRun(HazelcastManagedThread.java:64) [hazelcast-3.8.2.jar:3.8.2]
+	at com.hazelcast.util.executor.HazelcastManagedThread.run(HazelcastManagedThread.java:80) [hazelcast-3.8.2.jar:3.8.2]
+2018-02-12 13:17:15.356+0000 [] [hz._hzInstance_1_nimbus.cached.thread-5] DEBUG c.hazelcast.cluster.impl.TcpIpJoiner - [10.255.190.128]:5701 [nimbus] [3.8.2] Sending SplitBrainJoinMessage to [1.d5cd4a47-1e4c-4dc6-a850-c02421b4dfc7.apps.internal]:5701 
+2018-02-12 13:17:20.421+0000 [] [hz._hzInstance_1_nimbus.cached.thread-5] DEBUG c.hazelcast.cluster.impl.TcpIpJoiner - [10.255.190.128]:5701 [nimbus] [3.8.2] Should merge to: null 
+2018-02-12 13:17:30.342+0000 [] [hz._hzInstance_1_nimbus.cached.thread-2] DEBUG c.h.i.p.InternalPartitionService - [10.255.190.128]:5701 [nimbus] [3.8.2] Publishing partition state, version: 272 
+2018-02-12 13:17:45.342+0000 [] [hz._hzInstance_1_nimbus.cached.thread-5] DEBUG c.h.i.p.InternalPartitionService - [10.255.190.128]:5701 [nimbus] [3.8.2] Publishing partition state, version: 272 
+2018-02-12 13:18:00.341+0000 [] [hz._hzInstance_1_nimbus.cached.thread-4] DEBUG c.h.i.p.InternalPartitionService - [10.255.190.128]:5701 [nimbus] [3.8.2] Publishing partition state, version: 272 
+2018-02-12 13:18:15.341+0000 [] [hz._hzInstance_1_nimbus.cached.thread-2] DEBUG c.h.i.p.InternalPartitionService - [10.255.190.128]:5701 [nimbus] [3.8.2] Publishing partition state, version: 272 
+```

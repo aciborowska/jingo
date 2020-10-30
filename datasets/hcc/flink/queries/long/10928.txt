@@ -1,0 +1,45 @@
+We've seen a few instances of this occurring in production now (it's difficult to reproduce) 
+
+I've attached a timeline of events as a PDF here  ants-CopyofThe'death'spiralincident-191118-1231-1332.pdf  but essentially it boils down to
+
+1. Job restarts due to exception
+2. Job restores from a checkpoint but we get the exception
+
+
+
+Caused by: com.amazonaws.SdkClientException: Unable to execute HTTP request: Timeout waiting for connection from pool
+
+
+3. Job restarts
+4. Job restores from a checkpoint but we get the same exception
+
+.... repeat a few times within 2-3 minutes....
+
+5. YARN kills containers with out of memory
+
+
+
+2018-11-14 00:16:04,430 INFO  org.apache.flink.yarn.YarnResourceManager                     - Closing TaskExecutor connection container_1541433014652_0001_01_000716 because: Container [pid=7725,containerID=container_1541433014652_0001_01_
+000716] is running beyond physical memory limits. Current usage: 6.4 GB of 6.4 GB physical memory used; 8.4 GB of 31.9 GB virtual memory used. Killing container.
+Dump of the process-tree for container_1541433014652_0001_01_000716 :
+        |- PID PPID PGRPID SESSID CMD_NAME USER_MODE_TIME(MILLIS) SYSTEM_TIME(MILLIS) VMEM_USAGE(BYTES) RSSMEM_USAGE(PAGES) FULL_CMD_LINE
+        |- 7725 7723 7725 7725 (bash) 0 0 115863552 696 /bin/bash -c /usr/lib/jvm/java-openjdk/bin/java -Xms4995m -Xmx4995m -XX:MaxDirectMemorySize=1533m -Xloggc:/var/log/hadoop-yarn/flink_gc_container_1541433014652_0001_%p.log -XX:GCLogF
+ileSize=200M -XX:NumberOfGCLogFiles=10 -XX:+PrintGCDetails -XX:+PrintGCTimeStamps -XX:+PrintTenuringDistribution -XX:+PrintGCCause -XX:+PrintGCDateStamps -XX:+UseG1GC -Dlog.file=/var/log/hadoop-yarn/containers/application_1541433014652_00
+01/container_1541433014652_0001_01_000716/taskmanager.log -Dlog4j.configuration=file:./log4j.properties org.apache.flink.yarn.YarnTaskExecutorRunner --configDir . 1> /var/log/hadoop-yarn/containers/application_1541433014652_0001/container
+_1541433014652_0001_01_000716/taskmanager.out 2> /var/log/hadoop-yarn/containers/application_1541433014652_0001/container_1541433014652_0001_01_000716/taskmanager.err
+        |- 7738 7725 7725 7725 (java) 6959576 976377 8904458240 1671684 /usr/lib/jvm/java-openjdk/bin/java -Xms4995m -Xmx4995m -XX:MaxDirectMemorySize=1533m -Xloggc:/var/log/hadoop-yarn/flink_gc_container_1541433014652_0001_%p.log -XX:GCL
+ogFileSize=200M -XX:NumberOfGCLogFiles=10 -XX:+PrintGCDetails -XX:+PrintGCTimeStamps -XX:+PrintTenuringDistribution -XX:+PrintGCCause -XX:+PrintGCDateStamps -XX:+UseG1GC -Dlog.file=/var/log/hadoop-yarn/containers/application_1541433014652
+_0001/container_1541433014652_0001_01_000716/taskmanager.log -Dlog4j.configuration=file:./log4j.properties org.apache.flink.yarn.YarnTaskExecutorRunner --configDir .
+ 
+Container killed on request. Exit code is 143
+Container exited with a non-zero exit code 143
+
+
+
+6. YARN allocates new containers but the job is never able to get back into a stable state, with constant restarts until eventually the job is cancelled 
+
+
+We've seen something similar to FLINK-10848 happening to with some task managers allocated but sitting 'idle' state. 
+
+
+

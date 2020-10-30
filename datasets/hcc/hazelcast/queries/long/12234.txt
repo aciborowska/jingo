@@ -1,0 +1,48 @@
+
+@donnerbart 
+so, this split 'set' test looses some data after a few iterations of split heal https://hazelcast-l337.ci.cloudbees.com/view/split/job/split-set/14/consoleFull
+
+from the fail 
+`fail HzMember3HZBB _set_validate_setA hzcmd.set.SetAssert threadId=0 global.AssertionException: set set_setA414 size 0 != 100`  we see that we have lost all the data out of `set_setA414 `
+
+the loop is
+```
+split clusters AA BB
+untilCluster AA Size2  
+untilCluster BB Size3
+heal
+until AA merged 
+untilClusterSafe
+validate sets  
+```
+
+and as the iterations continue we loose the data out of a 2nd set, we see in the logs that a set with a lower number/name is empty  `set_setA145 size 0 != 100`
+I think you were saying that 'set' merging did have this batching optimisations ?  which should prevent merge operation time out
+in total the 5 node cluster contains 1000 sets each containing 100 Integers.
+test run details  http://54.82.84.143/~jenkins/workspace/split-set/3.10-SNAPSHOT/2018_01_30-04_25_15/merg/
+
+GC looks ok, but I will maker a longer run just to check http://54.82.84.143/~jenkins/workspace/split-set/3.10-SNAPSHOT/2018_01_30-04_25_15/merg/gc.html
+
+
+from the logs of member3 the first to report data loss out of set 414 http://54.82.84.143/~jenkins/workspace/split-set/3.10-SNAPSHOT/2018_01_30-04_25_15/merg/output/HZ/HzMember3HZBB/out.txt
+
+```
+WARNING: [10.0.0.39]:5701 [HZ] [3.10-SNAPSHOT] Following unknown addresses are found in partition table sent from master[[10.0.0.249]:5701]. (Probably they have recently joined or left the cluster.) {
+    [10.0.0.134]:5701
+}
+```
+
+Danny Conlon [4:18 PM]
+I see a few of these messages in the logs
+```
+./HzMember1HZAA/out.txt:WARNING: [10.0.0.134]:5701 [HZ] [3.10-SNAPSHOT] Error while running merge operation: CollectionMergeOperation invocation failed to complete due to operation-heartbeat-timeout. Current time: 2018-01-30 02:46:38.927. Start time: 2018-01-30 02:44:38.280. Total elapsed time: 120647 ms. Last operation heartbeat: never. Last operation heartbeat from member: 2018-01-30 02:46:26.935. Invocation{op=com.hazelcast.collection.impl.collection.operations.CollectionMergeOperation{serviceName='hz:impl:setService', identityHash=27334452, partitionId=57, replicaIndex=0, callId=-827892, invocationTime=1517280278268 (2018-01-30 02:44:38.268), waitTimeout=-1, callTimeout=60000, name=set_setA103}, tryCount=250, tryPauseMillis=500, invokeCount=1, callTimeoutMillis=60000, firstInvocationTimeMs=1517280278280, firstInvocationTime='2018-01-30 02:44:38.280', lastHeartbeatMillis=0, lastHeartbeatTime='1970-01-01 00:00:00.000', target=[10.0.0.154]:5701, pendingResponse={VOID}, backupsAcksExpected=0, backupsAcksReceived=0, connection=Connection[id=106, /10.0.0.134:38503->/10.0.0.154:5701, endpoint=[10.0.0.154]:5701, alive=true, type=MEMBER]}
+```
+
+and some
+
+```
+./HzMember4HZBB/out.txt:WARNING: [10.0.0.249]:5701 [HZ] [3.10-SNAPSHOT] Migration failed: MigrationInfo{uuid=d1166263-27ff-4194-85f3-d207371a7423, partitionId=0, source=[10.0.0.154]:5701, sourceUuid=1ac00c1c-7041-43bc-8b7e-dfff79ae5daa, sourceCurrentReplicaIndex=0, sourceNewReplicaIndex=3, destination=[10.0.0.204]:5701, destinationUuid=3f80fbe3-3bb1-4f72-a220-8e75c8895e8e, destinationCurrentReplicaIndex=-1, destinationNewReplicaIndex=0, master=[10.0.0.249]:5701, processing=false, status=ACTIVE}
+```
+
+mm is see `./HzMember1HZAA/out.txt:Members {size:1, ver:1} [`
+but even the 2 node sub cluster, will not loose data if it splits and rejoins

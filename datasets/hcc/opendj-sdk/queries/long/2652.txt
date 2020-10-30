@@ -1,0 +1,117 @@
+I can hit following issue by running functional tests. Unfortunatelly I was not able to reduce the number of steps to reproduce the issue. I will attach a script with all steps.
+Scenario
+
+	Install 2 instances
+	Enable replication
+	Initialize replication
+	Run pre-external-initialization on instance1
+	Run import-ldif on instance1
+	Backup instance1 data
+	Restore backup on instance2 from previous step 6.
+	Run post-external-initialization
+	Add one entry on instance1
+	Add one entry on instance2
+	Restore data on instance2 from previous backup (step 6.)
+	Import data on instance1
+	Backup instance1 data
+	Run dsreplication initialize-all  -> STOPPED_BY_ERROR (rc==12)
+
+
+
+This is failed command on line 150.
+
+./opendj/bin/dsreplication initialize-all -h localhost -p 4444 -b dc=com -I admin -w password -X -n
+
+Initializing base DN dc=com with the contents from localhost:4444:
+0 entries processed (0 % complete).
+
+Error during the initialization with contents from server localhost:4444.
+Last log details: [29/Jan/2016:11:20:25 +0100] severity="NOTICE" msgCount=0
+msgID=9896349 message="Initialize Backend task dsreplication-initialize2
+started execution".  Task state: STOPPED_BY_ERROR.  Check the error logs of
+localhost:4444 for more information.
+See /tmp/opendj-replication-8517443789251881283.log for a detailed log of this
+operation.
+
+
+
+Expected behavior, actual behavior and result of my investigation follows.
+
+Expected behavior
+I expect that command dsreplication initialize-all exits sucessfully with return code 0. 
+
+Actual behavior
+In comparison with expected behavior the command dsreplication initialize-all fails with error code 12.
+
+./opendj/bin/dsreplication initialize-all -h localhost -p 4444 -b dc=com -I admin -w password -X -n
+...
+echo $?
+12
+
+
+
+Additional info
+In error log file of instance2 I discovered a NPE: 
+
+cat DJ2/opendj/logs/errors | grep null
+category=SYNC severity=SEVERE_ERROR msgID=14942323 msg=Caught exception computing fake operations for domain dc=com for replication server localhost:8991 : nullNullPointerException (LDAPReplicationDomain.java:4707 ReplicationBroker.java:1091 ReplicationBroker.java:967 ReplicationBroker.java:806 ReplicationBroker.java:2470 ReplicationBroker.java:2894 ReplicationDomain.java:742 ListenerThread.java:97)
+
+
+
+I checked in control panel the task monitor. There are log messages of failed task:
+
+[29/Jan/2016:11:20:25 +0100] severity="NOTICE" msgCount=0 msgID=9896349 message="Initialize Backend task dsreplication-initialize2 started execution"
+[29/Jan/2016:11:20:25 +0100] severity="NOTICE" msgCount=1 msgID=15139025 message="Starting total update: exporting 165 entries in domain "dc=com" from this directory server DS(6667) to all remote directory servers"
+[29/Jan/2016:11:20:56 +0100] severity="NOTICE" msgCount=2 msgID=15139026 message="Finished total update: exported domain "dc=com" from this directory server DS(6667) to all remote directory servers. The following servers did not acknowledge initialization in the expected time. They are potentially down or too slow. Servers list: [24384]"
+[29/Jan/2016:11:20:56 +0100] severity="SEVERE_ERROR" msgCount=3 msgID=-1 message="The following servers did not acknowledge initialization in the expected time. They are potentially down or too slow. Servers list: [24384]"
+[29/Jan/2016:11:20:56 +0100] severity="NOTICE" msgCount=4 msgID=9896350 message="Initialize Backend task dsreplication-initialize2 finished execution"
+
+
+
+The server with ID 24384 is the second instance:
+Line 132 (status before failed command).
+
+./opendj/bin/dsreplication status -h localhost -p 4444 -b dc=com -I admin -w password --script-friendly -X -n
+dc=com  localhost:4444  167     true    6667    8422    8989    0               false
+dc=com  localhost:4446  167     true    24384   22559   8991    0               false
+
+
+
+The status of instance2 after failed command is (0 entries):
+
+          --- Server Status ---
+Server Run Status:        Started
+Open Connections:         1
+
+          --- Server Details ---
+Host Name:                localhost
+Administrative Users:     cn=myself
+Installation Path:
+/opt/opendj
+Version:                  OpenDJ 2.6.4
+Java Version:             1.7.0_80
+Administration Connector: Port 4446 (LDAPS)
+
+          --- Connection Handlers ---
+Address:Port : Protocol    : State
+-------------:-------------:---------
+--           : LDIF        : Disabled
+8991         : Replication : Enabled
+0.0.0.0:161  : SNMP        : Disabled
+0.0.0.0:1391 : LDAP        : Enabled
+0.0.0.0:1638 : LDAPS       : Enabled
+0.0.0.0:1689 : JMX         : Disabled
+0.0.0.0:8080 : HTTP        : Disabled
+
+          --- Data Sources ---
+Base DN:                      dc=com
+Backend ID:                   userRoot
+Entries:                      0
+Replication:                  Enabled
+Missing Changes:              0
+Age of Oldest Missing Change: <not available>
+
+
+
+
+The issue looks like OPENDJ-2341, but steps to reproduce are different.

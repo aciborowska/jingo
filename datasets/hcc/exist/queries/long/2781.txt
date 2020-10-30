@@ -1,0 +1,102 @@
+### What is the problem
+
+When configuring eXist to use Lucene’s GermanAnalyzer or a WhitespaceAnalyzer for the full-text search, search terms containing both umlauts and truncation like `Röntgen*` to find `Röntgenbilder` yields no results. With the WhitespaceAnalyser, truncation generally doesn’t seem to lead to results. Using the StandardAnalyzer, everything works as expected.
+
+### What did you expect
+
+`Röntgen*` to find `Röntgenbilder` regardless of the analyzer.
+
+### Describe how to reproduce or add a test
+
+3/9 tests fail for me, see comments below:
+
+```xquery
+xquery version "3.1";
+
+module namespace t="http://www.faustedition.net/exist/test";
+
+declare namespace f="http://www.faustedition.net/ns";
+declare namespace test="http://exist-db.org/xquery/xqsuite";
+
+declare variable $t:text := <f:doc>
+                                <f:p>Röntgenbilder der Handschriften angefertigt.</f:p>
+                            </f:doc>;
+
+declare variable $t:xconf := 
+        <collection xmlns="http://exist-db.org/collection-config/1.0" xmlns:f="http://www.faustedition.net/ns">
+            <index xmlns:xs="http://www.w3.org/2001/XMLSchema">
+                <fulltext default="none" attributes="false"/>
+                <lucene>
+                    <analyzer id="german" class="org.apache.lucene.analysis.de.GermanAnalyzer"/>
+                    <analyzer id="ws" class="org.apache.lucene.analysis.core.WhitespaceAnalyzer"/>
+                
+                    <text field="default" qname="f:p"/>
+                    <text field="german" qname="f:p" analyzer="german"/>
+                    <text field="ws" qname="f:p" analyzer="ws"/>
+                </lucene>
+            </index>
+        </collection>;
+        
+declare %test:setUp function t:setup() {
+    xmldb:create-collection("/db/system/config/db", "test"),
+    xmldb:store("/db/system/config/db/test", "collection.xconf", $t:xconf),
+    xmldb:create-collection("/db", "test"),
+    xmldb:store("/db/test", "test.xml", $t:text),
+    xmldb:reindex("/db/test")
+};
+
+ 
+declare %test:tearDown function t:teardown() {
+    xmldb:remove("/db/test"),
+    xmldb:remove("/db/system/config/db/test")
+};
+
+declare %test:assertExists function t:testDefaultTrunc() {
+    ft:query-field('default', 'Röntgen*')  (: default analyzer config :)
+}; (: succeeds :) 
+
+declare %test:assertExists function t:testGermanTrunc() {  (: FAILS :)
+    ft:query-field('german', 'Röntgen*')   (: GermanAnalyzer :)
+};
+
+declare %test:assertExists function t:testWhitespaceTrunc() { (: FAILS :)
+    ft:query-field('ws', 'Röntgen*') (: WhitespaceAnalyzer :)
+};
+
+
+
+declare %test:assertExists function t:testDefault() {
+    ft:query-field('default', 'Röntgenbilder')  (: default analyzer config :)
+}; (: succeeds :) 
+
+declare %test:assertExists function t:testGerman() {
+    ft:query-field('german', 'Röntgenbilder')   (: GermanAnalyzer :)
+};
+
+declare %test:assertExists function t:testWhitespace() {
+    ft:query-field('ws', 'Röntgenbilder') (: WhitespaceAnalyzer :)
+};
+
+
+declare %test:assertExists function t:testDefaultASCII() {
+    ft:query-field('default', 'Hand*')  (: default analyzer config :)
+}; (: succeeds :) 
+
+declare %test:assertExists function t:testGermanASCII() {
+    ft:query-field('german', 'Hand*')   (: GermanAnalyzer :)
+};
+
+declare %test:assertExists function t:testWhitespaceASCII() { (: FAILS :)
+    ft:query-field('ws', 'Hand*') (: WhitespaceAnalyzer :)
+};
+```
+
+I’ve run the tests on an otherwise clean eXist 5.0-RC7. The problem also exists on eXist 4.4.0.
+
+### Context information
+- eXist 5.0.0-RC7 /  b94acda4c
+- Java 1.8.0_212 [Oracle Corporation (OpenJDK 64-Bit Server VM)
+- Linux
+- 64 bit
+- How is eXist-db installed? (tar.bz2 file)
+- no custom changes in e.g. conf.xml

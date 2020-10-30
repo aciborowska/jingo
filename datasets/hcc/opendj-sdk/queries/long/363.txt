@@ -1,0 +1,65 @@
+The current usage for the setup tool specifies:
+
+
+--generateSelfSignedCertificate
+    Generate a self-signed certificate that the server should use when
+    accepting SSL-based connections or performing StartTLS negotiation
+-h, --hostname {host}
+    Directory server host name or IP address that will be used to generate the
+    self-signed certificate.  This argument will be taken into account only if
+    the self-signed certificate argument generateSelfSignedCertificate is
+    specified
+    Default value: matts-laptop
+
+
+
+This is completely misleading since certificates will be generated for the admin connector (port 4444 usually) and also for the ADS trust store used by replication. If the fully qualified host name is not provided then it is very likely that the generated certificates will cause subsequent SSL authentication failures/warnings, e.g. when using dsconfig or when replicas connect to each other.
+
+To test:
+
+
+	Default host name:
+
+$ ./setup -i -d 1000 -w password -n
+$ cd config
+$ keytool -v -list -keystore admin-truststore -storepass `cat admin-keystore.pin`
+$ keytool -v -list -keystore ads-truststore -storepass `cat ads-truststore.pin`
+
+
+Usually, depending on the host configuration, the listed certs will contain an owner/issuer DN which contains the unqualified hostname. For example, on my laptop I get:
+
+Owner: CN=matts-laptop, O=Administration Connector Self-Signed Certificate
+Issuer: CN=matts-laptop, O=Administration Connector Self-Signed Certificate
+
+
+	Fully qualified host name:
+
+$ ./setup -i -d 1000 -w password -h matts-laptop.local -n
+$ cd config
+$ keytool -v -list -keystore admin-truststore -storepass `cat admin-keystore.pin`
+$ keytool -v -list -keystore ads-truststore -storepass `cat ads-truststore.pin`
+
+
+Now the listed certs will contain an owner/issuer DN which contains the specified qualified hostname. For example, on my laptop I get:
+
+Owner: CN=matts-laptop.local, O=Administration Connector Self-Signed Certificate
+Issuer: CN=matts-laptop.local, O=Administration Connector Self-Signed Certificate
+
+
+
+
+
+Note that I never requested SSL/StartTLS support nor did I specify the --generateSelfSignedCertificate option as indicated in the usage.
+
+Finally, the quicksetup tool does allow the user to specify the hostname, but I don't think that it sufficiently communicates the importance of this setting.
+
+So what can we do to fix this? I think that there are several possibilities:
+
+
+	fix the CLI usage for the hostname option. It should not suggest that it should only be used if --generateSelfSignedCertificate is specified. The usage should clearly indicate that the hostname will be used for any generated self-signed certs, incl. the admin connector and the ADS trust store
+	make the CLI hostname option mandatory, i.e. do not provide a default value for it and force the user to specify something sensible. The unqualifed hostname is a poor default and should never be sufficient
+	request the hostname during interactive setup (GUI and CLI) with appropriate tooltips indicating what the host name will be used for.
+
+
+
+This issue will also have doc impact.

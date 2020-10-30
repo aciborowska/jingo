@@ -1,0 +1,54 @@
+With OpenDJ-3.0.0 rev b1858f0d30f5d2f1359a0c004264c9e72817774a
+any backend type
+
+We install 3 DJ servers, create suffixes on all of them, import ldif (see script in attachment).
+
+We export certificates from DJ2 and DJ3 to import then into DJ1 truststore.
+Then we configure pass-through-authentication and apply the policy to a user:
+
+
+./opendj/bin/dsconfig -h localhost -p 4444 -D "cn=Directory Manager" -w password -X create-password-policy --set primary-remote-ldap-server:localhost:1638 --set mapped-attribute:cn --set mapped-search-base-dn:dc=AD,dc=com --set mapped-search-bind-dn:"cn=Directory Manager" --set mapped-search-bind-password:password --set mapping-policy:mapped-search --set secondary-remote-ldap-server:localhost:1637 --set trust-manager-provider:JKS --set use-ssl:true --type ldap-pass-through --policy-name "LDAP PTA" -n
+
+./opendj/bin/dsconfig -h localhost -p 4444 -D "cn=Directory Manager" -w password -X get-password-policy-prop --policy-name "LDAP PTA" -n
+
+./opendj/bin/ldapmodify -h localhost -p 1389 -D "cn=Directory Manager" -w password
+20151021 17:25:18.739 - DEBUG - dn: uid=jvedder, ou=People, o=example
+changetype: modify
+add: ds-pwp-password-policy-dn
+ds-pwp-password-policy-dn: cn=LDAP PTA,cn=Password Policies,cn=config
+20151021 17:25:19.594 - INFO - SUCCESS:
+
+./opendj/bin/ldapsearch -h localhost -p 1389 -D "cn=Directory Manager" -w password -T -b "uid=jvedder, ou=People, o=example"  "(objectclass=*)" ds-pwp-password-policy-dn
+20151021 17:25:20.448 - INFO - SUCCESS
+
+
+
+but when trying to authenticate through DJ1 to DJ2 server mapped in ssl mode, it fails to bind:
+
+
+./opendj/bin/ldapsearch -h localhost -p 1389 -D "uid=jvedder, ou=People, o=example" -w befitting -T -b "uid=jvedder, ou=People, o=example" -s base "(objectclass=*)"
+The simple bind attempt failed
+Result Code:  49 (Invalid Credentials)
+
+
+
+and there is the following error message in access logs of DJ1:
+
+
+[21/Oct/2015:17:02:40 +0200] CONNECT conn=9 from=127.0.0.1:46316 to=127.0.0.1:1389 protocol=LDAP
+[21/Oct/2015:17:02:40 +0200] BIND REQ conn=9 op=0 msgID=1 version=3 type=SIMPLE dn="uid=jvedder, ou=People, o=example"
+[21/Oct/2015:17:02:40 +0200] BIND RES conn=9 op=0 msgID=1 result=49 authFailureReason="The user "uid=jvedder,ou=People,o=example" could not be authenticated using LDAP PTA policy "cn=LDAP PTA,cn=Password Policies,c
+n=config" because the search failed unexpectedly for the following reason: A connection could not be established to the remote LDAP server at localhost:1637 for LDAP PTA policy "cn=LDAP PTA,cn=Password Policies,cn=
+config" because SSL negotiation failed for the following reason: sun.security.validator.ValidatorException: PKIX path validation failed: java.security.cert.CertPathValidatorException: signature check failed" authDN
+="uid=jvedder, ou=People, o=example" etime=63
+[21/Oct/2015:17:02:40 +0200] DISCONNECT conn=9 reason="Client Disconnect"
+
+
+
+and the following message in DJ2 access logs:
+
+[21/Oct/2015:17:21:38 +0200] CONNECT conn=231 from=127.0.0.1:45685 to=127.0.0.1:1638 protocol=LDAPS
+[21/Oct/2015:17:21:38 +0200] DISCONNECT conn=231 reason="I/O Error" msg="An IO error occurred while reading a request from the client: javax.net.ssl.SSLException: Received fatal alert: certificate_unknown"
+
+
+

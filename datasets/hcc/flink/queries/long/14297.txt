@@ -1,0 +1,63 @@
+When defining a table that will be used as the build side on a Temporal Table Function, a constant key will not be accepted:
+
+In:
+
+
+Table ratesHistory = tEnv.sqlQuery(sql);
+TemporalTableFunction rates = ratesHistory.createTemporalTableFunction("r_proctime", "r_currency");
+
+
+ This crashes: 
+
+
+SELECT 
+ 'Eur1' AS r_currency,
+ r_amount, 
+ r_proctime 
+FROM RatesHistory
+
+ Making a type verification in Calcite fail: RelOptUtil.verifyTypeEquivalence, when trying to join the Lateral Table Function. It seems like this is a corner case in nullability, the error is:  
+
+
+(Blink) 
+Apply rule [LogicalCorrelateToJoinFromTemporalTableFunctionRule] [...]
+(old planner) 
+Apply rule [LogicalCorrelateToTemporalTableJoinRule] [...]
+Exception in thread "main" java.lang.AssertionError: Cannot add expression of different type to set:
+set type is RecordType(
+  [...] VARCHAR(65536) CHARACTER SET "UTF-16LE"          r_currency, 
+[...]) NOT NULL
+expression type is RecordType(
+  [...] CHAR(4)        CHARACTER SET "UTF-16LE" NOT NULL r_currency, 
+[...]) NOT NULL
+
+ (formatting and commenting mine)
+
+No problem in VARCHAR vs CHAR, as using the following works: 
+
+
+SELECT 
+ COALESCE('Eur1', r_currency) AS r_currency, 
+ r_amount, 
+ r_proctime 
+FROM RatesHistory
+
+ The problem is coming from nullable vs NOT NULL
+
+Attached is Java reproduction code, pom.xml, and both blink and old planner logs and stacktraces.
+
+My speculations on this is that an earlier transformation infers and normalizes the key type (or maybe gets it from the query side?), but the decorrelation and special temporal table function case happens later.
+
+Reordering the rules could help? Maybe way too heavy handed.
+
+Or do this rexBuilder.makeInputRef in a type-compatible way.
+
+This seems to be related to another issue:
+
+https://issues.apache.org/jira/browse/FLINK-14173
+
+Where careful support of the the nullability of the build side key in a LEFT JOIN will take part in the output.
+
+This might seem like a useless use case, but a constant key is the only way to access in SQL a Temporal Table Function for a global value (like querying a global current number)
+
+ 

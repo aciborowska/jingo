@@ -1,0 +1,33 @@
+My Setup:
+
+We have been using the RocksDb option of optimizeForPointLookup and running version 1.7 for years. Upon upgrading to Flink 1.10 we started receiving a strange behavior of missing time windows on a streaming Flink job. For the purpose of testing I experimented with previous Flink version and (1.8, 1.9, 1.9.3) and non of them showed the problem
+
+ 
+
+A sample of the code demonstrating the problem is here:
+
+
+ val datastream = env
+ .addSource(KafkaSource.keyedElements(config.kafkaElements, List(config.kafkaBootstrapServer)))
+
+ val result = datastream
+ .keyBy( _ => 1)
+ .timeWindow(Time.milliseconds(1))
+ .print()
+
+
+ 
+
+ 
+
+The source consists of 3 streams (being either 3 Kafka partitions or 3 Kafka topics), the elements in each of the streams are separately increasing. The elements generate increasing timestamps using an event time and start from 1, increasing by 1. The first partitions would consist of timestamps 1, 2, 10, 15..., the second of 4, 5, 6, 11..., the third of 3, 7, 8, 9...
+
+ 
+
+What I observe:
+
+The time windows would open as I expect for the first 127 timestamps. Then there would be a huge gap with no opened windows, if the source has many elements, then next open window would be having a timestamp in the thousands. A gap of hundred of elements would be created with what appear to be 'lost' elements. Those elements are not reported as late (if tested with the .sideOutputLateData operator). The way we have been using the option is by setting in inside the config like so:
+
+etherbi.rocksDB.columnOptions.optimizeForPointLookup=268435456
+
+We have been using it for performance reasons as we have huge RocksDB state backend.

@@ -1,0 +1,21 @@
+There's a batch of entries, let say in number of 2000.
+Big picture is to put initial versions of them the cache (with status field value 'N') and then put updated versions with status set to 'U'.
+
+Coalesced write behind is being used here. The entries have custom ``equals`` and ``hashCode``.
+
+The story is as follows:
+
+- put all entries in the cache
+- they are registered in write behind queue with store times 1558097498625 - 1558097498766
+- they are stored by write behind, because they all fit in ``StoreWorker``'s ``lastHighestStoreTime``: 1558097499038
+- after selecting entries to store, finished store operations are removed from queues
+- putting updated versions can be split into two parts:
+
+   - updated entries with store times 1558097498634 - 1558097498650, which are eventually not written to DB
+   - updated entries with store times 1558097500278 - 1558097501941, which are stored to DB
+
+What happens in between is additional ``removeFinishedStoreOperationsFromQueues`` invocation which apparently removes the first part of updated entries from being stored. I think that happens because the entries got "old" store times, from the initial batch, which were not timely removed from queue and are now removed during updated batch, because of the custom ``equals``, since using the generic one would indicate different objects.
+
+Could you please take a look? This problem appears in our production code and some entries stored in DB are not current ones. We were unable to write test case which reproduces this issue.
+
+We switched the write-coalescing off, as a workaround. It solved the issue, but affected the overall performance.

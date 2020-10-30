@@ -1,0 +1,124 @@
+To reproduce this issue, you have to simulate an HSM token on the running machine to allow java to correctly load a PKCS#11 keystore.
+This can be achieved using softHSM.
+Then you have to link the simulated token created with softHSM to the PKCS#11 interface, this can be done by:
+1. Creating a PKCS#11 configuration file linked to the softHSM library (on linux, it is located by default in /usr/local/lib/softhsm/libsofthsm2.so:
+
+$ cat /path/to/pkcs11.cfg
+name=pkcs11Test
+library=/usr/local/lib/softhsm/libsofthsm2.so 
+
+
+
+2. Then you have to add the sun.security.pkcs11.SunPKCS11 provider associated to the config file above in the jre security configuration:
+
+root@laptop:/usr/lib/jvm/java-8-openjdk-amd64/jre# cat lib/security/java.security | grep provider
+# Cryptography Package Providers ("providers" for short). The term
+# "provider" refers to a package or set of packages that supply a
+# the Java Security API. A provider may, for example, implement one or
+# Each provider must implement a subclass of the Provider class.
+# To register a provider in this master security properties file,
+#    security.provider.<n>=<className>
+[...]
+security.provider.9=sun.security.smartcardio.SunPCSC
+# Line above must be added manually (the provider number must be adjusted if needed)
+security.provider.10=sun.security.pkcs11.SunPKCS11 /path/to/pkcs11.cfg
+[...]
+
+
+3. Finally create one or more key pairs in the HSM using the PKCS#11 interface with keytool
+
+$ sudo keytool -genkeypair -alias pkcs11-softhsm-keypair -keyalg RSA -keystore NONE -storetype PKCS11
+[sudo] password for gaetan: 
+Enter keystore password:  
+What is your first and last name?
+  [Unknown]:  Test User
+What is the name of your organizational unit?
+  [Unknown]:  Test Organizational Unit
+What is the name of your organization?
+  [Unknown]:  Test Organization
+What is the name of your City or Locality?
+  [Unknown]:  City
+What is the name of your State or Province?
+  [Unknown]:  Province
+What is the two-letter country code for this unit?
+  [Unknown]:  FR
+Is CN=Test User, OU=Test Organizational Unit, O=Test Organization, L=City, ST=Province, C=FR correct?
+  [no]:  yes
+
+
+
+
+Then you can start running the interactive setup (sudo might be required to access the PKCS#11 interface):
+
+$ sudo ./setup
+Welcome to the OpenDJ 6.5.0 interactive setup.
+
+Interactive mode helps you quickly set up an OpenDJ server.
+Provide all required options to set up the server in non-interactive mode,
+or use the command shown at the end of your interactive session
+
+Select the type of server to set up:
+
+    1)  Directory Server
+    2)  Proxy Server
+    3)  Replication Server
+
+Enter choice [1]: 
+[...]
+Options to secure server connections:
+
+    1)  Generate self-signed certificate
+    2)  Use an existing certificate in a PKCS#12 keystore
+    3)  Use an existing certificate in a JCEKS keystore
+    4)  Use an existing certificate in a JKS keystore
+    5)  Use an existing certificate on a PKCS#11 token
+
+Enter choice [5]: 
+Keystore password: 
+
+The keystore contains the following certificate nicknames:
+pkcs11-softhsm-keypair, pkcs11-softhsm-keypair-2.
+You will be prompted for the nickname(s) to use
+
+Use nickname pkcs11-softhsm-keypair? (yes / no) [yes]: 
+Use nickname pkcs11-softhsm-keypair-2? (yes / no) [yes]: 
+
+Global Parameters
+----------------------------------------------------------------------------------------------------------
+Server instance path                            /home/gaetan/dj/opendj/opendj-server/target/opendj  
+Root user DN                                    cn=Directory Manager                                
+Root user password                              ******                                              
+Monitor user                                    Disabled                                            
+Hardened configuration for production           Disabled                                            
+Server's fully qualified host name              gaetan-laptop                                       
+Administration connector port                   4444                                                
+Start server after setup                        Enabled                                             
+Server security                                 Use existing PKCS#11 keystore                       
+com.forgerock.opendj.cli.TableBuilder@6e1d8f9e  Keystore password                                   ******
+
+Accept these choices and continue? (yes / no) [yes]: 
+
+
+
+
+According to the print done if a file based key store is used, it seems that we are wrongly trying to print the keystore path:
+
+Global Parameters
+----------------------------------------------------------------------------------------------------------------------------------------
+Server instance path                   /home/gaetan/dj/opendj/opendj-server/target/opendj
+Root user DN                           cn=Directory Manager
+Root user password                     ******
+Monitor user                           Disabled
+Hardened configuration for production  Disabled
+Server's fully qualified host name     gaetan-laptop
+Administration connector port          5444
+Start server after setup               Enabled
+Server security                        Use existing PKCS#12 keystore
+Keystore file                          /home/gaetan/dj/dev_resources/test_keystores/pkcs12_test_keystore_three_aliases_pass_password.p12
+Keystore password                      ******
+Certificate nickname(s) to use         cert-1, cert-2
+
+
+
+
+Also notice that certificate nicknames are not printed if the PKCS#11 interface is selected whereas they should be.

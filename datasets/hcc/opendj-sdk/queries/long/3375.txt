@@ -1,0 +1,75 @@
+OpenDJ 3.5.0 allows dsconfig to add an index definition for an "any" name whether the name is defined in the schema or not.
+
+The original issue was seen when adding an index for a previously defined "real" objectClass, but tests show you can add an index for any name.
+
+
+	Setup a DJ 3.5.0 instance
+	Run dsconfig create-backend-index with a bogus name.  You can even specify the name of a real objectClass such as inetOrgPerson.
+
+
+
+
+
+opendj; bin/$ ./dsconfig --bindDN "cn=Directory Manager" --bindPasswordFile pass -h localhost -p 4444 create-backend-index --backend-name userRoot --set index-type:presence --set index-type:equality --index-name phantomAttributename --no-prompt --trustAll
+
+[05/Oct/2016:12:55:08 -0600] ADD REQ conn=0 op=13 msgID=14 dn="ds-cfg-attribute=phantomAttributename,cn=Index,ds-cfg-backend-id=userRoot,cn=Backends,cn=config"
+[05/Oct/2016:12:55:08 -0600] ADD RES conn=0 op=13 msgID=14 result=0 etime=40
+
+
+
+
+opendj; bin/$ ./dsconfig --bindDN "cn=Directory Manager" --bindPasswordFile pass -h localhost -p 4444 create-backend-index --backend-name userRoot --set index-type:presence --set index-type:equality --index-name inetOrgPerson --no-prompt --trustAll
+
+[05/Oct/2016:12:56:19 -0600] ADD REQ conn=1 op=13 msgID=14 dn="ds-cfg-attribute=inetOrgPerson,cn=Index,ds-cfg-backend-id=userRoot,cn=Backends,cn=config"
+[05/Oct/2016:12:56:19 -0600] ADD RES conn=1 op=13 msgID=14 result=0 etime=7
+
+
+
+Note: backendstat list-indexes shows the index while verify-index can show there is no index configured.
+
+
+
+opendj; bin/$ ./backendstat list-indexes --backendID userRoot --baseDN dc=example,dc=com | grep phantomAttributename
+phantomAttributename.octetStringMatch             /dc=com,dc=example/phantomAttributename.octetStringMatch             MatchingRuleIndex  0
+phantomAttributename.presence                     /dc=com,dc=example/phantomAttributename.presence                     MatchingRuleIndex  0
+
+
+
+
+
+opendj; bin/$ ./verify-index --baseDN dc=example,dc=com --index phantomAttributename
+[05/10/2016:13:20:40 -0600] category=BACKEND seq=1 severity=FINE msg=JE backend 'userRoot' does not specify the number of cleaner threads: defaulting to 8 threads
+[05/10/2016:13:20:40 -0600] category=BACKEND seq=2 severity=FINE msg=JE backend 'userRoot' does not specify the number of lock tables: defaulting to 17
+[05/10/2016:13:20:41 -0600] category=BACKEND seq=29 severity=INFO msg=Due to changes in the configuration, index dc=com,dc=example_phantomAttributename is currently operating in a degraded state and must be rebuilt before it can be used
+[05/10/2016:13:20:41 -0600] category=BACKEND seq=30 severity=INFO msg=Due to changes in the configuration, index dc=com,dc=example_aTestObjectClass is currently operating in a degraded state and must be rebuilt before it can be used
+[05/10/2016:13:20:41 -0600] category=BACKEND seq=31 severity=INFO msg=Due to changes in the configuration, index dc=com,dc=example_inetOrgPerson is currently operating in a degraded state and must be rebuilt before it can be used
+An error occurred while attempting to perform index verification:
+DirectoryException: There is no index configured for attribute type
+'phantomAttributename' (BackendImpl.java:967 BackendImpl.java:721
+VerifyIndex.java:293 VerifyIndex.java:66)
+
+
+
+DJ 3.0.0 and DJ 4.0.0 SNAPSHOT (opendj-4.0.0-20160927.zip) throw the proper result=53.
+
+
+
+opendj; bin/$ ./dsconfig --bindDN "cn=Directory Manager" --bindPasswordFile pass -h localhost -p 4444 create-backend-index --backend-name userRoot --set index-type:presence --set index-type:equality --index-name phantomAttributename --no-prompt --trustAll
+
+The Backend Index could not be created because of the following reason:
+
+    *  Unwilling to Perform: The Directory Server is unwilling to add
+       configuration entry
+       ds-cfg-attribute=phantomAttributename,cn=Index,ds-cfg-backend-id=userRoo
+       t,cn=Backends,cn=config because one of the add listeners registered with
+       the parent entry
+       cn=Index,ds-cfg-backend-id=userRoot,cn=Backends,cn=config rejected this
+       change with the message: The Backend Index could not be decoded due to
+       the following reason: The value "phantomAttributename" is not a valid
+       value for the "attribute" property, which must have the following
+       syntax: OID
+
+[05/Oct/2016:13:06:12 -0600] ADD REQ conn=4 op=13 msgID=14 dn="ds-cfg-attribute=phantomAttributename,cn=Index,ds-cfg-backend-id=userRoot,cn=Backends,cn=config"
+[05/Oct/2016:13:06:12 -0600] ADD RES conn=4 op=13 msgID=14 result=53 message="The Directory Server is unwilling to add configuration entry ds-cfg-attribute=phantomAttributename,cn=Index,ds-cfg-backend-id=userRoot,cn=Backends,cn=config because one of the add listeners registered with the parent entry cn=Index,ds-cfg-backend-id=userRoot,cn=Backends,cn=config rejected this change with the message: The Backend Index could not be decoded due to the following reason: The value "phantomAttributename" is not a valid value for the "attribute" property, which must have the following syntax: OID" etime=5
+[05/Oct/2016:13:06:12 -0600] UNBIND REQ conn=4 op=14 msgID=15
+

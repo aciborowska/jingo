@@ -1,0 +1,325 @@
+Hi,
+
+I ran into a deadlock while adding a node to another node which is in the process of initializing a map.
+
+The following test starts a first node which slowly initializes a map. While this initialization is ongoing, a second node is started and joins the other node. This second node now blocks the first node forever - or until I shutdown the second node.
+
+This happens in 3.2, 3.2.2-SNAPSHOT, 3.3-SNAPSHOT.
+
+``` java
+package com.nm.test.hazelcast.mapstore;
+
+import com.hazelcast.config.*;
+import com.hazelcast.config.MapStoreConfig.InitialLoadMode;
+import com.hazelcast.core.Hazelcast;
+import com.hazelcast.core.HazelcastInstance;
+import com.hazelcast.core.IMap;
+import com.nm.test.hazelcast.TestHazelcast;
+import com.nm.test.hazelcast.utils.InMemoryMapStore;
+import com.nm.test.hazelcast.utils.Sleep;
+import org.apache.log4j.BasicConfigurator;
+import org.apache.log4j.Logger;
+import java.util.concurrent.atomic.AtomicLong;
+import junit.framework.TestCase;
+
+/**
+ * Test if a node joining a cluster which is loading data works.
+ */
+public class TestMapStore10 extends TestCase {
+
+    private static final Logger logger = Logger.getLogger(TestMapStore10.class);
+
+    private static final String mapName = "testMap";
+
+    private static final int writeDelaySeconds = 5;
+
+    private static final int preloadSize = 1000;
+
+    private static final AtomicLong thread1Shutdown = new AtomicLong(-1L);
+
+    private static final AtomicLong thread2Shutdown = new AtomicLong(-1L);
+
+    @Override
+    protected void setUp() throws Exception {
+
+        // configure logging
+        if (!TestHazelcast.loggingInitialized) {
+            TestHazelcast.loggingInitialized = true;
+            BasicConfigurator.configure();
+        }
+    }
+
+    public void testJoin() throws Exception {
+
+        // create shared hazelcast config
+        final Config config = new XmlConfigBuilder().build();
+        config.setProperty("hazelcast.logging.type", "log4j");
+
+        // disable JMX to make sure lazy loading works asynchronously
+        config.setProperty("hazelcast.jmx", "false");
+
+        // get map config
+        MapConfig mapConfig = config.getMapConfig(mapName);
+
+        // create shared map store implementation
+        // - use slow loading (300ms per map entry)
+        final InMemoryMapStore store = new InMemoryMapStore(true, 300, false);
+        store.preload(preloadSize);
+
+        // configure map store
+        MapStoreConfig mapStoreConfig = new MapStoreConfig();
+        mapStoreConfig.setEnabled(true);
+        mapStoreConfig.setInitialLoadMode(InitialLoadMode.LAZY);
+        mapStoreConfig.setWriteDelaySeconds(writeDelaySeconds);
+        mapStoreConfig.setClassName(null);
+        mapStoreConfig.setImplementation(store);
+        mapConfig.setMapStoreConfig(mapStoreConfig);
+
+        // thread 1:
+        // start a single node and load the data
+        Thread thread1 = new Thread(new Runnable() {
+
+            @Override
+            public void run() {
+
+                HazelcastInstance hcInstance = Hazelcast.newHazelcastInstance(config);
+
+                // ------------------------------------------------------- {5s}
+
+                // try-finally to stop hazelcast instance
+                try {
+
+                    // log started
+                    logger.info(Thread.currentThread().getName() + " started.");
+
+                    // get map
+                    // this will trigger loading the data
+                    // data loading using 20 threads will take 1000/20*300ms = 15s
+                    IMap<String, String> map = hcInstance.getMap(mapName);
+                    int size = map.size();
+                    logger.info("Map size = " + size);
+
+                    // -------------------------------------------------- {20s}
+
+                } finally {
+                    thread1Shutdown.set(System.currentTimeMillis());
+                    logger.info(Thread.currentThread().getName() + " shutdown on " + thread1Shutdown.get());
+                    hcInstance.getLifecycleService().shutdown();
+                }
+                logger.info(Thread.currentThread().getName() + " done.");
+            }
+        }, "Thread 1");
+        thread1.start();
+
+        // wait 10s after starting first thread
+        Sleep.sleep(10000, true);
+
+        // thread 2:
+        // simulate a second member which joins the cluster
+        Thread thread2 = new Thread(new Runnable() {
+
+            @Override
+            public void run() {
+
+                HazelcastInstance hcInstance = Hazelcast.newHazelcastInstance(config);
+
+                // ------------------------------------------------------ {15s}
+
+                // log joined
+                logger.info(Thread.currentThread().getName() + " hazelcast instance joined.");
+
+                // try-finally to stop hazelcast instance
+                try {
+
+                    // get map
+                    hcInstance.getMap(mapName);
+
+                    // sleep 20s
+                    Sleep.sleep(20000, true);
+
+                    logger.info(Thread.currentThread().getName() + " slept.");
+
+                    // -------------------------------------------------- {35s}
+
+                } finally {
+                    thread2Shutdown.set(System.currentTimeMillis());
+                    logger.info(Thread.currentThread().getName() + " shutdown on " + thread2Shutdown.get());
+                    hcInstance.getLifecycleService().shutdown();
+                }
+                logger.info(Thread.currentThread().getName() + " done.");
+            }
+        }, "Thread 2");
+        thread2.start();
+
+        // join threads
+        thread1.join();
+        thread2.join();
+
+        // assert correct shutdown order
+        if (thread1Shutdown.get() > thread2Shutdown.get()) {
+            fail("Thread 2 was shutdown before thread 1.");
+        }
+    }
+
+}
+
+
+package com.nm.test.hazelcast.utils;
+
+import com.hazelcast.core.MapStore;
+import org.apache.log4j.Logger;
+import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
+
+public class InMemoryMapStore implements MapStore<String, String> {
+
+    private static final Logger logger = Logger.getLogger(InMemoryMapStore.class);
+
+    // ----------------------------------------------------------------- config
+
+    private final boolean infoOnLoad;
+
+    private final int msPerLoad;
+
+    private final boolean sleepBeforeLoadAllKeys;
+
+    // ------------------------------------------------------------------ state
+
+    private final ConcurrentHashMap<String, String> store = new ConcurrentHashMap<String, String>();
+
+    private final AtomicInteger countLoadAllKeys = new AtomicInteger(0);
+
+    // ----------------------------------------------------------- construction
+
+    public InMemoryMapStore() {
+        this.infoOnLoad = true;
+        this.msPerLoad = -1;
+        this.sleepBeforeLoadAllKeys = false;
+    }
+
+    public InMemoryMapStore(boolean infoOnLoad, int msPerLoad, boolean sleepBeforeLoadAllKeys) {
+        this.infoOnLoad = infoOnLoad;
+        this.msPerLoad = msPerLoad;
+        this.sleepBeforeLoadAllKeys = sleepBeforeLoadAllKeys;
+    }
+
+    public void preload(int size) {
+        for (int i = 0; i < size; i++) {
+            store.put("k" + i, "v" + i);
+        }
+    }
+
+    // ---------------------------------------------------------------- getters
+
+    public int getCountLoadAllKeys() {
+        return countLoadAllKeys.get();
+    }
+
+    // ----------------------------------------------------- MapStore interface
+
+    @Override
+    public String load(String key) {
+        if (infoOnLoad) {
+            logger.info("load(" + key + ") called.");
+        }
+        if (msPerLoad > 0) {
+            Sleep.sleep(msPerLoad, false);
+        }
+        return store.get(key);
+    }
+
+    @Override
+    public Map<String, String> loadAll(Collection<String> keys) {
+        List<String> keysList = new ArrayList<String>(keys);
+        Collections.sort(keysList);
+        if (infoOnLoad) {
+            logger.info("loadAll(" + keysList + ") called.");
+        }
+        Map<String, String> result = new HashMap<String, String>();
+        for (String key : keys) {
+            if (msPerLoad > 0) {
+                Sleep.sleep(msPerLoad, false);
+            }
+            String value = store.get(key);
+            if (value != null) {
+                result.put(key, value);
+            }
+        }
+        return result;
+    }
+
+    @Override
+    public Set<String> loadAllKeys() {
+
+        // sleep 5s to highlight asynchronous behavior
+        if (sleepBeforeLoadAllKeys) {
+            Sleep.sleep(5000, true);
+        }
+
+        countLoadAllKeys.incrementAndGet();
+        logger.info("loadAllKeys() called (count now = " + countLoadAllKeys.get() + ").");
+        Set<String> result = new HashSet<String>(store.keySet());
+        List<String> resultList = new ArrayList<String>(result);
+        Collections.sort(resultList);
+        logger.info("loadAllKeys result: size = " + result.size() + ", keys = " + resultList + ".");
+        return result;
+    }
+
+    @Override
+    public void store(String key, String value) {
+        logger.info("store(" + key + ") called.");
+        store.put(key, value);
+    }
+
+    @Override
+    public void storeAll(Map<String, String> map) {
+        TreeSet<String> setSorted = new TreeSet<String>(map.keySet());
+        logger.info("storeAll(" + setSorted + ") called.");
+        store.putAll(map);
+    }
+
+    @Override
+    public void delete(String key) {
+        logger.info("delete(" + key + ") called.");
+        store.remove(key);
+    }
+
+    @Override
+    public void deleteAll(Collection<String> keys) {
+        List<String> keysList = new ArrayList<String>(keys);
+        Collections.sort(keysList);
+        logger.info("deleteAll(" + keysList + ") called.");
+        for (String key : keys) {
+            store.remove(key);
+        }
+    }
+
+}
+
+
+package com.nm.test.hazelcast.utils;
+
+import org.apache.log4j.Logger;
+
+public class Sleep {
+
+    private static final Logger logger = Logger.getLogger(Sleep.class);
+
+    public static void sleep(long ms, boolean log) {
+        try {
+            Thread.sleep(ms);
+            if (log) {
+                logger.info("Slept " + (ms / 1000) + "s.");
+            }
+        } catch (InterruptedException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+}
+
+```
+
+Best,
+Lukas

@@ -1,0 +1,100 @@
+This is issue has been observed in a customer environment, after upgrading 6 replicated servers to  3.5.1. The server has 2M entries, the backend occupancy around 23G. After upgrade, one of the server is spinning(?) at 93%, and do not seem to end. Other servers in the topology are impacted, causing long delays in starting, and timeouts with replication connections.The sequence they used to upgrade is not clear, but there is some evidence that it was performed live, taking one instance out at a time. The server that is spinning is an OpenAM external idStore. The jstack reveals that there is a single  thread at high CPU :
+
+
+
+"Replica DS(18981) missing change publisher for domain "dc=example,dc=com""  prio=10 tid=0x00007f0aa8ed8800 nid=0x533b runnable [0x00007f0a8f5f3000]
+  java.lang.Thread.State: RUNNABLE
+        at  org.forgerock.opendj.ldap.schema.ObjectIdentifierEqualityMatchingRuleImpl$2.<init>(ObjectIdentifierEqualityMatchingRuleImpl.java:157)
+
+
+
+It seems the issue can be reproduced following the steps described below. I currently have an instance spinning at hight CPU, likely to be the same issue observed by the customer. Unfortunately, having tested on OSX, I am not able to gather the thread statistics. A jstack fails to connect to the instance (therefore it has to be forced), neither attaching a debugger succeeds. Though the thread name is not displayed, the stack is probably related :
+
+
+
+Thread 5891: (state = BLOCKED)
+ - com.sleepycat.je.tree.INKeyRep$MaxKeySize.get(int) @bci=31, line=259 (Compiled frame)
+ - com.sleepycat.je.tree.INKeyRep$MaxKeySize.get(int) @bci=2, line=201 (Compiled frame)
+ - com.sleepycat.je.tree.IN.getKey(int) @bci=18, line=783 (Compiled frame)
+ - com.sleepycat.je.dbi.CursorImpl.fetchCurrent(com.sleepycat.je.DatabaseEntry, com.sleepycat.je.DatabaseEntry, com.sleepycat.je.txn.LockType) @bci=299, line=2295 (Compiled frame)
+ - com.sleepycat.je.dbi.CursorImpl.getCurrentAlreadyLatched(com.sleepycat.je.DatabaseEntry, com.sleepycat.je.DatabaseEntry, com.sleepycat.je.txn.LockType) @bci=58, line=1480 (Compiled frame)
+ - com.sleepycat.je.dbi.CursorImpl.getNext(com.sleepycat.je.DatabaseEntry, com.sleepycat.je.DatabaseEntry, com.sleepycat.je.txn.LockType, boolean, boolean, com.sleepycat.je.dbi.RangeConstraint) @bci=199, line=1607 (Compiled frame)
+ - com.sleepycat.je.Cursor.retrieveNextAllowPhantoms(com.sleepycat.je.DatabaseEntry, com.sleepycat.je.DatabaseEntry, com.sleepycat.je.txn.LockType, com.sleepycat.je.dbi.GetMode, com.sleepycat.je.dbi.RangeConstraint) @bci=66, line=3080 (Compiled frame)
+ - com.sleepycat.je.Cursor.retrieveNextNoDups(com.sleepycat.je.DatabaseEntry, com.sleepycat.je.DatabaseEntry, com.sleepycat.je.LockMode, com.sleepycat.je.dbi.GetMode) @bci=87, line=2957 (Compiled frame)
+ - com.sleepycat.je.Cursor.retrieveNext(com.sleepycat.je.DatabaseEntry, com.sleepycat.je.DatabaseEntry, com.sleepycat.je.LockMode, com.sleepycat.je.dbi.GetMode) @bci=26, line=2931 (Compiled frame)
+ - com.sleepycat.je.Cursor.getNext(com.sleepycat.je.DatabaseEntry, com.sleepycat.je.DatabaseEntry, com.sleepycat.je.LockMode) @bci=62, line=1148 (Compiled frame)
+ - org.opends.server.backends.jeb.JEStorage$CursorImpl.next() @bci=18, line=155 (Compiled frame)
+ - org.opends.server.backends.pluggable.EntryContainer.searchNotIndexed(org.opends.server.backends.pluggable.spi.ReadableTransaction, org.opends.server.core.SearchOperation, org.opends.server.controls.PagedResultsControl) @bci=590, line=1193 (Compiled frame)
+ - org.opends.server.backends.pluggable.EntryContainer.access$1700(org.opends.server.backends.pluggable.EntryContainer, org.opends.server.backends.pluggable.spi.ReadableTransaction, org.opends.server.core.SearchOperation, org.opends.server.controls.PagedResultsControl) @bci=4, line=112 (Interpreted frame)
+ - org.opends.server.backends.pluggable.EntryContainer$3.run(org.opends.server.backends.pluggable.spi.ReadableTransaction) @bci=833, line=881 (Interpreted frame)
+ - org.opends.server.backends.pluggable.EntryContainer$3.run(org.opends.server.backends.pluggable.spi.ReadableTransaction) @bci=2, line=667 (Interpreted frame)
+ - org.opends.server.backends.jeb.JEStorage.read(org.opends.server.backends.pluggable.spi.ReadOperation) @bci=6, line=762 (Interpreted frame)
+ - org.opends.server.backends.pluggable.TracedStorage.read(org.opends.server.backends.pluggable.spi.ReadOperation) @bci=26, line=496 (Interpreted frame)
+ - org.opends.server.backends.pluggable.EntryContainer.search(org.opends.server.core.SearchOperation) @bci=13, line=666 (Interpreted frame)
+ - org.opends.server.backends.pluggable.BackendImpl.search(org.opends.server.core.SearchOperation) @bci=23, line=565 (Interpreted frame)
+ - org.opends.server.workflowelement.localbackend.LocalBackendSearchOperation.processSearch(java.util.concurrent.atomic.AtomicBoolean) @bci=248, line=224 (Interpreted frame)
+ - org.opends.server.workflowelement.localbackend.LocalBackendSearchOperation.processLocalSearch(org.opends.server.workflowelement.localbackend.LocalBackendWorkflowElement) @bci=32, line=101 (Interpreted frame)
+ - org.opends.server.workflowelement.localbackend.LocalBackendWorkflowElement.execute(org.opends.server.types.Operation) @bci=90, line=732 (Interpreted frame)
+ - org.opends.server.workflowelement.localbackend.LocalBackendWorkflowElement.executeOnNonRootDSE(org.opends.server.types.Operation, org.opends.server.workflowelement.localbackend.LocalBackendWorkflowElement) @bci=2, line=1051 (Interpreted frame)
+ - org.opends.server.workflowelement.localbackend.LocalBackendWorkflowElement.execute(org.opends.server.types.Operation, org.forgerock.opendj.ldap.DN) @bci=45, line=894 (Interpreted frame)
+ - org.opends.server.core.SearchOperationBasis.run() @bci=293, line=1007 (Interpreted frame)
+ - org.opends.server.protocols.internal.InternalClientConnection.processSearch(org.opends.server.protocols.internal.SearchRequest, org.opends.server.protocols.internal.InternalSearchListener) @bci=18, line=1686 (Interpreted frame)
+ - org.opends.server.replication.plugin.LDAPReplicationDomain.searchForChangedEntries(org.forgerock.opendj.ldap.DN, org.opends.server.replication.common.CSN, org.opends.server.replication.common.CSN, org.opends.server.protocols.internal.InternalSearchListener) @bci=144, line=4182 (Interpreted frame)
+ - org.opends.server.replication.plugin.LDAPReplicationDomain.searchForChangedEntries(org.forgerock.opendj.ldap.DN, org.opends.server.replication.common.CSN, org.opends.server.protocols.internal.InternalSearchListener) @bci=4, line=4203 (Interpreted frame)
+ - org.opends.server.replication.plugin.PersistentServerState.checkAndUpdateServerState() @bci=38, line=328 (Interpreted frame)
+ - org.opends.server.replication.plugin.PersistentServerState.loadState() @bci=24, line=145 (Interpreted frame)
+ - org.opends.server.replication.plugin.PersistentServerState.<init>(org.forgerock.opendj.ldap.DN, int, org.opends.server.replication.common.ServerState) @bci=20, line=79 (Interpreted frame)
+ - org.opends.server.replication.plugin.LDAPReplicationDomain.<init>(org.forgerock.opendj.server.config.server.ReplicationDomainCfg, java.util.concurrent.BlockingQueue, org.opends.server.replication.service.DSRSShutdownSync) @bci=251, line=577 (Interpreted frame)
+ - org.opends.server.replication.plugin.MultimasterReplication.createNewDomain(org.forgerock.opendj.server.config.server.ReplicationDomainCfg) @bci=11, line=192 (Interpreted frame)
+ - org.opends.server.replication.plugin.MultimasterReplication.initializeSynchronizationProvider(org.forgerock.opendj.server.config.server.ReplicationSynchronizationProviderCfg) @bci=101, line=274 (Interpreted frame)
+ - org.opends.server.replication.plugin.MultimasterReplication.initializeSynchronizationProvider(org.forgerock.opendj.server.config.server.SynchronizationProviderCfg) @bci=5, line=85 (Interpreted frame)
+ - org.opends.server.core.SynchronizationProviderConfigManager.getSynchronizationProvider(org.forgerock.opendj.server.config.server.SynchronizationProviderCfg) @bci=115, line=317 (Interpreted frame)
+ - org.opends.server.core.SynchronizationProviderConfigManager.initializeSynchronizationProviders() @bci=80, line=111 (Interpreted frame)
+ - org.opends.server.core.DirectoryServer.startServer() @bci=641, line=1593 (Interpreted frame)
+ - org.opends.server.core.DirectoryServer.main(java.lang.String[]) @bci=1502, line=6277 (Interpreted frame)
+
+
+
+The data in the changelog does not evolve at all. Letting the server indefinitely running ends up in a crash.
+
+Note that in order for it to start, I had to configure a larger heap (going from 1G to 4G after upgrade), otherwise it ends up in Out Of Memory straight away.
+
+Below, the console traces when starting the server :
+
+
+
+[17/Nov/2016:09:19:32 +1100] category=com.forgerock.opendj.ldap.config.config severity=NOTICE msgID=571 msg=Loaded extension from file '/Users/patrickdiligent/opendj/server/2.6.2/2M/dj1/lib/extensions/snmp-mib2605.jar' (build 3.5.1, revision 23b322a7502f029b6d3725212c162de36f038122)
+[17/Nov/2016:09:19:32 +1100] category=CORE severity=NOTICE msgID=134 msg=OpenDJ Server 3.5.1 (build 20161018085632, revision number 23b322a7502f029b6d3725212c162de36f038122) starting up
+[17/Nov/2016:09:19:33 +1100] category=JVM severity=NOTICE msgID=21 msg=Installation Directory:  /Users/patrickdiligent/opendj/server/2.6.2/2M/dj1
+[17/Nov/2016:09:19:33 +1100] category=JVM severity=NOTICE msgID=23 msg=Instance Directory:      /Users/patrickdiligent/opendj/server/2.6.2/2M/dj1
+[17/Nov/2016:09:19:33 +1100] category=JVM severity=NOTICE msgID=17 msg=JVM Information: 1.7.0_75-b13 by Oracle Corporation, 64-bit architecture, 4116709376 bytes heap size
+[17/Nov/2016:09:19:33 +1100] category=JVM severity=NOTICE msgID=18 msg=JVM Host: 192.168.0.11, running Mac OS X 10.11.6 x86_64, 17179869184 bytes physical memory size, number of processors available 8
+[17/Nov/2016:09:19:33 +1100] category=JVM severity=NOTICE msgID=19 msg=JVM Arguments: "-Djava.awt.headless=true", "-Xms4096m", "-Xmx4096m", "-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=8000", "-Dorg.opends.server.scriptName=start-ds"
+[17/Nov/2016:09:19:35 +1100] category=BACKEND severity=NOTICE msgID=513 msg=The database backend userRoot containing 2000002 entries has started
+[17/Nov/2016:09:19:35 +1100] category=EXTENSIONS severity=NOTICE msgID=221 msg=DIGEST-MD5 SASL mechanism using a server fully qualified domain name of: patricks-MacBook-Pro.local
+[17/Nov/2016:09:19:35 +1100] category=SYNC severity=NOTICE msgID=204 msg=Replication server RS(10077) started listening for new connections on address 0.0.0.0 port 8989
+[17/Nov/2016:09:19:40 +1100] category=SYNC severity=WARNING msgID=106 msg=Timed out waiting for monitor data for the domain "dc=example,dc=com" from replication server RS(9565)
+[17/Nov/2016:09:20:40 +1100] category=SYNC severity=WARNING msgID=106 msg=Timed out waiting for monitor data for the domain "cn=admin data" from replication server RS(9565)
+[17/Nov/2016:09:20:40 +1100] category=SYNC severity=WARNING msgID=106 msg=Timed out waiting for monitor data for the domain "cn=admin data" from replication server RS(16226)
+[17/Nov/2016:09:20:40 +1100] category=SYNC severity=WARNING msgID=106 msg=Timed out waiting for monitor data for the domain "cn=schema" from replication server RS(9565)
+[17/Nov/2016:09:20:40 +1100] category=SYNC severity=WARNING msgID=106 msg=Timed out waiting for monitor data for the domain "cn=schema" from replication server RS(16226)
+[17/Nov/2016:09:20:45 +1100] category=SYNC severity=WARNING msgID=106 msg=Timed out waiting for monitor data for the domain "dc=example,dc=com" from replication server RS(16226)
+The timeout of '200' seconds to start the server has been reached.  You can
+use the argument '--timeout' to increase this timeout
+
+
+
+In order to reproduce :
+
+
+	Install 3 replicated servers, 2.6.2 with 2M entries.
+	Cause the backends to grow with historical data. For this I used JMeter with one thread randomly updating 2M users with sn, then givenName with a large value (1k+). I let it grow until userRoot reached 14G.Using one JMeter instance per server, had to let it run overnight.
+	Stop the JMeter test plan, and use modified test plan to moderately load the servers thru a load balancer (using haproxy). [ that's the step I followed, but it may not be a determining factor ].
+	Stop the first server, upgrade to 3.5.1, answer yes to all questions to perform post-upgrade tasks.
+	Start the server, spinning occurs, at first attempt.
+
+
+
+Re-starting the server did not clear the issue. On the customer install, the server had to be taken down, re-installed, and initialised from another node.
+
+I am keeping the data if it can be used for an investigation.

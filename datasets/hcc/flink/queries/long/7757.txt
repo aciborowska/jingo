@@ -1,0 +1,9 @@
+RocksDBKeyedStateBackend uses a lock to guard the db instance against disposal of the native resources while some parallel threads might still access db, which might otherwise lead to segfaults.
+
+Unfortunately, this locking is a bit to strict and can lead to situations where snapshots block the pipeline. This can happen when a snapshot s1 is running and somewhere blocking in IO while holding the guarding lock. A second snapshot s2 can be triggered in parallel and requires to hold the lock in the synchronous part to get a snapshot from db. As s1 is still holding on to the lock, s2 can block here and stop the operator from processing further elements.
+
+A simple solution could remove lock acquisition from the synchronous phase, because both, synchronous phase and disposing the backend are only allowed to be triggered from the thread that also drives element processing.
+
+A better solution would be to remove long sections under the lock all together, because as of now they will always prevent the possibility of parallel checkpointing. I think a guard for the rocksdb instance would be sufficient that blocks disposal for as long as there are still clients potentially accessing the instance in parallel. This could be realized by keeping a synchronized counter for active clients and block disposal until the client count drops to zero.
+
+This approach could also be integrated with triggering timers, which have always been problematic in the disposal phase are currently unregulated. In the new model, they could register as yet another client.

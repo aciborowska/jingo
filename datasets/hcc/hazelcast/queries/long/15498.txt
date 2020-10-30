@@ -1,0 +1,24 @@
+There are 2 modes of a failure:
+
+1. If initial loading mode is set to `InitialLoadMode.LAZY`, there might be partitions that were never accessed and hence no loading was performed for them. After hot restart such partitions are skipped and no record stores are created, but on the first access a record store is created using the usual `PartitionContainer#recordStoreConstructor` which triggers initial loading (`MapKeyLoader.startInitialLoad`). At the same time, a partition that was selected to orchestrate the loading (see `MapKeyLoader#calculateRole`) might be created in the hot restart way (if it was accessed before the restart, `PartitionContainer.recordStoreConstructorForHotRestart`) which skips the map loader logic, so the orchestrating partition is unaware if its responsibilities (its role is set to `Role.NONE` instead of `Role.SENDER`).
+
+2. The same applies to empty partitions for both `InitialLoadMode.LAZY` and `InitialLoadMode.EAGER` since empty partitions are skipped during hot restarting and created on the first access in the regular way.
+
+Sample exception:
+
+```
+Aug 29, 2019 12:20:20 AM com.hazelcast.map.impl.operation.KeyLoadStatusOperation
+SEVERE: [127.0.0.1]:5701 [dev] [3.12.2] Transition not allowed from state NOT_LOADED to LOADED
+java.lang.IllegalStateException: Transition not allowed from state NOT_LOADED to LOADED
+	at com.hazelcast.util.Preconditions.checkState(Preconditions.java:355)
+	at com.hazelcast.util.StateMachine.next(StateMachine.java:62)
+	at com.hazelcast.util.StateMachine.nextOrStay(StateMachine.java:76)
+	at com.hazelcast.map.impl.MapKeyLoader.trackLoading(MapKeyLoader.java:356)
+	at com.hazelcast.map.impl.recordstore.DefaultRecordStore.updateLoadStatus(DefaultRecordStore.java:1172)
+	at com.hazelcast.map.impl.operation.KeyLoadStatusOperation.run(KeyLoadStatusOperation.java:45)
+	at com.hazelcast.spi.Operation.call(Operation.java:170)
+	at com.hazelcast.spi.impl.operationservice.impl.OperationRunnerImpl.call(OperationRunnerImpl.java:210)
+	at com.hazelcast.spi.impl.operationservice.impl.OperationRunnerImpl.run(OperationRunnerImpl.java:199)
+	at com.hazelcast.spi.impl.operationexecutor.impl.OperationThread.process(OperationThread.java:147)
+	...
+```

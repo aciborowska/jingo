@@ -1,0 +1,73 @@
+After running 2.8 with replication of mods a little while, the dsreplication tool times out waiting for a response.
+
+
+dsreplication status -n -X -h tomme.internal.forgerock.com -p 11444 -I admin -w admin
+The displayed information might not be complete because the following errors
+were encountered reading the configuration of the existing servers:
+
+Error on m2.europe.com:22444: An error occurred connecting to the server.
+Details: javax.naming.NamingException: LDAP response read timed out, timeout
+used:-1ms.
+Error on m1.europe.com:11444: An error occurred connecting to the server.
+Details: javax.naming.NamingException: LDAP response read timed out, timeout
+used:-1ms.
+No replication information found.
+Hide full text
+
+
+
+From access log this search on cn=monitor takes forever for dsreplication:
+
+[18/Jun/2015:13:11:14 +0200] SEARCH REQ conn=222 op=5 msgID=6 base="cn=monitor" scope=one filter="(ds-backend-id=adminRoot)" attrs="ds-base-dn-entry-count"
+
+
+
+jstack shows this thread active on request handler for admin port 11444 and takes long time to complete:
+
+"LDAP Request Handler 0 for connection handler Administration Connector 0.0.0.0 port 11444" prio=10 tid=0x00007f702c85c000 nid=0x1297e runnable [0x00007f6fc4cfe000]
+java.lang.Thread.State: RUNNABLE
+        at org.forgerock.opendj.ldap.ByteStringBuilder.toByteString(ByteStringBuilder.java:1223)
+        at org.opends.server.replication.server.changelog.file.BlockLogReader.readNextRecord(BlockLogReader.java:328)
+        at org.opends.server.replication.server.changelog.file.BlockLogReader.readRecord(BlockLogReader.java:253)
+        at org.opends.server.replication.server.changelog.file.BlockLogReader.readRecord(BlockLogReader.java:204)
+        at org.opends.server.replication.server.changelog.file.LogFile$LogFileCursor.next(LogFile.java:567)
+        at org.opends.server.replication.server.changelog.file.LogFile.getNumberOfRecords(LogFile.java:402)
+        at org.opends.server.replication.server.changelog.file.Log.getNumberOfRecords(Log.java:689)
+        at org.opends.server.replication.server.changelog.file.FileChangeNumberIndexDB.count(FileChangeNumberIndexDB.java:193)
+        at org.opends.server.replication.server.changelog.file.FileChangeNumberIndexDB$DbMonitorProvider.getMonitorData(FileChangeNumberIndexDB.java:269)
+        at org.opends.server.backends.MonitorBackend.getMonitorEntry(MonitorBackend.java:786)
+        at org.opends.server.backends.MonitorBackend.getEntry(MonitorBackend.java:752)
+        at org.opends.server.backends.MonitorBackend.search(MonitorBackend.java:568)
+        at org.opends.server.workflowelement.localbackend.LocalBackendSearchOperation.processSearch(LocalBackendSearchOperation.java:250)
+        at org.opends.server.workflowelement.localbackend.LocalBackendSearchOperation.processLocalSearch(LocalBackendSearchOperation.java:109)
+        at org.opends.server.workflowelement.localbackend.LocalBackendWorkflowElement.execute(LocalBackendWorkflowElement.java:756)
+        at org.opends.server.workflowelement.localbackend.LocalBackendWorkflowElement.executeOnNonRootDSE(LocalBackendWorkflowElement.java:1050)
+        at org.opends.server.workflowelement.localbackend.LocalBackendWorkflowElement.execute(LocalBackendWorkflowElement.java:921)
+        at org.opends.server.core.SearchOperationBasis.run(SearchOperationBasis.java:1091)
+        at org.opends.server.core.SynchronousStrategy.enqueueRequest(SynchronousStrategy.java:48)
+        at org.opends.server.protocols.ldap.LDAPClientConnection.addOperationInProgress(LDAPClientConnection.java:1245)
+        at org.opends.server.protocols.ldap.LDAPClientConnection.processSearchRequest(LDAPClientConnection.java:2301)
+        at org.opends.server.protocols.ldap.LDAPClientConnection.processLDAPMessage(LDAPClientConnection.java:1684)
+        at org.opends.server.protocols.ldap.LDAPRequestHandler.run(LDAPRequestHandler.java:182)
+Hide full text
+
+
+
+On this port we are in CLOSE_WAIT, never a good sign, and there is single connection for admin port have to wait until network timeout.
+
+
+netstat -an | grep 11444
+tcp 0 0 :::11444 :::* LISTEN 
+tcp 192 0 ::ffff:172.16.204.193:11444 ::ffff:172.16.204.193:56521 CLOSE_WAIT 
+tcp 144 0 ::ffff:172.16.204.193:11444 ::ffff:172.16.204.193:56518 CLOSE_WAIT 
+tcp 218 0 ::ffff:172.16.204.193:11444 ::ffff:172.16.204.193:56519 CLOSE_WAIT
+
+
+
+Looks like it is on internal search of changenumber index database.
+
+This search would have same issue:
+
+
+ldapsearch -X -Z -p 11444 -D "cn=directory manager" -w secret12 -b "cn=ChangeNumber Index Database,cn=monitor" "objectclass=*" dn
+

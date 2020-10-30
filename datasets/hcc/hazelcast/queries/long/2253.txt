@@ -1,0 +1,227 @@
+By using hazlecast 3.2  for distributed caching we are seeing  om.hazelcast.spi.exception.CallerNotMemberException and com.hazelcast.spi.exception.WrongTargetException. The  application is running on four AWS EC2 large instance( Amazon Linux AMI release 2014.03 on 64 bit )  with 7 Gb memory within tomcat 7 Container .  The application logic mainly concentrates around data insertion and data retrieval from hazlecast distributed cache using .  The application is quite heavy on get and put operation.  The CPU of the box has never gone above 40% . Observed below exceptions within our application logs. 
+
+ :com.hazelcast.spi.exception.CallerNotMemberException: Not Member! caller:Address[10.113.136.172]:5701, 
+partitionId: 160, operation: com.hazelcast.map.operation.GetOperation, service: hz:impl:mapService
+
+:com.hazelcast.spi.exception.CallerNotMemberException: Not Member! caller:Address[10.113.136.172]:5701, 
+partitionId: 127, operation: com.hazelcast.map.operation.GetOperation, service: hz:impl:mapService
+
+com.hazelcast.spi.exception.WrongTargetException: WrongTarget! this:Address[10.113.136.172]:5701, target:null, partitionId: 154, replicaIndex: 0,
+ operation: com.hazelcast.map.operation.GetOperation, service: hz:impl:mapService
+
+This exception is happening at random intervals and the frequency of this exception is 20-30 times a day. The cache (get/put ) operation is failing at the time of  exception. It comes back to normal state within 5 minutes or less. Using below code it can be reproduces . It used  two maps as given below in Hazelcast configuration along with the application code.  The three classes which represents cache operations are HazleCastInstanceManager  which is a singleton instance which configures the hazelcast and other two are  SessionCacheManager  and  DataCacheManager (Replica of SessionCachemanger) each represents the map present in  Hazelcast configuration and used for respective cache operations. Using the map instances the application completes get and put operations. 
+
+```
+<hazelcast xmlns="http://www.hazelcast.com/schema/config" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.hazelcast.com/schema/config http://www.hazelcast.com/schema/config/hazelcast-config-3.2.xsd">
+
+<properties>
+    <property name="hazelcast.logging.type">log4j</property>     
+    <property name="hazelcast.icmp.enabled">true</property>
+    <property name="hazelcast.max.no.heartbeat.seconds">30</property>
+    <property name="hazelcast.icmp.timeout">5000</property>
+    <property name="hazelcast.icmp.ttl">10</property>  
+</properties>
+
+<network>
+    <port auto-increment="false">5701</port>
+    <join>
+        <multicast enabled="false">
+            <multicast-group>224.2.2.3</multicast-group>
+            <multicast-port>54327</multicast-port>
+        </multicast>
+        <tcp-ip enabled="false">                
+        </tcp-ip>
+        <aws enabled="true">
+                   <access-key>XXXXXXXXX</access-key>
+                    <secret-key>XXXXXXXXX</secret-key>
+                     <security-group-name>XXXXXXXXX</security-group-name>
+         </aws>
+    </join>   
+</network>
+<map name="DATA_CACHE">
+    <backup-count>1</backup-count>
+    <time-to-live-seconds>1800</time-to-live-seconds>
+    <max-idle-seconds>300</max-idle-seconds>       
+    <eviction-percentage>25</eviction-percentage>
+    <max-size policy="PER_NODE">6000</max-size> 
+    <eviction-policy>LRU</eviction-policy>
+    <merge-policy>com.hazelcast.map.merge.LatestUpdateMapMergePolicy</merge-policy>
+    <statistics-enabled>true</statistics-enabled>
+    <read-backup-data>true</read-backup-data>
+    <eviction-percentage>25</eviction-percentage>       
+</map>
+
+<map name="SESSION_CACHE">
+    <backup-count>1</backup-count>        
+    <max-idle-seconds>1800</max-idle-seconds>
+    <time-to-live-seconds>3600</time-to-live-seconds>           
+    <eviction-delay-seconds>1800</eviction-delay-seconds>
+    <eviction-policy>LRU</eviction-policy>
+    <merge-policy>com.hazelcast.map.merge.LatestUpdateMapMergePolicy</merge-policy>
+    <statistics-enabled>true</statistics-enabled>
+    <read-backup-data>false</read-backup-data>
+</map>
+```
+
+</hazelcast>
+
+``` java
+public class SessionCacheManager {
+    private static volatile  SessionCacheManager SessionCacheManager=null;
+    @SuppressWarnings("rawtypes")
+    private ConcurrentMap sessionCache=null;
+    private final String SESSION_CACHE="SESSION_CACHE";
+    static Logger logger = Logger.getLogger(SessionCacheManager.class);
+
+    private SessionCacheManager() 
+    {
+        try {           
+
+            sessionCache=HazleCastInstanceManager.getInstance().getHazleCast().getMap(SESSION_CACHE);           
+
+        } catch (Exception e) {
+            logger.error("Exception while initilaizing   SessionCacheManager()  -"+e);
+            logger.error(e);    
+
+            throw new CacheInitializationException(" Failed to initilaize  SessionCacheManager()",e);
+        }
+
+    }
+
+    public  static  SessionCacheManager getInstance() 
+    {
+        if(SessionCacheManager==null){
+             synchronized (SessionCacheManager.class)
+             {
+                 if(SessionCacheManager==null)
+                 {
+                    SessionCacheManager=new  SessionCacheManager();
+                 }
+             }
+        }
+
+        return SessionCacheManager;
+    }
+
+    @SuppressWarnings("rawtypes")
+    public  Map getsessionCache() {
+        return sessionCache;
+    }
+
+    @SuppressWarnings("rawtypes")
+    public LocalMapStats getStatistics()
+    {
+      return ((IMap) sessionCache).getLocalMapStats();
+    }
+
+    public  Object get(String key)
+    {
+
+            return (Object) sessionCache.get(key);
+
+    }
+
+    @SuppressWarnings("unchecked")
+    public  void put(String key,Object object) 
+    {
+
+            sessionCache.put(key, object);
+
+    }
+    public  void remove(String key) 
+    {       
+            sessionCache.remove(key);
+
+    }
+}
+```
+
+``` java
+public class HazleCastInstanceManager {
+
+    private static Logger logger = Logger.getLogger(HazleCastInstanceManager.class);
+    private static HazleCastInstanceManager hazleCastInstanceManager;       
+    private HazelcastInstance hz;
+
+    private  HazleCastInstanceManager()  {
+        // TODO Auto-generated constructor stub
+
+        File hazleCastConfigFile=new File(Constants.HAZLECAST_CONFIG_FILE_LOCATION);
+        if(!hazleCastConfigFile.exists())
+        {
+            throw new RuntimeException("HazleCast Confgiuration file not found ");
+        }
+        Config cfg;
+        try {
+            cfg = new FileSystemXmlConfig(hazleCastConfigFile);
+        } catch (FileNotFoundException e) {
+            throw new RuntimeException("HazleCast Confgiuration file not found at ");
+        }       
+        hz = Hazelcast.newHazelcastInstance(cfg);
+        Cluster cluster = hz.getCluster();
+        cluster.addMembershipListener(new HazleCastMembershipListener());
+
+        Set<Member> setMembers  = cluster.getMembers();
+        for (Member member : setMembers) {          
+            logger.error(" Hazle Cast Cluster Memeber Details :: " + "isLocalMember " + member.localMember()+ " ::  " 
+                         +"member.inetaddress " + member.getInetSocketAddress().getHostName() + " :: "+"member.port " +  member.getInetSocketAddress().getPort());
+
+        }
+    }
+
+    public static synchronized HazleCastInstanceManager getInstance() 
+    {
+        if(hazleCastInstanceManager==null)
+            hazleCastInstanceManager=new HazleCastInstanceManager();
+        return hazleCastInstanceManager;
+    }
+
+    public HazelcastInstance getHazleCast()
+    {
+        return hz;
+    }
+
+    public void shutdown()
+    {
+        Hazelcast.shutdownAll();    
+    }
+    private class HazleCastMembershipListener implements MembershipListener{    
+        private  Logger logger = Logger.getLogger(HazleCastMembershipListener.class);
+
+        public void memberAdded(MembershipEvent membersipEvent) {
+           logger.error("HazleCastMember Added :::: " + membersipEvent);
+           Cluster cluster = hz.getCluster();
+           Set<Member> setMembers  = cluster.getMembers();
+            for (Member member : setMembers) {          
+                logger.error(" Hazle Cast Cluster  Memeber Details :: " + "isLocalMember " + member.localMember()+ " ::  " 
+                             +"member.inetaddress " + member.getInetSocketAddress().getHostName() + " :: "+"member.port " +  member.getInetSocketAddress().getPort());
+
+            }
+        }
+
+        public void memberRemoved(MembershipEvent membersipEvent) {
+            logger.error("HazleCastMember Removed  ::::" + membersipEvent);
+            Cluster cluster = hz.getCluster();
+               Set<Member> setMembers  = cluster.getMembers();
+                for (Member member : setMembers) {          
+                    logger.error(" Hazle Cast Cluster Memeber Details :: " + "isLocalMember " + member.localMember()+ " ::  " 
+                                 +"member.inetaddress " + member.getInetSocketAddress().getHostName() + " :: "+"member.port " +  member.getInetSocketAddress().getPort());
+
+                }
+        }
+
+        @Override
+        public void memberAttributeChanged(MemberAttributeEvent membersipEvent) {
+            // TODO Auto-generated method stub
+            logger.error("HazleCastMember member changed  ::::" + membersipEvent);
+            Cluster cluster = hz.getCluster();
+               Set<Member> setMembers  = cluster.getMembers();
+                for (Member member : setMembers) {          
+                    logger.error(" Hazle Cast Cluster Memeber Details :: " + "isLocalMember " + member.localMember()+ " ::  " 
+                                 +"member.inetaddress " + member.getInetSocketAddress().getHostName() + " :: "+"member.port " +  member.getInetSocketAddress().getPort());
+
+                }
+        }
+    } 
+} 
+```

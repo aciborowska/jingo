@@ -1,0 +1,104 @@
+## Bug Report
+
+**For English only**, other languages will not accept.
+
+Before report a bug, make sure you have:
+
+- Searched open and closed [GitHub issues](https://github.com/apache/shardingsphere/issues).
+- Read documentation: [ShardingSphere Doc](https://shardingsphere.apache.org/document/current/en/overview).
+
+Please pay attention on issues you submitted, because we maybe need more details. 
+If no response **more than 7 days** and we cannot reproduce it on current information, we will **close it**.
+
+Please answer these questions before submitting your issue. Thanks!
+
+### Which version of ShardingSphere did you use?
+ShardingSphere  4.0.1
+
+### Which project did you use? ShardingSphere-JDBC or ShardingSphere-Proxy?
+ShardingSphere-JDBC
+
+### Expected behavior
+With the same encrypt-rule, decrypt mode work as same as encrypt mode.
+### Actual behavior
+Encrypt mode works, but decrypt mode not.
+
+### Reason analyze (If you can)
+EncryptRule use equalsIgnoreCase method to match encrypt column, but use equals method to match decrypt column.
+
+### Steps to reproduce the behavior, such as: SQL to execute, sharding rule configuration, when exception occur etc.
+---------------------------------------------------------------
+ sharding rule configuration: 
+```
+spring:
+  shardingsphere:
+    props:
+      sql.show: true
+      query.with.cipher.column: true
+    sharding:
+      encrypt-rule:
+        encryptors:
+          encryptor_aes_salt:
+            type: aes-salt
+            props:
+              aes.key.value: 123456
+        tables:
+          t_account_salt:
+            columns:
+              mobile:
+                cipherColumn: mobile_cipher
+                assistedQueryColumn: mobile_assisted
+                encryptor: encryptor_aes_salt
+```
+---------------------------------------------------------------------------------------
+Tip: Use mysql config with "lower_case_table_names=1" , it will makes mysql don't care about the column is lower case or upper case. In sharding encrypt table,  use upper case columns to design. In application config, use lower case to config the cipherColumn and assistedQueryColumn. Then insert sql works correctly, but select sql not work.
+
+----------------------------------------------------------------------------------------
+With this problem, I find the code in 'encrypt-core-common' module :
+```
+EncryptTable.java : 
+    /**
+     * Find encryptor.
+     *
+     * @param logicColumn column name
+     * @return encryptor
+     */
+    public Optional<String> findEncryptor(final String logicColumn) {
+        Optional<String> originLogicColumnName = findOriginLogicColumnName(logicColumn);
+        return originLogicColumnName.isPresent() && columns.containsKey(originLogicColumnName.get())
+                ? Optional.of(columns.get(originLogicColumnName.get()).getEncryptor()) : Optional.empty();
+    }
+    
+    private Optional<String> findOriginLogicColumnName(final String logicColumn) {
+        for (String each : columns.keySet()) {
+            if (logicColumn.equalsIgnoreCase(each)) {
+                return Optional.of(each);
+            }
+        }
+        return Optional.empty();
+    }
+
+```
+note: Here use String's equalsIgnoreCase method to match. If true sharding-jdbc may invoke ShardingEncryptor's encrypt method.
+```
+EncryptRule.java : 
+
+    /**
+     * Is cipher column or not.
+     *
+     * @param tableName table name
+     * @param columnName column name
+     * @return cipher column or not
+     */
+    public boolean isCipherColumn(final String tableName, final String columnName) {
+        return tables.containsKey(tableName) && tables.get(tableName).getCipherColumns().contains(columnName);
+    }
+
+```
+note: tables.get(tableName).getCipherColumns() retuen a linkedlist , LinkedList's contains method use equals to match.  If true sharding-jdbc may invoke ShardingEncryptor's decrypt method.
+
+-----------------------------------------------------------------------
+
+
+### Example codes for reproduce this issue (such as a github link).
+see previous.

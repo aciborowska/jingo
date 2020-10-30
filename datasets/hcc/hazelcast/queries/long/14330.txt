@@ -1,0 +1,71 @@
+Hazelcast version: 3.11.1 (older versions are affected as well)
+Env: Windows/Linux/MacOS
+
+When a Hazelcast instance is starting and it has a replicated map configured within an XML configuration with async-fillup=false option - sometimes the method HazelcastInstance.getReplicatedMap(...) can be blocked for tens of minutes (even if the replicated map actually is empty).
+
+The following code reproduces the problem quite frequently:
+```java
+public class ReplicatedMapInitIssue {
+    private static final String TEST_MAP = "test";
+
+
+    public static void main(String ... args) {
+        Config config1 = buildConfig(5701, 5702);
+        Config config2 = buildConfig(5702, 5701);
+
+        for (int i = 0; i < 10; i++) {
+
+            HazelcastInstance hazelcastInstance1 = Hazelcast.newHazelcastInstance(config1);
+            ReplicatedMap<String, String> replicatedMap1 = hazelcastInstance1.getReplicatedMap(TEST_MAP);
+
+            HazelcastInstance hazelcastInstance2 = Hazelcast.newHazelcastInstance(config2);
+            ReplicatedMap<String, String> replicatedMap2 = hazelcastInstance2.getReplicatedMap(TEST_MAP);
+
+            Hazelcast.shutdownAll();
+        }
+    }
+
+    private static Config buildConfig(int localPort, int remotePort) {
+        Config config = new Config();
+        JoinConfig joinConfig = new JoinConfig().setTcpIpConfig(new TcpIpConfig().addMember("localhost:" + remotePort));
+        NetworkConfig networkConfig = new NetworkConfig().setJoin(joinConfig);
+        networkConfig.setPort(localPort);
+        config.setNetworkConfig(networkConfig);
+        ReplicatedMapConfig replicatedMapConfig = new ReplicatedMapConfig().setName(TEST_MAP);
+        replicatedMapConfig.setAsyncFillup(false);
+        config.addReplicatedMapConfig(replicatedMapConfig);
+        return config;
+    }
+}
+```
+
+The issue is caused by a kind of race condition in an asynchronous initialization of partition-related information within Hazelcast. Sometimes, at the moment of ReplicatedMap initialization full information about partition owners is not available yet and an internal Hazelcast invocation service cannot identify an invocation target to deliver requests, so they are rejected and retried several times. This is a stack trace to the place where the invocation target is not identifying:
+
+```
+hz._hzInstance_2_dev.cached.thread-3@5689" prio=5 tid=0x57 nid=NA runnable
+java.lang.Thread.State: RUNNABLE
+at com.hazelcast.spi.impl.operationservice.impl.Invocation.initInvocationTarget(Invocation.java:255)
+at com.hazelcast.spi.impl.operationservice.impl.Invocation.doInvoke(Invocation.java:552)
+at com.hazelcast.spi.impl.operationservice.impl.Invocation.invoke0(Invocation.java:530)
+at com.hazelcast.spi.impl.operationservice.impl.Invocation.invoke(Invocation.java:220)
+at com.hazelcast.spi.impl.operationservice.impl.InvocationBuilderImpl.invoke(InvocationBuilderImpl.java:60)
+at com.hazelcast.replicatedmap.impl.ReplicatedMapProxy.requestDataForPartition(ReplicatedMapProxy.java:149)
+at com.hazelcast.replicatedmap.impl.ReplicatedMapProxy.fireMapDataLoadingTasks(ReplicatedMapProxy.java:139)
+at com.hazelcast.replicatedmap.impl.ReplicatedMapProxy.initialize(ReplicatedMapProxy.java:111)
+at com.hazelcast.spi.impl.proxyservice.impl.ProxyRegistry.doCreateProxy(ProxyRegistry.java:219)
+at com.hazelcast.spi.impl.proxyservice.impl.ProxyRegistry.createProxy(ProxyRegistry.java:209)
+at com.hazelcast.spi.impl.proxyservice.impl.operations.PostJoinProxyOperation$CreateProxyTask.run(PostJoinProxyOperation.java:127)
+at com.hazelcast.util.executor.CachedExecutorServiceDelegate$Worker.run(CachedExecutorServiceDelegate.java:227)
+at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1142)
+at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:617)
+at java.lang.Thread.run(Thread.java:745)
+at com.hazelcast.util.executor.HazelcastManagedThread.executeRun(HazelcastManagedThread.java:64)
+at com.hazelcast.util.executor.HazelcastManagedThread.run(HazelcastManagedThread.java:80)
+```
+
+The array with addresses (com.hazelcast.internal.partition.impl.InternalPartitionImpl#replicas) may have a value like: [null, [localhost]:5701, null, null, null, null, null]
+Do not know is it expected or not but in any case ReplicatedMapProxy initialization logic has a retry mechanism which can handle such situations but it has a non-optimal implementation.
+The initialization is executed per single partition at once and there is sleep for 1 second for each such attempt. By default Hazelcast has 271 partitions. Also retryCount is shared for different partitions and it introduces an additional delay in triggering of requestDataForPartition for different partitions.
+So, in total this logic can spend several minutes to complete the replicated map initialization (even if replicated map is actually empty). While the replicated map is not fully initialized - it is not returned to an applied code.
+
+I am planning to create a pull request with a possible fix soon.

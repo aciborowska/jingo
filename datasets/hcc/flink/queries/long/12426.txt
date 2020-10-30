@@ -1,0 +1,47 @@
+Hi all,
+  
+ We use Flink batch and start thousands of jobs per day. Occasionally we observed some stuck jobs, due to some TM hang in “DEPLOYING” state. 
+  
+ It seems that the TM is calling BlobClient to download jars from JM/BlobServer. Under hood it’s calling Socket.connect() and then Socket.read() to retrieve results. 
+  
+ These jobs usually have many TM slots (1~2k). We checked the TM log and dumped the TM thread. It indeed hung on socket read to download jar from Blob server. 
+  
+ We're using Flink 1.5 but this may also affect later versions since related code are not changed much. We've tried to add socket timeout in BlobClient, but still no luck.
+  
+ ————————
+ TM log
+ ————————
+ ...
+ INFO org.apache.flink.runtime.taskexecutor.TaskExecutor - Received task DataSource (at createInput(ExecutionEnvironment.java:548) (our.code)) (184/2000).
+
+INFO org.apache.flink.runtime.taskmanager.Task - DataSource (at createInput(ExecutionEnvironment.java:548) (our.code)) (184/2000) switched from CREATED to DEPLOYING.
+
+INFO org.apache.flink.runtime.taskmanager.Task - Creating FileSystem stream leak safety net for task DataSource (at createInput(ExecutionEnvironment.java:548) (our.code)) (184/2000) [DEPLOYING]
+
+INFO org.apache.flink.runtime.taskmanager.Task - Loading JAR files for task DataSource (at createInput(ExecutionEnvironment.java:548) (our.code)) (184/2000) [DEPLOYING].
+
+INFO org.apache.flink.runtime.blob.BlobClient - Downloading 19e65c0caa41f264f9ffe4ca2a48a434/p-3ecd6341bf97d5512b14c93f6c9f51f682b6db26-37d5e69d156ee00a924c1ebff0c0d280 from some-host-ip-port
+
+no more logs...
+  
+ ————————
+ TM thread dump:
+ ————————
+ "DataSource (at createInput(ExecutionEnvironment.java:548) (our.code)) (1999/2000)" #72 prio=5 os_prio=0 tid=0x00007fb9a1521000 nid=0xa0994 runnable [0x00007fb97cfbf000]
+    java.lang.Thread.State: RUNNABLE
+         at java.net.SocketInputStream.socketRead0(Native Method)
+         at java.net.SocketInputStream.socketRead(SocketInputStream.java:116)
+         at java.net.SocketInputStream.read(SocketInputStream.java:171)
+         at java.net.SocketInputStream.read(SocketInputStream.java:141)
+         at org.apache.flink.runtime.blob.BlobInputStream.read(BlobInputStream.java:152)
+         at org.apache.flink.runtime.blob.BlobInputStream.read(BlobInputStream.java:140)
+         at org.apache.flink.runtime.blob.BlobClient.downloadFromBlobServer(BlobClient.java:170)
+         at org.apache.flink.runtime.blob.AbstractBlobCache.getFileInternal(AbstractBlobCache.java:181)
+         at org.apache.flink.runtime.blob.PermanentBlobCache.getFile(PermanentBlobCache.java:206)
+         at org.apache.flink.runtime.execution.librarycache.BlobLibraryCacheManager.registerTask(BlobLibraryCacheManager.java:120)
+         - locked <0x000000078ab60ba8> (a java.lang.Object)
+         at org.apache.flink.runtime.taskmanager.Task.createUserCodeClassloader(Task.java:893)
+         at org.apache.flink.runtime.taskmanager.Task.run(Task.java:585)
+         at java.lang.Thread.run(Thread.java:748)
+ ————————
+  

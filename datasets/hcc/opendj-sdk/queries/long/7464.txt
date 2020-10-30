@@ -1,0 +1,248 @@
+Description
+
+Using dsbackup command in gke to backup 100000 users on a remote bucket. * using custom-16-40960 machine type, it takes 45 minutes 
+
+	using c2-standard-16 machine type, it takes 26 minutes 
+	using c2-standard-16 machine type I tried 1 million users and after more than 2h30 of backup, i canceled the command because it took too. much time
+
+
+
+Few details
+
+	it is an online dsbackup command
+	there is no activity on the server during the backup (on client side)
+	pod seems to use 1 cpu to compress and do the backup. Probably related to OPENDJ-5930
+	jstack : all ds worker threads are in “TIMED_WAITING (parking)” state
+	network bandwidth between ds pod and bucket is not the issue (see PERF-1648)
+	size of db folder : 1.6G
+	size of backup on the remote bucket : 882.89 MiB
+	using a custom folder to store local temporary backup files on the fast pvc (instead of default /tmp), it takes 20 minutes (instead of 26 minutes)
+
+
+
+Comments
+
+My feeling that it takes around 25 minutes to compress 1.6G on c2 machine type (and 45 minutes on custom 16)
+  
+ This is a problem for performance test as we may need to use backup and restore to test large deployment usecases. And may be a customer issue as well 
+Steps
+
+	deploy DS with backup on remote bucket option enabled
+	import 100000 users with ldapmodify
+	run dsbackup command
+
+
+
+Notes
+
+	when using Forgerock VPn I have a kubectl timeout issue, so i would recommend to not run the test through the vpn.
+	I started to write a tutorial
+
+
+
+Traces
+
+forgerock@ds-idrepo-0:/opt/opendj/data$ echo $OPENDJ_JAVA_ARGS
+-XX:MaxRAMPercentage=75 -XX:+UseParallelGC -XX:MaxTenuringThreshold=1 -Djava.security.egd=file:/dev/urandom -Djava.io.tmpdir=/opt/opendj/data/backup -Xlog:gc*:file=/opt/opendj/data/GCDetails_DJ
+
+
+run dsbackup create on the pod
+
+time /opt/opendj/bin/dsbackup create --hostname ds-idrepo-0.ds-idrepo --port 4444 --bindDN uid=admin --bindPassword 0jy1j2xwap8aj0niaditianq1p6mtjfy --backupLocation gs://performance-bucket-us-east1/gandru/perf_1573/ds-idrepo-0 --noPropertiesFile --trustAll --no-prompt --storageProperty gs.credentials.path:/var/run/secrets/cloud-credentials-cache/gcp-credentials.json > /tmp/backup_log 2>&1 &
+
+
+output
+
+Backup task BackupTask-fce9164e-e5b8-42cc-bd61-1436d6d004fd scheduled to start immediately
+[07/Sep/2020:13:38:41 +0000] category=BACKEND severity=NOTICE seq=0 msgID=413 msg=Backup task BackupTask-fce9164e-e5b8-42cc-bd61-1436d6d004fd started execution
+[07/Sep/2020:13:38:41 +0000] category=BACKUP severity=NOTICE seq=1 msgID=1 msg=Starting backup for backend 'amCts'
+[07/Sep/2020:13:38:41 +0000] category=BACKUP severity=NOTICE seq=2 msgID=14 msg=Backing up file (1/1) '00000000.jdb'
+[07/Sep/2020:13:38:44 +0000] category=BACKUP severity=NOTICE seq=3 msgID=3 msg=Backup completed for backend 'amCts' with backup ID 'amCts_20200907133843682'
+[07/Sep/2020:13:38:44 +0000] category=BACKUP severity=NOTICE seq=4 msgID=1 msg=Starting backup for backend 'idmRepo'
+[07/Sep/2020:13:38:44 +0000] category=BACKUP severity=NOTICE seq=5 msgID=14 msg=Backing up file (1/1) '00000000.jdb'
+[07/Sep/2020:13:38:46 +0000] category=BACKUP severity=NOTICE seq=6 msgID=3 msg=Backup completed for backend 'idmRepo' with backup ID 'idmRepo_20200907133846126'
+[07/Sep/2020:13:38:46 +0000] category=BACKUP severity=NOTICE seq=7 msgID=1 msg=Starting backup for backend 'tasks'
+[07/Sep/2020:13:38:46 +0000] category=BACKUP severity=NOTICE seq=8 msgID=14 msg=Backing up file (1/1) 'tasks.ldif'
+[07/Sep/2020:13:38:49 +0000] category=BACKUP severity=NOTICE seq=9 msgID=3 msg=Backup completed for backend 'tasks' with backup ID 'tasks_20200907133848614'
+[07/Sep/2020:13:38:49 +0000] category=BACKUP severity=NOTICE seq=10 msgID=1 msg=Starting backup for backend 'monitorUser'
+[07/Sep/2020:13:38:49 +0000] category=BACKUP severity=NOTICE seq=11 msgID=14 msg=Backing up file (1/2) 'monitorUser.ldif'
+[07/Sep/2020:13:38:50 +0000] category=BACKUP severity=NOTICE seq=12 msgID=14 msg=Backing up file (2/2) 'monitorUser.ldif.bak'
+[07/Sep/2020:13:38:53 +0000] category=BACKUP severity=NOTICE seq=13 msgID=3 msg=Backup completed for backend 'monitorUser' with backup ID 'monitorUser_20200907133852517'
+[07/Sep/2020:13:38:53 +0000] category=BACKUP severity=NOTICE seq=14 msgID=1 msg=Starting backup for backend 'cfgStore'
+[07/Sep/2020:13:38:53 +0000] category=BACKUP severity=NOTICE seq=15 msgID=14 msg=Backing up file (1/1) '00000000.jdb'
+[07/Sep/2020:13:38:55 +0000] category=BACKUP severity=NOTICE seq=16 msgID=3 msg=Backup completed for backend 'cfgStore' with backup ID 'cfgStore_20200907133854966'
+[07/Sep/2020:13:38:55 +0000] category=BACKUP severity=NOTICE seq=17 msgID=1 msg=Starting backup for backend 'schema'
+[07/Sep/2020:13:38:55 +0000] category=BACKUP severity=NOTICE seq=18 msgID=14 msg=Backing up file (1/29) '03-changelog.ldif'
+[07/Sep/2020:13:38:57 +0000] category=BACKUP severity=NOTICE seq=19 msgID=14 msg=Backing up file (2/29) '03-rfc2739.ldif'
+[07/Sep/2020:13:38:58 +0000] category=BACKUP severity=NOTICE seq=20 msgID=14 msg=Backing up file (3/29) '05-samba.ldif'
+[07/Sep/2020:13:39:00 +0000] category=BACKUP severity=NOTICE seq=21 msgID=14 msg=Backing up file (4/29) '01-pwpolicy.ldif'
+[07/Sep/2020:13:39:01 +0000] category=BACKUP severity=NOTICE seq=22 msgID=14 msg=Backing up file (5/29) '03-rfc3712.ldif'
+[07/Sep/2020:13:39:03 +0000] category=BACKUP severity=NOTICE seq=23 msgID=14 msg=Backing up file (6/29) '03-rfc3112.ldif'
+[07/Sep/2020:13:39:04 +0000] category=BACKUP severity=NOTICE seq=24 msgID=14 msg=Backing up file (7/29) '05-solaris.ldif'
+[07/Sep/2020:13:39:06 +0000] category=BACKUP severity=NOTICE seq=25 msgID=14 msg=Backing up file (8/29) '05-rfc4876.ldif'
+[07/Sep/2020:13:39:08 +0000] category=BACKUP severity=NOTICE seq=26 msgID=14 msg=Backing up file (9/29) '03-keystore.ldif'
+[07/Sep/2020:13:39:09 +0000] category=BACKUP severity=NOTICE seq=27 msgID=14 msg=Backing up file (10/29) '03-rfc2926.ldif'
+[07/Sep/2020:13:39:11 +0000] category=BACKUP severity=NOTICE seq=28 msgID=14 msg=Backing up file (11/29) '04-rfc2307bis.ldif'
+[07/Sep/2020:13:39:12 +0000] category=BACKUP severity=NOTICE seq=29 msgID=14 msg=Backing up file (12/29) '03-rfc2713.ldif'
+[07/Sep/2020:13:39:14 +0000] category=BACKUP severity=NOTICE seq=30 msgID=14 msg=Backing up file (13/29) '03-rfc2714.ldif'
+[07/Sep/2020:13:39:15 +0000] category=BACKUP severity=NOTICE seq=31 msgID=14 msg=Backing up file (14/29) '03-pwpolicyextension.ldif'
+[07/Sep/2020:13:39:17 +0000] category=BACKUP severity=NOTICE seq=32 msgID=14 msg=Backing up file (15/29) '00-core.ldif'
+[07/Sep/2020:13:39:18 +0000] category=BACKUP severity=NOTICE seq=33 msgID=14 msg=Backing up file (16/29) '06-compat.ldif'
+[07/Sep/2020:13:39:20 +0000] category=BACKUP severity=NOTICE seq=34 msgID=14 msg=Backing up file (17/29) '03-uddiv3.ldif'
+[07/Sep/2020:13:39:22 +0000] category=BACKUP severity=NOTICE seq=35 msgID=14 msg=Backing up file (18/29) '02-config.ldif'
+[07/Sep/2020:13:39:23 +0000] category=BACKUP severity=NOTICE seq=36 msgID=14 msg=Backing up file (19/29) '60-identity-store-ds-schema.ldif'
+[07/Sep/2020:13:39:25 +0000] category=BACKUP severity=NOTICE seq=37 msgID=14 msg=Backing up file (20/29) '60-config-schema.ldif'
+[07/Sep/2020:13:39:26 +0000] category=BACKUP severity=NOTICE seq=38 msgID=14 msg=Backing up file (21/29) '60-identity-store-ds-deviceprofiles.ldif'
+[07/Sep/2020:13:39:28 +0000] category=BACKUP severity=NOTICE seq=39 msgID=14 msg=Backing up file (22/29) '60-identity-store-ds-oathdevices.ldif'
+[07/Sep/2020:13:39:29 +0000] category=BACKUP severity=NOTICE seq=40 msgID=14 msg=Backing up file (23/29) '60-identity-store-ds-kba.ldif'
+[07/Sep/2020:13:39:31 +0000] category=BACKUP severity=NOTICE seq=41 msgID=14 msg=Backing up file (24/29) '60-identity-store-ds-webauthndevices.ldif'
+[07/Sep/2020:13:39:32 +0000] category=BACKUP severity=NOTICE seq=42 msgID=14 msg=Backing up file (25/29) '60-identity-store-ds-deviceprint.ldif'
+[07/Sep/2020:13:39:34 +0000] category=BACKUP severity=NOTICE seq=43 msgID=14 msg=Backing up file (26/29) '60-identity-store-ds-dashboard.ldif'
+[07/Sep/2020:13:39:36 +0000] category=BACKUP severity=NOTICE seq=44 msgID=14 msg=Backing up file (27/29) '60-identity-store-ds-pushdevices.ldif'
+[07/Sep/2020:13:39:37 +0000] category=BACKUP severity=NOTICE seq=45 msgID=14 msg=Backing up file (28/29) '60-repo-schema.ldif'
+[07/Sep/2020:13:39:39 +0000] category=BACKUP severity=NOTICE seq=46 msgID=14 msg=Backing up file (29/29) '60-cts-schema.ldif'
+[07/Sep/2020:13:39:44 +0000] category=BACKUP severity=NOTICE seq=47 msgID=3 msg=Backup completed for backend 'schema' with backup ID 'schema_20200907133940703'
+[07/Sep/2020:13:39:44 +0000] category=BACKUP severity=NOTICE seq=48 msgID=1 msg=Starting backup for backend 'rootUser'
+[07/Sep/2020:13:39:44 +0000] category=BACKUP severity=NOTICE seq=49 msgID=14 msg=Backing up file (1/2) 'rootUser.ldif'
+[07/Sep/2020:13:39:46 +0000] category=BACKUP severity=NOTICE seq=50 msgID=14 msg=Backing up file (2/2) 'rootUser.ldif.bak'
+[07/Sep/2020:13:39:48 +0000] category=BACKUP severity=NOTICE seq=51 msgID=3 msg=Backup completed for backend 'rootUser' with backup ID 'rootUser_20200907133947664'
+[07/Sep/2020:13:39:48 +0000] category=BACKUP severity=NOTICE seq=52 msgID=1 msg=Starting backup for backend 'amIdentityStore'
+[07/Sep/2020:13:39:48 +0000] category=BACKUP severity=NOTICE seq=53 msgID=14 msg=Backing up file (1/2) '00000000.jdb'
+[07/Sep/2020:13:50:56 +0000] category=BACKUP severity=NOTICE seq=54 msgID=14 msg=Backing up file (2/2) '00000001.jdb'
+[07/Sep/2020:14:00:06 +0000] category=BACKUP severity=NOTICE seq=55 msgID=3 msg=Backup completed for backend 'amIdentityStore' with backup ID 'amIdentityStore_20200907140005376'
+[07/Sep/2020:14:00:06 +0000] category=BACKEND severity=NOTICE seq=56 msgID=414 msg=Backup task BackupTask-fce9164e-e5b8-42cc-bd61-1436d6d004fd finished execution in the state Completed successfully
+Backup task BackupTask-fce9164e-e5b8-42cc-bd61-1436d6d004fd has been successfully completed
+
+
+Pod description
+
+$ k describe pod ds-idrepo-0
+Name:           ds-idrepo-0
+Namespace:      gandru
+Priority:       0
+Node:           gke-gandru-ds-c263d18e-fclx/192.168.16.17
+Start Time:     Mon, 07 Sep 2020 15:12:21 +0200
+Labels:         affinity=directory
+                app=ds-idrepo
+                app.kubernetes.io/managed-by=skaffold-v1.12.1
+                controller-revision-hash=ds-idrepo-84ddc56765
+                skaffold.dev/builder=local
+                skaffold.dev/cleanup=true
+                skaffold.dev/deployer=kustomize
+                skaffold.dev/docker-api-version=1.40
+                skaffold.dev/namespace=gandru
+                skaffold.dev/profile.0=ds-only
+                skaffold.dev/run-id=gandru
+                skaffold.dev/tag-policy=custom
+                statefulset.kubernetes.io/pod-name=ds-idrepo-0
+                tier=ds
+Annotations:    sidecar.istio.io/inject: false
+Status:         Running
+IP:             10.224.3.11
+IPs:            <none>
+Controlled By:  StatefulSet/ds-idrepo
+Init Containers:
+  initialize:
+    Container ID:  docker://63bd2f7d9739c8e8410504399349d475bd89525c9297fd30c556b895d3b7e6a2
+    Image:         gcr.io/engineeringpit/lodestar-images/ds-idrepo:gandru@sha256:e77074faad746fa56f0e664b8f902e2eb8bf0939b708664559a16173a61598a1
+    Image ID:      docker-pullable://gcr.io/engineeringpit/lodestar-images/ds-idrepo@sha256:e77074faad746fa56f0e664b8f902e2eb8bf0939b708664559a16173a61598a1
+    Port:          <none>
+    Host Port:     <none>
+    Command:
+      /opt/opendj/scripts/init-and-restore.sh
+    State:          Terminated
+      Reason:       Completed
+      Exit Code:    0
+      Started:      Mon, 07 Sep 2020 15:13:25 +0200
+      Finished:     Mon, 07 Sep 2020 15:13:48 +0200
+    Ready:          True
+    Restart Count:  0
+    Limits:
+      memory:  1Gi
+    Requests:
+      cpu:     250m
+      memory:  512Mi
+    Environment Variables from:
+      cloud-storage-credentials-idrepo  Secret  Optional: false
+    Environment:
+      DS_SET_UID_ADMIN_AND_MONITOR_PASSWORDS:  true
+      DS_UID_MONITOR_PASSWORD_FILE:            /var/run/secrets/opendj-passwords/monitor.pw
+      DS_UID_ADMIN_PASSWORD_FILE:              /var/run/secrets/opendj-passwords/dirmanager.pw
+      DSBACKUP_HOSTS:                          ds-cts-0,ds-idrepo-0
+      DSBACKUP_DIRECTORY:                      gs://performance-bucket-us-east1/gandru/perf_1573
+      AUTORESTORE_FROM_DSBACKUP:               true
+    Mounts:
+      /opt/opendj/data from data (rw)
+      /opt/opendj/secrets from secrets (rw)
+      /var/run/secrets/cloud-credentials-cache/ from cloud-credentials-cache (rw)
+      /var/run/secrets/kubernetes.io/serviceaccount from default-token-6977c (ro)
+      /var/run/secrets/opendj from secrets (rw)
+      /var/run/secrets/opendj-passwords from passwords (rw)
+Containers:
+  ds:
+    Container ID:  docker://56541e77f16b8010b63e9edd49bbbe98ce19b57243160d794ca79da6bc5c200d
+    Image:         gcr.io/engineeringpit/lodestar-images/ds-idrepo:gandru@sha256:e77074faad746fa56f0e664b8f902e2eb8bf0939b708664559a16173a61598a1
+    Image ID:      docker-pullable://gcr.io/engineeringpit/lodestar-images/ds-idrepo@sha256:e77074faad746fa56f0e664b8f902e2eb8bf0939b708664559a16173a61598a1
+    Ports:         1389/TCP, 1636/TCP, 4444/TCP, 8989/TCP, 8080/TCP, 8443/TCP
+    Host Ports:    0/TCP, 0/TCP, 0/TCP, 0/TCP, 0/TCP, 0/TCP
+    Args:
+      start-ds
+    State:          Running
+      Started:      Mon, 07 Sep 2020 15:13:49 +0200
+    Ready:          True
+    Restart Count:  0
+    Limits:
+      cpu:     8
+      memory:  4Gi
+    Requests:
+      cpu:     8
+      memory:  4Gi
+    Environment Variables from:
+      cloud-storage-credentials-idrepo  Secret  Optional: false
+    Environment:
+      NAMESPACE:           gandru (v1:metadata.namespace)
+      DSBACKUP_HOSTS:      ds-cts-0,ds-idrepo-0
+      DSBACKUP_DIRECTORY:  gs://performance-bucket-us-east1/gandru/perf_1573
+      OPENDJ_JAVA_ARGS:    -XX:MaxRAMPercentage=75 -XX:+UseParallelGC -XX:MaxTenuringThreshold=1 -Djava.security.egd=file:/dev/urandom -Djava.io.tmpdir=/opt/opendj/data/backup -Xlog:gc*:file=/opt/opendj/data/GCDetails_DJ
+    Mounts:
+      /opt/opendj/data from data (rw)
+      /opt/opendj/secrets from secrets (rw)
+      /var/run/secrets/cloud-credentials-cache/ from cloud-credentials-cache (rw)
+      /var/run/secrets/kubernetes.io/serviceaccount from default-token-6977c (ro)
+      /var/run/secrets/opendj from secrets (rw)
+Conditions:
+  Type              Status
+  Initialized       True
+  Ready             True
+  ContainersReady   True
+  PodScheduled      True
+Volumes:
+  data:
+    Type:       PersistentVolumeClaim (a reference to a PersistentVolumeClaim in the same namespace)
+    ClaimName:  data-ds-idrepo-0
+    ReadOnly:   false
+  secrets:
+    Type:        Secret (a volume populated by a Secret)
+    SecretName:  ds
+    Optional:    false
+  passwords:
+    Type:        Secret (a volume populated by a Secret)
+    SecretName:  ds-passwords
+    Optional:    false
+  cloud-credentials-cache:
+    Type:       EmptyDir (a temporary directory that shares a pod's lifetime)
+    Medium:
+    SizeLimit:  <unset>
+  default-token-6977c:
+    Type:        Secret (a volume populated by a Secret)
+    SecretName:  default-token-6977c
+    Optional:    false
+QoS Class:       Guaranteed
+Node-Selectors:  <none>
+Tolerations:     WorkerDedicatedDS op=Exists
+                 node.kubernetes.io/not-ready:NoExecute op=Exists for 300s
+                 node.kubernetes.io/unreachable:NoExecute op=Exists for 300s
+Events:          <none>
+
+
+ 

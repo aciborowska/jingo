@@ -1,0 +1,342 @@
+When I try to set proxy on http client settings, it throws exceptions when doing the call.
+There is no known workaround at the moment.
+
+In case of `SSLException: handshake timed out` it most likely not a timeout, because I've seen it happen in less than a second where the timeout should be 10s by default.
+
+### Steps to Reproduce
+
+You can run following code with groovy and you will get an exception from micronaut where other frameworks will succeed. Vert.x is also using Netty, so this is not a Netty problem.
+
+```groovy
+@Grab(group='io.micronaut', module='micronaut-http-client', version='1.0.4')
+@Grab(group='io.vertx', module='vertx-rx-java2', version='3.6.3')
+@Grab(group='io.vertx', module='vertx-web-client', version='3.6.3')
+import io.micronaut.http.client.DefaultHttpClient
+import io.micronaut.http.client.DefaultHttpClientConfiguration
+import io.vertx.core.net.ProxyOptions
+import io.vertx.ext.web.client.WebClientOptions
+import io.vertx.reactivex.ext.web.client.WebClient
+
+import static io.vertx.reactivex.core.Vertx.vertx
+
+String url = "https://www.google.com"
+String path = "/"
+
+// given a random public proxy:
+// InetSocketAddress proxyAddress = new InetSocketAddress("43.240.103.105", 8080) // ReadTimeoutException: Read Timeout
+InetSocketAddress proxyAddress = new InetSocketAddress("45.6.92.18", 8080) // SSLException: handshake timed out
+
+// Java connection
+
+def proxy = new Proxy(Proxy.Type.HTTP, proxyAddress)
+def connection = new URL(url + path).openConnection(proxy)
+connection.inputStream.text
+println "Success with Java URL!!!"
+
+// Vert.x
+
+WebClientOptions options = new WebClientOptions()
+    .setDefaultHost(url)
+    .setProxyOptions(new ProxyOptions()
+        .setHost(proxyAddress.getHostName())
+        .setPort(proxyAddress.getPort())
+    )
+
+WebClient.create(vertx(), options)
+    .get(path)
+    .rxSend()
+    .blockingGet()
+
+println "Success with Vert.x!!!"
+
+// Micronaut
+
+def conf = new DefaultHttpClientConfiguration()
+conf.proxyType = Proxy.Type.HTTP
+conf.proxyAddress = proxyAddress
+def client = new DefaultHttpClient(new URL(url), conf)
+client.retrieve(path).blockingFirst() // <<-- throws exception
+
+println "Success with Micronaut!!!"
+
+```
+
+### Expected Behaviour
+
+Http Client can call services from behind the proxy.
+
+### Actual Behaviour
+
+Can't use micronaut behind a proxy.
+
+### Environment Information
+
+- **Operating System**: Mac
+- **Micronaut Version:** 1.0.4
+- **JDK Version:** 1.8.0_171-b11
+
+### Exceptions
+Usually for first proxy I get:
+
+```
+Success with Java URL!!!
+SLF4J: Failed to load class "org.slf4j.impl.StaticLoggerBinder".
+SLF4J: Defaulting to no-operation (NOP) logger implementation
+SLF4J: See http://www.slf4j.org/codes.html#StaticLoggerBinder for further details.
+Success with Vert.x!!!
+Caught: io.micronaut.http.client.exceptions.ReadTimeoutException: Read Timeout
+io.micronaut.http.client.exceptions.ReadTimeoutException: Read Timeout
+        at io.micronaut.http.client.exceptions.ReadTimeoutException.<clinit>(ReadTimeoutException.java:27)
+        at io.micronaut.http.client.DefaultHttpClient.lambda$null$25(DefaultHttpClient.java:1056)
+        at io.reactivex.internal.operators.flowable.FlowableOnErrorNext$OnErrorNextSubscriber.onError(FlowableOnErrorNext.java:103)
+        at io.reactivex.internal.operators.flowable.FlowableTimeoutTimed$TimeoutSubscriber.onTimeout(FlowableTimeoutTimed.java:139)
+        at io.reactivex.internal.operators.flowable.FlowableTimeoutTimed$TimeoutTask.run(FlowableTimeoutTimed.java:170)
+        at io.reactivex.internal.schedulers.ScheduledRunnable.run(ScheduledRunnable.java:66)
+        at io.reactivex.internal.schedulers.ScheduledRunnable.call(ScheduledRunnable.java:57)
+```
+
+Where for second proxy I get
+
+```
+Success with Java URL!!!
+SLF4J: Failed to load class "org.slf4j.impl.StaticLoggerBinder".
+SLF4J: Defaulting to no-operation (NOP) logger implementation
+SLF4J: See http://www.slf4j.org/codes.html#StaticLoggerBinder for further details.
+Success with Vert.x!!!
+Caught: java.lang.RuntimeException: io.netty.handler.proxy.ProxyConnectException: http, none, 45.6.92.18/45.6.92.18:8080 => www.google.com/216.58.212.100:443, javax.net.ssl.SSLException: handshake timed out
+io.reactivex.exceptions.UndeliverableException: The exception could not be delivered to the consumer because it has already canceled/disposed the flow or the exception has nowhere to go to begin with. Further reading: https://github.com/ReactiveX/RxJava/wiki/What's-different-in-2.0#error-handling | io.micronaut.http.client.exceptions.HttpClientException: Error occurred reading HTTP response: http, none, 45.6.92.18/45.6.92.18:8080 => www.google.com/216.58.212.100:443, javax.net.ssl.SSLException: handshake timed out
+        at io.reactivex.plugins.RxJavaPlugins.onError(RxJavaPlugins.java:367)
+        at io.reactivex.internal.operators.flowable.FlowableCreate$BaseEmitter.onError(FlowableCreate.java:275)
+        at io.micronaut.http.client.DefaultHttpClient$10.exceptionCaught(DefaultHttpClient.java:1819)
+        at io.netty.channel.AbstractChannelHandlerContext.invokeExceptionCaught(AbstractChannelHandlerContext.java:285)
+        at io.netty.channel.AbstractChannelHandlerContext.invokeExceptionCaught(AbstractChannelHandlerContext.java:264)
+        at io.netty.channel.AbstractChannelHandlerContext.fireExceptionCaught(AbstractChannelHandlerContext.java:256)
+        at io.netty.channel.ChannelInboundHandlerAdapter.exceptionCaught(ChannelInboundHandlerAdapter.java:131)
+        at io.netty.channel.AbstractChannelHandlerContext.invokeExceptionCaught(AbstractChannelHandlerContext.java:285)
+        at io.netty.channel.AbstractChannelHandlerContext.invokeExceptionCaught(AbstractChannelHandlerContext.java:264)
+        at io.netty.channel.AbstractChannelHandlerContext.fireExceptionCaught(AbstractChannelHandlerContext.java:256)
+        at io.netty.channel.ChannelInboundHandlerAdapter.exceptionCaught(ChannelInboundHandlerAdapter.java:131)
+        at io.netty.channel.AbstractChannelHandlerContext.invokeExceptionCaught(AbstractChannelHandlerContext.java:285)
+        at io.netty.channel.AbstractChannelHandlerContext.invokeExceptionCaught(AbstractChannelHandlerContext.java:264)
+        at io.netty.channel.AbstractChannelHandlerContext.fireExceptionCaught(AbstractChannelHandlerContext.java:256)
+        at io.netty.channel.ChannelInboundHandlerAdapter.exceptionCaught(ChannelInboundHandlerAdapter.java:131)
+        at io.netty.channel.AbstractChannelHandlerContext.invokeExceptionCaught(AbstractChannelHandlerContext.java:285)
+        at io.netty.channel.AbstractChannelHandlerContext.invokeExceptionCaught(AbstractChannelHandlerContext.java:264)
+        at io.netty.channel.AbstractChannelHandlerContext.fireExceptionCaught(AbstractChannelHandlerContext.java:256)
+        at io.netty.channel.CombinedChannelDuplexHandler$DelegatingChannelHandlerContext.fireExceptionCaught(CombinedChannelDuplexHandler.java:426)
+        at io.netty.channel.ChannelHandlerAdapter.exceptionCaught(ChannelHandlerAdapter.java:87)
+        at io.netty.channel.CombinedChannelDuplexHandler$1.fireExceptionCaught(CombinedChannelDuplexHandler.java:147)
+        at io.netty.channel.ChannelInboundHandlerAdapter.exceptionCaught(ChannelInboundHandlerAdapter.java:131)
+        at io.netty.channel.CombinedChannelDuplexHandler.exceptionCaught(CombinedChannelDuplexHandler.java:233)
+        at io.netty.channel.AbstractChannelHandlerContext.invokeExceptionCaught(AbstractChannelHandlerContext.java:285)
+        at io.netty.channel.AbstractChannelHandlerContext.invokeExceptionCaught(AbstractChannelHandlerContext.java:264)
+        at io.netty.channel.AbstractChannelHandlerContext.fireExceptionCaught(AbstractChannelHandlerContext.java:256)
+        at io.netty.channel.ChannelInboundHandlerAdapter.exceptionCaught(ChannelInboundHandlerAdapter.java:131)
+        at io.netty.channel.AbstractChannelHandlerContext.invokeExceptionCaught(AbstractChannelHandlerContext.java:285)
+        at io.netty.channel.AbstractChannelHandlerContext.invokeExceptionCaught(AbstractChannelHandlerContext.java:264)
+        at io.netty.channel.AbstractChannelHandlerContext.fireExceptionCaught(AbstractChannelHandlerContext.java:256)
+        at io.netty.handler.proxy.ProxyHandler.failPendingWritesAndClose(ProxyHandler.java:356)
+        at io.netty.handler.proxy.ProxyHandler.setConnectFailure(ProxyHandler.java:349)
+        at io.netty.handler.proxy.ProxyHandler.access$100(ProxyHandler.java:38)
+        at io.netty.handler.proxy.ProxyHandler$1.operationComplete(ProxyHandler.java:67)
+        at io.netty.handler.proxy.ProxyHandler$1.operationComplete(ProxyHandler.java:63)
+        at io.netty.util.concurrent.DefaultPromise.notifyListener0(DefaultPromise.java:511)
+        at io.netty.util.concurrent.DefaultPromise.notifyListenersNow(DefaultPromise.java:485)
+        at io.netty.util.concurrent.DefaultPromise.notifyListeners(DefaultPromise.java:424)
+        at io.netty.util.concurrent.DefaultPromise.tryFailure(DefaultPromise.java:121)
+        at io.netty.util.internal.PromiseNotificationUtil.tryFailure(PromiseNotificationUtil.java:64)
+        at io.netty.channel.DelegatingChannelPromiseNotifier.operationComplete(DelegatingChannelPromiseNotifier.java:57)
+        at io.netty.channel.DelegatingChannelPromiseNotifier.operationComplete(DelegatingChannelPromiseNotifier.java:31)
+        at io.netty.util.concurrent.DefaultPromise.notifyListener0(DefaultPromise.java:511)
+        at io.netty.util.concurrent.DefaultPromise.notifyListenersNow(DefaultPromise.java:485)
+        at io.netty.util.concurrent.DefaultPromise.notifyListeners(DefaultPromise.java:424)
+        at io.netty.util.concurrent.DefaultPromise.tryFailure(DefaultPromise.java:121)
+        at io.netty.util.internal.PromiseNotificationUtil.tryFailure(PromiseNotificationUtil.java:64)
+        at io.netty.channel.DelegatingChannelPromiseNotifier.operationComplete(DelegatingChannelPromiseNotifier.java:57)
+        at io.netty.channel.DelegatingChannelPromiseNotifier.operationComplete(DelegatingChannelPromiseNotifier.java:31)
+        at io.netty.channel.AbstractCoalescingBufferQueue.releaseAndCompleteAll(AbstractCoalescingBufferQueue.java:340)
+        at io.netty.channel.AbstractCoalescingBufferQueue.releaseAndFailAll(AbstractCoalescingBufferQueue.java:207)
+        at io.netty.handler.ssl.SslHandler.releaseAndFailAll(SslHandler.java:1583)
+        at io.netty.handler.ssl.SslHandler.access$1000(SslHandler.java:165)
+        at io.netty.handler.ssl.SslHandler$6.run(SslHandler.java:1782)
+        at io.netty.util.concurrent.PromiseTask$RunnableAdapter.call(PromiseTask.java:38)
+        at io.netty.util.concurrent.ScheduledFutureTask.run(ScheduledFutureTask.java:127)
+        at io.netty.util.concurrent.AbstractEventExecutor.safeExecute(AbstractEventExecutor.java:163)
+        at io.netty.util.concurrent.SingleThreadEventExecutor.runAllTasks(SingleThreadEventExecutor.java:404)
+        at io.netty.channel.nio.NioEventLoop.run(NioEventLoop.java:462)
+        at io.netty.util.concurrent.SingleThreadEventExecutor$5.run(SingleThreadEventExecutor.java:897)
+        at io.netty.util.concurrent.FastThreadLocalRunnable.run(FastThreadLocalRunnable.java:30)
+        at java.lang.Thread.run(Thread.java:748)
+Caused by: io.micronaut.http.client.exceptions.HttpClientException: Error occurred reading HTTP response: http, none, 45.6.92.18/45.6.92.18:8080 => www.google.com/216.58.212.100:443, javax.net.ssl.SSLException: handshake timed out
+        ... 60 more
+Caused by: io.netty.handler.proxy.ProxyConnectException: http, none, 45.6.92.18/45.6.92.18:8080 => www.google.com/216.58.212.100:443, javax.net.ssl.SSLException: handshake timed out
+        at io.netty.handler.proxy.ProxyHandler.setConnectFailure(ProxyHandler.java:344)
+        at io.netty.handler.proxy.ProxyHandler.access$100(ProxyHandler.java:38)
+        at io.netty.handler.proxy.ProxyHandler$1.operationComplete(ProxyHandler.java:67)
+        at io.netty.handler.proxy.ProxyHandler$1.operationComplete(ProxyHandler.java:63)
+        at io.netty.util.concurrent.DefaultPromise.notifyListener0(DefaultPromise.java:511)
+        at io.netty.util.concurrent.DefaultPromise.notifyListenersNow(DefaultPromise.java:485)
+        at io.netty.util.concurrent.DefaultPromise.notifyListeners(DefaultPromise.java:424)
+        at io.netty.util.concurrent.DefaultPromise.tryFailure(DefaultPromise.java:121)
+        at io.netty.util.internal.PromiseNotificationUtil.tryFailure(PromiseNotificationUtil.java:64)
+        at io.netty.channel.DelegatingChannelPromiseNotifier.operationComplete(DelegatingChannelPromiseNotifier.java:57)
+        at io.netty.channel.DelegatingChannelPromiseNotifier.operationComplete(DelegatingChannelPromiseNotifier.java:31)
+        at io.netty.util.concurrent.DefaultPromise.notifyListener0(DefaultPromise.java:511)
+        at io.netty.util.concurrent.DefaultPromise.notifyListenersNow(DefaultPromise.java:485)
+        at io.netty.util.concurrent.DefaultPromise.notifyListeners(DefaultPromise.java:424)
+        at io.netty.util.concurrent.DefaultPromise.tryFailure(DefaultPromise.java:121)
+        at io.netty.util.internal.PromiseNotificationUtil.tryFailure(PromiseNotificationUtil.java:64)
+        at io.netty.channel.DelegatingChannelPromiseNotifier.operationComplete(DelegatingChannelPromiseNotifier.java:57)
+        at io.netty.channel.DelegatingChannelPromiseNotifier.operationComplete(DelegatingChannelPromiseNotifier.java:31)
+        at io.netty.channel.AbstractCoalescingBufferQueue.releaseAndCompleteAll(AbstractCoalescingBufferQueue.java:340)
+        at io.netty.channel.AbstractCoalescingBufferQueue.releaseAndFailAll(AbstractCoalescingBufferQueue.java:207)
+        at io.netty.handler.ssl.SslHandler.releaseAndFailAll(SslHandler.java:1583)
+        at io.netty.handler.ssl.SslHandler.access$1000(SslHandler.java:165)
+        at io.netty.handler.ssl.SslHandler$6.run(SslHandler.java:1782)
+        at io.netty.util.concurrent.PromiseTask$RunnableAdapter.call(PromiseTask.java:38)
+        at io.netty.util.concurrent.ScheduledFutureTask.run(ScheduledFutureTask.java:127)
+        at io.netty.util.concurrent.AbstractEventExecutor.safeExecute(AbstractEventExecutor.java:163)
+        at io.netty.util.concurrent.SingleThreadEventExecutor.runAllTasks(SingleThreadEventExecutor.java:404)
+        at io.netty.channel.nio.NioEventLoop.run(NioEventLoop.java:462)
+        at io.netty.util.concurrent.SingleThreadEventExecutor$5.run(SingleThreadEventExecutor.java:897)
+        at io.netty.util.concurrent.FastThreadLocalRunnable.run(FastThreadLocalRunnable.java:30)
+Caused by: javax.net.ssl.SSLException: handshake timed out
+        at io.netty.handler.ssl.SslHandler.handshake(...)(Unknown Source)
+java.lang.RuntimeException: io.netty.handler.proxy.ProxyConnectException: http, none, 45.6.92.18/45.6.92.18:8080 => www.google.com/216.58.212.100:443, javax.net.ssl.SSLException: handshake timed out
+        at io.reactivex.internal.util.ExceptionHelper.wrapOrThrow(ExceptionHelper.java:46)
+        at io.reactivex.internal.subscribers.BlockingBaseSubscriber.blockingGet(BlockingBaseSubscriber.java:78)
+        at io.reactivex.Flowable.blockingFirst(Flowable.java:5533)
+        at io.reactivex.Flowable$blockingFirst.call(Unknown Source)
+        at ProxyDemo.run(ProxyDemo.groovy:48)
+Caused by: io.netty.handler.proxy.ProxyConnectException: http, none, 45.6.92.18/45.6.92.18:8080 => www.google.com/216.58.212.100:443, javax.net.ssl.SSLException: handshake timed out
+        at io.netty.handler.proxy.ProxyHandler.setConnectFailure(ProxyHandler.java:344)
+        at io.netty.handler.proxy.ProxyHandler.access$100(ProxyHandler.java:38)
+        at io.netty.handler.proxy.ProxyHandler$1.operationComplete(ProxyHandler.java:67)
+        at io.netty.handler.proxy.ProxyHandler$1.operationComplete(ProxyHandler.java:63)
+        at io.netty.util.concurrent.DefaultPromise.notifyListener0(DefaultPromise.java:511)
+        at io.netty.util.concurrent.DefaultPromise.notifyListenersNow(DefaultPromise.java:485)
+        at io.netty.util.concurrent.DefaultPromise.notifyListeners(DefaultPromise.java:424)
+        at io.netty.util.concurrent.DefaultPromise.tryFailure(DefaultPromise.java:121)
+        at io.netty.util.internal.PromiseNotificationUtil.tryFailure(PromiseNotificationUtil.java:64)
+        at io.netty.channel.DelegatingChannelPromiseNotifier.operationComplete(DelegatingChannelPromiseNotifier.java:57)
+        at io.netty.channel.DelegatingChannelPromiseNotifier.operationComplete(DelegatingChannelPromiseNotifier.java:31)
+        at io.netty.util.concurrent.DefaultPromise.notifyListener0(DefaultPromise.java:511)
+        at io.netty.util.concurrent.DefaultPromise.notifyListenersNow(DefaultPromise.java:485)
+        at io.netty.util.concurrent.DefaultPromise.notifyListeners(DefaultPromise.java:424)
+        at io.netty.util.concurrent.DefaultPromise.tryFailure(DefaultPromise.java:121)
+        at io.netty.util.internal.PromiseNotificationUtil.tryFailure(PromiseNotificationUtil.java:64)
+        at io.netty.channel.DelegatingChannelPromiseNotifier.operationComplete(DelegatingChannelPromiseNotifier.java:57)
+        at io.netty.channel.DelegatingChannelPromiseNotifier.operationComplete(DelegatingChannelPromiseNotifier.java:31)
+        at io.netty.channel.AbstractCoalescingBufferQueue.releaseAndCompleteAll(AbstractCoalescingBufferQueue.java:340)
+        at io.netty.channel.AbstractCoalescingBufferQueue.releaseAndFailAll(AbstractCoalescingBufferQueue.java:207)
+        at io.netty.handler.ssl.SslHandler.releaseAndFailAll(SslHandler.java:1583)
+        at io.netty.handler.ssl.SslHandler.access$1000(SslHandler.java:165)
+        at io.netty.handler.ssl.SslHandler$6.run(SslHandler.java:1782)
+        at io.netty.util.concurrent.PromiseTask$RunnableAdapter.call(PromiseTask.java:38)
+        at io.netty.util.concurrent.ScheduledFutureTask.run(ScheduledFutureTask.java:127)
+        at io.netty.util.concurrent.AbstractEventExecutor.safeExecute(AbstractEventExecutor.java:163)
+        at io.netty.util.concurrent.SingleThreadEventExecutor.runAllTasks(SingleThreadEventExecutor.java:404)
+        at io.netty.channel.nio.NioEventLoop.run(NioEventLoop.java:462)
+        at io.netty.util.concurrent.SingleThreadEventExecutor$5.run(SingleThreadEventExecutor.java:897)
+        at io.netty.util.concurrent.FastThreadLocalRunnable.run(FastThreadLocalRunnable.java:30)
+Caused by: javax.net.ssl.SSLException: handshake timed out
+        at io.netty.handler.ssl.SslHandler.handshake(...)(Unknown Source)
+Exception in thread "multithreadEventLoopGroup-2-2" io.reactivex.exceptions.UndeliverableException: The exception could not be delivered to the consumer because it has already canceled/disposed the flow or the exception has nowhere to go to begin with. Further reading: https://github.com/ReactiveX/RxJava/wiki/What's-different-in-2.0#error-handling | io.micronaut.http.client.exceptions.HttpClientException: Error occurred reading HTTP response: http, none, 45.6.92.18/45.6.92.18:8080 => www.google.com/216.58.212.100:443, javax.net.ssl.SSLException: handshake timed out
+        at io.reactivex.plugins.RxJavaPlugins.onError(RxJavaPlugins.java:367)
+        at io.reactivex.internal.operators.flowable.FlowableCreate$BaseEmitter.onError(FlowableCreate.java:275)
+        at io.micronaut.http.client.DefaultHttpClient$10.exceptionCaught(DefaultHttpClient.java:1819)
+        at io.netty.channel.AbstractChannelHandlerContext.invokeExceptionCaught(AbstractChannelHandlerContext.java:285)
+        at io.netty.channel.AbstractChannelHandlerContext.invokeExceptionCaught(AbstractChannelHandlerContext.java:264)
+        at io.netty.channel.AbstractChannelHandlerContext.fireExceptionCaught(AbstractChannelHandlerContext.java:256)
+        at io.netty.channel.ChannelInboundHandlerAdapter.exceptionCaught(ChannelInboundHandlerAdapter.java:131)
+        at io.netty.channel.AbstractChannelHandlerContext.invokeExceptionCaught(AbstractChannelHandlerContext.java:285)
+        at io.netty.channel.AbstractChannelHandlerContext.invokeExceptionCaught(AbstractChannelHandlerContext.java:264)
+        at io.netty.channel.AbstractChannelHandlerContext.fireExceptionCaught(AbstractChannelHandlerContext.java:256)
+        at io.netty.channel.ChannelInboundHandlerAdapter.exceptionCaught(ChannelInboundHandlerAdapter.java:131)
+        at io.netty.channel.AbstractChannelHandlerContext.invokeExceptionCaught(AbstractChannelHandlerContext.java:285)
+        at io.netty.channel.AbstractChannelHandlerContext.invokeExceptionCaught(AbstractChannelHandlerContext.java:264)
+        at io.netty.channel.AbstractChannelHandlerContext.fireExceptionCaught(AbstractChannelHandlerContext.java:256)
+        at io.netty.channel.ChannelInboundHandlerAdapter.exceptionCaught(ChannelInboundHandlerAdapter.java:131)
+        at io.netty.channel.AbstractChannelHandlerContext.invokeExceptionCaught(AbstractChannelHandlerContext.java:285)
+        at io.netty.channel.AbstractChannelHandlerContext.invokeExceptionCaught(AbstractChannelHandlerContext.java:264)
+        at io.netty.channel.AbstractChannelHandlerContext.fireExceptionCaught(AbstractChannelHandlerContext.java:256)
+        at io.netty.channel.CombinedChannelDuplexHandler$DelegatingChannelHandlerContext.fireExceptionCaught(CombinedChannelDuplexHandler.java:426)
+        at io.netty.channel.ChannelHandlerAdapter.exceptionCaught(ChannelHandlerAdapter.java:87)
+        at io.netty.channel.CombinedChannelDuplexHandler$1.fireExceptionCaught(CombinedChannelDuplexHandler.java:147)
+        at io.netty.channel.ChannelInboundHandlerAdapter.exceptionCaught(ChannelInboundHandlerAdapter.java:131)
+        at io.netty.channel.CombinedChannelDuplexHandler.exceptionCaught(CombinedChannelDuplexHandler.java:233)
+        at io.netty.channel.AbstractChannelHandlerContext.invokeExceptionCaught(AbstractChannelHandlerContext.java:285)
+        at io.netty.channel.AbstractChannelHandlerContext.invokeExceptionCaught(AbstractChannelHandlerContext.java:264)
+        at io.netty.channel.AbstractChannelHandlerContext.fireExceptionCaught(AbstractChannelHandlerContext.java:256)
+        at io.netty.channel.ChannelInboundHandlerAdapter.exceptionCaught(ChannelInboundHandlerAdapter.java:131)
+        at io.netty.channel.AbstractChannelHandlerContext.invokeExceptionCaught(AbstractChannelHandlerContext.java:285)
+        at io.netty.channel.AbstractChannelHandlerContext.invokeExceptionCaught(AbstractChannelHandlerContext.java:264)
+        at io.netty.channel.AbstractChannelHandlerContext.fireExceptionCaught(AbstractChannelHandlerContext.java:256)
+        at io.netty.handler.proxy.ProxyHandler.failPendingWritesAndClose(ProxyHandler.java:356)
+        at io.netty.handler.proxy.ProxyHandler.setConnectFailure(ProxyHandler.java:349)
+        at io.netty.handler.proxy.ProxyHandler.access$100(ProxyHandler.java:38)
+        at io.netty.handler.proxy.ProxyHandler$1.operationComplete(ProxyHandler.java:67)
+        at io.netty.handler.proxy.ProxyHandler$1.operationComplete(ProxyHandler.java:63)
+        at io.netty.util.concurrent.DefaultPromise.notifyListener0(DefaultPromise.java:511)
+        at io.netty.util.concurrent.DefaultPromise.notifyListenersNow(DefaultPromise.java:485)
+        at io.netty.util.concurrent.DefaultPromise.notifyListeners(DefaultPromise.java:424)
+        at io.netty.util.concurrent.DefaultPromise.tryFailure(DefaultPromise.java:121)
+        at io.netty.util.internal.PromiseNotificationUtil.tryFailure(PromiseNotificationUtil.java:64)
+        at io.netty.channel.DelegatingChannelPromiseNotifier.operationComplete(DelegatingChannelPromiseNotifier.java:57)
+        at io.netty.channel.DelegatingChannelPromiseNotifier.operationComplete(DelegatingChannelPromiseNotifier.java:31)
+        at io.netty.util.concurrent.DefaultPromise.notifyListener0(DefaultPromise.java:511)
+        at io.netty.util.concurrent.DefaultPromise.notifyListenersNow(DefaultPromise.java:485)
+        at io.netty.util.concurrent.DefaultPromise.notifyListeners(DefaultPromise.java:424)
+        at io.netty.util.concurrent.DefaultPromise.tryFailure(DefaultPromise.java:121)
+        at io.netty.util.internal.PromiseNotificationUtil.tryFailure(PromiseNotificationUtil.java:64)
+        at io.netty.channel.DelegatingChannelPromiseNotifier.operationComplete(DelegatingChannelPromiseNotifier.java:57)
+        at io.netty.channel.DelegatingChannelPromiseNotifier.operationComplete(DelegatingChannelPromiseNotifier.java:31)
+        at io.netty.channel.AbstractCoalescingBufferQueue.releaseAndCompleteAll(AbstractCoalescingBufferQueue.java:340)
+        at io.netty.channel.AbstractCoalescingBufferQueue.releaseAndFailAll(AbstractCoalescingBufferQueue.java:207)
+        at io.netty.handler.ssl.SslHandler.releaseAndFailAll(SslHandler.java:1583)
+        at io.netty.handler.ssl.SslHandler.access$1000(SslHandler.java:165)
+        at io.netty.handler.ssl.SslHandler$6.run(SslHandler.java:1782)
+        at io.netty.util.concurrent.PromiseTask$RunnableAdapter.call(PromiseTask.java:38)
+        at io.netty.util.concurrent.ScheduledFutureTask.run(ScheduledFutureTask.java:127)
+        at io.netty.util.concurrent.AbstractEventExecutor.safeExecute(AbstractEventExecutor.java:163)
+        at io.netty.util.concurrent.SingleThreadEventExecutor.runAllTasks(SingleThreadEventExecutor.java:404)
+        at io.netty.channel.nio.NioEventLoop.run(NioEventLoop.java:462)
+        at io.netty.util.concurrent.SingleThreadEventExecutor$5.run(SingleThreadEventExecutor.java:897)
+        at io.netty.util.concurrent.FastThreadLocalRunnable.run(FastThreadLocalRunnable.java:30)
+        at java.lang.Thread.run(Thread.java:748)
+Caused by: io.micronaut.http.client.exceptions.HttpClientException: Error occurred reading HTTP response: http, none, 45.6.92.18/45.6.92.18:8080 => www.google.com/216.58.212.100:443, javax.net.ssl.SSLException: handshake timed out
+        ... 60 more
+Caused by: io.netty.handler.proxy.ProxyConnectException: http, none, 45.6.92.18/45.6.92.18:8080 => www.google.com/216.58.212.100:443, javax.net.ssl.SSLException: handshake timed out
+        at io.netty.handler.proxy.ProxyHandler.setConnectFailure(ProxyHandler.java:344)
+        at io.netty.handler.proxy.ProxyHandler.access$100(ProxyHandler.java:38)
+        at io.netty.handler.proxy.ProxyHandler$1.operationComplete(ProxyHandler.java:67)
+        at io.netty.handler.proxy.ProxyHandler$1.operationComplete(ProxyHandler.java:63)
+        at io.netty.util.concurrent.DefaultPromise.notifyListener0(DefaultPromise.java:511)
+        at io.netty.util.concurrent.DefaultPromise.notifyListenersNow(DefaultPromise.java:485)
+        at io.netty.util.concurrent.DefaultPromise.notifyListeners(DefaultPromise.java:424)
+        at io.netty.util.concurrent.DefaultPromise.tryFailure(DefaultPromise.java:121)
+        at io.netty.util.internal.PromiseNotificationUtil.tryFailure(PromiseNotificationUtil.java:64)
+        at io.netty.channel.DelegatingChannelPromiseNotifier.operationComplete(DelegatingChannelPromiseNotifier.java:57)
+        at io.netty.channel.DelegatingChannelPromiseNotifier.operationComplete(DelegatingChannelPromiseNotifier.java:31)
+        at io.netty.util.concurrent.DefaultPromise.notifyListener0(DefaultPromise.java:511)
+        at io.netty.util.concurrent.DefaultPromise.notifyListenersNow(DefaultPromise.java:485)
+        at io.netty.util.concurrent.DefaultPromise.notifyListeners(DefaultPromise.java:424)
+        at io.netty.util.concurrent.DefaultPromise.tryFailure(DefaultPromise.java:121)
+        at io.netty.util.internal.PromiseNotificationUtil.tryFailure(PromiseNotificationUtil.java:64)
+        at io.netty.channel.DelegatingChannelPromiseNotifier.operationComplete(DelegatingChannelPromiseNotifier.java:57)
+        at io.netty.channel.DelegatingChannelPromiseNotifier.operationComplete(DelegatingChannelPromiseNotifier.java:31)
+        at io.netty.channel.AbstractCoalescingBufferQueue.releaseAndCompleteAll(AbstractCoalescingBufferQueue.java:340)
+        at io.netty.channel.AbstractCoalescingBufferQueue.releaseAndFailAll(AbstractCoalescingBufferQueue.java:207)
+        at io.netty.handler.ssl.SslHandler.releaseAndFailAll(SslHandler.java:1583)
+        at io.netty.handler.ssl.SslHandler.access$1000(SslHandler.java:165)
+        at io.netty.handler.ssl.SslHandler$6.run(SslHandler.java:1782)
+        at io.netty.util.concurrent.PromiseTask$RunnableAdapter.call(PromiseTask.java:38)
+        at io.netty.util.concurrent.ScheduledFutureTask.run(ScheduledFutureTask.java:127)
+        at io.netty.util.concurrent.AbstractEventExecutor.safeExecute(AbstractEventExecutor.java:163)
+        at io.netty.util.concurrent.SingleThreadEventExecutor.runAllTasks(SingleThreadEventExecutor.java:404)
+        at io.netty.channel.nio.NioEventLoop.run(NioEventLoop.java:462)
+        at io.netty.util.concurrent.SingleThreadEventExecutor$5.run(SingleThreadEventExecutor.java:897)
+        at io.netty.util.concurrent.FastThreadLocalRunnable.run(FastThreadLocalRunnable.java:30)
+Caused by: javax.net.ssl.SSLException: handshake timed out
+        at io.netty.handler.ssl.SslHandler.handshake(...)(Unknown Source)
+```

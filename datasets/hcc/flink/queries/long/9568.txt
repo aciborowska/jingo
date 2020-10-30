@@ -1,0 +1,150 @@
+It seems that errors in input formats are not properly propagated. This might be related to the recent FLIP-6 changes.
+
+Take the following example:
+
+
+final ExecutionEnvironment env = ExecutionEnvironment.getExecutionEnvironment();
+env.readTextFile("this_path_does_not_exist").print();
+
+
+
+Running this in an IDE leads to the correct exception:
+
+
+Caused by: java.io.FileNotFoundException: File thispathdoesnotexist does not exist or the user running Flink ('twalthr') has insufficient permissions to access it.
+
+
+
+The RestClusterClient returns an internal server error for this when executed in SQL Client:
+
+
+Caused by: org.apache.flink.client.program.ProgramInvocationException: Could not retrieve the execution result.
+  at org.apache.flink.client.program.rest.RestClusterClient.submitJob(RestClusterClient.java:258)
+  at org.apache.flink.table.client.gateway.local.ProgramDeployer.deployJob(ProgramDeployer.java:102)
+  ... 2 more
+Caused by: org.apache.flink.runtime.client.JobSubmissionException: Failed to submit JobGraph.
+  at org.apache.flink.client.program.rest.RestClusterClient.lambda$submitJob$5(RestClusterClient.java:358)
+  at java.util.concurrent.CompletableFuture.uniExceptionally(CompletableFuture.java:870)
+  at java.util.concurrent.CompletableFuture$UniExceptionally.tryFire(CompletableFuture.java:852)
+  at java.util.concurrent.CompletableFuture.postComplete(CompletableFuture.java:474)
+  at java.util.concurrent.CompletableFuture.completeExceptionally(CompletableFuture.java:1977)
+  at org.apache.flink.runtime.concurrent.FutureUtils.lambda$retryOperationWithDelay$5(FutureUtils.java:214)
+  at java.util.concurrent.CompletableFuture.uniWhenComplete(CompletableFuture.java:760)
+  at java.util.concurrent.CompletableFuture$UniWhenComplete.tryFire(CompletableFuture.java:736)
+  at java.util.concurrent.CompletableFuture.postComplete(CompletableFuture.java:474)
+  at java.util.concurrent.CompletableFuture.postFire(CompletableFuture.java:561)
+  at java.util.concurrent.CompletableFuture$UniCompose.tryFire(CompletableFuture.java:929)
+  at java.util.concurrent.CompletableFuture$Completion.run(CompletableFuture.java:442)
+  at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1142)
+  at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:617)
+  at java.lang.Thread.run(Thread.java:745)
+Caused by: java.util.concurrent.CompletionException: org.apache.flink.runtime.concurrent.FutureUtils$RetryException: Could not complete the operation. Exception is not retryable.
+  at java.util.concurrent.CompletableFuture.encodeRelay(CompletableFuture.java:326)
+  at java.util.concurrent.CompletableFuture.completeRelay(CompletableFuture.java:338)
+  at java.util.concurrent.CompletableFuture.uniRelay(CompletableFuture.java:911)
+  at java.util.concurrent.CompletableFuture$UniRelay.tryFire(CompletableFuture.java:899)
+  ... 12 more
+Caused by: org.apache.flink.runtime.concurrent.FutureUtils$RetryException: Could not complete the operation. Exception is not retryable.
+  ... 10 more
+Caused by: java.util.concurrent.CompletionException: org.apache.flink.runtime.rest.util.RestClientException: [Internal server error.]
+  at java.util.concurrent.CompletableFuture.encodeRelay(CompletableFuture.java:326)
+  at java.util.concurrent.CompletableFuture.completeRelay(CompletableFuture.java:338)
+  at java.util.concurrent.CompletableFuture.uniRelay(CompletableFuture.java:911)
+  at java.util.concurrent.CompletableFuture.uniCompose(CompletableFuture.java:953)
+  at java.util.concurrent.CompletableFuture$UniCompose.tryFire(CompletableFuture.java:926)
+  ... 4 more
+Caused by: org.apache.flink.runtime.rest.util.RestClientException: [Internal server error.]
+  at org.apache.flink.runtime.rest.RestClient.parseResponse(RestClient.java:225)
+  at org.apache.flink.runtime.rest.RestClient.lambda$submitRequest$3(RestClient.java:209)
+  at java.util.concurrent.CompletableFuture.uniCompose(CompletableFuture.java:952)
+  ... 5 more
+
+
+
+When submitted through the web UI the log shows:
+
+
+2018-06-11 15:53:38,204 ERROR org.apache.flink.runtime.webmonitor.handlers.JarRunHandler    - Exception occurred in REST handler.
+org.apache.flink.runtime.rest.handler.RestHandlerException: org.apache.flink.util.FlinkException: Failed to submit job 1f302e263579bed44635aa5e4e5dbe25.
+	at org.apache.flink.runtime.webmonitor.handlers.JarRunHandler.lambda$handleRequest$3(JarRunHandler.java:141)
+	at java.util.concurrent.CompletableFuture.uniExceptionally(CompletableFuture.java:870)
+	at java.util.concurrent.CompletableFuture$UniExceptionally.tryFire(CompletableFuture.java:852)
+	at java.util.concurrent.CompletableFuture.postComplete(CompletableFuture.java:474)
+	at java.util.concurrent.CompletableFuture.completeExceptionally(CompletableFuture.java:1977)
+	at org.apache.flink.runtime.concurrent.FutureUtils$1.onComplete(FutureUtils.java:811)
+	at akka.dispatch.OnComplete.internal(Future.scala:258)
+	at akka.dispatch.OnComplete.internal(Future.scala:256)
+	at akka.dispatch.japi$CallbackBridge.apply(Future.scala:186)
+	at akka.dispatch.japi$CallbackBridge.apply(Future.scala:183)
+	at scala.concurrent.impl.CallbackRunnable.run(Promise.scala:36)
+	at org.apache.flink.runtime.concurrent.Executors$DirectExecutionContext.execute(Executors.java:83)
+	at scala.concurrent.impl.CallbackRunnable.executeWithValue(Promise.scala:44)
+	at scala.concurrent.impl.Promise$DefaultPromise.tryComplete(Promise.scala:252)
+	at akka.pattern.PromiseActorRef.$bang(AskSupport.scala:534)
+	at akka.pattern.PipeToSupport$PipeableFuture$$anonfun$pipeTo$1.applyOrElse(PipeToSupport.scala:20)
+	at akka.pattern.PipeToSupport$PipeableFuture$$anonfun$pipeTo$1.applyOrElse(PipeToSupport.scala:18)
+	at scala.concurrent.Future$$anonfun$andThen$1.apply(Future.scala:436)
+	at scala.concurrent.Future$$anonfun$andThen$1.apply(Future.scala:435)
+	at scala.concurrent.impl.CallbackRunnable.run(Promise.scala:36)
+	at akka.dispatch.BatchingExecutor$AbstractBatch.processBatch(BatchingExecutor.scala:55)
+	at akka.dispatch.BatchingExecutor$BlockableBatch$$anonfun$run$1.apply$mcV$sp(BatchingExecutor.scala:91)
+	at akka.dispatch.BatchingExecutor$BlockableBatch$$anonfun$run$1.apply(BatchingExecutor.scala:91)
+	at akka.dispatch.BatchingExecutor$BlockableBatch$$anonfun$run$1.apply(BatchingExecutor.scala:91)
+	at scala.concurrent.BlockContext$.withBlockContext(BlockContext.scala:72)
+	at akka.dispatch.BatchingExecutor$BlockableBatch.run(BatchingExecutor.scala:90)
+	at akka.dispatch.TaskInvocation.run(AbstractDispatcher.scala:39)
+	at akka.dispatch.ForkJoinExecutorConfigurator$AkkaForkJoinTask.exec(AbstractDispatcher.scala:415)
+	at scala.concurrent.forkjoin.ForkJoinTask.doExec(ForkJoinTask.java:260)
+	at scala.concurrent.forkjoin.ForkJoinPool$WorkQueue.runTask(ForkJoinPool.java:1339)
+	at scala.concurrent.forkjoin.ForkJoinPool.runWorker(ForkJoinPool.java:1979)
+	at scala.concurrent.forkjoin.ForkJoinWorkerThread.run(ForkJoinWorkerThread.java:107)
+Caused by: java.util.concurrent.CompletionException: org.apache.flink.util.FlinkException: Failed to submit job 1f302e263579bed44635aa5e4e5dbe25.
+	at java.util.concurrent.CompletableFuture.encodeRelay(CompletableFuture.java:326)
+	at java.util.concurrent.CompletableFuture.completeRelay(CompletableFuture.java:338)
+	at java.util.concurrent.CompletableFuture.uniRelay(CompletableFuture.java:911)
+	at java.util.concurrent.CompletableFuture$UniRelay.tryFire(CompletableFuture.java:899)
+	... 29 more
+Caused by: org.apache.flink.util.FlinkException: Failed to submit job 1f302e263579bed44635aa5e4e5dbe25.
+	at org.apache.flink.runtime.dispatcher.Dispatcher.submitJob(Dispatcher.java:254)
+	at sun.reflect.GeneratedMethodAccessor56.invoke(Unknown Source)
+	at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)
+	at java.lang.reflect.Method.invoke(Method.java:498)
+	at org.apache.flink.runtime.rpc.akka.AkkaRpcActor.handleRpcInvocation(AkkaRpcActor.java:247)
+	at org.apache.flink.runtime.rpc.akka.AkkaRpcActor.handleRpcMessage(AkkaRpcActor.java:162)
+	at org.apache.flink.runtime.rpc.akka.FencedAkkaRpcActor.handleRpcMessage(FencedAkkaRpcActor.java:70)
+	at org.apache.flink.runtime.rpc.akka.AkkaRpcActor.onReceive(AkkaRpcActor.java:142)
+	at org.apache.flink.runtime.rpc.akka.FencedAkkaRpcActor.onReceive(FencedAkkaRpcActor.java:40)
+	at akka.actor.UntypedActor$$anonfun$receive$1.applyOrElse(UntypedActor.scala:165)
+	at akka.actor.Actor$class.aroundReceive(Actor.scala:502)
+	at akka.actor.UntypedActor.aroundReceive(UntypedActor.scala:95)
+	at akka.actor.ActorCell.receiveMessage(ActorCell.scala:526)
+	at akka.actor.ActorCell.invoke(ActorCell.scala:495)
+	at akka.dispatch.Mailbox.processMailbox(Mailbox.scala:257)
+	at akka.dispatch.Mailbox.run(Mailbox.scala:224)
+	at akka.dispatch.Mailbox.exec(Mailbox.scala:234)
+	... 4 more
+Caused by: org.apache.flink.runtime.client.JobExecutionException: Could not set up JobManager
+	at org.apache.flink.runtime.jobmaster.JobManagerRunner.<init>(JobManagerRunner.java:169)
+	at org.apache.flink.runtime.dispatcher.Dispatcher$DefaultJobManagerRunnerFactory.createJobManagerRunner(Dispatcher.java:885)
+	at org.apache.flink.runtime.dispatcher.Dispatcher.createJobManagerRunner(Dispatcher.java:287)
+	at org.apache.flink.runtime.dispatcher.Dispatcher.runJob(Dispatcher.java:277)
+	at org.apache.flink.runtime.dispatcher.Dispatcher.persistAndRunJob(Dispatcher.java:262)
+	at org.apache.flink.runtime.dispatcher.Dispatcher.submitJob(Dispatcher.java:249)
+	... 20 more
+Caused by: org.apache.flink.runtime.JobException: Creating the input splits caused an error: File thispathdoesnotexist does not exist or the user running Flink ('twalthr') has insufficient permissions to access it.
+	at org.apache.flink.runtime.executiongraph.ExecutionJobVertex.<init>(ExecutionJobVertex.java:273)
+	at org.apache.flink.runtime.executiongraph.ExecutionGraph.attachJobGraph(ExecutionGraph.java:827)
+	at org.apache.flink.runtime.executiongraph.ExecutionGraphBuilder.buildGraph(ExecutionGraphBuilder.java:232)
+	at org.apache.flink.runtime.executiongraph.ExecutionGraphBuilder.buildGraph(ExecutionGraphBuilder.java:100)
+	at org.apache.flink.runtime.jobmaster.JobMaster.createExecutionGraph(JobMaster.java:1150)
+	at org.apache.flink.runtime.jobmaster.JobMaster.createAndRestoreExecutionGraph(JobMaster.java:1130)
+	at org.apache.flink.runtime.jobmaster.JobMaster.<init>(JobMaster.java:298)
+	at org.apache.flink.runtime.jobmaster.JobManagerRunner.<init>(JobManagerRunner.java:151)
+	... 25 more
+Caused by: java.io.FileNotFoundException: File thispathdoesnotexist does not exist or the user running Flink ('twalthr') has insufficient permissions to access it.
+	at org.apache.flink.core.fs.local.LocalFileSystem.getFileStatus(LocalFileSystem.java:115)
+	at org.apache.flink.api.common.io.FileInputFormat.createInputSplits(FileInputFormat.java:588)
+	at org.apache.flink.api.common.io.FileInputFormat.createInputSplits(FileInputFormat.java:62)
+	at org.apache.flink.runtime.executiongraph.ExecutionJobVertex.<init>(ExecutionJobVertex.java:259)
+	... 32 more
+

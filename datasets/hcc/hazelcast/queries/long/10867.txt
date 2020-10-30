@@ -1,0 +1,50 @@
+Test Case:
+```java
+@RunWith(HazelcastParallelClassRunner.class)
+@Category({QuickTest.class, ParallelTest.class})
+public class SimuTest extends HazelcastTestSupport {
+
+    private final TestHazelcastFactory hazelcastFactory = new TestHazelcastFactory();
+    private HazelcastInstance targetInstance;
+
+    @Before
+    public void setup() {
+        hazelcastFactory.newHazelcastInstance();
+        targetInstance = hazelcastFactory.newHazelcastInstance();
+    }
+
+    @Test(timeout = Long.MAX_VALUE)
+    public void foo() throws InterruptedException {
+        final int iterationPerThread = 100000;
+        for (int i = 0; i < iterationPerThread; i++) {
+            timeStep();
+            System.out.println("Finished iteration " + i);
+            Thread.sleep(5000);
+        }
+    }
+
+    private void timeStep() throws InterruptedException {
+        TransactionContext ctx = targetInstance.newTransactionContext();
+        ctx.beginTransaction();
+        TransactionalQueue<Integer> queue = ctx.getQueue("myQueue");
+        queue.offer(1);
+        queue.take();
+        ctx.commitTransaction();
+    }
+}
+```
+
+When running this test I can see this in logs: `Backup reserve failed, itemId: <ID> is not found`
+
+This is from `QueueContainer`, `txnOfferBackupReserve()`:
+```java
+    public void txnOfferBackupReserve(long itemId, String transactionId) {
+        QueueItem item = new QueueItem(this, itemId, null);
+        Object o = txMap.put(itemId, new TxQueueItem(item).setPollOperation(false).setTransactionId(transactionId));
+        if (o != null) {
+            logger.severe("txnOfferBackupReserve operation-> Item exists already at txMap for itemId: " + itemId);
+        }
+    }
+```
+
+tha'ts suspicious. I believe it should use the backupmap (`getBackupMap()`) for reservation on entries. Also check logic in `txnPollBackupReserve()`

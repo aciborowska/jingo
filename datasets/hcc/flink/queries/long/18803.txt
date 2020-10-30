@@ -1,0 +1,79 @@
+When submit job using  RemoteStreamEnvironment in attach mode. The client submission thread is blocked on "jobResultFuture.get()" in the "submitJob" method of RestClusterClient.java, it holds the local variable jobGraph, if the job is complex with lots of vertexs and edges or client submits quite a lot of jobs. The size of jobGraph become large and the client may OOM. I think there is no need for client to hold it.
+
+The biggest objects of client heap  is as below ,The number of tasks of this job is  408
+
+
+
+ 
+
+
+
+ 
+
+ 
+
+perhaps we can null out it after success of submission
+
+ 
+
+
+//代码占位符
+
+public JobSubmissionResult run(FlinkPlan compiledPlan,
+      List<URL> libraries, List<URL> classpaths, ClassLoader classLoader, SavepointRestoreSettings savepointSettings)
+      throws ProgramInvocationException {
+   return submitJob(() -> getJobGraph(flinkConfig, compiledPlan, libraries, classpaths, savepointSettings), classLoader);
+}
+
+
+public JobSubmissionResult submitJob(Supplier<JobGraph> jobGraphSupplier, ClassLoader classLoader) throws ProgramInvocationException {
+   JobGraph jobGraph = jobGraphSupplier.get();
+   JobID jobID = jobGraph.getJobID();
+   log.info("Submitting job {} (detached: {}).", jobID, isDetached());
+
+   final CompletableFuture<JobSubmissionResult> jobSubmissionFuture = submitJob(jobGraph);
+   JobSubmissionResult result;
+   try {
+      result = jobSubmissionFuture.get();
+      //help GC
+      jobGraph = null;
+   } catch (Exception e) {
+      throw new ProgramInvocationException("Could not submit job",
+         jobID, ExceptionUtils.stripExecutionException(e));
+   }
+
+   if (isDetached()) {
+      return result;
+   } else {
+      final CompletableFuture<JobResult> jobResultFuture = requestJobResult(jobID);
+      final JobResult jobResult;
+      try {
+         jobResult = jobResultFuture.get();
+      } catch (Exception e) {
+         throw new ProgramInvocationException("Could not retrieve the execution result.",
+            jobID, ExceptionUtils.stripExecutionException(e));
+      }
+
+      try {
+         this.lastJobExecutionResult = jobResult.toJobExecutionResult(classLoader);
+         return lastJobExecutionResult;
+      } catch (JobExecutionException e) {
+         throw new ProgramInvocationException("Job failed.", jobID, e);
+      } catch (IOException | ClassNotFoundException e) {
+         throw new ProgramInvocationException("Job failed.", jobID, e);
+      }
+   }
+}
+
+
+ 
+
+we can see the job graph has been GC
+
+
+
+ 
+
+ 
+
+ 

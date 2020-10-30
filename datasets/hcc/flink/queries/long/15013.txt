@@ -1,0 +1,49 @@
+THIS IS DIFFERENT FROM FLINK-15007, even though the text looks almost the same.
+
+This was discovered while debugging FLINK-14834. In some cases a Flink needs needs more slots to execute than expected. You can see this in some of the logs attached to FLINK-14834.
+
+You can reproduce this using https://github.com/aljoscha/docker-hadoop-cluster to bring up a YARN cluster and then running a compiled Flink in there.
+
+When you run
+
+
+bin/flink run -m yarn-cluster -p 3 -yjm 1224 -ytm 1224 /root/DualInputWordCount.jar --input hdfs:///wc-in-1 --output hdfs:///wc-out && hdfs dfs -rm -r /wc-out
+
+
+and check the logs afterwards you will sometimes see three "Requesting new slot..." statements and sometimes you will see four.
+
+This is the git bisect log that identifies the first faulty commit (https://github.com/apache/flink/commit/2ab8b61f2f22f1a1ce7f92cd6b8dd32d2c0c227d):
+
+
+git bisect start
+# good: [09f2f43a1d73c76bf4d3f4a1205269eb860deb14] [FLINK-14154][ml] Add the class for multivariate Gaussian Distribution.
+git bisect good 09f2f43a1d73c76bf4d3f4a1205269eb860deb14
+# bad: [01d6972ab267807b8afccb09a45c454fa76d6c4b] [hotfix] Refactor out slots creation from the TaskSlotTable constructor
+git bisect bad 01d6972ab267807b8afccb09a45c454fa76d6c4b
+# bad: [7a61c582c7213f123e10de4fd11a13d96425fd77] [hotfix] Fix wrong Java doc comment of BroadcastStateBootstrapFunction.Context
+git bisect bad 7a61c582c7213f123e10de4fd11a13d96425fd77
+# good: [edeec8d7420185d1c49b2739827bd921d2c2d485] [hotfix][runtime] Replace all occurrences of letter to mail to unify wording of variables and documentation.
+git bisect good edeec8d7420185d1c49b2739827bd921d2c2d485
+# bad: [1b4ebce86b71d56f44185f1cb83d9a3b51de13df] [FLINK-14262][table-planner-blink] support referencing function with fully/partially qualified names in blink
+git bisect bad 1b4ebce86b71d56f44185f1cb83d9a3b51de13df
+# good: [25a3d9138cd5e39fc786315682586b75d8ac86ea] [hotfix] Move TaskManagerSlot to o.a.f.runtime.resourcemanager.slotmanager
+git bisect good 25a3d9138cd5e39fc786315682586b75d8ac86ea
+# good: [362d7670593adc2e4b20650c8854398727d8102b] [FLINK-12122] Calculate TaskExecutorUtilization when listing available slots
+git bisect good 362d7670593adc2e4b20650c8854398727d8102b
+# bad: [7e8218515baf630e668348a68ff051dfa49c90c3] [FLINK-13969][Checkpointing] Do not allow trigger new checkpoitn after stop the coordinator
+git bisect bad 7e8218515baf630e668348a68ff051dfa49c90c3
+# bad: [269e7f007e855c2bdedf8bad64ef13f516a608a6] [FLINK-12122] Choose SlotSelectionStrategy based on ClusterOptions#EVENLY_SPREAD_OUT_SLOTS_STRATEGY
+git bisect bad 269e7f007e855c2bdedf8bad64ef13f516a608a6
+# bad: [2ab8b61f2f22f1a1ce7f92cd6b8dd32d2c0c227d] [FLINK-12122] Add EvenlySpreadOutLocationPreferenceSlotSelectionStrategy
+git bisect bad 2ab8b61f2f22f1a1ce7f92cd6b8dd32d2c0c227d
+# first bad commit: [2ab8b61f2f22f1a1ce7f92cd6b8dd32d2c0c227d] [FLINK-12122] Add EvenlySpreadOutLocationPreferenceSlotSelectionStrategy
+
+
+
+I'm using the streaming WordCount example that I modified to have two "inputs", similar to how the WordCount example is used in the YARN/kerberos/Docker test. Instead of using the input once we use it like this:
+
+
+text = env.readTextFile(params.get("input")).union(env.readTextFile(params.get("input")));
+
+
+to create two inputs from the same path. A jar is attached.

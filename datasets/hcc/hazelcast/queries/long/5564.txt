@@ -1,0 +1,151 @@
+Hi,
+
+as issue #4398 is already closed and already fixes most of the issues mentioned there, I open a new issue here.
+
+The problem described in issue #4398 is fixed in all cases, except when using MultiExecutionCallback to wait for completion of long running tasks.
+
+Here is the test that shows the problem:
+
+``` java
+package com.nm.test.hazelcast.task;
+
+import com.hazelcast.config.Config;
+import com.hazelcast.config.XmlConfigBuilder;
+import com.hazelcast.core.*;
+import com.nm.test.hazelcast.TestHazelcast;
+import org.apache.log4j.BasicConfigurator;
+import org.apache.log4j.Logger;
+import java.io.Serializable;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.Callable;
+import java.util.concurrent.CountDownLatch;
+import junit.framework.TestCase;
+
+/**
+ * Test if a task that runs longer than the call timeout is executed correctly when using
+ * callbacks.
+ */
+public class TestTask4 extends TestCase {
+
+    private static final Logger logger = Logger.getLogger(TestTask4.class);
+
+    private static final long timeoutMs = 3000;
+
+    @Override
+    protected void setUp() throws Exception {
+
+        // configure logging
+        if (!TestHazelcast.loggingInitialized) {
+            TestHazelcast.loggingInitialized = true;
+            BasicConfigurator.configure();
+        }
+    }
+
+    public void testTask4() throws Exception {
+
+        // create hazelcast config
+        Config config = new XmlConfigBuilder().build();
+        config.setProperty("hazelcast.logging.type", "log4j");
+
+        // set call timeout to 3 seconds to make the problem appear quicker
+        config.setProperty("hazelcast.operation.call.timeout.millis", String.valueOf(timeoutMs));
+
+        // start two hazelcast instances
+        HazelcastInstance hcInstance1 = Hazelcast.newHazelcastInstance(config);
+        HazelcastInstance hcInstance2 = Hazelcast.newHazelcastInstance(config);
+        logger.info("Hazelcast instances started.");
+
+        // var to collect execution results
+        List<String> results = new ArrayList<String>();
+
+        // try-finally to stop hazelcast
+        try {
+
+            // create callback
+            CountDownLatch latch = new CountDownLatch(1);
+            Callback callback = new Callback(latch);
+
+            // submit the long-running task
+            logger.info("Executing task...");
+            IExecutorService executorService = hcInstance1.getExecutorService("default");
+            executorService.submitToAllMembers(new SleepingTask(), callback);
+            logger.info("Task submitted.");
+
+            // wait for all results
+            logger.info("Waiting for results...");
+            callback.await();
+            for (Object value : callback.values.values()) {
+                results.add(value.toString());
+            }
+            logger.info("Results received.");
+
+        } catch (Exception e) {
+
+            // log and rethrow exception
+            logger.error("Exception: " + e.getMessage(), e);
+            throw e;
+
+        } finally {
+
+            // shutdown
+            hcInstance1.getLifecycleService().shutdown();
+            hcInstance2.getLifecycleService().shutdown();
+        }
+
+        // ensure success
+        for (String result : results) {
+            if (!result.equals("Success")) {
+                fail("Non-success result: " + result);
+            }
+        }
+
+        logger.info("Test done.");
+    }
+
+    private static class SleepingTask implements Callable<String>, Serializable {
+
+        private static final long serialVersionUID = 1L;
+
+        @Override
+        public String call() throws Exception {
+            Thread.sleep(15000);
+            return "Success";
+        }
+
+    }
+
+    private static class Callback implements MultiExecutionCallback {
+
+        private final CountDownLatch latch;
+
+        private Map<Member, Object> values;
+
+        public Callback(CountDownLatch latch) {
+            this.latch = latch;
+        }
+
+        @Override
+        public void onResponse(Member member, Object value) {
+            logger.info("Member " + member + " done: " + value);
+        }
+
+        @Override
+        public void onComplete(Map<Member, Object> values) {
+            this.values = values;
+            logger.info("All members done: " + values.values());
+            latch.countDown();
+        }
+
+        public void await() throws InterruptedException {
+            latch.await();
+        }
+
+    }
+
+}
+```
+
+Best,
+Lukas

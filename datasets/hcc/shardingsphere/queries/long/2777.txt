@@ -1,0 +1,121 @@
+## Bug Report
+
+java.lang.IndexOutOfBoundsException: Index: 0, Size: 0
+
+### Which version of ShardingSphere did you use?
+
+4.0.0-RC2
+
+### Which project did you use? Sharding-JDBC or Sharding-Proxy?
+
+Sharding-Proxy
+
+### Expected behavior
+
+execute SQL `select distinct(user_id) from t_order` success
+
+### Actual behavior
+
+```
+[ERROR] 10:06:09.837 [ShardingSphere-Command-4] o.a.s.s.f.c.CommandExecutorTask - Exception occur: 
+java.lang.IndexOutOfBoundsException: Index: 0, Size: 0
+	at java.util.ArrayList.rangeCheck(ArrayList.java:657)
+	at java.util.ArrayList.get(ArrayList.java:433)
+	at org.apache.shardingsphere.core.execute.sql.execute.result.DistinctQueryResult.getColumnIndex(DistinctQueryResult.java:208)
+	at org.apache.shardingsphere.core.execute.sql.execute.result.DistinctQueryResult$1.apply(DistinctQueryResult.java:95)
+	at org.apache.shardingsphere.core.execute.sql.execute.result.DistinctQueryResult$1.apply(DistinctQueryResult.java:91)
+	at com.google.common.collect.Lists$TransformingRandomAccessList$1.transform(Lists.java:617)
+	at com.google.common.collect.TransformedIterator.next(TransformedIterator.java:48)
+	at com.google.common.collect.TransformedIterator.next(TransformedIterator.java:48)
+	at java.util.AbstractList.hashCode(AbstractList.java:540)
+	at org.apache.shardingsphere.core.execute.sql.execute.row.QueryRow.hashCode(QueryRow.java:84)
+	at java.util.HashMap.hash(HashMap.java:339)
+	at java.util.HashMap.put(HashMap.java:612)
+	at java.util.HashSet.add(HashSet.java:220)
+	at org.apache.shardingsphere.core.execute.sql.execute.result.DistinctQueryResult.fill(DistinctQueryResult.java:111)
+	at org.apache.shardingsphere.core.execute.sql.execute.result.DistinctQueryResult.getResultData(DistinctQueryResult.java:99)
+	at org.apache.shardingsphere.core.execute.sql.execute.result.DistinctQueryResult.<init>(DistinctQueryResult.java:67)
+	at org.apache.shardingsphere.core.merge.dql.DQLMergeEngine.getRealQueryResults(DQLMergeEngine.java:85)
+	at org.apache.shardingsphere.core.merge.dql.DQLMergeEngine.<init>(DQLMergeEngine.java:71)
+	at org.apache.shardingsphere.core.merge.MergeEngineFactory.newInstance(MergeEngineFactory.java:58)
+	at org.apache.shardingsphere.shardingproxy.backend.communication.jdbc.JDBCDatabaseCommunicationEngine.merge(JDBCDatabaseCommunicationEngine.java:110)
+	at org.apache.shardingsphere.shardingproxy.backend.communication.jdbc.JDBCDatabaseCommunicationEngine.execute(JDBCDatabaseCommunicationEngine.java:95)
+	at org.apache.shardingsphere.shardingproxy.backend.communication.jdbc.JDBCDatabaseCommunicationEngine.execute(JDBCDatabaseCommunicationEngine.java:77)
+	at org.apache.shardingsphere.shardingproxy.backend.text.query.QueryBackendHandler.execute(QueryBackendHandler.java:54)
+	at org.apache.shardingsphere.shardingproxy.frontend.mysql.command.query.text.query.MySQLComQueryPacketExecutor.execute(MySQLComQueryPacketExecutor.java:72)
+	at org.apache.shardingsphere.shardingproxy.frontend.command.CommandExecutorTask.executeCommand(CommandExecutorTask.java:86)
+	at org.apache.shardingsphere.shardingproxy.frontend.command.CommandExecutorTask.run(CommandExecutorTask.java:66)
+	at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1149)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:624)
+	at java.lang.Thread.run(Thread.java:748)
+```
+
+### Reason analyze (If you can)
+
+The input `distinctColumnLabels` in `DistinctQueryResult` is `(user_id)`, but columnLabel in ResultSet and `columnLabelAndIndexMap` is `user_id`, so can find this columnLabel.
+
+`distinctColumnLabels` is come from `ShardingSelectOptimizedStatement`, so there may be mistakes in Optimize.
+
+### Steps to reproduce the behavior, such as: SQL to execute, sharding rule configuration, when exception occur etc.
+
+sharding rule configuration:
+```
+schemaName: sharding_db
+
+dataSources:
+  ds_0:
+    url: jdbc:mysql://127.0.0.1:3306/demo_ds_0?serverTimezone=UTC&useSSL=false
+    username: root
+    password:
+    connectionTimeoutMilliseconds: 30000
+    idleTimeoutMilliseconds: 60000
+    maxLifetimeMilliseconds: 1800000
+    maxPoolSize: 50
+  ds_1:
+    url: jdbc:mysql://127.0.0.1:3306/demo_ds_1?serverTimezone=UTC&useSSL=false
+    username: root
+    password:
+    connectionTimeoutMilliseconds: 30000
+    idleTimeoutMilliseconds: 60000
+    maxLifetimeMilliseconds: 1800000
+    maxPoolSize: 50
+
+shardingRule:
+  tables:
+    t_order:
+      actualDataNodes: ds_${0..1}.t_order_${0..1}
+      tableStrategy:
+        inline:
+          shardingColumn: order_id
+          algorithmExpression: t_order_${order_id % 2}
+      keyGenerator:
+        type: SNOWFLAKE
+        column: order_id
+    t_order_item:
+      actualDataNodes: ds_${0..1}.t_order_item_${0..1}
+      tableStrategy:
+        inline:
+          shardingColumn: order_id
+          algorithmExpression: t_order_item_${order_id % 2}
+      keyGenerator:
+        type: SNOWFLAKE
+        column: order_item_id
+  bindingTables:
+    - t_order,t_order_item
+  defaultDatabaseStrategy:
+    inline:
+      shardingColumn: user_id
+      algorithmExpression: ds_${user_id % 2}
+  defaultTableStrategy:
+    none:
+```
+
+SQL:
+```
+CREATE TABLE IF NOT EXISTS t_order (order_id BIGINT AUTO_INCREMENT, user_id INT NOT NULL, status VARCHAR(50), PRIMARY KEY (order_id));
+
+CREATE TABLE IF NOT EXISTS t_order_item (order_item_id BIGINT AUTO_INCREMENT, order_id BIGINT, user_id INT NOT NULL, status VARCHAR(50) , PRIMARY KEY (order_item_id), KEY order_id(order_id));
+
+select distinct(user_id) from t_order
+```
+### Example codes for reproduce this issue (such as a github link).

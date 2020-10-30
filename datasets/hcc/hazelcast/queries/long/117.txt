@@ -1,0 +1,108 @@
+The distributed map seems to loose data, when you try to put an already mapped key into the map after another member has been started. I found this behaviour in the Version 2.0.2 and 2.1 snapshot build. Didn't try any 1.x version. I am using two Win7 64 Bit machines with jdk 1.7u3.
+
+Steps to reproduce the problem:
+- Start one hazelcast server
+- Fill a map with some simple data:
+
+``` java
+public static void main(String[] args) {
+        int startKey = 0;
+        int numberOfKeys = 10;
+        Random rand = new Random();
+        ClientConfig clientConfig = new ClientConfig();
+        clientConfig.getGroupConfig().setName("dev").setPassword("dev-pass");
+        clientConfig.addAddress(Globals.serverNames);
+        HazelcastInstance client = HazelcastClient.newHazelcastClient(clientConfig);
+
+        IMap<Long, Long> myMap = client.getMap("mydata");
+        for (int i = startKey; i < (startKey+numberOfKeys); i++) {
+            Long key = new Long(i);
+            myMap.lock(key);
+            myMap.put(key, new Long(rand.nextInt()));
+            myMap.unlock(key);
+            System.out.println(new Long(i).toString());
+        }
+        myMap.flush();
+        System.out.println(myMap.size());
+        client.getLifecycleService().shutdown();
+
+    }
+```
+- List the keys of the map:
+
+``` java
+public static void main(String[] args) {
+
+        ClientConfig clientConfig = new ClientConfig();
+        clientConfig.getGroupConfig().setName("dev").setPassword("dev-pass");
+        clientConfig.addAddress(Globals.serverNames);
+        HazelcastInstance client = HazelcastClient.newHazelcastClient(clientConfig);
+        PartitionService partitionService = client.getPartitionService();
+
+        Map<Long, Long> myMap = client.getMap("mydata");
+        Set keys = myMap.keySet();
+
+        Iterator<Long> iter = keys.iterator();
+        int counter = 0;
+        while (iter.hasNext()) {
+            Long t  = iter.next();
+            Partition partition = partitionService.getPartition(t);
+            Member ownerMember = partition.getOwner();
+            System.out.println(t + ";" + ownerMember.toString());
+            counter++;
+        }
+        System.out.println("Number of keys: " + counter);
+        client.getLifecycleService().shutdown();
+    }
+```
+
+Output:
+
+```
+0;Member [192.168.0.4]:5701
+1;Member [192.168.0.4]:5701
+2;Member [192.168.0.4]:5701
+3;Member [192.168.0.4]:5701
+4;Member [192.168.0.4]:5701
+5;Member [192.168.0.4]:5701
+6;Member [192.168.0.4]:5701
+7;Member [192.168.0.4]:5701
+8;Member [192.168.0.4]:5701
+9;Member [192.168.0.4]:5701
+Number of keys: 10
+```
+- Start a second hazelcast server
+- List the keys again:
+  Output:
+
+```
+0;Member [192.168.0.4]:5701
+1;Member [192.168.0.4]:5701
+2;Member [192.168.0.5]:5701
+3;Member [192.168.0.4]:5701
+4;Member [192.168.0.4]:5701
+5;Member [192.168.0.5]:5701
+6;Member [192.168.0.4]:5701
+7;Member [192.168.0.4]:5701
+8;Member [192.168.0.5]:5701
+9;Member [192.168.0.5]:5701
+Number of keys: 10
+```
+
+Some of the keys have changed ownership - just as expected.
+- Now run the code the fill the map again.
+- List the keys again:
+
+Output:
+
+```
+0;Member [192.168.0.4]:5701
+1;Member [192.168.0.4]:5701
+3;Member [192.168.0.4]:5701
+4;Member [192.168.0.4]:5701
+6;Member [192.168.0.4]:5701
+7;Member [192.168.0.4]:5701
+Number of keys: 6
+```
+
+All the migrated keys are missing. When setting the log level to finest, the second hazelcast server tells me, that it is evicting 4 entries. If you run the code to fill the map again, everything will be fine. I tried it with a lot of different map properties - none seem to solve this problem. Changes to the code (for example setting the ttl with put, setting a lock on the map, using replace instead of put for second mapping) didn't help.

@@ -1,0 +1,195 @@
+## Steps to reproduce:
+
+Create an one app:
+
+`$ mn create-app example.micronaut.second`
+
+Create a Controller: 
+```
+
+package example.micronaut;
+
+import io.micronaut.http.HttpRequest;
+import io.micronaut.http.annotation.Controller;
+import io.micronaut.http.annotation.Get;
+import io.micronaut.http.HttpStatus;
+
+@Controller
+public class HomeController {
+
+    @Get
+    public HttpStatus index(HttpRequest request) {
+        if (request.getHeaders().contains("X-Correlation-ID")) {
+            return HttpStatus.OK;
+        }
+        return HttpStatus.NOT_FOUND;
+
+    }
+}
+```
+
+
+Modify `src/main/resources/application.yml` so that the app listens in port 8081:
+
+```
+micronaut:
+  application:
+    name: second
+  server:
+    port: 8081
+```
+
+***
+
+Create another app:
+
+`$ mn create-app example.micronaut.first`
+
+Create a Controller: 
+```
+package example.micronaut;
+
+import io.micronaut.http.annotation.Controller;
+import io.micronaut.http.annotation.Get;
+import io.micronaut.http.HttpStatus;
+
+@Controller
+public class HomeController {
+
+    private final SecondClient secondClient;
+
+    public HomeController(SecondClient secondClient) {
+        this.secondClient = secondClient;
+    }
+
+    @Get
+    public HttpStatus index() {
+        return secondClient.index();
+    }
+}
+```
+
+The Controller uses a declarative HTTP Client:
+
+```
+package example.micronaut;
+
+import io.micronaut.http.HttpStatus;
+import io.micronaut.http.annotation.Get;
+import io.micronaut.http.client.annotation.Client;
+
+@Client(id = "second")
+public interface SecondClient {
+
+    @Get
+    HttpStatus index();
+}
+```
+
+Modify configuration to point to the other service: 
+
+```
+micronaut:
+  application:
+    name: first
+  http:
+    services:
+      second:
+        url: 'http://localhost:8081'
+```
+
+There is an HTTP Client Filter responsible of adding an extra HTTP Header. 
+
+```
+package example.micronaut;
+
+import io.micronaut.http.HttpResponse;
+import io.micronaut.http.MutableHttpRequest;
+import io.micronaut.http.annotation.Filter;
+import io.micronaut.http.filter.ClientFilterChain;
+import io.micronaut.http.filter.HttpClientFilter;
+import org.reactivestreams.Publisher;
+
+@Filter("/**")
+public class SecondHttpClientFilter implements HttpClientFilter {
+
+    @Override
+    public Publisher<? extends HttpResponse<?>> doFilter(MutableHttpRequest<?> request, ClientFilterChain chain) {
+        request.getHeaders().add("X-Correlation-ID", "foo");
+        return chain.proceed(request);
+    }
+}
+```
+
+Run both apps:
+
+```
+first$ ./gradlew run
+second$ ./gradlew run
+```
+
+### Expected Behaviour
+```
+
+curl "http://localhost:8080/"
+200 OK
+
+```
+### Actual Behaviour
+
+```
+curl "http://localhost:8080/"
+{"message":"Page Not Found","_links":{"self":{"href":"/","templated":false}}}
+
+```
+
+***
+
+It seems to be an issue related with root path requests not being intercepted by the HTTP Client. 
+
+If you use a non root path, it works as expected. That it is to say you modify the controller in the second app to specify `@Controller("/foo")`
+
+```
+package example.micronaut;
+
+import io.micronaut.http.HttpRequest;
+import io.micronaut.http.annotation.Controller;
+import io.micronaut.http.annotation.Get;
+import io.micronaut.http.HttpStatus;
+
+@Controller("/foo")
+public class HomeController {
+
+    @Get
+    public HttpStatus index(HttpRequest request) {
+        if (request.getHeaders().contains("X-Correlation-ID")) {
+            return HttpStatus.OK;
+        }
+        return HttpStatus.NOT_FOUND;
+
+    }
+}```
+
+and you modify the Client:
+
+```package example.micronaut;
+
+import io.micronaut.http.HttpStatus;
+import io.micronaut.http.annotation.Get;
+import io.micronaut.http.client.annotation.Client;
+
+@Client(id = "second")
+public interface SecondClient {
+
+    @Get("/foo")
+    HttpStatus index();
+}
+```
+
+***
+
+### Environment Information
+
+- **Operating System**: MacOS High Sierra
+- **Micronaut Version:** 1.2.0.RC2
+- **JDK Version:** 1.8.0_191

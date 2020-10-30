@@ -1,0 +1,88 @@
+Note: Clients does not have this problem.
+Code below demonstrates the problem:
+
+```
+import com.hazelcast.config.Config;
+import com.hazelcast.config.MapConfig;
+import com.hazelcast.config.MapStoreConfig;
+import com.hazelcast.config.XmlConfigBuilder;
+import com.hazelcast.core.Hazelcast;
+import com.hazelcast.core.HazelcastInstance;
+import com.hazelcast.core.IMap;
+import com.hazelcast.core.MapStore;
+import java.util.Collection;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+
+
+class XStore implements MapStore {
+
+    Map map = new ConcurrentHashMap();
+
+    XStore() {
+        for (int i = 0; i < 1000; i++) {
+            map.put(i, i * 10);
+        }
+    }
+
+    public void store(Object o, Object o2) {
+        map.put(o, o2);
+    }
+
+    public void storeAll(Map map) {
+        this.map.putAll(map);
+    }
+
+    public void delete(Object o) {
+        map.remove(o);
+    }
+
+    public void deleteAll(Collection collection) {
+        for (Object o : collection) {
+            map.remove(o);
+        }
+    }
+
+    public Object load(Object o) {
+        System.out.println("load");
+        return map.get(o);
+    }
+
+    public Map loadAll(Collection collection) {
+        System.out.println("loadAll");
+        final Map hashMap = new HashMap();
+        for (Object o : collection) {
+            hashMap.put(o, map.get(o));
+        }
+        return hashMap;
+    }
+
+    public Set loadAllKeys() {
+        System.out.println("loadAllKeys");
+        return map.keySet();
+    }
+}
+
+public class XTest {
+    public static void main(String[] args) {
+        XStore store = new XStore();
+        Config config = new XmlConfigBuilder().build();
+        final String MAP_NAME = "x";
+        MapConfig mapConfig = config.getMapConfig(MAP_NAME);
+        MapStoreConfig mapStoreConfig = new MapStoreConfig();
+        mapStoreConfig.setImplementation(store);
+        mapConfig.setMapStoreConfig(mapStoreConfig);
+        final HazelcastInstance hazelcastInstance = Hazelcast.newHazelcastInstance(config);
+        final HazelcastInstance liteMember = Hazelcast.newLiteMemberHazelcastInstance();
+        //hazelcastInstance.getMap(MAP_NAME).size();
+        final IMap<Object, Object> imap = liteMember.getMap(MAP_NAME);
+        System.out.println(imap.size()); //should be 1000
+
+        hazelcastInstance.getLifecycleService().shutdown();
+        liteMember.getLifecycleService().shutdown();
+
+    }
+}
+```

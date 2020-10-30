@@ -1,0 +1,65 @@
+In order to avoid trying to remove an entry that may have already been removed in another, uncommitted transaction (so that we don't block unnecessarily), we first check `IMap.tryLock` before performing `TransactionalMap.remove`. For example:
+
+``` java
+if (map.tryLock("foo")) {
+    txnMap.remove("foo");
+}
+```
+
+This works as we expect when using local transaction on either a member or client and when using XA transactions (with Atomikos as the transaction manager; we have not tested with other transaction managers) if the operations occur on a member. However, if this occurs on a client in an XA transaction, we receive the following exception: `com.hazelcast.transaction.TransactionException: Transaction couldn't obtain lock for the key: foo`.
+
+The code below reproduces this issue. Changing the `client` and `xa` flags allows you to test the different circumstances.
+
+``` java
+public static void tryLockTest() throws Exception
+{
+    final boolean client = true;
+    final boolean xa = true;
+
+    // Atomikos TransactionManager
+    TransactionManager tm = new UserTransactionManager();
+
+    // get HazelcastInstance
+    HazelcastInstance hzInstance;
+    if (client) {
+        Hazelcast.newHazelcastInstance();
+        hzInstance = HazelcastClient.newHazelcastClient();
+    }
+    else {
+         hzInstance = Hazelcast.newHazelcastInstance();
+    }
+
+    // get map
+    IMap<String, String> map = hzInstance.getMap("map");
+    map.put("foo", "bar");
+
+    // start transaction
+    TransactionContext txnCtx;
+    if (xa) {
+        tm.begin();
+        HazelcastXAResource hzXaResource = hzInstance.getXAResource();
+        tm.getTransaction().enlistResource(hzXaResource);
+        txnCtx = hzXaResource.getTransactionContext();
+    }
+    else {
+        txnCtx = hzInstance.newTransactionContext();
+        txnCtx.beginTransaction();
+    }
+
+    // remove "foo" from transactional map
+    if (map.tryLock("foo")) {
+        txnCtx.getMap("map").remove("foo");
+        System.out.println("removed \"foo\"");
+    }
+
+    // commit transaction
+    if (xa) {
+        tm.commit();
+    }
+    else {
+        txnCtx.commitTransaction();
+    }
+}
+```
+
+This was tested with versions 3.5.5 and 3.6

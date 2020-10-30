@@ -1,0 +1,48 @@
+Cache.close() doesn't call close() method of registered Closeable CacheEntryListener. It seems there's no TCK test to verify but this is a spec violation. `Cache.close()` javadoc explicitly says:
+
+```
+must close and release all resources being coordinated on behalf of the Cache by the 
+{@link CacheManager}. This includes calling the <code>close</code> method on configured 
+{@link CacheLoader}, {@link CacheWriter}, registered {@link CacheEntryListener}s and
+{@link ExpiryPolicy} instances that implement the java.io.Closeable interface.
+```
+
+``` java
+@org.junit.Test
+public void testCloseableCacheListener() {
+    CachingProvider provider = HazelcastServerCachingProvider
+            .createCachingProvider(Hazelcast.newHazelcastInstance());
+
+    CacheManager cacheManager = provider.getCacheManager();
+
+    CloseableListener listener = new CloseableListener();
+
+    Factory<CloseableListener> listenerFactory = FactoryBuilder.factoryOf(listener);
+    CompleteConfiguration<Object, Object> configuration = new CacheConfig()
+            .addCacheEntryListenerConfiguration(
+                    new MutableCacheEntryListenerConfiguration(listenerFactory, null, true, false));
+
+    Cache<Object, Object> cache = cacheManager.createCache("test", configuration);
+    cache.close();
+
+    Assert.assertTrue("CloseableListener.close() should be called when cache is closed!", 
+                listener.closed);
+}
+
+static class CloseableListener implements CacheEntryCreatedListener, Closeable, Serializable {
+
+    volatile boolean closed = false;
+
+    @Override
+    public void onCreated(Iterable iterable) throws CacheEntryListenerException {
+        if (closed) {
+            throw new IllegalStateException();
+        }
+    }
+
+    @Override
+    public void close() throws IOException {
+        closed = true;
+    }
+}
+```

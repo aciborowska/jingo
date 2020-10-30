@@ -1,0 +1,13 @@
+Flink needs a way of accessing a DataSet in an out-of-core way, by means of wrapping a DataSet in Map, Set and List / Iterator interfaces that can be accessed as side inputs from within mapper functions operating on another DataSet .
+
+Some coding patterns are simply painful to write in terms of joins: it's often much simpler to work in terms of Map lookups by key. I was trying to use .collect to produce a Map that could be looked up inside mapper functions in other parts of a Flink program, and tons of intermediate results were getting re-computed many times – FLINK-2250. However, even once this is fixed (FLINK-2097), so that you don't have to build a Flink program as a single DAG, if you want it to run efficiently, there's a bigger issue: it's unreasonable to rely on a DataSet fitting into RAM by collecting it as a HashMap.
+
+By far the most frustrating part of building a very large, single-DAG Flink program is that you have to write joins literally everywhere, rather simply doing HashMap lookups. Joins require a significant amount of boilerplate code, and often you need an n-way join to get all the values you need in one place. In the Flink program I'm currently working on, I have numerous two-, three- and four-way joins, but I even need a SIX-WAY join in one place, which is a complete nightmare of type information, nested chained methods, tuple field names, and special-casing for null results in outer joins, etc.
+
+It would be great if you could simply wrap a DataSet in a Map interface that transparently gave access to the intermediate values in the DataSet, scheduling the DataSet for computation if it wasn't already computed. Similarly, a Set interface would be a useful special case of Map. And it would be useful to also have List and/or Iterator interfaces for wrapping a sorted or possibly-unsorted DataSet respectively.
+
+These wrappers would not require the entire DataSet to be loaded into RAM. To use the wrapper, you would call something like DataSet#groupBy(keyFields...).asMap(). The resulting Map would have Iterable<SomeValueType> as its value type.
+
+Similarly, you could turn a form a SortedGrouping into a List or Iterable, you , etc. (or maybe you would simply get all the elements in the DataSet in some undetermined order by calling DataSet#iterator()).
+
+As far as scheduling, since these calls would block on the DataSet being computed, you would need a way of putting a caller thread to sleep (and starting another worker thread in its place) until the wrapped DataSet had been computed.

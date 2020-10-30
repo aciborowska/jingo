@@ -1,0 +1,124 @@
+I have a few problems with a logic of storing evicted/deleted items.
+
+So, for my map I have a simple MyMapStore (which logs any operations) with a &quot;write-behind&quot; logic.
+When I puts some elements into map and then deletes they I have a different cases based on an eviction.
+
+case #1:
+  (map) put: key=1 val=test1
+  (map) put: key=2 val=test2
+  ...
+  (map) del: key=1 (returned value is &quot;test1&quot;)
+  ...
+     --( write-delay-seconds was expired )--
+  ...
+  (map-store): delete for keys: [1](map-store): store for items: [2=test2]
+
+case #2:
+  (map) put: key=1 val=test1
+  (map) put: key=2 val=test2
+  ...
+     --(key=1 was evicted [by ttl or idle]) --
+  ...
+  (map) del: key=1 (returned value is NULL)
+  ...
+     --( write-delay-seconds was expired )--
+  ...
+  (map-store): store for items: [1=test1, 2=test2]
+
+case #3:
+  (map) put: key=1 val=test1
+  (map) put: key=2 val=test2
+  ...
+     --(key=1 was evicted [by ttl or idle]) --
+  ...
+     --( write-delay-seconds was expired )--
+  ...
+  (map-store): store for items: [1=test1, 2=test2]
+
+Why will HZ store any evicted items (regardless of deletion after eviction)?<p>Migrated from http://code.google.com/p/hazelcast/issues/detail?id=826</p><hr/><h2>earlier comments</h2>
+
+<p><strong>mehmetdoghan said, at 2012-03-22T14:31:28.000Z:</strong></p>
+
+<p>* Evicted items are always stored/persisted (if they are not removed before map store operation). 
+* Removed items are/should be removed from store (if they are not put into map back before map store operation).
+
+So case#1 and case#3 seem right.
+
+Case#2 seems faulty. Which Hazelcast version you are testing?</p><p><strong>dsuchka said, at 2012-03-22T19:03:34.000Z:</strong></p>
+<p>I am testing the Hazelcast v2.0.2.
+
+So, usually as a normal case/situation any scheduled (by write-delay-seconds) store operations should be completed earlier their eviction (by TTL or idle-timeout). But as a test case I think this may be interesting. However, if case#3 seem right, all evicted items are really exist on a JVM? How long? So, If these items are exist only in a store-scheduler, they will released after completing their map-store operations. And in this case, of course, as in case#2 any deletion operations on non-exists (already evicted, but yet exist in a store-scheduler) items will not occur (no new scheduled task for deleting), and after scheduled time expired, evicted and deleted [only from map] items will be stored. Right?</p><p><strong>dsuchka said, at 2012-03-23T13:10:44.000Z:</strong></p>
+<p>Hmm... I added the listener for monitoring of map events. As it possible to see, really no eviction had happened before the storage. But when there is an appeal to items, they really are absent (like an outdated).
+
+Test settings (just one node for simplicity is):
+map:
+  time-to-live-seconds = 10 seconds
+  eviction-policy = LRU
+  eviction-delay-seconds = 1 second
+map-store:
+  write-delay-seconds = 40 seconds
+
+Log (merged with comments and input/output log):
+>> map put 1 test1
+2012-03-23 15:15:02.989 INFO  [hz._hzInstance_1_dev.cached.thread-1] MyMapStore:62 - load by key=1
+2012-03-23 15:15:02.999 INFO  [hz._hzInstance_1_dev.cached.thread-1] HzMonitor:26 - entry added: items: 1=test1
+<< old value: null
+
+>> map put 2 test2
+2012-03-23 15:15:05.610 INFO  [hz._hzInstance_1_dev.cached.thread-1] MyMapStore:62 - load by key=2
+2012-03-23 15:15:05.611 INFO  [hz._hzInstance_1_dev.cached.thread-1] HzMonitor:26 - entry added: items: 2=test2
+<< old value: null
+
+>> map put 3 test3
+2012-03-23 15:15:08.728 INFO  [hz._hzInstance_1_dev.cached.thread-1] MyMapStore:62 - load by key=3
+2012-03-23 15:15:08.729 INFO  [hz._hzInstance_1_dev.cached.thread-1] HzMonitor:26 - entry added: items: 3=test3
+<< old value: null
+
+--( TTL is expired for keys=[1, 2, 3] )--
+
+>> map get 2
+2012-03-23 15:15:28.749 INFO  [hz._hzInstance_1_dev.cached.thread-1] MyMapStore:62 - load by key=2
+<< value is: null
+
+>> map del 1
+2012-03-23 15:15:31.071 INFO  [hz._hzInstance_1_dev.cached.thread-1] MyMapStore:62 - load by key=1
+<< deleted: null
+
+--( store-time is reached for key=1 )--
+2012-03-23 15:15:44.231 INFO  [hz._hzInstance_1_dev.cached.thread-1] MyMapStore:43 - store key=1: test1
+
+--( store-time is reached for keys=[2, 3] )--
+2012-03-23 15:15:55.230 INFO  [hz._hzInstance_1_dev.cached.thread-1] MyMapStore:55 - store for map: {2=test2, 3=test3}
+
+--( now they will be really evicted )--
+
+2012-03-23 15:15:55.233 INFO  [hz._hzInstance_1_dev.cached.thread-3] HzMonitor:31 - entry evicted: items: 1=test1
+2012-03-23 15:16:06.230 INFO  [hz._hzInstance_1_dev.cached.thread-2] HzMonitor:31 - entry evicted: items: 3=test3
+2012-03-23 15:16:06.231 INFO  [hz._hzInstance_1_dev.cached.thread-1] HzMonitor:31 - entry evicted: items: 2=test2
+
+>> map put 4 test4
+2012-03-23 15:16:16.552 INFO  [hz._hzInstance_1_dev.cached.thread-1] MyMapStore:62 - load by key=4
+2012-03-23 15:16:16.554 INFO  [hz._hzInstance_1_dev.cached.thread-1] HzMonitor:26 - entry added: items: 4=test4
+<< old value: null
+
+>> map del 4
+2012-03-23 15:16:18.380 INFO  [hz._hzInstance_1_dev.cached.thread-1] HzMonitor:36 - entry removed: items: 4=test4
+<< deleted: test4
+
+>> map put 5 test5
+2012-03-23 15:16:23.067 INFO  [hz._hzInstance_1_dev.cached.thread-1] MyMapStore:62 - load by key=5
+2012-03-23 15:16:23.068 INFO  [hz._hzInstance_1_dev.cached.thread-1] HzMonitor:26 - entry added: items: 5=test5
+<< old value: null
+>> map get 5
+<< value is: test5
+
+--( store-time is reached for key=4 )--
+2012-03-23 15:17:01.229 INFO  [hz._hzInstance_1_dev.cached.thread-1] MyMapStore:30 - delete by key=4
+
+
+--( store-time is reached for key=5 )--
+2012-03-23 15:17:12.230 INFO  [hz._hzInstance_1_dev.cached.thread-1] MyMapStore:43 - store key=5: test5
+
+--( now it will be really evicted )--
+2012-03-23 15:17:23.231 INFO  [hz._hzInstance_1_dev.cached.thread-4] HzMonitor:31 - entry evicted: items: 5=test5
+</p>

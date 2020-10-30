@@ -1,0 +1,63 @@
+## Problem
+A docker container (containing a hazelcast member in a cluster) leaves and then rejoins a docker network where the cluster is running.  Discovery mechanism is default multicast.  Upon the container being reattached to the network the member within tries to rejoin the existing cluster and fails with the following multicast error.
+
+```
+Mar 26, 2019 8:01:57 AM com.hazelcast.internal.cluster.impl.MulticastService
+WARNING: [172.18.0.6]:5701 [dev] [3.12-BETA-2] Sending multicast datagram failed. Exception message saying the operation is not permitted usually means the underlying OS is not able to send packets at a given pace. It can be caused by starting several hazelcast members in parallel when the members send their join message nearly at the same time.
+java.io.IOException: No such device (sendto failed)
+    at java.net.PlainDatagramSocketImpl.send(Native Method)
+    at java.net.DatagramSocket.send(DatagramSocket.java:693)
+    at com.hazelcast.internal.cluster.impl.MulticastService.send(MulticastService.java:284)
+    at com.hazelcast.internal.cluster.impl.MulticastJoiner.searchForOtherClusters(MulticastJoiner.java:113)
+    at com.hazelcast.internal.cluster.impl.SplitBrainHandler.searchForOtherClusters(SplitBrainHandler.java:75)
+    at com.hazelcast.internal.cluster.impl.SplitBrainHandler.run(SplitBrainHandler.java:42)
+    at com.hazelcast.spi.impl.executionservice.impl.DelegateAndSkipOnConcurrentExecutionDecorator$DelegateDecorator.run(DelegateAndSkipOnConcurrentExecutionDecorator.java:77)
+    at com.hazelcast.util.executor.CachedExecutorServiceDelegate$Worker.run(CachedExecutorServiceDelegate.java:227)
+    at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1149)
+    at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:624)
+    at java.lang.Thread.run(Thread.java:748)
+    at com.hazelcast.util.executor.HazelcastManagedThread.executeRun(HazelcastManagedThread.java:64)
+    at com.hazelcast.util.executor.HazelcastManagedThread.run(HazelcastManagedThread.java:80)
+```
+
+On the larger side with the other members the rejoining container and member is noticed and a reconnect phase is started but it seems to hang...
+
+```
+INFO: [172.18.0.2]:5701 [dev] [3.12-BETA-2] Initialized new cluster connection between /172.18.0.2:36995 and /172.18.0.6:5701
+```
+
+I've confirmed with @mdogan that we should expect a member rejoining via multicast after split brain to work, so the question is, is this a docker networking issue or something more fundamental with our multicast code.    I would expect the member to rejoin the cluster.
+
+## Steps to reproduce.
+
+1.  Create a docker network for the containers to join. `docker network create --subnet=172.18.0.0/16 hazelnet`
+2. Start a number of hazelcast members within the network. `docker run --network hazelnet -d  hazelcast/hazelcast:3.12-BETA-2`
+3. Start following the container logs on a container you are keeping in the network and the container you select to remove.
+4. Remove one of the containers from the network, in this example `naughty_chatalet`... `docker network disconnect hazelnet naughty_chatelet`
+5. Wait for default heartbeat disconnects to kick in and observe the remaining cluster members to remove the gone member.
+6. Once the lone member has confirmed it is indeed alone, reattach the container to the docker network. `docker network connect hazelnet naughty_chatelet`
+7. Watching the logs of the reconnected container you should see the original error messages with multicast and that it cannot form a cluster.
+
+## Environment
+
+``` ~  docker version                                                                       Tue 26 Mar 08:30:30 2019
+Client: Docker Engine - Community
+ Version:           18.09.2
+ API version:       1.39
+ Go version:        go1.10.8
+ Git commit:        6247962
+ Built:             Sun Feb 10 04:12:39 2019
+ OS/Arch:           darwin/amd64
+ Experimental:      false
+
+Server: Docker Engine - Community
+ Engine:
+  Version:          18.09.2
+  API version:      1.39 (minimum version 1.12)
+  Go version:       go1.10.6
+  Git commit:       6247962
+  Built:            Sun Feb 10 04:13:06 2019
+  OS/Arch:          linux/amd64
+  Experimental:     true
+```
+Running on MacOS laptop.

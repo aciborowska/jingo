@@ -1,0 +1,88 @@
+Hi there!
+
+We are constantly seeing this exception in our production environment.
+
+We have 3 nodes and we are using a lot of locking operations:
+```
+imap.lock("lockName");
+locksObserver.onLocked("lockName");
+try {
+     // logic
+} finally {
+     imap.unlock("lockName");
+     locksObserver.onUnlocked("lockName");
+}
+```
+
+Sometimes cluster breaks due to other unknown issue with time leaps that I've filed earlier:
+https://github.com/hazelcast/hazelcast/issues/15546
+
+In a minute or two cluster reunites, and then we see a lot of  such exceptions. The worst thing that sometimes these exceptions are thrown on imap.unlock() and it causes a distributed deadlock - lock is locked, all members are present, but .unlock() was unsuccessful so it remains locked forever. 
+
+Here is simplified log of the problem depicted in two nodes.
+DistributedLocksObserver in further logs is a simple component that silently intercepts all lock/unlock invocations and writes them into ITopic in order to every node can listen and log all lock/unlock operations on every other node.
+
+NODE_1
+```
+2019-11-01 16:52:51 INFO  NODE_1 DistributedLocksObserver:25 - 2019-11-01T16:52:51.940 : UNLOCK : %SOME_LOCK_NAME%
+2019-11-01 16:52:51 INFO  NODE_1 TcpIpConnector:65 - [1.1.1.101]:25701 [NODES_GROUP] [3.11.2] Connecting to /1.1.1.91:25701, timeout: 0, bind-any: true
+2019-11-01 16:52:51 INFO  NODE_1 DistributedLocksObserver:25 - 2019-11-01T16:52:51.944 : LOCK : %SOME_LOCK_NAME%
+2019-11-01 16:52:51 INFO  NODE_1 DistributedLocksObserver:25 - 2019-11-01T16:52:51.946 : UNLOCK : %SOME_LOCK_NAME%
+2019-11-01 16:52:51 INFO  NODE_1 TcpIpConnection:65 - [1.1.1.101]:25701 [NODES_GROUP] [3.11.2] Initialized new cluster connection between /1.1.1.101:35606 and /1.1.1.91:25701
+2019-11-01 16:52:52 INFO  NODE_1 DistributedLocksObserver:25 - 2019-11-01T16:52:52.260 : LOCK : %SOME_LOCK_NAME%
+```
+As it can be seen, some operation have acquired %SOME_LOCK_NAME% at .944 ms and then released it at .946
+Than some other operation have acquired the same lock at .52.260 and it is not released anymore
+
+NODE_2
+```
+2019-11-01 16:52:45 INFO  NODE_2 TcpIpConnector:65 - [1.1.1.91]:25701 [NODES_GROUP] [3.11.2] Connecting to /1.1.1.215:25701, timeout: 0, bind-any: true
+2019-11-01 16:52:45 INFO  NODE_2 TcpIpConnection:65 - [1.1.1.91]:25701 [NODES_GROUP] [3.11.2] Initialized new cluster connection between /1.1.1.91:48367 and /1.1.1.215:25701
+2019-11-01 16:52:51 INFO  NODE_2 TcpIpConnection:65 - [1.1.1.91]:25701 [NODES_GROUP] [3.11.2] Initialized new cluster connection between /1.1.1.91:25701 and /1.1.1.101:35606
+2019-11-01 16:52:51 INFO  NODE_2 ClusterService:65 - [1.1.1.91]:25701 [NODES_GROUP] [3.11.2]
+
+Members {size:3, ver:39} [
+        Member [1.1.1.215]:25701 - 8d103b01-5bef-470b-b7a9-81daba15a58b
+        Member [1.1.1.101]:25701 - a8dd2137-38e5-4ee2-8de6-a70eaed82c21
+        Member [1.1.1.91]:25701 - 78350eee-3058-4aa5-a389-5137d1e32eb5 this
+]
+
+2019-11-01 16:52:52 INFO  NODE_2 DistributedLocksObserver:25 - 2019-11-01T16:52:52.260 : LOCK : %SOME_LOCK_NAME%
+2019-11-01 16:52:52 ERROR NODE_2 EventServiceImpl:69 - [1.1.1.91]:25701 [NODES_GROUP] [3.11.2] hz._hzInstance_1_NODES_GROUP.event-4 caught an exception while processing task:com.hazelcast.spi.impl.eventservice.impl.LocalEventDispatcher@178bf18a
+java.lang.IllegalMonitorStateException: Current thread is not owner of the lock! -> Owner: 7a8f7235-b849-4c2e-af65-8e19432af6fb, thread ID: 47
+        at com.hazelcast.concurrent.lock.operations.UnlockOperation.unlock(UnlockOperation.java:75)
+        at com.hazelcast.concurrent.lock.operations.UnlockOperation.run(UnlockOperation.java:64)
+        at com.hazelcast.spi.Operation.call(Operation.java:170)
+        at com.hazelcast.spi.impl.operationservice.impl.OperationRunnerImpl.call(OperationRunnerImpl.java:208)
+        at com.hazelcast.spi.impl.operationservice.impl.OperationRunnerImpl.run(OperationRunnerImpl.java:197)
+        at com.hazelcast.spi.impl.operationservice.impl.OperationRunnerImpl.run(OperationRunnerImpl.java:413)
+        at com.hazelcast.spi.impl.operationexecutor.impl.OperationThread.process(OperationThread.java:153)
+        at com.hazelcast.spi.impl.operationexecutor.impl.OperationThread.process(OperationThread.java:123)
+        at com.hazelcast.spi.impl.operationexecutor.impl.OperationThread.run(OperationThread.java:110)
+        at ------ submitted from ------.(Unknown Source)
+        at com.hazelcast.spi.impl.operationservice.impl.InvocationFuture.resolve(InvocationFuture.java:127)
+        at com.hazelcast.spi.impl.operationservice.impl.InvocationFuture.resolveAndThrowIfException(InvocationFuture.java:79)
+        at com.hazelcast.spi.impl.AbstractInvocationFuture.get(AbstractInvocationFuture.java:162)
+        at com.hazelcast.spi.impl.AbstractInvocationFuture.join(AbstractInvocationFuture.java:143)
+        at com.hazelcast.concurrent.lock.LockProxySupport.unlock(LockProxySupport.java:151)
+        at com.hazelcast.map.impl.proxy.MapProxyImpl.unlock(MapProxyImpl.java:332)
+
+        at ...... // our application code invoking IMap.unlock(%SOME_LOCK_NAME%);
+
+        at com.hazelcast.internal.cluster.impl.ClusterServiceImpl.dispatchEvent(ClusterServiceImpl.java:809)
+        at com.hazelcast.internal.cluster.impl.ClusterServiceImpl.dispatchEvent(ClusterServiceImpl.java:85)
+        at com.hazelcast.spi.impl.eventservice.impl.LocalEventDispatcher.run(LocalEventDispatcher.java:64)
+        at com.hazelcast.util.executor.StripedExecutor$Worker.process(StripedExecutor.java:226)
+        at com.hazelcast.util.executor.StripedExecutor$Worker.run(StripedExecutor.java:209)
+```
+Here we also see logged lock operation at .52.260 and unlock attempt that fails.
+After that lock %SOME_LOCK_NAME% remains locked and no one can access it anymore.
+
+UPD. 
+I have some considerations of what may be the reason of this behavior.
+Members are subjected to UUID change when they are merged into cluster. NODE_2 was merged. It prints 3 nodes and 3 uuids. And then it prints Owner: 7a8f7235-b849-4c2e-af65-8e19432af6fb, thread ID: 47. But there is no member with such UUID anymore in cluster as could be seen from Members {...} log.
+That's why I suppose there is such sequence that leads to this exception:
+1) member acquires a lock while having uuid_1
+2) member is subjected to merge into cluster
+3) member is merged, its uuid is changed to uuid_2
+4) member is attempting to unlock a lock, but lock is reserved for uuid_1+threadId, and uuid_1 != uuid_2 thus exception is to be thrown.

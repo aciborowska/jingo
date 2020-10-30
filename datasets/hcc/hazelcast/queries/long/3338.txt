@@ -1,0 +1,145 @@
+Hi, 
+
+this issue exists in Hazelcast 3.3-EA and also a build of the 3.3 development branch from August 7, 2014. It is related to issue #2128.
+
+If you have a map with write-behind and a map store configured (eviction is not needed), and you call the flush method in the IMap, the map store's store method can be called concurrently for the same key, namely for those keys which are in the write-behind queue and then forcibly stored by the flush. This is because the flush operation storing all entries in the write-behind queue seems to be executed in the operation thread, while the periodic processing of the write-behind queue is done by an executor service defined in the WriteBehindQueueManager.
+
+The following piece of code is a unit test to reproduce the issue:
+
+``` java
+public class TestMapStore16 extends TestCase {
+
+    private static final String mapName = "testMap" + TestMapStore15.class.getSimpleName();
+
+    private static final int writeDelaySeconds = 1;
+
+    @Override
+    protected void setUp() throws Exception {
+
+        // configure logging
+        if (!TestHazelcast.loggingInitialized) {
+            TestHazelcast.loggingInitialized = true;
+            BasicConfigurator.configure();
+        }
+    }
+
+    public void testNoStoreConcurrency() throws Exception {
+
+        // create shared hazelcast instance config
+        final Config config = new XmlConfigBuilder().build();
+        config.setProperty("hazelcast.logging.type", "log4j");
+
+        // create shared map store implementation
+        SlowConcurrencyCheckingMapStore store = new SlowConcurrencyCheckingMapStore();
+
+        // configure map store
+        MapStoreConfig mapStoreConfig = new MapStoreConfig();
+        mapStoreConfig.setEnabled(true);
+        mapStoreConfig.setWriteDelaySeconds(writeDelaySeconds);
+        mapStoreConfig.setClassName(null);
+        mapStoreConfig.setImplementation(store);
+        MapConfig mapConfig = config.getMapConfig(mapName);
+        mapConfig.setMapStoreConfig(mapStoreConfig);
+
+        // start hazelcast instance
+        HazelcastInstance hcInstance = Hazelcast.newHazelcastInstance(config);
+
+        IMap<String, String> testMap = hcInstance.getMap(mapName);
+
+        // This will trigger a write-behind store in roughly writeDelaySeconds, the store itself is artificially delayed to take 10 seconds
+        testMap.put("key", "value");
+        // Wait until the store operation has started
+        Thread.sleep((writeDelaySeconds + 2) * 1000);
+        // Flush the map, causing the not yet stored entries to be stored 
+        testMap.flush();
+
+        // Make sure that the store triggered by the flush did not overlap with a write-behind call to store for the same key 
+        assertEquals("There were concurrent executions of store for the same key", 0, store.getConcurrentStoreCount());
+
+    }
+
+}
+```
+
+It relies on the following dummy-store:
+
+``` java
+/**
+ * Map store that sleeps for 10 seconds in the store implementation and counts the number of
+ * concurrently executed stores for the same key.
+ */
+public class SlowConcurrencyCheckingMapStore implements MapStore<String, String> {
+
+    private static final long SLEEP_TIME = 10000;
+
+    private ConcurrentHashMap<String, String> store = new ConcurrentHashMap<String, String>();
+
+    private Set<String> activeKeys = Collections.newSetFromMap(new ConcurrentHashMap<String, Boolean>());
+
+    private AtomicInteger concurrentStoreCount = new AtomicInteger(0);
+
+    public int getConcurrentStoreCount() {
+        return concurrentStoreCount.get();
+    }
+
+    @Override
+    public void store(String key, String value) {
+        boolean added = activeKeys.add(key);
+        if (!added) concurrentStoreCount.incrementAndGet();
+        try {
+            try {
+                Thread.sleep(SLEEP_TIME);
+            } catch (InterruptedException e) {
+                // ignore
+            }
+            store.put(key, value);
+        } finally {
+            if (added) activeKeys.remove(key);
+        }
+    }
+
+    @Override
+    public void storeAll(Map<String, String> map) {
+        for (Entry<String, String> entry : map.entrySet()) {
+            store(entry.getKey(), entry.getValue());
+        }
+    }
+
+    @Override
+    public String load(String key) {
+        return store.get(key);
+    }
+
+    @Override
+    public Map<String, String> loadAll(Collection<String> keys) {
+        Map<String, String> result = new HashMap<String, String>();
+        for (String key : keys) {
+            result.put(key, store.get(key));
+        }
+        return result;
+    }
+
+    @Override
+    public Set<String> loadAllKeys() {
+        return store.keySet();
+    }
+
+    @Override
+    public void delete(String key) {
+        store.remove(key);
+    }
+
+    @Override
+    public void deleteAll(Collection<String> keys) {
+        for (String key : keys) {
+            store.remove(key);
+        }
+    }
+
+}
+```
+
+A workaround is to ensure mutual exclusion in the MapStore implementation. However, I would expect the mutual exclusion guarantee from Hazelcast.
+
+Cheers,
+Andreas

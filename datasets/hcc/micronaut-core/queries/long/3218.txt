@@ -1,0 +1,76 @@
+Tested on MN 1.3.4
+
+
+From a conversation with @jameskleeh  and @croudet on Gitter:
+
+Consider the following:
+
+```
+@ConfigurationProperties("myapp.default")
+@Context
+class DefaultsConfiguration{
+
+    @Valid @NotNull
+    var tenants: List<DefaultTenant> = listOf()
+}
+```
+
+vs
+
+```
+@ConfigurationProperties("myapp.default")
+@Context
+class DefaultsConfiguration{
+
+    @Valid
+    var tenants: List<DefaultTenant> = listOf()
+}
+```
+
+The second snippet will not trigger validation.
+
+this appears to trace back to:
+
+https://github.com/micronaut-projects/micronaut-core/blob/1.3.x/inject-java/src/main/java/io/micronaut/annotation/processing/BeanDefinitionInjectProcessor.java#L832
+
+```
+if (!writer.isValidated() && annotationUtils.hasStereotype(method, ANN_CONSTRAINT)) {
+    writer.setValidated(true);
+}
+```
+
+where ANN_CONSTRAINT is 
+
+https://github.com/micronaut-projects/micronaut-core/blob/1.3.x/inject-java/src/main/java/io/micronaut/annotation/processing/BeanDefinitionInjectProcessor.java#L99
+
+```
+private static final String ANN_CONSTRAINT = "javax.validation.Constraint";
+```
+
+It would appear the logic for L832 is incorrect, and should be using 
+
+https://github.com/micronaut-projects/micronaut-core/blob/1.3.x/inject-java/src/main/java/io/micronaut/annotation/processing/BeanDefinitionInjectProcessor.java#L101
+
+```
+private static final Predicate<AnnotationMetadata> IS_CONSTRAINT = am ->
+            am.hasStereotype(ANN_CONSTRAINT) || am.hasStereotype(ANN_VALID);
+```
+
+or using equivalent logic.
+
+
+TLDR: The check if the bean should be validated is currently only looking for Beans with Annotations that are part of the javax constraints package, but the `@Valid` annotation is not part of that package, so if a Bean only contains `@Valid`, then validation is not triggered.
+
+Also note that if you were to use the snippet:
+
+```
+@ConfigurationProperties("myapp.default")
+@Context
+class DefaultsConfiguration{
+
+    @Valid
+    var tenants: List<DefaultTenant> = listOf()
+}
+``` 
+
+which does not throw validator errors, but you manually validate the bean with `validator.validate(..)`, then it will detect the validation errors.  It would appear there is some de-synced code.

@@ -1,0 +1,75 @@
+Please see: https://stackoverflow.com/questions/54095774/hazelcast-not-working-correctly-with-sqlpredicate-and-index-on-optional-field
+
+The problem here, when initializing `TypeConverter` inside the index, if the indexed property is in a collection and when
+
+ - the collection is null
+ - the collection is empty
+ - the collection is not empty but the attribute is null for all entries
+
+Then `QueryableEntry.getConverter` returns `IDENTITY_CONVERTER`. This causes wrong converter type initialization and causing SqlPredicate to return wrong results.
+
+Suggested Fix:
+
+from `getConverter` method:
+
+```
+ else {
+            AttributeType attributeType = extractAttributeType(attributeName, attribute);
+            return attributeType == null ? IDENTITY_CONVERTER : attributeType.getConverter();
+        }
+```
+
+The only case `attributeType` is null is when the `attribute` is the type of `MultiResult` and either all values in it is null or it is an instance of `ImmutableMultiResut` which means Collection itself is null or empty. In this case, we should return `NULL_CONVERTER` instead of `IDENTITY_CONVERTER` so that index can continue to find correct TypeConverter with next entry.
+
+Simple reproducer:
+```
+    public static void main(String[] args) {
+        Config config = new Config();
+        final MapConfig mapConfig = config.getMapConfig("data");
+        mapConfig.addMapIndexConfig(new MapIndexConfig("nested[any].number", false));
+
+        HazelcastInstance instance = Hazelcast.newHazelcastInstance(config);
+
+        IMap<Integer, Data> map = instance.getMap("data");
+
+        Data data1 = new Data(Collections.emptyList());
+        Data data2 = new Data(Arrays.asList(new SubData(1)));
+
+        Predicate equalPredicate = Predicates.equal("nested[any].number", 1);
+        Predicate sqlPredicate = new SqlPredicate("nested[any].number=1");
+
+
+        map.put(1, data1);
+        map.put(2, data2);
+
+        Collection<Data> equalResults = map.values(equalPredicate);
+        Collection<Data> sqlResults = map.values(sqlPredicate);
+
+        assertEquals(1, equalResults.size()); // contains "1"
+        assertEquals(1, sqlResults.size());   // --> this fails, it returns en empty list
+    }
+
+    static class Data implements Serializable {
+        private final List<SubData> nested;
+
+        public Data(List<SubData> nested) {
+            this.nested = nested;
+        }
+
+        public List<SubData> getNested() {
+            return nested;
+        }
+    }
+
+    static class SubData implements Serializable {
+        private final Integer number;
+
+        public SubData(Integer number) {
+            this.number = number;
+        }
+
+        public Integer getNumber() {
+            return number;
+        }
+    }
+```

@@ -1,0 +1,38 @@
+data-source指定数据源会被初始化成内部bean， sharding-jdbc 是使用这个内部bean作为数据源，外层设定数据源bean没有被用，这就造成 数据源会被初始化两次 也就是启动时 会有两套同样的数据源 都加载了
+
+排查原因：
+ Map<String, BeanDefinition> result = new ManagedMap<>(dataSources.size());
+
+value 使用了 BeanDefinition 类型
+spring 解析 ManagedMap 类型代码
+
+else if (value instanceof ManagedMap) {
+			// May need to resolve contained runtime references.
+			return resolveManagedMap(argName, (Map<?, ?>) value);
+		}
+
+private Map<?, ?> resolveManagedMap(Object argName, Map<?, ?> mm) {
+		Map<Object, Object> resolved = new LinkedHashMap<Object, Object>(mm.size());
+		for (Map.Entry<?, ?> entry : mm.entrySet()) {
+			Object resolvedKey = resolveValueIfNecessary(argName, entry.getKey());
+			Object resolvedValue = resolveValueIfNecessary(
+					new KeyedArgName(argName, entry.getKey()), entry.getValue());
+			resolved.put(resolvedKey, resolvedValue);
+		}
+		return resolved;
+	}
+
+value 最后重新调用 resolveValueIfNecessary方法
+
+解析
+else if (value instanceof BeanDefinition) {
+			// Resolve plain BeanDefinition, without contained name: use dummy name.
+			BeanDefinition bd = (BeanDefinition) value;
+			String innerBeanName = "(inner bean)" + BeanFactoryUtils.GENERATED_BEAN_NAME_SEPARATOR +
+					ObjectUtils.getIdentityHexString(bd);
+			return resolveInnerBean(argName, innerBeanName, bd);
+		}
+
+BeanDefinition类型会直接生成内部bean ，没有使用外部bean作为数据源；
+
+这种情况配置bean数据源就会被加载两套 内部bean一套，外部bean 一套  sharding-jdbc使用的是内部bean作为数据源，外部bean数据源没有用

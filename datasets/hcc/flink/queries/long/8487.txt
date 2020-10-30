@@ -1,0 +1,47 @@
+A user reported this issue on the user@f.a.o mailing list and analyzed the situation.
+
+Scenario:
+
+	A program that reads from Kafka and computes counts in a keyed 15 minute tumbling window.  StateBackend is RocksDB and checkpointing is enabled.
+
+
+
+
+
+keyBy(0)
+        .timeWindow(Time.of(window_size, TimeUnit.MINUTES))
+        .allowedLateness(Time.of(late_by, TimeUnit.SECONDS))
+        .reduce(new ReduceFunction(), new WindowFunction())
+
+
+
+
+	At some point HDFS went into a safe mode due to NameNode issues
+	The following exception was thrown
+
+
+
+
+
+org.apache.hadoop.ipc.RemoteException(org.apache.hadoop.ipc.StandbyException): Operation category WRITE is not supported in state standby. Visit https://s.apache.org/sbnn-error
+    ..................
+
+    at org.apache.flink.runtime.fs.hdfs.HadoopFileSystem.mkdirs(HadoopFileSystem.java:453)
+        at org.apache.flink.core.fs.SafetyNetWrapperFileSystem.mkdirs(SafetyNetWrapperFileSystem.java:111)
+        at org.apache.flink.runtime.state.filesystem.FsCheckpointStreamFactory.createBasePath(FsCheckpointStreamFactory.java:132)
+
+
+
+
+	The pipeline came back after a few restarts and checkpoint failures, after the HDFS issues were resolved.
+
+
+
+
+	It was evident that operator state was lost. Either it was the Kafka consumer that kept on advancing it's offset between a start and the next checkpoint failure (a minute's worth) or the the operator that had partial aggregates was lost.
+
+
+
+The user did some in-depth analysis (see mail thread) and might have (according to Aljoscha Krettek) identified the problem.
+
+Stefan Richter, can you have a look at this issue and check if it is relevant?

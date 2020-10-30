@@ -1,0 +1,10 @@
+https://lists.apache.org/thread.html/e241be9a1a10810a1203786dff3b7386d265fbe8702815a77bad42eb@%3Cdev.flink.apache.org%3E
+
+1) We have a per-job flink cluster
+2) We use BATCH execution mode + region failover strategy
+
+Point 1) should imply single user code class loader per task manager (because there is only single pipeline, that reuses class loader cached in BlobLibraryCacheManager). We need this property, because we have UDFs that access C libraries using JNI (I think this may be fairly common use-case when dealing with legacy code). JDK internals make sure that single library can be only loaded by a single class loader per JVM.
+
+When region recovery is triggered, vertices that need recover are first reset back to CREATED stated and then rescheduled. In case all tasks in a task manager are reset, this results in cached class loader being released. This unfortunately causes job failure, because we try to reload a native library in a newly created class loader.
+
+I believe the correct approach would be not to release cached class loader if the job is recovering, even though there are no tasks currently registered with TM.

@@ -1,0 +1,49 @@
+ 
+
+In 1.6.2., we have seen slot allocation failure keep happening for long time. Having looked at the log, I see the following behavior:
+
+	TM sends a registration request R1 to resource manager.
+	R1 times out after 100ms, which is initial timeout.
+	TM retries a registration request R2 to resource manager (with timeout 200ms).
+	R2 arrives first at resource manager and registered, and then TM gets successful response moving onto step 5 below.
+	On successful registration, R2's instance is put to taskManagerRegistrations
+	Then R1 arrives at resource manager and realizes the same TM resource ID is already registered, which then unregisters R2's instance ID from taskManagerRegistrations. A new instance ID for R1 is registered to workerRegistration.
+	R1's response is not handled though since it already timed out (see akka temp actor resolve failure below), hence no registration to taskManagerRegistrations.
+	TM keeps heartbeating to the resource manager with slot status.
+	Resource manager ignores this slot status, since taskManagerRegistrations contains R2, not R1, which replaced R2 in workerRegistration at step 6.
+	Slot request can never be fulfilled, timing out.
+
+
+
+The following is the debug logs for the above steps:
+
+ 
+
+
+JM log:
+
+2019-04-11 22:39:40.000,Registering TaskManager with ResourceID 46c8e0d0fcf2c306f11954a1040d5677 (akka.ssl.tcp://flink@flink-taskmanager:6122/user/taskmanager_0) at ResourceManager
+
+2019-04-11 22:39:40.000,Registering TaskManager 46c8e0d0fcf2c306f11954a1040d5677 under deade132e2c41c52019cdc27977266cf at the SlotManager.
+
+2019-04-11 22:39:40.000,Replacing old registration of TaskExecutor 46c8e0d0fcf2c306f11954a1040d5677.
+
+2019-04-11 22:39:40.000,Unregister TaskManager deade132e2c41c52019cdc27977266cf from the SlotManager.
+
+2019-04-11 22:39:40.000,Registering TaskManager with ResourceID 46c8e0d0fcf2c306f11954a1040d5677 (akka.ssl.tcp://flink@flink-taskmanager:6122/user/taskmanager_0) at ResourceManager
+
+TM log:
+
+2019-04-11 22:39:40.000,Registration at ResourceManager attempt 1 (timeout=100ms)
+
+2019-04-11 22:39:40.000,Registration at ResourceManager (akka.ssl.tcp://flink@flink-jobmanager:6123/user/resourcemanager) attempt 1 timed out after 100 ms
+
+2019-04-11 22:39:40.000,Registration at ResourceManager attempt 2 (timeout=200ms)
+
+2019-04-11 22:39:40.000,Successful registration at resource manager akka.ssl.tcp://flink@flink-jobmanager:6123/user/resourcemanager under registration id deade132e2c41c52019cdc27977266cf.
+
+2019-04-11 22:39:41.000,resolve of path sequence [/temp/$c] failed
+
+ 
+
+As RPC calls seem to use akka ask, which creates temporary source actor, I think multiple RPC calls could've arrived out or order by different actor pairs and the symptom above seems to be due to that. If so, it could have attempt account in the call argument to prevent unexpected unregistration? At this point, what I have done is only log analysis, so I could do further analysis, but before that wanted to check if it's a known issue. I also searched with some relevant terms and log pieces, but couldn't find the duplicate. Please deduplicate if any.

@@ -1,0 +1,21 @@
+The issue is during requesting exclusive buffers with a timeout. Since currently the number of maximum buffers and the number of required buffers are not the same for local buffer pools, there may be cases that the local buffer pools of the upstream tasks occupy all the buffers while the downstream tasks fail to acquire exclusive buffers to make progress. As for 1.9 in https://issues.apache.org/jira/browse/FLINK-12852 deadlock was avoided by adding a timeout to try to failover the current execution when the timeout occurs and tips users to increase the number of buffers in the exception message.
+
+In the discussion under the https://issues.apache.org/jira/browse/FLINK-12852 there were numerous proper solutions discussed and as for now there is no consensus how to fix it:
+
+1. Only allocate the minimum per producer, which is one buffer per channel. This would be needed to keep the requirement similar to what we have at the moment, but it is much less than we recommend for the credit-based network data exchange (2* channels + floating)
+
+2a. Coordinate the deployment sink-to-source such that receivers always have their buffers first. This will be complex to implement and coordinate and break with many assumptions about tasks being independent (coordination wise) on the TaskManagers. Giving that assumption up will be a pretty big step and cause lot's of complexity in the future.
+
+It will also increase deployment delays. Low deployment delays should be a design goal in my opinion, as it will enable other features more easily, like low-disruption upgrades, etc.
+
+2b. Assign extra buffers only once all of the tasks are RUNNING. This is a simplified version of 2a, without tracking the tasks sink-to-source.
+
+3. Make buffers always revokable, by spilling.
+This is tricky to implement very efficiently, especially because there is the logic that slices buffers for early sends for the low-latency streaming stuff
+the spilling request will come from an asynchronous call. That will probably stay like that even with the mailbox, because the main thread will be frequently blocked on buffer allocation when this request comes.
+
+4. We allocate the recommended number for good throughput (2*numChannels + floating) per consumer and per producer.
+No dynamic rebalancing any more. This would increase the number of required network buffers in certain high-parallelism scenarios quite a bit with the default config. Users can down-configure this by setting the per-channel buffers lower. But it would break user setups and require them to adjust the config when upgrading.
+
+5. We make the network resource per slot and ask the scheduler to attach information about how many producers and how many consumers will be in the slot, worst case. We use that to pre-compute how many excess buffers the producers may take.
+This will also break with some assumptions and lead us to the point that we have to pre-compute network buffers in the same way as managed memory. Seeing how much pain it is with the managed memory, this seems not so great.

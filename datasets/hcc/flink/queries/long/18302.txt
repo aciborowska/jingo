@@ -1,0 +1,60 @@
+Sql-client when execute INSERT statements does not use the user class loader from ExecutionContext. This makes it impossible to run queries with UDF in it if the dependencies are added with --jar flag.
+
+This can be reproduced when I migrate SQLClientKafkaITCase to use DDL (FLINK-18086). 
+
+It give exception:
+
+
+
+Exception in thread "main" org.apache.flink.table.client.SqlClientException: Unexpected exception. This is a bug. Please consider filing an issue.
+	at org.apache.flink.table.client.SqlClient.main(SqlClient.java:213)
+Caused by: java.lang.RuntimeException: Error running SQL job.
+	at org.apache.flink.table.client.gateway.local.LocalExecutor.executeUpdateInternal(LocalExecutor.java:595)
+	at org.apache.flink.table.client.gateway.local.LocalExecutor.executeUpdate(LocalExecutor.java:515)
+	at org.apache.flink.table.client.cli.CliClient.callInsert(CliClient.java:596)
+	at org.apache.flink.table.client.cli.CliClient.callCommand(CliClient.java:315)
+	at java.util.Optional.ifPresent(Optional.java:159)
+	at org.apache.flink.table.client.cli.CliClient.open(CliClient.java:212)
+	at org.apache.flink.table.client.SqlClient.openCli(SqlClient.java:142)
+	at org.apache.flink.table.client.SqlClient.start(SqlClient.java:114)
+	at org.apache.flink.table.client.SqlClient.main(SqlClient.java:201)
+Caused by: java.lang.RuntimeException: Could not execute program.
+	at org.apache.flink.table.client.gateway.local.ProgramDeployer.deploy(ProgramDeployer.java:84)
+	at org.apache.flink.table.client.gateway.local.LocalExecutor.executeUpdateInternal(LocalExecutor.java:592)
+	... 8 more
+Caused by: org.apache.flink.util.FlinkRuntimeException: org.apache.flink.api.common.InvalidProgramException: Table program cannot be compiled. This is a bug. Please file an issue.
+	at org.apache.flink.table.runtime.generated.CompileUtils.compile(CompileUtils.java:68)
+	at org.apache.flink.table.runtime.generated.GeneratedClass.compile(GeneratedClass.java:78)
+	at org.apache.flink.table.runtime.generated.GeneratedClass.getClass(GeneratedClass.java:96)
+	at org.apache.flink.table.runtime.operators.CodeGenOperatorFactory.getStreamOperatorClass(CodeGenOperatorFactory.java:51)
+	at org.apache.flink.streaming.api.graph.StreamingJobGraphGenerator.preValidate(StreamingJobGraphGenerator.java:217)
+	at org.apache.flink.streaming.api.graph.StreamingJobGraphGenerator.createJobGraph(StreamingJobGraphGenerator.java:154)
+	at org.apache.flink.streaming.api.graph.StreamingJobGraphGenerator.createJobGraph(StreamingJobGraphGenerator.java:109)
+	at org.apache.flink.streaming.api.graph.StreamGraph.getJobGraph(StreamGraph.java:850)
+	at org.apache.flink.client.StreamGraphTranslator.translateToJobGraph(StreamGraphTranslator.java:52)
+	at org.apache.flink.client.FlinkPipelineTranslationUtil.getJobGraph(FlinkPipelineTranslationUtil.java:43)
+	at org.apache.flink.client.deployment.executors.PipelineExecutorUtils.getJobGraph(PipelineExecutorUtils.java:55)
+	at org.apache.flink.client.deployment.executors.AbstractSessionClusterExecutor.execute(AbstractSessionClusterExecutor.java:57)
+	at org.apache.flink.table.client.gateway.local.ProgramDeployer.deploy(ProgramDeployer.java:82)
+	... 9 more
+Caused by: org.apache.flink.shaded.guava18.com.google.common.util.concurrent.UncheckedExecutionException: org.apache.flink.api.common.InvalidProgramException: Table program cannot be compiled. This is a bug. Please file an issue.
+	at org.apache.flink.shaded.guava18.com.google.common.cache.LocalCache$Segment.get(LocalCache.java:2203)
+	at org.apache.flink.shaded.guava18.com.google.common.cache.LocalCache.get(LocalCache.java:3937)
+	at org.apache.flink.shaded.guava18.com.google.common.cache.LocalCache$LocalManualCache.get(LocalCache.java:4739)
+	at org.apache.flink.table.runtime.generated.CompileUtils.compile(CompileUtils.java:66)
+	... 21 more
+Caused by: org.apache.flink.api.common.InvalidProgramException: Table program cannot be compiled. This is a bug. Please file an issue.
+	at org.apache.flink.table.runtime.generated.CompileUtils.doCompile(CompileUtils.java:81)
+	at org.apache.flink.table.runtime.generated.CompileUtils.lambda$compile$1(CompileUtils.java:66)
+	at org.apache.flink.shaded.guava18.com.google.common.cache.LocalCache$LocalManualCache$1.load(LocalCache.java:4742)
+	at org.apache.flink.shaded.guava18.com.google.common.cache.LocalCache$LoadingValueReference.loadFuture(LocalCache.java:3527)
+	at org.apache.flink.shaded.guava18.com.google.common.cache.LocalCache$Segment.loadSync(LocalCache.java:2319)
+	at org.apache.flink.shaded.guava18.com.google.common.cache.LocalCache$Segment.lockedGetOrLoad(LocalCache.java:2282)
+	at org.apache.flink.shaded.guava18.com.google.common.cache.LocalCache$Segment.get(LocalCache.java:2197)
+	... 24 more
+Caused by: org.codehaus.commons.compiler.CompileException: Line 13, Column 30: Cannot determine simple type name "org"
+
+
+
+
+The reason is that we only wrap classloader for the inner applyUpdate, but not the outer executeUpdateInternal. However, ProgramDeployer#deploy() in executeUpdateInternal will invoke code compile which throws this exception.

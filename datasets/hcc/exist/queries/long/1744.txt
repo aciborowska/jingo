@@ -1,0 +1,99 @@
+### What is the problem
+
+In eXist v3.6.1, saving a document to a collection with a full text index configured with `<lucene diacritics="no">` works without error. In eXist v4.0.0 (and v4.1.0-SNAPSHOT) this action returns a sequence of errors, including `java.lang.ExceptionInInitializerError` and `java.lang.NoClassDefFoundError`. A test demonstrating this is below.
+
+This issue was whittled down from the problem reported to me and @adamretter by @wsalesky, in which running [analyzers.xql](https://github.com/eXist-db/exist/blob/develop/extensions/indexes/lucene/test/src/xquery/lucene/analyzers.xql) in eXist v4.0.0 via eXide > Run as test results in a test failure. A test demonstrating this is below too.
+
+### What did you expect
+
+I expected to be able to configure diacritic-insensitive Lucene full text indexes in eXist v4.0.0.
+
+### Describe how to reproduce or add a test
+
+Run the following XQuery in eXide and monitor exist.log. (Consider first running without `diacritics="no"`; the query runs without error. Then restore `diacritics="no"` to observe the error.)
+The query will produce a sequence of errors, including `java.lang.ExceptionInInitializerError` and `java.lang.NoClassDefFoundError`.
+
+```xquery
+xquery version "3.1";
+
+let $xconf :=
+    <collection xmlns="http://exist-db.org/collection-config/1.0">
+        <index>
+            <lucene diacritics="no">
+            <!--  <lucene>  -->
+                <text qname="p"/>
+            </lucene>
+        </index>
+    </collection>
+let $test-col := xmldb:create-collection("/db", "test")
+let $conf-col := xmldb:create-collection("/db/system/config/db", "test")
+return 
+    (
+        xmldb:store($conf-col, "collection.xconf", $xconf),
+        xmldb:store($test-col, "test.xml",
+            <test>
+                <p>Hello</p>
+            </test>
+        ),
+        xmldb:remove($test-col),
+        xmldb:remove($conf-col)
+    )
+```
+
+With `diacritics="no"`, the query produces a sequence of errors in exist.log - see the full logs
+[here](https://github.com/eXist-db/exist/files/1742938/exist.log).
+
+**First run:**
+
+```text
+2018-02-21 00:29:30,620 [qtp1253271425-51] WARN  (TransactionManager.java [close]:186) - Transaction was not committed or aborted, auto aborting! 
+2018-02-21 00:29:30,621 [qtp1253271425-51] ERROR (XQueryServlet.java [process]:534) - null 
+java.lang.ExceptionInInitializerError: null
+	at org.exist.indexing.lucene.analyzers.NoDiacriticsStandardAnalyzer.createComponents(NoDiacriticsStandardAnalyzer.java:133) ~[exist-index-lucene.jar:4.1.0-SNAPSHOT]
+...
+Caused by: com.ibm.icu.util.ICUUncheckedIOException: java.io.IOException: ICU data file error: Header authentication failed, please check if you have a valid ICU data file; data format 4e726d32, format version 2.0.0.0
+	at com.ibm.icu.impl.Normalizer2Impl.load(Normalizer2Impl.java:483) ~[icu4j-60.2.jar:60.2]
+```
+
+**Second and subsequent runs:**
+
+```text
+2018-02-21 00:29:35,090 [qtp1253271425-54] ERROR (XQueryServlet.java [process]:534) - Could not initialize class org.apache.lucene.analysis.icu.ICUFoldingFilter 
+java.lang.NoClassDefFoundError: Could not initialize class org.apache.lucene.analysis.icu.ICUFoldingFilter
+	at org.exist.indexing.lucene.analyzers.NoDiacriticsStandardAnalyzer.createComponents(NoDiacriticsStandardAnalyzer.java:133) ~[exist-index-lucene.jar:4.1.0-SNAPSHOT]
+```
+
+To reproduce @wsalesky's report with or without eXide, run the following query:
+
+```xquery
+xquery version "3.1";
+
+import module namespace test="http://exist-db.org/xquery/xqsuite" at 
+    "resource:org/exist/xquery/lib/xqsuite/xqsuite.xql";
+
+test:suite(
+    inspect:module-functions(
+        xs:anyURI(
+            "https://raw.githubusercontent.com/eXist-db/exist/develop/extensions/indexes/lucene/test/src/xquery/lucene/analyzers.xql"
+        )
+    )
+)
+```
+
+**Result:**
+
+```xml
+<testsuites>
+    <testsuite package="http://exist-db.org/xquery/lucene/test/analyzers"
+        timestamp="2018-02-21T00:35:32.712-05:00" errors="5">Could not initialize class
+        org.apache.lucene.analysis.icu.ICUFoldingFilter</testsuite>
+</testsuites>
+```
+
+### Context information
+
+- eXist-db version + Git Revision hash: no problem evident in eXist-db v3.6.0 (3be6286); problem evident in v4.0.0 (cc66ebc) and v4.1.0 (23f577317)
+- Java version: 1.8.0_162
+- Operating system: macOS 10.13.3
+- 32 or 64 bit: 64 bit
+- Any custom changes in e.g. conf.xml: no

@@ -1,0 +1,27 @@
+I have been experimenting recently with the use of the hz.LATEST_UPDATE merge policy and have found a case where it is not operating properly.
+
+My setup is this:
+
+I am using version 2.4.
+
+I have a system of two machines, each running a hazelcast member and sharing a map.
+
+I bring up member A first on machine A and then member B on machine B. Member A becomes the head of the cluster because it is older.
+
+I have backups set so that all data on one member are backed up on one other (i.e. the only other member in the system)
+
+Member A creates 4 elements and adds them to the map, elements 3 & 4 are made local to member A and elements 1 & 2 are made local to member B.
+
+Next, I disconnect the ethernet cable from machine A. After a few minutes, members A and B recognize the absence of the other and repartition the map. Each essentially promotes its backup data for the non-local elements to local status so that each member now sees
+all four data elements.
+
+I now modify the values of elements 2 and 4 of the map accessible to member A and elements 1 and 3 of the map accessible to member B. (i.e. one element that used to be local and one element that used to be remote when the system was not partitioned.)
+
+Next, I reconnect the ethernet cable to machine B. After a short time, members A and B recognize the presence of each other and reform the cluster. This time, member B is made the head of the cluster. 
+
+The elements of the shared map are now reallocated. Elements 1 & 2 are made local to member A and elements 3 & 4 are made local to member B.
+
+Finally, values of the elements are determined through application of the merge policy. All are done correctly, except that element 1 has the value that was originally assigned it and not the value it was assigned later by member B when the system was partitioned. Examining the merge process more closely, I see that when member A attempts to come up with the value of its two local variables, it compares the "LastUpdateTime" time stamp of its local copy of the data with that of the data sent from member B. The time stamp of the data from member B is always 0 - which is wrong for element 1.
+
+More generally, as described in the 12.2.4 of the documentation, when a partitioned network merges, that part of the cluster which has the oldest member is the "existing cluster" and the other part is the "merging cluster". Prior to merging common data structures, each element of a structure is assigned to be local to a member of the combined cluster. Once assigned, the merge method of the MergePolicy object is handed two elements, existingEntry and mergingEntry, representing the data from the existing cluster and merging cluster, respectively. Whenever the merge method
+is invoked on a member from the merging cluster, the "LastUpdateTime" and "LastStoreTime" time stamp information of the existingEntry is 0.

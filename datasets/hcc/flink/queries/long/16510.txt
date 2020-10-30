@@ -1,0 +1,49 @@
+The JvmShutdownSafeguard does not always succeed but can hang when multiple threads attempt to shutdown the JVM. Apparently mixing System.exit() with ShutdownHooks and forcefully terminating the JVM via Runtime.halt() does not play together well:
+
+
+"Jvm Terminator" #22 daemon prio=5 os_prio=0 tid=0x00007fb8e82f2800 nid=0x5a96 runnable [0x00007fb35cffb000]
+   java.lang.Thread.State: RUNNABLE
+	at java.lang.Shutdown.$$YJP$$halt0(Native Method)
+	at java.lang.Shutdown.halt0(Shutdown.java)
+	at java.lang.Shutdown.halt(Shutdown.java:139)
+	- locked <0x000000047ed67638> (a java.lang.Shutdown$Lock)
+	at java.lang.Runtime.halt(Runtime.java:276)
+	at org.apache.flink.runtime.util.JvmShutdownSafeguard$DelayedTerminator.run(JvmShutdownSafeguard.java:86)
+	at java.lang.Thread.run(Thread.java:748)
+
+   Locked ownable synchronizers:
+	- None
+
+"FlinkCompletableFutureDelayScheduler-thread-1" #18154 daemon prio=5 os_prio=0 tid=0x00007fb708a7d000 nid=0x5a8a waiting for monitor entry [0x00007fb289d49000]
+   java.lang.Thread.State: BLOCKED (on object monitor)
+	at java.lang.Shutdown.halt(Shutdown.java:139)
+	- waiting to lock <0x000000047ed67638> (a java.lang.Shutdown$Lock)
+	at java.lang.Shutdown.exit(Shutdown.java:213)
+	- locked <0x000000047edb7348> (a java.lang.Class for java.lang.Shutdown)
+	at java.lang.Runtime.exit(Runtime.java:110)
+	at java.lang.System.exit(System.java:973)
+	at org.apache.flink.runtime.taskexecutor.TaskManagerRunner.terminateJVM(TaskManagerRunner.java:266)
+	at org.apache.flink.runtime.taskexecutor.TaskManagerRunner.lambda$onFatalError$1(TaskManagerRunner.java:260)
+	at org.apache.flink.runtime.taskexecutor.TaskManagerRunner$$Lambda$27464/1464672548.accept(Unknown Source)
+	at java.util.concurrent.CompletableFuture.uniWhenComplete(CompletableFuture.java:774)
+	at java.util.concurrent.CompletableFuture$UniWhenComplete.tryFire(CompletableFuture.java:750)
+	at java.util.concurrent.CompletableFuture.postComplete(CompletableFuture.java:488)
+	at java.util.concurrent.CompletableFuture.completeExceptionally(CompletableFuture.java:1990)
+	at org.apache.flink.runtime.concurrent.FutureUtils$Timeout.run(FutureUtils.java:943)
+	at org.apache.flink.runtime.concurrent.DirectExecutorService.execute(DirectExecutorService.java:211)
+	at org.apache.flink.runtime.concurrent.FutureUtils.lambda$orTimeout$11(FutureUtils.java:361)
+	at org.apache.flink.runtime.concurrent.FutureUtils$$Lambda$27435/159015392.run(Unknown Source)
+	at java.util.concurrent.Executors$RunnableAdapter.call(Executors.java:511)
+	at java.util.concurrent.FutureTask.run(FutureTask.java:266)
+	at java.util.concurrent.ScheduledThreadPoolExecutor$ScheduledFutureTask.access$201(ScheduledThreadPoolExecutor.java:180)
+	at java.util.concurrent.ScheduledThreadPoolExecutor$ScheduledFutureTask.run(ScheduledThreadPoolExecutor.java:293)
+	at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1149)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:624)
+	at java.lang.Thread.run(Thread.java:748)
+
+   Locked ownable synchronizers:
+	- <0x00000006d5e56bd0> (a java.util.concurrent.ThreadPoolExecutor$Worker)
+
+
+
+Note that under this condition the JVM should terminate but it still hangs. Sometimes it quits after several minutes.

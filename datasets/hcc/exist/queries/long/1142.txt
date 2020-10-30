@@ -1,0 +1,170 @@
+In my testing with the current develop branch of eXist 3.0 ("RC2"), the XQuery Update "rename" action fails and causes an NPE on elements that are indexed with the old range index.
+
+In all 3 test cases, the expected results are the same:
+
+``` xml
+<x>
+    <z/>
+</x>
+```
+
+And in test cases 1 and 2, we get the expected results. But in test case 3, the empty sequence is returned.
+
+**test1.xq**: no index involved, results return as expected
+
+``` xquery
+xquery version "3.1";
+
+let $clear := 
+    for $col in ('/db/rename-test', '/db/system/config/db/rename-test')
+    return
+        if (xmldb:collection-available($col)) then 
+            xmldb:remove($col)
+        else
+            ()
+let $data-collection := xmldb:create-collection('/db', 'rename-test')
+let $in-memory-doc := document { <x><y/></x> }
+let $store-doc := xmldb:store($data-collection, 'test.xml', $in-memory-doc)
+let $on-disk-doc := doc($store-doc)
+let $rename := update rename $on-disk-doc/x/y as "z"
+return $on-disk-doc
+```
+
+**test2.xq**: new range index, returns expected results
+
+``` xquery
+xquery version "3.1";
+
+let $clear := 
+    for $col in ('/db/rename-test', '/db/system/config/db/rename-test')
+    return
+        if (xmldb:collection-available($col)) then 
+            xmldb:remove($col)
+        else
+            ()
+let $data-collection := xmldb:create-collection('/db', 'rename-test')
+let $xconf-collection := xmldb:create-collection('/db/system/config/db', 'rename-test')
+let $xconf := 
+    <collection xmlns="http://exist-db.org/collection-config/1.0">
+        <index xmlns:xs="http://www.w3.org/2001/XMLSchema">
+            <range>
+                <create qname="y" type="xs:string"/>
+            </range>
+        </index>
+    </collection>
+let $store-xconf := xmldb:store($xconf-collection, 'collection.xconf', $xconf)
+let $in-memory-doc := document { <x><y/></x> }
+let $store-doc := xmldb:store($data-collection, 'test.xml', $in-memory-doc)
+let $on-disk-doc := doc($store-doc)
+let $rename := update rename $on-disk-doc/x/y as "z"
+return $on-disk-doc
+```
+
+**test3.xq**: old range index, returns **empty sequence**
+
+``` xquery
+xquery version "3.1";
+
+let $clear := 
+    for $col in ('/db/rename-test', '/db/system/config/db/rename-test')
+    return
+        if (xmldb:collection-available($col)) then 
+            xmldb:remove($col)
+        else
+            ()
+let $data-collection := xmldb:create-collection('/db', 'rename-test')
+let $xconf-collection := xmldb:create-collection('/db/system/config/db', 'rename-test')
+let $xconf := 
+    <collection xmlns="http://exist-db.org/collection-config/1.0">
+        <index xmlns:xs="http://www.w3.org/2001/XMLSchema">
+            <create qname="y" type="xs:string"/>
+        </index>
+    </collection>
+let $store-xconf := xmldb:store($xconf-collection, 'collection.xconf', $xconf)
+let $in-memory-doc := document { <x><y/></x> }
+let $store-doc := xmldb:store($data-collection, 'test.xml', $in-memory-doc)
+let $on-disk-doc := doc($store-doc)
+let $rename := update rename $on-disk-doc/x/y as "z"
+return $on-disk-doc
+```
+
+This test3.xq returns an empty sequence and produces an NPE; trace from exist.log follows:
+
+```
+2016-10-12 14:48:53,592 [qtp1766603786-38] WARN  (TransactionManager.java [close]:199) - Transaction was not committed or aborted, auto aborting! 
+2016-10-12 14:48:53,594 [qtp1766603786-38] ERROR (XQueryServlet.java [process]:547) - null 
+java.lang.NullPointerException
+    at org.exist.xquery.value.StringValue.compareTo(StringValue.java:671) ~[exist.jar:?]
+    at org.exist.storage.NativeValueIndex$QNameKey.compareTo(NativeValueIndex.java:1477) ~[exist.jar:?]
+    at org.exist.storage.NativeValueIndex$QNameKey.compareTo(NativeValueIndex.java:1461) ~[exist.jar:?]
+    at java.util.TreeMap.compare(TreeMap.java:1294) ~[?:1.8.0_102]
+    at java.util.TreeMap.put(TreeMap.java:538) ~[?:1.8.0_102]
+    at org.exist.storage.NativeValueIndex.store(NativeValueIndex.java:276) ~[exist.jar:?]
+    at org.exist.storage.NativeValueIndex.storeElement(NativeValueIndex.java:259) ~[exist.jar:?]
+    at org.exist.storage.NativeBroker.removeNode(NativeBroker.java:3259) ~[exist.jar:?]
+    at org.exist.dom.persistent.ElementImpl.updateChild(ElementImpl.java:1403) ~[exist.jar:?]
+    at org.exist.xquery.update.Rename.eval(Rename.java:149) ~[exist.jar:?]
+    at org.exist.xquery.LetExpr.eval(LetExpr.java:99) ~[exist.jar:?]
+    at org.exist.xquery.LetExpr.eval(LetExpr.java:111) ~[exist.jar:?]
+    at org.exist.xquery.LetExpr.eval(LetExpr.java:111) ~[exist.jar:?]
+    at org.exist.xquery.LetExpr.eval(LetExpr.java:111) ~[exist.jar:?]
+    at org.exist.xquery.LetExpr.eval(LetExpr.java:111) ~[exist.jar:?]
+    at org.exist.xquery.LetExpr.eval(LetExpr.java:111) ~[exist.jar:?]
+    at org.exist.xquery.LetExpr.eval(LetExpr.java:111) ~[exist.jar:?]
+    at org.exist.xquery.LetExpr.eval(LetExpr.java:111) ~[exist.jar:?]
+    at org.exist.xquery.LetExpr.eval(LetExpr.java:111) ~[exist.jar:?]
+    at org.exist.xquery.AbstractExpression.eval(AbstractExpression.java:71) ~[exist.jar:?]
+    at org.exist.xquery.PathExpr.eval(PathExpr.java:276) ~[exist.jar:?]
+    at org.exist.xquery.AbstractExpression.eval(AbstractExpression.java:71) ~[exist.jar:?]
+    at org.exist.xquery.XQuery.execute(XQuery.java:253) ~[exist.jar:?]
+    at org.exist.xquery.XQuery.execute(XQuery.java:185) ~[exist.jar:?]
+    at org.exist.http.servlets.XQueryServlet.process(XQueryServlet.java:483) [exist-optional.jar:?]
+    at org.exist.http.servlets.XQueryServlet.doPost(XQueryServlet.java:196) [exist-optional.jar:?]
+    at javax.servlet.http.HttpServlet.service(HttpServlet.java:707) [servlet-api-3.1.jar:3.1.0]
+    at javax.servlet.http.HttpServlet.service(HttpServlet.java:790) [servlet-api-3.1.jar:3.1.0]
+    at org.eclipse.jetty.servlet.ServletHolder.handle(ServletHolder.java:845) [jetty-servlet-9.3.9.v20160517.jar:9.3.9.v20160517]
+    at org.eclipse.jetty.servlet.ServletHandler.doHandle(ServletHandler.java:583) [jetty-servlet-9.3.9.v20160517.jar:9.3.9.v20160517]
+    at org.eclipse.jetty.server.handler.ScopedHandler.handle(ScopedHandler.java:143) [jetty-server-9.3.9.v20160517.jar:9.3.9.v20160517]
+    at org.eclipse.jetty.security.SecurityHandler.handle(SecurityHandler.java:566) [jetty-security-9.3.9.v20160517.jar:9.3.9.v20160517]
+    at org.eclipse.jetty.server.session.SessionHandler.doHandle(SessionHandler.java:226) [jetty-server-9.3.9.v20160517.jar:9.3.9.v20160517]
+    at org.eclipse.jetty.server.handler.ContextHandler.doHandle(ContextHandler.java:1174) [jetty-server-9.3.9.v20160517.jar:9.3.9.v20160517]
+    at org.eclipse.jetty.servlet.ServletHandler.doScope(ServletHandler.java:511) [jetty-servlet-9.3.9.v20160517.jar:9.3.9.v20160517]
+    at org.eclipse.jetty.server.session.SessionHandler.doScope(SessionHandler.java:185) [jetty-server-9.3.9.v20160517.jar:9.3.9.v20160517]
+    at org.eclipse.jetty.server.handler.ContextHandler.doScope(ContextHandler.java:1106) [jetty-server-9.3.9.v20160517.jar:9.3.9.v20160517]
+    at org.eclipse.jetty.server.handler.ScopedHandler.handle(ScopedHandler.java:141) [jetty-server-9.3.9.v20160517.jar:9.3.9.v20160517]
+    at org.eclipse.jetty.server.Dispatcher.forward(Dispatcher.java:159) [jetty-server-9.3.9.v20160517.jar:9.3.9.v20160517]
+    at org.eclipse.jetty.server.Dispatcher.forward(Dispatcher.java:74) [jetty-server-9.3.9.v20160517.jar:9.3.9.v20160517]
+    at org.exist.http.urlrewrite.Forward.doRewrite(Forward.java:50) [exist-optional.jar:?]
+    at org.exist.http.urlrewrite.XQueryURLRewrite.doRewrite(XQueryURLRewrite.java:545) [exist-optional.jar:?]
+    at org.exist.http.urlrewrite.XQueryURLRewrite.service(XQueryURLRewrite.java:349) [exist-optional.jar:?]
+    at javax.servlet.http.HttpServlet.service(HttpServlet.java:790) [servlet-api-3.1.jar:3.1.0]
+    at org.eclipse.jetty.servlet.ServletHolder.handle(ServletHolder.java:845) [jetty-servlet-9.3.9.v20160517.jar:9.3.9.v20160517]
+    at org.eclipse.jetty.servlet.ServletHandler$CachedChain.doFilter(ServletHandler.java:1689) [jetty-servlet-9.3.9.v20160517.jar:9.3.9.v20160517]
+    at de.betterform.agent.web.filter.XFormsFilter.doFilter(XFormsFilter.java:171) [betterform-exist-5.1-SNAPSHOT-20160615.jar:?]
+    at org.eclipse.jetty.servlet.ServletHandler$CachedChain.doFilter(ServletHandler.java:1668) [jetty-servlet-9.3.9.v20160517.jar:9.3.9.v20160517]
+    at org.eclipse.jetty.servlet.ServletHandler.doHandle(ServletHandler.java:581) [jetty-servlet-9.3.9.v20160517.jar:9.3.9.v20160517]
+    at org.eclipse.jetty.server.handler.ScopedHandler.handle(ScopedHandler.java:143) [jetty-server-9.3.9.v20160517.jar:9.3.9.v20160517]
+    at org.eclipse.jetty.security.SecurityHandler.handle(SecurityHandler.java:524) [jetty-security-9.3.9.v20160517.jar:9.3.9.v20160517]
+    at org.eclipse.jetty.server.session.SessionHandler.doHandle(SessionHandler.java:226) [jetty-server-9.3.9.v20160517.jar:9.3.9.v20160517]
+    at org.eclipse.jetty.server.handler.ContextHandler.doHandle(ContextHandler.java:1174) [jetty-server-9.3.9.v20160517.jar:9.3.9.v20160517]
+    at org.eclipse.jetty.servlet.ServletHandler.doScope(ServletHandler.java:511) [jetty-servlet-9.3.9.v20160517.jar:9.3.9.v20160517]
+    at org.eclipse.jetty.server.session.SessionHandler.doScope(SessionHandler.java:185) [jetty-server-9.3.9.v20160517.jar:9.3.9.v20160517]
+    at org.eclipse.jetty.server.handler.ContextHandler.doScope(ContextHandler.java:1106) [jetty-server-9.3.9.v20160517.jar:9.3.9.v20160517]
+    at org.eclipse.jetty.server.handler.ScopedHandler.handle(ScopedHandler.java:141) [jetty-server-9.3.9.v20160517.jar:9.3.9.v20160517]
+    at org.eclipse.jetty.server.handler.ContextHandlerCollection.handle(ContextHandlerCollection.java:213) [jetty-server-9.3.9.v20160517.jar:9.3.9.v20160517]
+    at org.eclipse.jetty.server.handler.HandlerCollection.handle(HandlerCollection.java:119) [jetty-server-9.3.9.v20160517.jar:9.3.9.v20160517]
+    at org.eclipse.jetty.server.handler.gzip.GzipHandler.handle(GzipHandler.java:396) [jetty-server-9.3.9.v20160517.jar:9.3.9.v20160517]
+    at org.eclipse.jetty.server.handler.HandlerWrapper.handle(HandlerWrapper.java:134) [jetty-server-9.3.9.v20160517.jar:9.3.9.v20160517]
+    at org.eclipse.jetty.server.Server.handle(Server.java:524) [jetty-server-9.3.9.v20160517.jar:9.3.9.v20160517]
+    at org.eclipse.jetty.server.HttpChannel.handle(HttpChannel.java:319) [jetty-server-9.3.9.v20160517.jar:9.3.9.v20160517]
+    at org.eclipse.jetty.server.HttpConnection.onFillable(HttpConnection.java:253) [jetty-server-9.3.9.v20160517.jar:9.3.9.v20160517]
+    at org.eclipse.jetty.io.AbstractConnection$ReadCallback.succeeded(AbstractConnection.java:273) [jetty-io-9.3.9.v20160517.jar:9.3.9.v20160517]
+    at org.eclipse.jetty.io.FillInterest.fillable(FillInterest.java:95) [jetty-io-9.3.9.v20160517.jar:9.3.9.v20160517]
+    at org.eclipse.jetty.io.SelectChannelEndPoint$2.run(SelectChannelEndPoint.java:93) [jetty-io-9.3.9.v20160517.jar:9.3.9.v20160517]
+    at org.eclipse.jetty.util.thread.strategy.ExecuteProduceConsume.executeProduceConsume(ExecuteProduceConsume.java:303) [jetty-util-9.3.9.v20160517.jar:9.3.9.v20160517]
+    at org.eclipse.jetty.util.thread.strategy.ExecuteProduceConsume.produceConsume(ExecuteProduceConsume.java:148) [jetty-util-9.3.9.v20160517.jar:9.3.9.v20160517]
+    at org.eclipse.jetty.util.thread.strategy.ExecuteProduceConsume.run(ExecuteProduceConsume.java:136) [jetty-util-9.3.9.v20160517.jar:9.3.9.v20160517]
+    at org.eclipse.jetty.util.thread.QueuedThreadPool.runJob(QueuedThreadPool.java:671) [jetty-util-9.3.9.v20160517.jar:9.3.9.v20160517]
+    at org.eclipse.jetty.util.thread.QueuedThreadPool$2.run(QueuedThreadPool.java:589) [jetty-util-9.3.9.v20160517.jar:9.3.9.v20160517]
+    at java.lang.Thread.run(Thread.java:745) [?:1.8.0_102]
+```

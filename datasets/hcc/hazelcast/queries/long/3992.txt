@@ -1,0 +1,117 @@
+It seems somewhat counterintuitive that the EVICTED event is sent **before** the ADDED event to an EntryListener on a DistributedObject (at least in HzC version 3.3.+). For example, the test code below retrieves an IMap and puts 1 element more than the IMap max size:
+
+``` java
+        final IMap<String, String> map = cache.getMap(quickEvictionMapId);
+        map.addEntryListener(listener, true);
+        Thread.sleep(200);
+
+        for (int i = 0; i < maxCacheSize + 1; i++) {
+            map.put(key + "_" + i, value + "_" + i);
+        }
+```
+
+Recording the events as received by the `listener`object yields the following list of method calls in the listener. Note that the EVICTED events are delivered before the ADDED events, which is somewhat confusing if you want to - say - adjust some state relying on the fact that objects being evicted are actually added beforehand. For example... in the resulting output snippet below, Hazelcast thread 46 first sends the EVICTED event for key_3/value_3 and then the ADDED event for the same K/V pair:
+
+```
+######################################
+[0]: onEntryEvent (hz.orderingTestInstance.event-44): ADDED - [key_0]: null --> value_0
+[1]: onEntryEvent (hz.orderingTestInstance.event-46): EVICTED - [key_3]: value_3 --> null
+[2]: onEntryEvent (hz.orderingTestInstance.event-47): EVICTED - [key_2]: value_2 --> null
+[3]: onEntryEvent (hz.orderingTestInstance.event-43): ADDED - [key_1]: null --> value_1
+[4]: onEntryEvent (hz.orderingTestInstance.event-47): ADDED - [key_2]: null --> value_2
+[5]: onEntryEvent (hz.orderingTestInstance.event-46): ADDED - [key_3]: null --> value_3
+[6]: onEntryEvent (hz.orderingTestInstance.event-46): EVICTED - [key_4]: value_4 --> null
+[7]: onEntryEvent (hz.orderingTestInstance.event-46): ADDED - [key_4]: null --> value_4
+######################################
+```
+# The full code sample
+
+The relevant code of the testcase I wrote to produce the printout is found below. Just wrap it into a JUnit testcase class and fire away:
+
+``` java
+    class SynchronizedEntryListener extends EntryAdapter<String, String> {
+
+        // Internal state
+        private final Object[] lock = new Object[0];
+        private AtomicInteger counter = new AtomicInteger();
+        private SortedMap<Integer, String> orderedMessages = new TreeMap<Integer, String>();
+
+        @Override
+        public void onEntryEvent(final EntryEvent<String, String> event) {
+            synchronized (lock) {
+                final String threadName = Thread.currentThread().getName();
+                final String message = "onEntryEvent (" + threadName + "): " + event.getEventType().toString()
+                        + " - [" + event.getKey() + "]: " + event.getOldValue() + " --> " + event.getValue();
+                orderedMessages.put(counter.getAndIncrement(), message);
+            }
+        }
+
+        @Override
+        public void onMapEvent(final MapEvent event) {
+            synchronized (lock) {
+                final String threadName = Thread.currentThread().getName();
+                final String message = "onMapEvent (" + threadName + "): " + event.getEventType().toString()
+                        + " - [" + event.getName() + "(" + event.getNumberOfEntriesAffected() + "]: "
+                        + event.getEventType();
+                orderedMessages.put(counter.getAndIncrement(), message);
+            }
+        }
+
+        @Override
+        public String toString() {
+
+            StringBuilder builder = new StringBuilder("\n\n\n######################################\n");
+            for(Map.Entry<Integer, String> current : orderedMessages.entrySet()) {
+                builder.append("[" + current.getKey() + "]: " + current.getValue() + "\n");
+            }
+            return builder.toString() + "\n######################################\n\n\n";
+        }
+
+        public SortedMap<Integer, String> getOrderedEventLog() {
+            return orderedMessages;
+        }
+    }
+
+    @Test
+    public void validateStrangeOrderingInListenerEvents() throws Exception {
+
+        // Assemble
+        final String key = "key";
+        final String value = "value";
+        final String quickEvictionMapId = "quickEvictionMap";
+        final int maxCacheSize = 4;
+        final int evictionPercentage = 25;
+
+        final Config config = new Config("orderingTestInstance");
+        final MapConfig mapConfig = config.getMapConfig(quickEvictionMapId);
+        mapConfig.setEvictionPolicy(MapConfig.EvictionPolicy.LFU);
+        mapConfig.setEvictionPercentage(evictionPercentage);
+        mapConfig.setMaxSizeConfig(new MaxSizeConfig().setSize(maxCacheSize));
+        final NetworkConfig networkConfig = config.getNetworkConfig();
+        networkConfig.getJoin().getMulticastConfig().setEnabled(false);
+
+        final HazelcastInstance cache = Hazelcast.getOrCreateHazelcastInstance(config);
+
+        final int expectedRemainingAfterEviction =  (int) (mapConfig.getMaxSizeConfig().getSize()
+                * (100.0d - (double) mapConfig.getEvictionPercentage())/100.0d) - 1;
+
+
+        final SynchronizedEntryListener listener = new SynchronizedEntryListener();
+
+        // Act
+        final IMap<String, String> map = cache.getMap(quickEvictionMapId);
+        map.addEntryListener(listener, true);
+        Thread.sleep(200);
+
+        for (int i = 0; i < maxCacheSize + 1; i++) {
+            map.put(key + "_" + i, value + "_" + i);
+        }
+        Thread.sleep(200);
+
+        // Assert
+        System.out.println(listener.toString());
+        Assert.assertEquals(expectedRemainingAfterEviction, map.size());
+
+        // final SortedMap<Integer, String> events = listener.getOrderedEventLog();
+    }
+```

@@ -1,0 +1,96 @@
+Reproduced with 7.0.0-SNAPSHOT rev. 4895248f4ae . 
+
+This is discovered with stress job:  http://jenkins-fr.internal.forgerock.com:8080/view/DJ%20Stress/job/OpenDJ-7.0.x/job/replication/job/replication_modrate_substring/ which is unstable.
+
+The job regularly hits problem with divergences in data after one hour modrate run with modifications targeted to description attribute. Before the modrate is started the test is adding substring index for description attribute and at the end of modrate it removes the index.
+
+This problem looks like issue we already had before: OPENDJ-5461.
+
+The topology is 2xDSRS servers with 100 000 entries and replication enabled.
+
+The framework command to reproduce the issue is:
+
+python3 run-pybot.py -v --cfg modSub.cfg -c stress -s replication.modratesubstring -n DJ
+
+
+Before you run it, download attached config modSub.cfg and put it to config folder.
+
+
+
+Test steps:
+1. Setup DJ1 with default settings and 100 000 entries
+2. Setup DJ2 with same base_dn like DJ1
+3. Enable replication between DJ1 and DJ2 + initialize it
+4. Set replication purge delay to 1200s
+
+./DJ1/opendj/bin/dsconfig -h pyforge.example.com -p 4444 -D "uid=admin" -w password -X set-replication-server-prop --provider-name "Multimaster Synchronization" --set "replication-purge-delay:1200s" -n
+
+./DJ2/opendj/bin/dsconfig -h pyforge.example.com -p 4445 -D "uid=admin" -w password -X set-replication-server-prop --provider-name "Multimaster Synchronization" --set "replication-purge-delay:1200s" -n
+
+
+5. On both servers create new index type of substring for description attribute
+
+./DJ1/opendj/bin/dsconfig -h pyforge.example.com -p 4444 -D "uid=admin" -w password -X create-backend-index --backend-name appData --type generic --index-name description  --set index-type:substring
+
+./DJ2/opendj/bin/dsconfig -h pyforge.example.com -p 4445 -D "uid=admin" -w password -X create-backend-index --backend-name appData --type generic --index-name description  --set index-type:substring
+
+
+6. On both servers rebuild the index from step 5.
+
+./DJ1/opendj/bin/rebuild-index -h pyforge.example.com -p 4444 -D "uid=admin" -w password -X -b o=example --rebuildAll
+
+./DJ2/opendj/bin/rebuild-index -h pyforge.example.com -p 4445 -D "uid=admin" -w password -X -b o=example --rebuildAll
+
+
+7. Run modrate
+
+modrate -h brie.internal.forgerock.com -p 1389 -D "uid=admin" -w password -d 3600 -b uid=user.{1},ou=People,o=example -S -g "rand(0,99999)" -c 40 -t 3 -i 30 -F -g "randstr(40)" "description:{2}"
+
+
+8. On both servers delete the index from step 5. and rebuild it with same commands like in step 6.
+
+./DJ1/opendj/bin/dsconfig -h pyforge.example.com -p 4444 -D "uid=admin" -w password -X delete-backend-index --backend-name appData --index-name description
+
+./DJ2/opendj/bin/dsconfig -h pyforge.example.com -p 4445 -D "uid=admin" -w password -X delete-backend-index --backend-name appData --index-name description
+
+
+9. Check lastChangeNumbers are in sync
+10. Check data are in sync
+
+Current behavior
+During checks of data consistency there are divergences like:
+
+
+dn: uid=user.10097,ou=People,o=example
+changetype: modify
+delete: description
+description: ch60B6CU8VX3KMkyfU0ZVCHrdThOmEnTe847p5PCwnuFtUjmWD7bwHSSYD7VHdoy9XzyuYoAKxqTN70KrfxhBzTE3Wht2iJYqWdTthlBKmSp3pKn9I1Fd9R4zQvYXPaTHqYgCPzuZF85IzmHARrXvpWkmis24qyKqpFVeMnHHxWBpkyTmbtRO73mW1n9k4Ks9JjAKULt
+-
+add: description
+description: ytWa0BbP7Fkj3ru5E0dJ2Dux1nfwoEolrvQTZlUO3p2ag5bUpHFQvA2haZKNuiK7OCJJcLy9YSaxV556bMZmiiHCcMrzMqFDO2deAfzxSsnPwbeUuZbP9gZUXCMmfYeGjxWcMxJj3Pr8sdjOkejpx8H4bj4llOvxLUn1jKPCd54LKz883C0uVqwH6KtvlIVrLVA18fIc
+-
+delete: ds-sync-hist
+ds-sync-hist: description:0103016d629c5a97001188d4dj1:repl:ch60B6CU8VX3KMkyfU0ZVCHrdThOmEnTe847p5PCwnuFtUjmWD7bwHSSYD7VHdoy9XzyuYoAKxqTN70KrfxhBzTE3Wht2iJYqWdTthlBKmSp3pKn9I1Fd9R4zQvYXPaTHqYgCPzuZF85IzmHARrXvpWkmis24qyKqpFVeMnHHxWBpkyTmbtRO73mW1n9k4Ks9JjAKULt
+ds-sync-hist: modifiersName:0103016d629c5a97001188d4dj1:repl:uid=admin
+ds-sync-hist: modifyTimestamp:0103016d629c5a97001188d4dj1:repl:20190924093117Z
+-
+add: ds-sync-hist
+ds-sync-hist: description:0103016d629a6d9d0010f3cadj1:repl:ytWa0BbP7Fkj3ru5E0dJ2Dux1nfwoEolrvQTZlUO3p2ag5bUpHFQvA2haZKNuiK7OCJJcLy9YSaxV556bMZmiiHCcMrzMqFDO2deAfzxSsnPwbeUuZbP9gZUXCMmfYeGjxWcMxJj3Pr8sdjOkejpx8H4bj4llOvxLUn1jKPCd54LKz883C0uVqwH6KtvlIVrLVA18fIc
+ds-sync-hist: modifiersName:0103016d629a6d9d0010f3cadj1:repl:uid=admin
+ds-sync-hist: modifyTimestamp:0103016d629a6d9d0010f3cadj1:repl:20190924092910Z
+-
+delete: modifyTimestamp
+modifyTimestamp: 20190924093117Z
+-
+add: modifyTimestamp
+modifyTimestamp: 20190924092910Z
+-
+
+
+
+I also tried to wait for 10 minutes and check the data manually with export-ldif and ldifdiff. This produced same diff file like was produced in the test. I don't see any ERROR message in logs.
+
+I noticed that replication delay graph which we have in the job looks odd because the delay is continuously increasing. See attached graph image.png.
+
+Expected behavior
+Consistent data at the end of the test.

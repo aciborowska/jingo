@@ -1,0 +1,16 @@
+When task finishes, the `CheckpointBarrierUnaligner` will decline the current checkpoint, which would write abort request into `ChannelStateWriter`.
+
+The abort request will be executed before other write output request in the queue, and close the underlying `CheckpointStateOutputStream`. Then when the dispatcher executes the next write output request to access the stream, it will throw ClosedByInterruptException to make dispatcher thread exit.
+
+In this process, the underlying buffers for current write output request will be recycled twice. 
+
+	ChannelStateCheckpointWriter#write will recycle all the buffers in finally part, which can cover both exception and normal cases.
+	ChannelStateWriteRequestDispatcherImpl#dispatch will call `request.cancel(e)`  to recycle the underlying buffers again in the case of exception.
+
+
+
+The effect of this bug can cause further exception in the network shuffle process, which references the same buffer as above, then this exception will send to the downstream side to make it failure.
+
+ 
+
+This bug can be reproduced easily via running UnalignedCheckpointITCase#shouldPerformUnalignedCheckpointOnParallelRemoteChannel.

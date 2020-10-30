@@ -1,0 +1,111 @@
+Hi,
+
+it looks like IMap.destroy() does not work if a MapStore with a write-behind interval is configured:
+
+```
+java.lang.UnsupportedOperationException
+    at com.hazelcast.spi.impl.ExecutionServiceImpl$ScheduledExecutorServiceDelegate.shutdown(ExecutionServiceImpl.java:401)
+    at com.hazelcast.map.writebehind.WriteBehindQueueManager.stop(WriteBehindQueueManager.java:98)
+    at com.hazelcast.map.MapContainer.shutDownMapStoreScheduledExecutor(MapContainer.java:260)
+    at com.hazelcast.map.MapService.destroyDistributedObject(MapService.java:624)
+    at com.hazelcast.spi.impl.ProxyServiceImpl.destroyLocalDistributedObject(ProxyServiceImpl.java:163)
+    at com.hazelcast.spi.impl.ProxyServiceImpl.destroyDistributedObject(ProxyServiceImpl.java:145)
+    at com.hazelcast.spi.AbstractDistributedObject.destroy(AbstractDistributedObject.java:51)
+    at com.nm.test.hazelcast.mapstore.TestMapStore13.testDestroyWriteBehind(TestMapStore13.java:77)
+```
+
+Here is a test that reproduces the issue:
+
+``` java
+package com.nm.test.hazelcast.mapstore;
+
+import com.hazelcast.config.Config;
+import com.hazelcast.config.MapConfig;
+import com.hazelcast.config.MapStoreConfig;
+import com.hazelcast.config.XmlConfigBuilder;
+import com.hazelcast.core.Hazelcast;
+import com.hazelcast.core.HazelcastInstance;
+import com.hazelcast.core.IMap;
+import com.nm.test.hazelcast.TestHazelcast;
+import com.nm.test.hazelcast.utils.RecordingMapStore;
+import com.nm.test.hazelcast.utils.Sleep;
+import org.apache.log4j.BasicConfigurator;
+import org.apache.log4j.Logger;
+import junit.framework.TestCase;
+
+/**
+ * A test to ensure IMap.destroy() works.
+ */
+public class TestMapStore13 extends TestCase {
+
+    private static final Logger logger = Logger.getLogger(TestMapStore13.class);
+
+    private static final String mapName = "testMap" + TestMapStore13.class.getSimpleName();
+
+    private static final int numIterations = 10;
+
+    private static final int writeDelaySeconds = 5;
+
+    @Override
+    protected void setUp() throws Exception {
+
+        // configure logging
+        if (!TestHazelcast.loggingInitialized) {
+            TestHazelcast.loggingInitialized = true;
+            BasicConfigurator.configure();
+        }
+    }
+
+    public void testDestroyWriteBehind() throws Exception {
+
+        // create hazelcast config
+        Config config = new XmlConfigBuilder().build();
+        config.setProperty("hazelcast.logging.type", "log4j");
+
+        // create map store
+        RecordingMapStore store = new RecordingMapStore(false, false);
+
+        // configure map store
+        MapStoreConfig mapStoreConfig = new MapStoreConfig();
+        mapStoreConfig.setEnabled(true);
+        mapStoreConfig.setWriteDelaySeconds(writeDelaySeconds);
+        mapStoreConfig.setClassName(null);
+        mapStoreConfig.setImplementation(store);
+        MapConfig mapConfig = config.getMapConfig(mapName);
+        mapConfig.setMapStoreConfig(mapStoreConfig);
+
+        // start hazelcast instance
+        HazelcastInstance hcInstance = Hazelcast.newHazelcastInstance(config);
+
+        // --------------------------------------------------------------- {5s}
+
+        // execute several puts
+        IMap<String, String> map = hcInstance.getMap(mapName);
+        for (int i = 0; i < numIterations; i++) {
+            map.put("keyA" + i, "valueA" + i);
+        }
+
+        // wait for store to finish
+        Sleep.sleep(1000 * (writeDelaySeconds + 3), true);
+
+        // -------------------------------------------------------------- {13s}
+
+        // destroy map
+        logger.info("Calling destroy...");
+        try {
+            map.destroy();
+        } finally {
+
+            // shutdown hazelcast instance
+            hcInstance.getLifecycleService().shutdown();
+        }
+
+        // log done
+        logger.info("Test done.");
+    }
+
+}
+```
+
+Thanks and best,
+Lukas

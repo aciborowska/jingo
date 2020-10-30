@@ -1,0 +1,57 @@
+version: 3.1.0.M1
+database type: mysql
+orm: spring data jpa
+
+not sharding table do not route the default datasource. default datasource name is "main",but the table push_user route  "ds0".
+
+sharding config code:
+```
+   // 配置真实数据源
+    Map<String, DataSource> dataSourceMap = new HashMap<>();
+    dataSourceMap.put("ds0",sharding01DataSource());
+    dataSourceMap.put("ds1",sharding02DataSource());
+    dataSourceMap.put("ds2",sharding03DataSource());
+    dataSourceMap.put("ds3",sharding04DataSource());
+    dataSourceMap.put("main",moduleDataSource());
+
+    // 配置Order表规则
+    TableRuleConfiguration orderTableRuleConfig = new TableRuleConfiguration();
+    orderTableRuleConfig.setLogicTable("push_message");
+    orderTableRuleConfig.setActualDataNodes("ds${0..3}.push_message");
+
+    //分布式主键
+    orderTableRuleConfig.setKeyGeneratorColumnName("id");
+    ShardingDefaultKeyGenerator shardingDefaultKeyGenerator = new ShardingDefaultKeyGenerator();
+    orderTableRuleConfig.setKeyGenerator(shardingDefaultKeyGenerator);
+
+    // 配置分库策略
+    orderTableRuleConfig.setDatabaseShardingStrategyConfig(
+            new InlineShardingStrategyConfiguration("traceid", "ds${traceid%4}"));
+
+    // 配置分片规则
+    ShardingRuleConfiguration shardingRuleConfig = new ShardingRuleConfiguration();
+    shardingRuleConfig.getTableRuleConfigs().add(orderTableRuleConfig);
+    shardingRuleConfig.setDefaultDataSourceName("main");//默认主数据源配置
+```
+test case
+```
+@Test
+    public void testSelece(){
+        PageRequest pageRequest = new PageRequest(1, 1000);
+        List<UserPo> userPos = userRepository.getWithoutUserIdListBy("appcode_idxyer_iphone",new Date(),pageRequest);
+        log.info("size:"+userPos.size());
+    }
+
+// userRepository
+  @Query("SELECT u FROM UserPo u WHERE u.userId is NULL and u.appName = ?1 and u.modifyTime < ?2")
+  List<UserPo> getWithoutUserIdListBy(String appName, Date date, Pageable pageable);
+```
+
+log:
+```
+2018-12-26 12:32:00.060  INFO 46235 --- [           main] ShardingSphere-SQL                       : Rule Type: sharding
+2018-12-26 12:32:00.061  INFO 46235 --- [           main] ShardingSphere-SQL                       : Logic SQL: select userpo0_.id as id1_5_, userpo0_.createTime as createTi2_5_, userpo0_.appCode as appCode3_5_, userpo0_.appName as appName4_5_, userpo0_.appVersion as appVersi5_5_, userpo0_.deviceMc as deviceMc6_5_, userpo0_.deviceToken as deviceTo7_5_, userpo0_.deviceTokenType as deviceTo8_5_, userpo0_.deviceType as deviceTy9_5_, userpo0_.modifyTime as modifyT10_5_, userpo0_.osVersion as osVersi11_5_, userpo0_.userId as userId12_5_, userpo0_.version as version13_5_ from push_user userpo0_ where (userpo0_.userId is null) and userpo0_.appName=? and userpo0_.modifyTime<? limit ?, ?
+2018-12-26 12:32:00.061  INFO 46235 --- [           main] ShardingSphere-SQL                       : SQLStatement: SelectStatement(super=DQLStatement(super=io.shardingsphere.core.parsing.parser.sql.dql.select.SelectStatement@13a590f3), containStar=false, selectListLastPosition=460, groupByLastPosition=0, items=[CommonSelectItem(expression=userpo0_.id, alias=Optional.of(id1_5_)), CommonSelectItem(expression=userpo0_.createTime, alias=Optional.of(createTi2_5_)), CommonSelectItem(expression=userpo0_.appCode, alias=Optional.of(appCode3_5_)), CommonSelectItem(expression=userpo0_.appName, alias=Optional.of(appName4_5_)), CommonSelectItem(expression=userpo0_.appVersion, alias=Optional.of(appVersi5_5_)), CommonSelectItem(expression=userpo0_.deviceMc, alias=Optional.of(deviceMc6_5_)), CommonSelectItem(expression=userpo0_.deviceToken, alias=Optional.of(deviceTo7_5_)), CommonSelectItem(expression=userpo0_.deviceTokenType, alias=Optional.of(deviceTo8_5_)), CommonSelectItem(expression=userpo0_.deviceType, alias=Optional.of(deviceTy9_5_)), CommonSelectItem(expression=userpo0_.modifyTime, alias=Optional.of(modifyT10_5_)), CommonSelectItem(expression=userpo0_.osVersion, alias=Optional.of(osVersi11_5_)), CommonSelectItem(expression=userpo0_.userId, alias=Optional.of(userId12_5_)), CommonSelectItem(expression=userpo0_.version, alias=Optional.of(version13_5_))], groupByItems=[], orderByItems=[], limit=Limit(databaseType=MySQL, offset=LimitValue(value=1000, index=2, boundOpened=false), rowCount=LimitValue(value=1000, index=3, boundOpened=false)), subQueryStatement=null, subQueryStatements=[])
+2018-12-26 12:32:00.061  INFO 46235 --- [           main] ShardingSphere-SQL                       : Actual SQL: ds0 ::: select userpo0_.id as id1_5_, userpo0_.createTime as createTi2_5_, userpo0_.appCode as appCode3_5_, userpo0_.appName as appName4_5_, userpo0_.appVersion as appVersi5_5_, userpo0_.deviceMc as deviceMc6_5_, userpo0_.deviceToken as deviceTo7_5_, userpo0_.deviceTokenType as deviceTo8_5_, userpo0_.deviceType as deviceTy9_5_, userpo0_.modifyTime as modifyT10_5_, userpo0_.osVersion as osVersi11_5_, userpo0_.userId as userId12_5_, userpo0_.version as version13_5_ from push_user userpo0_ where (userpo0_.userId is null) and userpo0_.appName=? and userpo0_.modifyTime<? limit ?, ? ::: [[appcode_idxyer_iphone, 2018-12-26 12:24:22.936, 0, 2000]]
+2
+```

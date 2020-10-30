@@ -1,0 +1,65 @@
+If the backup entry processor implements `HazelcastInstanceAware`, the instance is not injected. 
+Reproducer:
+
+```
+@RunWith(HazelcastSerialClassRunner.class)
+@Category({QuickTest.class, ParallelTest.class})
+public class BackupEntryProcessorInstanceAware extends HazelcastTestSupport {
+
+    public static final String MAP_NAME = "EntryProcessorTest";
+
+    @Override
+    public Config getConfig() {
+        Config config = super.getConfig();
+        MapConfig mapConfig = new MapConfig(MAP_NAME);
+        mapConfig.setInMemoryFormat(BINARY);
+        config.addMapConfig(mapConfig);
+        return config;
+    }
+
+
+    @Test
+    public void test() {
+        final Config cfg = getConfig();
+        final TestHazelcastInstanceFactory factory = createHazelcastInstanceFactory(2);
+        final HazelcastInstance i1 = factory.newHazelcastInstance(cfg);
+        final HazelcastInstance i2 = factory.newHazelcastInstance(cfg);
+
+        try {
+            final IMap<Object, Object> map = i1.getMap(MAP_NAME);
+            map.put("a", 1);
+            map.put("b", 2);
+            map.executeOnEntries(new PartitionAwareTestEntryProcessor(MAP_NAME));
+        } catch (ClassCastException e) {
+            e.printStackTrace();
+            fail("ClassCastException must not happen!");
+        } finally {
+            i1.shutdown();
+        }
+    }
+
+
+    private static class PartitionAwareTestEntryProcessor extends AbstractEntryProcessor<Object, Object>
+            implements HazelcastInstanceAware {
+
+        private String name;
+        private transient HazelcastInstance hz;
+
+        private PartitionAwareTestEntryProcessor(String name) {
+            this.name = name;
+        }
+
+        @Override
+        public Object process(Map.Entry<Object, Object> entry) {
+            hz.getMap(name).put(entry.getKey(), entry.getValue());
+            return null;
+        }
+
+        @Override
+        public void setHazelcastInstance(HazelcastInstance hazelcastInstance) {
+            this.hz = hazelcastInstance;
+        }
+    }
+
+}
+```

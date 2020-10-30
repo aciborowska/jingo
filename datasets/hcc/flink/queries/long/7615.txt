@@ -1,0 +1,36 @@
+When `mesos.resourcemanager.framework.role` is specified, TaskManagers are unable to start. An error message is given that indicates that the request resources can be satisfied. I sadly lost the logs, but essentially it appears that an offer extend by mesos is accepted, but the request being made for resources under the default role (of `*`) but if the resources offered all exist under the role. 
+
+I believe this is likely to do with the fact that while the framework properly starts under the specified role (meaning it only gets offers of the specified role), it isn't making `Protos.Resource` objects with a role defined.
+
+This can be seen here: https://github.com/apache/flink/blob/release-1.3.2/flink-mesos/src/main/java/org/apache/flink/mesos/Utils.java#L72
+
+The mesos docs for the `Resource.Builder.setRole` (http://mesos.apache.org/api/latest/java/org/apache/mesos/Protos.Resource.Builder.html#setRole-java.lang.String-) allow for a role to be provided. (Note, this method is shown as deprecated for mesos 1.4.0, but for the current version flink uses of 1.0.1, this method is the only mechanism)
+
+I believe this should mostly be fixed by something like this:
+
+
+
+/**
+	 * Construct a scalar resource value.
+	 */
+	public static Protos.Resource scalar(String name, double value, Option<String> role) {
+		Protos.Resource.Builder builder = Protos.Resource.newBuilder()
+			.setName(name)
+			.setType(Protos.Value.Type.SCALAR)
+			.setScalar(Protos.Value.Scalar.newBuilder().setValue(value));
+
+		if (role.isDefined()) {
+			builder.setRole(role.get());
+		}
+
+		return builder.build();
+	}
+
+
+
+
+However, perhaps we want to consider upgrading to mesos 1.4.x that has the newer API for this (http://mesos.apache.org/api/latest/java/org/apache/mesos/Protos.Resource.ReservationInfo.Builder.html#setRole-java.lang.String-) 
+
+In looking at the other options for ReservationInfo, I don't see any current need to expose any of those parameters for configuration, but perhaps some FLIP-6 work could benefit.
+
+[~till.rohrmann] any thoughts? I can implement a fix as above against mesos 1.0.1, but figured I would get your input before submitting a patch for this

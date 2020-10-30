@@ -1,0 +1,68 @@
+There seems to be an issue with the use of "order by" in an recursively called function, leading to a NPE:
+
+> 2015-12-03 10:59:21,512 [eXistThread-123] WARN  (ServletHandler.java [doHandle]:563) - /exist/apps/tamboti/modules/search/index.html 
+> javax.servlet.ServletException: An unknown error occurred: null
+>   at org.exist.http.servlets.EXistServlet.doPost(EXistServlet.java:460) ~[exist-optional.jar:?]
+>   at javax.servlet.http.HttpServlet.service(HttpServlet.java:755) ~[servlet-api-3.0.jar:?]
+>   at javax.servlet.http.HttpServlet.service(HttpServlet.java:848) ~[servlet-api-3.0.jar:?]
+
+[...]
+
+> Caused by: java.lang.NullPointerException
+>   at org.exist.xquery.OrderByClause.eval(OrderByClause.java:53) ~[exist.jar:?]
+>   at org.exist.xquery.LetExpr.eval(LetExpr.java:111) ~[exist.jar:?]
+>   at org.exist.xquery.AbstractExpression.eval(AbstractExpression.java:71) ~[exist.jar:?]
+>   at org.exist.xquery.ForExpr.processItem(ForExpr.java:238) ~[exist.jar:?]
+>   at org.exist.xquery.ForExpr.eval(ForExpr.java:178) ~[exist.jar:?]
+>   at org.exist.xquery.LetExpr.eval(LetExpr.java:111) ~[exist.jar:?]
+>   at org.exist.xquery.UserDefinedFunction.eval(UserDefinedFunction.java:155) ~[exist.jar:?]
+>   at org.exist.xquery.FunctionCall.evalFunction(FunctionCall.java:330) ~[exist.jar:?]
+>   at org.exist.xquery.FunctionCall.eval(FunctionCall.java:234) ~[exist.jar:?]
+>   at org.exist.xquery.LetExpr.eval(LetExpr.java:99) ~[exist.jar:?]
+
+[...]
+
+See full exception quoted here: http://pastebin.com/V9pNFiiL
+
+This code will show the problem:
+
+``` xquery
+xquery version "3.0";
+
+declare function local:recursive($collection) {
+    let $subcollections := xmldb:get-child-collections($collection)
+    for $subcol in $subcollections
+        order by $subcol
+    return 
+        let $fullpath := xs:anyURI($collection || "/" || $subcol)
+        return
+            <col name="{$fullpath}">
+                {local:recursive($fullpath)}
+            </col>
+
+};
+
+declare function local:non-recursive($collection) {
+    let $subcollections := xmldb:get-child-collections($collection)
+    for $subcol in $subcollections
+        order by $subcol
+    return 
+        let $fullpath := xs:anyURI($collection || "/" || $subcol)
+        return
+            <col name="{$fullpath}">
+                {
+                    let $subcollections := xmldb:get-child-collections($fullpath)
+                    for $subcol in $subcollections
+                    order by $subcol
+                    return 
+                        let $fullpath := xs:anyURI($collection || "/" || $subcol)
+                        return
+                            <col name="{$fullpath}"/>
+                }
+            </col>
+};
+
+local:recursive("/db")
+```
+
+local:non-recursive("/db") works, local:recursive("/db") drops NPE. Maybe related to: https://github.com/eXist-db/exist/issues/839 ?

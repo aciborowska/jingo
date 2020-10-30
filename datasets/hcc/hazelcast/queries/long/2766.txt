@@ -1,0 +1,170 @@
+I take a look at the code. In heartBeater method, there are suspicious hardcoded numbers. 
+Eventough did not quite follow the logic but there is a update in last read to delay if connection to member is null. Seems like it is reason for delaying the decision of member is dead.
+
+Here is the customers detailed report :
+
+In the case where a After a TCP connection is lost from a peer, Hazelcast instance takes 200+ seconds to update the members list.
+
+I have a hazelcast cluster with 3 nodes in the same IP subnet. Each server is listening on port 5700 for peer-peer communication. and 5 second peer heartbeat time out (hazelcast.max.no.heartbeat.seconds)
+
+I have a test to check the behavior of the cluster when a firewall blocks the communication port.
+
+Steps:
+1. Configure 3 node hazelcast cluster as described above
+2. Use linux iptables to block the communication port on two of the members command used:
+
+iptables -I INPUT -p tcp --destination-port 5700 -j DROP
+iptables -I OUTPUT -p tcp --destination-port 5700 -j DROP
+1. Check for cluster members on each hazelcast node
+2. In most runs of the test, cluster membership is updated within 5 seconds on all three nodes to reflect the loss of two peer nodes. In few runs, membership update takes 3+ minutes on one of the machine.
+
+I'm expecting that all nodes detect and settle with appropriate memberships quicker in all runs. Let me know if you need any further clarification.
+
+Some logs from the test run:
+
+Node 1 - working fine
+
+```
+2014-06-18 13:01:00.397] INFO ev.global-operation.thread-5 com.hazelcast.cluster.ClusterService [10.1.18.182]:5700 [dev] [3.2.2]
+
+Members [3] {
+Member [10.1.18.181]:5700
+Member [10.1.18.182]:5700 this
+Member [10.1.20.116]:5700
+}
+
+[2014-06-18 13:01:07.952] INFO stance_2_dev.cached.thread-7 com.hazelcast.nio.SocketConnector [10.1.18.182]:5700 [dev] [3.2.2] Could not connect to: /10.1.18.181:5700. Reason: SocketException[Connection timed out to address /10.1.18.181:5700]
+[2014-06-18 13:01:30.795] WARN stance_2_dev.cached.thread-2 com.hazelcast.cluster.ClusterService [10.1.18.182]:5700 [dev] [3.2.2] Master node has timed out its heartbeat and will be removed
+[2014-06-18 13:01:30.796] INFO stance_2_dev.cached.thread-2 com.hazelcast.cluster.ClusterService [10.1.18.182]:5700 [dev] [3.2.2] Master Address[10.1.18.181]:5700 left the cluster. Assigning new master Member [10.1.18.182]:5700 this
+[2014-06-18 13:01:30.798] INFO stance_2_dev.cached.thread-2 com.hazelcast.nio.TcpIpConnection [10.1.18.182]:5700 [dev] [3.2.2] Connection [Address[10.1.18.181]:5700] lost. Reason: Socket explicitly closed
+[2014-06-18 13:01:30.798] INFO stance_2_dev.cached.thread-2 com.hazelcast.cluster.ClusterService [10.1.18.182]:5700 [dev] [3.2.2] Removing Member [10.1.18.181]:5700
+[2014-06-18 13:01:30.808] INFO stance_2_dev.cached.thread-2 com.hazelcast.cluster.ClusterService [10.1.18.182]:5700 [dev] [3.2.2]
+
+Members [2] {
+Member [10.1.18.182]:5700 this
+Member [10.1.20.116]:5700
+}
+
+[2014-06-18 13:01:30.808] INFO stance_2_dev.cached.thread-6 com.hazelcast.nio.SocketConnector [10.1.18.182]:5700 [dev] [3.2.2] Connecting to /10.1.18.181:5700, timeout: 0, bind-any: true
+[2014-06-18 13:01:31.796] WARN stance_2_dev.cached.thread-4 com.hazelcast.cluster.ClusterService [10.1.18.182]:5700 [dev] [3.2.2] Added Address[10.1.20.116]:5700 to list of dead addresses because of timeout since last read
+[2014-06-18 13:01:31.798] INFO stance_2_dev.cached.thread-4 com.hazelcast.nio.TcpIpConnection [10.1.18.182]:5700 [dev] [3.2.2] Connection [Address[10.1.20.116]:5700] lost. Reason: Socket explicitly closed
+[2014-06-18 13:01:31.799] INFO stance_2_dev.cached.thread-4 com.hazelcast.cluster.ClusterService [10.1.18.182]:5700 [dev] [3.2.2] Removing Member [10.1.20.116]:5700
+[2014-06-18 13:01:31.801] INFO stance_2_dev.cached.thread-4 com.hazelcast.cluster.ClusterService [10.1.18.182]:5700 [dev] [3.2.2]
+
+Members [1] {
+Member [10.1.18.182]:5700 this
+}
+
+[2014-06-18 13:01:32.309] INFO ._hzInstance_2_dev.migration com.hazelcast.partition.InternalPartitionService [10.1.18.182]:5700 [dev] [3.2.2] Partition balance is ok, no need to re-partition cluster data...
+
+Node 2 - working fine
+```
+
+[2014-06-18 13:01:00.396] INFO ev.global-operation.thread-8 com.hazelcast.cluster.ClusterService [10.1.20.116]:5700 [dev] [3.2.2]
+
+Members [3] {
+Member [10.1.18.181]:5700
+Member [10.1.18.182]:5700
+Member [10.1.20.116]:5700 this
+}
+
+[2014-06-18 13:01:01.894] INFO stance_2_dev.cached.thread-4 com.hazelcast.core.LifecycleService [10.1.20.116]:5700 [dev] [3.2.2] Address[10.1.20.116]:5700 is MERGED
+[2014-06-18 13:01:06.977] INFO stance_2_dev.cached.thread-3 com.hazelcast.nio.SocketConnector [10.1.20.116]:5700 [dev] [3.2.2] Could not connect to: /10.1.18.181:5700. Reason: SocketException[Connection timed out to address /10.1.18.181:5700]
+[2014-06-18 13:01:23.904] WARN stance_2_dev.cached.thread-3 com.hazelcast.cluster.ClusterService [10.1.20.116]:5700 [dev] [3.2.2] Master node has timed out its heartbeat and will be removed
+[2014-06-18 13:01:23.904] INFO stance_2_dev.cached.thread-3 com.hazelcast.cluster.ClusterService [10.1.20.116]:5700 [dev] [3.2.2] Master Address[10.1.18.181]:5700 left the cluster. Assigning new master Member [10.1.18.182]:5700
+[2014-06-18 13:01:23.905] INFO stance_2_dev.cached.thread-3 com.hazelcast.nio.TcpIpConnection [10.1.20.116]:5700 [dev] [3.2.2] Connection [Address[10.1.18.181]:5700] lost. Reason: Socket explicitly closed
+[2014-06-18 13:01:23.905] INFO stance_2_dev.cached.thread-3 com.hazelcast.cluster.ClusterService [10.1.20.116]:5700 [dev] [3.2.2] Removing Member [10.1.18.181]:5700
+[2014-06-18 13:01:23.911] INFO stance_2_dev.cached.thread-3 com.hazelcast.cluster.ClusterService [10.1.20.116]:5700 [dev] [3.2.2]
+
+Members [2] {
+Member [10.1.18.182]:5700
+Member [10.1.20.116]:5700 this
+}
+
+[2014-06-18 13:01:23.911] INFO stance_2_dev.cached.thread-4 com.hazelcast.nio.SocketConnector [10.1.20.116]:5700 [dev] [3.2.2] Connecting to /10.1.18.181:5700, timeout: 0, bind-any: true
+[2014-06-18 13:01:24.904] WARN stance_2_dev.cached.thread-5 com.hazelcast.cluster.ClusterService [10.1.20.116]:5700 [dev] [3.2.2] Master node has timed out its heartbeat and will be removed
+[2014-06-18 13:01:24.904] INFO stance_2_dev.cached.thread-5 com.hazelcast.cluster.ClusterService [10.1.20.116]:5700 [dev] [3.2.2] Master Address[10.1.18.182]:5700 left the cluster. Assigning new master Member [10.1.20.116]:5700 this
+[2014-06-18 13:01:24.906] INFO stance_2_dev.cached.thread-5 com.hazelcast.nio.TcpIpConnection [10.1.20.116]:5700 [dev] [3.2.2] Connection [Address[10.1.18.182]:5700] lost. Reason: Socket explicitly closed
+[2014-06-18 13:01:24.906] INFO stance_2_dev.cached.thread-5 com.hazelcast.cluster.ClusterService [10.1.20.116]:5700 [dev] [3.2.2] Removing Member [10.1.18.182]:5700
+[2014-06-18 13:01:24.908] INFO stance_2_dev.cached.thread-5 com.hazelcast.cluster.ClusterService [10.1.20.116]:5700 [dev] [3.2.2]
+
+Members [1] {
+Member [10.1.20.116]:5700 this
+}
+
+[2014-06-18 13:01:24.908] INFO stance_2_dev.cached.thread-1 com.hazelcast.nio.SocketConnector [10.1.20.116]:5700 [dev] [3.2.2] Connecting to /10.1.18.182:5700, timeout: 0, bind-any: true
+[2014-06-18 13:01:25.657] INFO ._hzInstance_2_dev.migration com.hazelcast.partition.InternalPartitionService [10.1.20.116]:5700 [dev] [3.2.2] Partition balance is ok, no need to re-partition cluster data...
+
+Node 3 - with problem
+
+```
+
+[2014-06-18 13:01:00.397] INFO ev.global-operation.thread-3 com.hazelcast.cluster.ClusterService [10.1.18.181]:5700 [dev] [3.2.2]
+Members [3] {
+Member [10.1.18.181]:5700 this
+Member [10.1.18.182]:5700
+Member [10.1.20.116]:5700
+}
+
+[2014-06-18 13:01:00.692] INFO ._hzInstance_2_dev.migration com.hazelcast.partition.InternalPartitionService [10.1.18.181]:5700 [dev] [3.2.2] Re-partitioning cluster data... Migration queue size: 90
+[2014-06-18 13:01:02.027] INFO ._hzInstance_2_dev.migration com.hazelcast.partition.InternalPartitionService [10.1.18.181]:5700 [dev] [3.2.2] All migration tasks has been completed, queues are empty.
+[2014-06-18 13:01:23.908] INFO nstance_2_dev.IO.thread-in-0 com.hazelcast.nio.TcpIpConnection [10.1.18.181]:5700 [dev] [3.2.2] Connection [Address[10.1.20.116]:5700] lost. Reason: java.io.EOFException[Remote socket closed!]
+[2014-06-18 13:01:23.908] WARN nstance_2_dev.IO.thread-in-0 com.hazelcast.nio.ReadHandler [10.1.18.181]:5700 [dev] [3.2.2] hz._hzInstance_2_dev.IO.thread-in-0 Closing socket to endpoint Address[10.1.20.116]:5700, Cause:java.io.EOFException: Remote socket closed!
+[2014-06-18 13:01:24.441] INFO stance_2_dev.cached.thread-4 com.hazelcast.nio.SocketConnector [10.1.18.181]:5700 [dev] [3.2.2] Connecting to /10.1.20.116:5700, timeout: 0, bind-any: true
+[2014-06-18 13:01:29.441] WARN stance_2_dev.cached.thread-5 com.hazelcast.cluster.ClusterService [10.1.18.181]:5700 [dev] [3.2.2] Member [10.1.18.181]:5700 this has no connection to Address[10.1.20.116]:5700
+[2014-06-18 13:01:30.442] WARN stance_2_dev.cached.thread-5 com.hazelcast.cluster.ClusterService [10.1.18.181]:5700 [dev] [3.2.2] Added Address[10.1.18.182]:5700 to list of dead addresses because of timeout since last read
+[2014-06-18 13:01:30.442] INFO stance_2_dev.cached.thread-5 com.hazelcast.nio.TcpIpConnection [10.1.18.181]:5700 [dev] [3.2.2] Connection [Address[10.1.18.182]:5700] lost. Reason: Socket explicitly closed
+[2014-06-18 13:01:30.442] INFO stance_2_dev.cached.thread-5 com.hazelcast.cluster.ClusterService [10.1.18.181]:5700 [dev] [3.2.2] Removing Member [10.1.18.182]:5700
+[2014-06-18 13:01:30.442] WARN stance_2_dev.IO.thread-out-1 com.hazelcast.nio.WriteHandler [10.1.18.181]:5700 [dev] [3.2.2] hz._hzInstance_2_dev.IO.thread-out-1 Closing socket to endpoint Address[10.1.18.182]:5700, Cause:java.nio.channels.ClosedChannelException
+[2014-06-18 13:01:30.450] INFO stance_2_dev.cached.thread-5 com.hazelcast.cluster.ClusterService [10.1.18.181]:5700 [dev] [3.2.2]
+
+Members [2] {
+Member [10.1.18.181]:5700 this
+Member [10.1.20.116]:5700
+}
+
+[2014-06-18 13:01:34.971] INFO ._hzInstance_2_dev.migration com.hazelcast.partition.InternalPartitionService [10.1.18.181]:5700 [dev] [3.2.2] Partition state sync invocation timed out: java.util.concurrent.TimeoutException: Call BasicInvocation{ serviceName='hz:core:partitionService', op=com.hazelcast.partition.impl.PartitionStateOperation@64e4d3c2, partitionId=-1, replicaIndex=0, tryCount=250, tryPauseMillis=500, invokeCount=11, callTimeout=60000, target=Address[10.1.20.116]:5700} encountered a timeout
+[2014-06-18 13:01:34.971] INFO ._hzInstance_2_dev.migration com.hazelcast.partition.InternalPartitionService [10.1.18.181]:5700 [dev] [3.2.2] Partition balance is ok, no need to re-partition cluster data...
+[2014-06-18 13:01:35.442] WARN stance_2_dev.cached.thread-6 com.hazelcast.cluster.ClusterService [10.1.18.181]:5700 [dev] [3.2.2] Member [10.1.18.181]:5700 this has no connection to Address[10.1.20.116]:5700
+[2014-06-18 13:01:40.443] WARN stance_2_dev.cached.thread-6 com.hazelcast.cluster.ClusterService [10.1.18.181]:5700 [dev] [3.2.2] Member [10.1.18.181]:5700 this has no connection to Address[10.1.20.116]:5700
+[2014-06-18 13:01:46.444] WARN stance_2_dev.cached.thread-2 com.hazelcast.cluster.ClusterService [10.1.18.181]:5700 [dev] [3.2.2] Member [10.1.18.181]:5700 this has no connection to Address[10.1.20.116]:5700
+[2014-06-18 13:01:52.445] WARN stance_2_dev.cached.thread-2 com.hazelcast.cluster.ClusterService [10.1.18.181]:5700 [dev] [3.2.2] Member [10.1.18.181]:5700 this has no connection to Address[10.1.20.116]:5700
+[2014-06-18 13:01:54.405] WARN TaskExecSched-3-thread-8 com.hazelcast.spi.OperationService [10.1.18.181]:5700 [dev] [3.2.2] com.hazelcast.spi.exception.RetryableIOException: Packet not sent to -> Address[10.1.20.116]:5700
+[2014-06-18 13:01:58.445] WARN stance_2_dev.cached.thread-6 com.hazelcast.cluster.ClusterService [10.1.18.181]:5700 [dev] [3.2.2] Member [10.1.18.181]:5700 this has no connection to Address[10.1.20.116]:5700
+[2014-06-18 13:02:04.446] WARN stance_2_dev.cached.thread-6 com.hazelcast.cluster.ClusterService [10.1.18.181]:5700 [dev] [3.2.2] Member [10.1.18.181]:5700 this has no connection to Address[10.1.20.116]:5700
+[2014-06-18 13:02:09.447] WARN stance_2_dev.cached.thread-6 com.hazelcast.cluster.ClusterService [10.1.18.181]:5700 [dev] [3.2.2] Member [10.1.18.181]:5700 this has no connection to Address[10.1.20.116]:5700
+[2014-06-18 13:02:14.448] WARN stance_2_dev.cached.thread-2 com.hazelcast.cluster.ClusterService [10.1.18.181]:5700 [dev] [3.2.2] Member [10.1.18.181]:5700 this has no connection to Address[10.1.20.116]:5700
+[2014-06-18 13:02:17.980] WARN stance_2_dev.async.thread-17 com.hazelcast.spi.impl.BasicInvocation [10.1.18.181]:5700 [dev] [3.2.2] Retrying invocation: BasicInvocation{ serviceName='hz:impl:mapService', op=ContainsKeyOperation{}, partitionId=15, replicaIndex=0, tryCount=250, tryPauseMillis=500, invokeCount=100, callTimeout=60000, target=Address[10.1.20.116]:5700}, Reason: com.hazelcast.spi.exception.RetryableIOException: Packet not sent to -> Address[10.1.20.116]:5700
+[2014-06-18 13:02:19.480] WARN stance_2_dev.async.thread-12 com.hazelcast.spi.impl.BasicInvocation [10.1.18.181]:5700 [dev] [3.2.2] Retrying invocation: BasicInvocation{ serviceName='hz:core:partitionService', op=com.hazelcast.partition.impl.PartitionStateOperation@64e4d3c2, partitionId=-1, replicaIndex=0, tryCount=250, tryPauseMillis=500, invokeCount=100, callTimeout=60000, target=Address[10.1.20.116]:5700}, Reason: com.hazelcast.spi.exception.RetryableIOException: Packet not sent to -> Address[10.1.20.116]:5700
+[2014-06-18 13:02:20.449] WARN stance_2_dev.cached.thread-6 com.hazelcast.cluster.ClusterService [10.1.18.181]:5700 [dev] [3.2.2] Member [10.1.18.181]:5700 this has no connection to Address[10.1.20.116]:5700
+[2014-06-18 13:02:22.983] WARN stance_2_dev.async.thread-15 com.hazelcast.spi.impl.BasicInvocation [10.1.18.181]:5700 [dev] [3.2.2] Retrying invocation: BasicInvocation{ serviceName='hz:impl:mapService', op=ContainsKeyOperation{}, partitionId=15, replicaIndex=0, tryCount=250, tryPauseMillis=500, invokeCount=110, callTimeout=60000, target=Address[10.1.20.116]:5700}, Reason: com.hazelcast.spi.exception.RetryableIOException: Packet not sent to -> Address[10.1.20.116]:5700
+[2014-06-18 13:02:24.483] WARN stance_2_dev.async.thread-15 com.hazelcast.spi.impl.BasicInvocation [10.1.18.181]:5700 [dev] [3.2.2] Retrying invocation: BasicInvocation{ serviceName='hz:core:partitionService', op=com.hazelcast.partition.impl.PartitionStateOperation@64e4d3c2, partitionId=-1, replicaIndex=0, tryCount=250, tryPauseMillis=500, invokeCount=110, callTimeout=60000, target=Address[10.1.20.116]:5700}, Reason: com.hazelcast.spi.exception.RetryableIOException: Packet not sent to -> Address[10.1.20.116]:5700
+[2014-06-18 13:02:26.450] WARN stance_2_dev.cached.thread-6 com.hazelcast.cluster.ClusterService [10.1.18.181]:5700 [dev] [3.2.2] Member [10.1.18.181]:5700 this has no connection to Address[10.1.20.116]:5700
+[2014-06-18 13:02:27.593] INFO stance_2_dev.cached.thread-4 com.hazelcast.nio.SocketConnector [10.1.18.181]:5700 [dev] [3.2.2] Could not connect to: /10.1.20.116:5700. Reason: SocketException[Connection timed out to address /10.1.20.116:5700]
+[2014-06-18 13:02:27.778] INFO stance_2_dev.cached.thread-2 com.hazelcast.nio.SocketConnector [10.1.18.181]:5700 [dev] [3.2.2] Connecting to /10.1.20.116:5700, timeout: 0, bind-any: true
+[2014-06-18 13:02:27.985] WARN nstance_2_dev.async.thread-3 com.hazelcast.spi.impl.BasicInvocation [10.1.18.181]:5700 [dev] [3.2.2] Retrying invocation: BasicInvocation{ serviceName='hz:impl:mapService', op=ContainsKeyOperation{}, partitionId=15, replicaIndex=0, tryCount=250, tryPauseMillis=500, invokeCount=120, callTimeout=60000, target=Address[10.1.20.116]:5700}, Reason: com.hazelcast.spi.exception.RetryableIOException: Packet not sent to -> Address[10.1.20.116]:5700
+[2014-06-18 13:02:29.486] WARN stance_2_dev.async.thread-14 com.hazelcast.spi.impl.BasicInvocation [10.1.18.181]:5700 [dev] [3.2.2] Retrying invocation: BasicInvocation{ serviceName='hz:core:partitionService', op=com.hazelcast.partition.impl.PartitionStateOperation@64e4d3c2, partitionId=-1, replicaIndex=0, tryCount=250, tryPauseMillis=500, invokeCount=120, callTimeout=60000, target=Address[10.1.20.116]:5700}, Reason: com.hazelcast.spi.exception.RetryableIOException: Packet not sent to -> Address[10.1.20.116]:5700
+[2014-06-18 13:02:32.450] WARN stance_2_dev.cached.thread-6 com.hazelcast.cluster.ClusterService [10.1.18.181]:5700 [dev] [3.2.2] Member [10.1.18.181]:5700 this has no connection to Address[10.1.20.116]:5700
+[2014-06-18 13:02:32.988] WARN nstance_2_dev.async.thread-5 com.hazelcast.spi.impl.BasicInvocation [10.1.18.181]:5700 [dev] [3.2.2] Retrying invocation: BasicInvocation{ serviceName='hz:impl:mapService', op=ContainsKeyOperation{}, partitionId=15, replicaIndex=0, tryCount=250, tryPauseMillis=500, invokeCount=130, callTimeout=60000, target=Address[10.1.20.116]:5700}, Reason: com.hazelcast.spi.exception.RetryableIOException: Packet not sent to -> Address[10.1.20.116]:5700
+[2014-06-18 13:02:34.489] WARN nstance_2_dev.async.thread-5 com.hazelcast.spi.impl.BasicInvocation [10.1.18.181]:5700 [dev] [3.2.2] Retrying invocation: BasicInvocation{ serviceName='hz:core:partitionService', op=com.hazelcast.partition.impl.PartitionStateOperation@64e4d3c2, partitionId=-1, replicaIndex=0, tryCount=250, tryPauseMillis=500, invokeCount=130, callTimeout=60000, target=Address[10.1.20.116]:5700}, Reason: com.hazelcast.spi.exception.RetryableIOException: Packet not sent to -> Address[10.1.20.116]:5700
+[2014-06-18 13:02:37.451] WARN stance_2_dev.cached.thread-5 com.hazelcast.cluster.ClusterService [10.1.18.181]:5700 [dev] [3.2.2] Member [10.1.18.181]:5700 this has no connection to Address[10.1.20.116]:5700
+[2014-06-18 13:02:37.991] WARN stance_2_dev.async.thread-18 com.hazelcast.spi.impl.BasicInvocation [10.1.18.181]:5700 [dev] [3.2.2] Retrying invocation: BasicInvocation{ serviceName='hz:impl:mapService', op=ContainsKeyOperation{}, partitionId=15, replicaIndex=0, tryCount=250, tryPauseMillis=500, invokeCount=140, callTimeout=60000, target=Address[10.1.20.116]:5700}, Reason: com.hazelcast.spi.exception.RetryableIOException: Packet not sent to -> Address[10.1.20.116]:5700
+[2014-06-18 13:02:39.492] WARN stance_2_dev.async.thread-15 com.hazelcast.spi.impl.BasicInvocation [10.1.18.181]:5700 [dev] [3.2.2] Retrying invocation: BasicInvocation{ serviceName='hz:core:partitionService', op=com.hazelcast.partition.impl.PartitionStateOperation@64e4d3c2, partitionId=-1, replicaIndex=0, tryCount=250, tryPauseMillis=500, invokeCount=140, callTimeout=60000, target=Address[10.1.20.116]:5700}, Reason: com.hazelcast.spi.exception.RetryableIOException: Packet not sent to -> Address[10.1.20.116]:5700
+
+...
+<Several thousand similar lines of logs>
+...
+
+[2014-06-18 13:04:32.096] WARN stance_2_dev.async.thread-11 com.hazelcast.spi.impl.BasicInvocation [10.1.18.181]:5700 [dev] [3.2.2] Retrying invocation: BasicInvocation{ serviceName='hz:impl:mapService', op=com.hazelcast.map.operation.MapValuesOperation@26202d71, partitionId=153, replicaIndex=0, tryCount=250, tryPauseMillis=500, invokeCount=100, callTimeout=60000, target=Address[10.1.20.116]:5700}, Reason: com.hazelcast.spi.exception.RetryableIOException: Packet not sent to -> Address[10.1.20.116]:5700
+[2014-06-18 13:04:32.096] WARN stance_2_dev.async.thread-18 com.hazelcast.spi.impl.BasicInvocation [10.1.18.181]:5700 [dev] [3.2.2] Retrying invocation: BasicInvocation{ serviceName='hz:impl:mapService', op=com.hazelcast.map.operation.MapValuesOperation@4a3de75b, partitionId=82, replicaIndex=0, tryCount=250, tryPauseMillis=500, invokeCount=100, callTimeout=60000, target=Address[10.1.20.116]:5700}, Reason: com.hazelcast.spi.exception.RetryableIOException: Packet not sent to -> Address[10.1.20.116]:5700
+[2014-06-18 13:04:34.121] INFO stance_2_dev.cached.thread-2 com.hazelcast.nio.SocketConnector [10.1.18.181]:5700 [dev] [3.2.2] Could not connect to: /10.1.20.116:5700. Reason: SocketException[Connection timed out to address /10.1.20.116:5700]
+[2014-06-18 13:04:34.121] WARN stance_2_dev.cached.thread-2 com.hazelcast.nio.ConnectionMonitor [10.1.18.181]:5700 [dev] [3.2.2] Removing connection to endpoint Address[10.1.20.116]:5700 Cause => java.net.SocketException {Connection timed out to address /10.1.20.116:5700}, Error-Count: 5
+[2014-06-18 13:04:34.122] INFO stance_2_dev.cached.thread-2 com.hazelcast.cluster.ClusterService [10.1.18.181]:5700 [dev] [3.2.2] Removing Member [10.1.20.116]:5700
+[2014-06-18 13:04:34.124] INFO stance_2_dev.cached.thread-2 com.hazelcast.cluster.ClusterService [10.1.18.181]:5700 [dev] [3.2.2]
+
+Members [1] {
+Member [10.1.18.181]:5700 this
+}
+
+[2014-06-18 13:04:35.676] INFO ._hzInstance_2_dev.migration com.hazelcast.partition.InternalPartitionService [10.1.18.181]:5700 [dev] [3.2.2] Partition balance is ok, no need to re-partition cluster data...
+```

@@ -1,0 +1,43 @@
+After following the https://ci.apache.org/projects/flink/flink-docs-release-1.4/dev/table/sourceSinks.html#configure-a-rowtime-attribute documentation.
+I register the timestamp field, but I still get rowtime not found in any table:
+
+
+
+
+KafkaTableSource source = Kafka08JsonTableSource.builder()// set Kafka topic
+            .forTopic("alerting")
+            // set Kafka consumer properties
+            .withKafkaProperties(getKafkaProperties())
+            // set Table schema
+            .withSchema(TableSchema.builder()
+                    .field("tenant", Types.STRING())
+                    .field("message", Types.STRING())
+                    .field("frequency", Types.LONG())
+                    .field("timestamp", Types.SQL_TIMESTAMP()).build())
+            .failOnMissingField(true)
+            .withRowtimeAttribute(
+                    // "timestamp" is rowtime attribute
+                    "timestamp",
+                    // value of "timestamp" is extracted from existing field with same name
+                    new ExistingField("timestamp"),
+                    // values of "timestamp" are at most out-of-order by 30 seconds
+                    new BoundedOutOfOrderTimestamps(TimeUnit.DAYS.toMillis(1)))
+            .build();
+
+    //register the alerting topic as kafka
+    tEnv.registerTableSource("kafka", source);
+
+    Table results = tEnv.sqlQuery("SELECT tenant, message, SUM(frequency) " +
+            "FROM kafka " +
+            "GROUP BY HOP(rowtime, INTERVAL '1' SECOND, INTERVAL '5' SECOND), tenant, message");
+
+    tEnv.toAppendStream(results, Row.class).print();
+
+
+
+
+I get the following error:
+
+
+Exception in thread "main" org.apache.flink.table.api.ValidationException: SQL validation failed. From line 1, column 64 to line 1, column 70: Column 'rowtime' not found in any table at org.apache.flink.table.calcite.FlinkPlannerImpl.validate(FlinkPlannerImpl.scala:93) at org.apache.flink.table.api.TableEnvironment.sqlQuery(TableEnvironment.scala:561) at oracle.flink.demo.KafkaSQLStream.main(KafkaSQLStream.java:62) Caused by: org.apache.calcite.runtime.CalciteContextException: From line 1, column 64 to line 1, column 70: Column 'rowtime' not found in any table at sun.reflect.NativeConstructorAccessorImpl.newInstance0(Native Method) at sun.reflect.NativeConstructorAccessorImpl.newInstance(NativeConstructorAccessorImpl.java:62) at sun.reflect.DelegatingConstructorAccessorImpl.newInstance(DelegatingConstructorAccessorImpl.java:45) at java.lang.reflect.Constructor.newInstance(Constructor.java:423) at org.apache.calcite.runtime.Resources$ExInstWithCause.ex(Resources.java:463)
+

@@ -1,0 +1,156 @@
+in version 3.6 there is a massive ,IMO, regression in the ReplicatedMap updates.
+sometimes the update loses some of the entries to update.
+here is a test i prepared that demonstrate the problem :  
+
+hazelcast.xml : 
+
+```
+<hazelcast xsi:schemaLocation="http://www.hazelcast.com/schema/config https://hazelcast.com/schema/config/hazelcast-config-3.6.xsd"
+           xmlns="http://www.hazelcast.com/schema/config"
+           xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+    <group>
+        <name>mygroup</name>
+        <password>admin</password>
+    </group>
+    <management-center enabled="false">http://localhost:8080/mancenter</management-center>
+    <instance-name>BOTH_LAYERS</instance-name>
+    <network>
+        <port auto-increment="true">5711</port>
+        <join>
+            <multicast enabled="true">
+                <multicast-group>224.2.2.3</multicast-group>
+                <multicast-port>54327</multicast-port>
+                <multicast-timeout-seconds>4</multicast-timeout-seconds>
+            </multicast>
+            <tcp-ip enabled="false"/>
+            <aws enabled="false"/>
+        </join>
+    </network>
+    <replicatedmap name="configurationSetCache">
+        <statistics-enabled>true</statistics-enabled>
+    </replicatedmap>
+</hazelcast>
+
+```
+
+ReplicatedMapIssue.java :  
+
+```
+package test;
+
+import com.hazelcast.core.Hazelcast;
+import com.hazelcast.core.HazelcastInstance;
+
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.InputStreamReader;
+import java.io.Serializable;
+import java.util.HashMap;
+import java.util.Map;
+
+public class ReplicatedMapIssue implements Serializable{
+
+    public static final int NEW_ENTRIES_COUNT = 7;
+
+    private Map<Integer,DummyObject> replicatedMap;
+
+    private BufferedReader stdin;
+
+
+    public void test() {
+
+        HazelcastInstance hz = Hazelcast.newHazelcastInstance();
+        replicatedMap = hz.getReplicatedMap("configurationSetCache");
+
+
+        try {
+            boolean exit = false;
+            stdin = new BufferedReader(new InputStreamReader(System.in));
+            do {
+                System.out.print(
+                        "1.replicated map test\n" +
+                        "0.exit\n");
+                System.out.print("choose: ");
+                String line = stdin.readLine();
+
+                switch(Integer.parseInt(line)) {
+                    case 1: {
+                        runReplicatedMapTest();
+                        break;
+                    }
+                    case 0: {
+                        exit = true;
+                        break;
+                    }
+                }
+            } while (!exit) ;
+            hz.shutdown();
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+
+    }
+
+    private void runReplicatedMapTest() {
+        Map<Integer,DummyObject> map = new HashMap<>();
+        for(int i=0;i < NEW_ENTRIES_COUNT;i++){
+            map.put((int) (Math.random() * 100), new DummyObject());
+        }
+        replicatedMap.clear();
+        replicatedMap.putAll(map);
+//        for(Map.Entry<Integer,DummyObject> e:map.entrySet()) replicatedMap.put(e.getKey(),e.getValue());
+
+        long start = System.currentTimeMillis();
+        do {
+            try {
+                Thread.sleep(1000);
+            } catch (InterruptedException ignored) {}
+        }while(replicatedMap.size() != NEW_ENTRIES_COUNT);
+        long finish = System.currentTimeMillis();
+        System.out.format("replicated map (size %d), took %d ms and contains the following values: %s \n", replicatedMap.size(), (finish - start), replicatedMap.values());
+    }
+
+
+    public static void main(String[] args) {
+        ReplicatedMapIssue issue = new ReplicatedMapIssue();
+        issue.test();
+        System.out.println("hazelcast stopped");
+        System.exit(0);
+    }
+}
+
+```
+
+DummyObject.java :  
+
+```
+package test;
+
+import java.io.Serializable;
+import java.util.UUID;
+
+public class DummyObject implements Serializable {
+    private String a;
+
+    public DummyObject() {
+        a = UUID.randomUUID().toString();
+    }
+
+    @Override
+    public String toString() {
+        return a.substring(0,8);
+    }
+}
+
+```
+
+---
+
+using java 8 and hazelcast 3.6 
+
+reproduce steps:
+1) run the main
+2) on the menu click 1 few times one by one
+--> after some times either the update will take more than a minute or the program will simply freeze (its because the map contains only 6 entries and the seventh entry will never get updated.
+
+in 3.5.5, the scenario is much better, but around 20% of the times, also the seventh entry is lost.

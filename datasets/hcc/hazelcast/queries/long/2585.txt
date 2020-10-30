@@ -1,0 +1,12 @@
+Steps to reproduce (on AWS EC2)
+- Connect to your Hazelcast cluster using `cname0.example.com` and `cname1.example.com`, where both CNAMES point to an AWS EC2 address such as `ec2-123-45-67-89.somewhere.compute.amazonaws.com`
+- HZ resolves the IP addresses and connects to the cluster
+- Shut down your cluster
+- HZ tries to immediately reconnect 
+- For connecting, the client steps through `ClientClusterService.ClusterListenerThread.pickConnection`. At this point, the client addresses are read again from the configuration (https://github.com/hazelcast/hazelcast/blob/master/hazelcast-client/src/main/java/com/hazelcast/client/spi/impl/ClientClusterServiceImpl.java#L270). At this time, however, the DNS names from the configuration _still_ resolve to the _old/current_ IPs (due to DNS caching)
+- In the meantime, the cluster comes up again and the DNS names `cname0.example.com` and `cname1.example.com` resolve now to _new_ IPs
+- The client keeps looping in `ClientClusterServiceImpl.connectToOne` by trying to connect to the _old_ addresses. It hasn't a chance any longer to resolve the hostnames from the initial configuration to the new IP addresses
+
+Suggestion to solve this issue:
+
+Let `ClientClusterServiceImpl.connectToOne` periodically leave and step back to `ClientClusterService.ClusterListenerThread.pickConnection` in order to re-read (and re-resolve) the updated DNS entries.

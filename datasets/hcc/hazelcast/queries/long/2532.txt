@@ -1,0 +1,20 @@
+When WAN replication is enabled, the merge method is not called for remote inserts. Is this deliberate? It seems to conflict with the javadoc comment on MapMergePolicy which says "You should consider the case where existingEntry is null."
+
+It is useful to have the merge method called even when the remote inserted value does not exist in the local cluster, as we may want to sanitize it or trigger some other action based on it.
+
+I think calling the merge policy on insert is a one line change to DefaultRecordStore:
+
+```
+    public boolean merge(Data dataKey, EntryView mergingEntry, MapMergePolicy mergePolicy) {
+        checkIfLoaded();
+        Record record = records.get(dataKey);
+        Object newValue = null;
+        if (record == null) {
+            newValue = mergePolicy.merge(name, mergingEntry, null); // instead of: newValue = mergingEntry.getValue();
+            newValue = writeMapStore(dataKey, newValue, null);
+            record = mapService.createRecord(name, dataKey, newValue, DEFAULT_TTL);
+            records.put(dataKey, record);
+            updateSizeEstimator(calculateRecordSize(record));
+        }
+        ...
+```

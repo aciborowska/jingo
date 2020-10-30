@@ -1,0 +1,82 @@
+Simple test case:
+
+
+    public static void main(String[] args) {
+        try {
+            SSLContext sslContext =
+                    new SSLContextBuilder().setTrustManager(TrustManagers.distrustAll())
+                            .getSSLContext();
+            LDAPOptions options = new LDAPOptions();
+            options.setSSLContext(sslContext);
+            ConnectionFactory factory = new LDAPConnectionFactory("localhost", 1636, options);
+            Connection c = factory.getConnection();
+            try {
+                c.bind("cn=directory manager", "password".toCharArray());
+            } finally {
+                c.close();
+            }
+        } catch (Exception e) {
+            System.err.println("GOT EXCEPTION: " + e.toString());
+        }
+    }
+
+
+
+This results in the following output:
+
+
+Jan 11, 2013 3:40:17 PM org.glassfish.grizzly.filterchain.DefaultFilterChain execute
+WARNING: Exception during FilterChain execution
+java.lang.IllegalStateException: Handshake is not completed!
+	at org.glassfish.grizzly.ssl.SSLFilter.accurateWrite(SSLFilter.java:569)
+	at org.glassfish.grizzly.ssl.SSLFilter.handleWrite(SSLFilter.java:216)
+	at org.glassfish.grizzly.filterchain.ExecutorResolver$8.execute(ExecutorResolver.java:111)
+	at org.glassfish.grizzly.filterchain.DefaultFilterChain.executeFilter(DefaultFilterChain.java:265)
+	at org.glassfish.grizzly.filterchain.DefaultFilterChain.executeChainPart(DefaultFilterChain.java:200)
+	at org.glassfish.grizzly.filterchain.DefaultFilterChain.execute(DefaultFilterChain.java:134)
+	at org.glassfish.grizzly.filterchain.DefaultFilterChain.process(DefaultFilterChain.java:112)
+	at org.glassfish.grizzly.ProcessorExecutor.execute(ProcessorExecutor.java:78)
+	at org.glassfish.grizzly.filterchain.DefaultFilterChain.write(DefaultFilterChain.java:390)
+	at org.glassfish.grizzly.nio.NIOConnection.write(NIOConnection.java:397)
+	at org.glassfish.grizzly.nio.NIOConnection.write(NIOConnection.java:380)
+	at com.forgerock.opendj.ldap.LDAPConnection.close(LDAPConnection.java:666)
+	at com.forgerock.opendj.ldap.LDAPConnection.close(LDAPConnection.java:299)
+	at org.forgerock.opendj.ldap.AbstractConnection.close(AbstractConnection.java:245)
+	at com.forgerock.opendj.ldap.LDAPConnectionFactoryImpl$CompletionHandlerAdapter.onFailure(LDAPConnectionFactoryImpl.java:172)
+	at com.forgerock.opendj.ldap.LDAPConnectionFactoryImpl$CompletionHandlerAdapter.access$2(LDAPConnectionFactoryImpl.java:170)
+	at com.forgerock.opendj.ldap.LDAPConnectionFactoryImpl$CompletionHandlerAdapter$2.failed(LDAPConnectionFactoryImpl.java:130)
+	at org.glassfish.grizzly.ssl.SSLFilter$ConnectionCloseListener.onClosed(SSLFilter.java:735)
+	at org.glassfish.grizzly.nio.NIOConnection.notifyCloseListeners(NIOConnection.java:692)
+	at org.glassfish.grizzly.nio.NIOConnection.close0(NIOConnection.java:436)
+	at org.glassfish.grizzly.nio.transport.TCPNIOConnection.close0(TCPNIOConnection.java:244)
+	at org.glassfish.grizzly.nio.NIOConnection.close(NIOConnection.java:419)
+	at org.glassfish.grizzly.nio.NIOConnection.closeSilently(NIOConnection.java:425)
+	at org.glassfish.grizzly.filterchain.DefaultFilterChain.execute(DefaultFilterChain.java:163)
+	at org.glassfish.grizzly.filterchain.DefaultFilterChain.process(DefaultFilterChain.java:112)
+	at org.glassfish.grizzly.ProcessorExecutor.execute(ProcessorExecutor.java:78)
+	at org.glassfish.grizzly.nio.transport.TCPNIOTransport.fireIOEvent(TCPNIOTransport.java:770)
+	at org.glassfish.grizzly.strategies.AbstractIOStrategy.fireIOEvent(AbstractIOStrategy.java:112)
+	at org.glassfish.grizzly.strategies.WorkerThreadIOStrategy.run0(WorkerThreadIOStrategy.java:115)
+	at org.glassfish.grizzly.strategies.WorkerThreadIOStrategy.access$100(WorkerThreadIOStrategy.java:55)
+	at org.glassfish.grizzly.strategies.WorkerThreadIOStrategy$WorkerThreadRunnable.run(WorkerThreadIOStrategy.java:135)
+	at org.glassfish.grizzly.threadpool.AbstractThreadPool$Worker.doWork(AbstractThreadPool.java:567)
+	at org.glassfish.grizzly.threadpool.AbstractThreadPool$Worker.run(AbstractThreadPool.java:547)
+	at java.lang.Thread.run(Thread.java:722)
+
+GOT EXCEPTION: org.forgerock.opendj.ldap.ConnectionException: Connect Error: 
+
+
+
+It looks like we are attempting to send an unbind on a connection which is attempting to negotiate SSL:
+
+com.forgerock.opendj.ldap.LDAPConnection.close(LDAPConnection.java:666)
+
+Suggested fix:
+
+
+	only send unbind if bindOrStartTLSInProgress is false
+	set bindOrStartTLSInProgress when starting SSL handshake
+	reset bindOrStartTLSInProgress on handshake completion
+	DON'T reset bindOrStartTLSInProgress on handshake failure
+
+

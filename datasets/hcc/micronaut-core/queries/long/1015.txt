@@ -1,0 +1,57 @@
+### Steps to Reproduce
+- Clone the repository  [micronaut-redis-cache-demo](https://github.com/Ehrzs/micronaut-redis-cache-demo).
+- Start a docker redis container.
+- `/gradlew run` in repository folder.
+- Httprequest GET to `localhost:8080/cache`
+
+### Expected Behaviour
+- Receive a "hello" message alfter 1 seconds the first time to make the HttpRequest
+- Receive a "hello" message in less than 100ms the second time to make the HttpRequest
+- See a new key stored in the docker redis container.
+
+### Actual Behaviour
+
+The default bean instantiated to implement the [CacheManager](https://github.com/micronaut-projects/micronaut-core/blob/master/runtime/src/main/java/io/micronaut/cache/CacheManager.java) is the [DefaultCacheManager](https://github.com/micronaut-projects/micronaut-core/blob/master/runtime/src/main/java/io/micronaut/cache/DefaultCacheManager.java).
+At this bean initialization, `SyncCache` beans are stored in a `Map`. Those `SyncCache` beans are retrieved from the microservice configuration.
+If a `RedisCache` is configurated in the `application.yml`, then two beans are going to be initialized in the ApplicationContext: 
+
+- [DefaultSyncCache](https://github.com/micronaut-projects/micronaut-core/blob/master/runtime/src/main/java/io/micronaut/cache/DefaultSyncCache.java)
+- [RedisCache](https://github.com/micronaut-projects/micronaut-core/blob/master/configurations/redis-lettuce/src/main/java/io/micronaut/configuration/lettuce/cache/RedisCache.java)
+
+These beans, has no order in the `SyncCache` array in `DefaultCacheManager` constructor, so they are inserted in the `Map` with no order. This can cause an error when something is stored in the cache, because the `RedisCache` bean could be replaced by a `DefaultSyncCache` in the constructor loop.
+
+This behaviour can be seen in this gif:
+
+![rediscacheerrormicronaut](https://user-images.githubusercontent.com/13764790/49725678-95852a80-fc6c-11e8-9033-c92859d2064b.gif)
+
+The order of the array in the constructor is:
+- RedisCache - othercache
+- DefaultSyncCache - othercache
+- RedisCache - mycache
+- DefaultSyncCache - mycache
+
+So, the map is filled in the loop like:
+#### Init loop
+- `key`, `value`
+#### First step
+- othercache: RedisCache
+#### Second step
+- othercache: DefaultSyncCache
+#### Third step
+- othercache: DefautlSyncCache 
+- mycache: RedisCache
+#### Fourth step
+- othercache: DefautlSyncCache 
+- mycache: DefautlSyncCache 
+
+### Environment Information
+
+- **Operating System**: Ubuntu 18.04
+- **Micronaut Version:** 1.0.1
+- **JDK Version:** 1.10
+
+### Example Application
+
+ [micronaut-redis-cache-demo](https://github.com/Ehrzs/micronaut-redis-cache-demo)
+
+

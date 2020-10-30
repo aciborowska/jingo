@@ -1,0 +1,43 @@
+When an invokeOnAllPartitions call is made from an async thread  it may cause a deadlock, since the call requires an extra async thread to complete its callback. See the example below:
+
+```
+@Rule
+public RuntimeAvailableProcessorsRule runtimeAvailableProcessorsRule = new RuntimeAvailableProcessorsRule(2);
+
+@Test
+public void testDeadLock() throws InterruptedException {
+    HazelcastInstance hz = createHazelcastInstance();
+    IMap<Object, Object> map = hz.getMap("map");
+    map.putAsync("key", "value")
+            .andThen(new ExecutionCallback<Object>() {
+                @Override
+                public void onResponse(Object response) {
+                   map.putAsync("key", "value2").andThen(
+                           new ExecutionCallback<Object>() {
+                               @Override
+                               public void onResponse(Object response) {
+                                   System.out.println("value2: " + Thread.currentThread().getName());
+                                   map.removeAll(Predicates.alwaysTrue());
+                                   System.out.println("Remove all done");
+                               }
+
+                               @Override
+                               public void onFailure(Throwable t) { }
+                           }
+                   );
+                    System.out.println("value:" + Thread.currentThread().getName());
+                    LockSupport.park();
+                }
+
+                @Override
+                public void onFailure(Throwable t) { }
+            });
+    Thread.currentThread().join();
+}
+```
+
+The removeAll() call here will never be completed since both async threads are blocked. The problem is in this line: https://github.com/hazelcast/hazelcast/blob/master/hazelcast/src/main/java/com/hazelcast/spi/impl/operationservice/impl/InvokeOnPartitions.java#L122
+
+The callback here is executed on the default executor, which is the async one.
+
+See also for a side effect of this: https://github.com/hazelcast/hazelcast-jet/issues/1339

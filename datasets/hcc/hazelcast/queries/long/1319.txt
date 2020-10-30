@@ -1,0 +1,43 @@
+When we try to execute the follwoing queries on a large dataset it throws a stackoverflow exception:
+
+(a in ('x','y')) and b like 'z'
+
+This has no relation with the size of the resultset.
+The stackoverflow comes from:
+java.lang.StackOverflowError: null
+        at java.util.regex.Pattern$CharProperty.match(Pattern.java:3345) ~[na:1.6.0_25]
+        at java.util.regex.Pattern$Curly.match0(Pattern.java:3760) ~[na:1.6.0_25]
+        at java.util.regex.Pattern$Curly.match(Pattern.java:3744) ~[na:1.6.0_25]
+        at java.util.regex.Matcher.match(Matcher.java:1127) ~[na:1.6.0_25]
+        at java.util.regex.Matcher.matches(Matcher.java:502) ~[na:1.6.0_25]
+        at com.hazelcast.query.Predicates$LikePredicate.apply(Predicates.java:253) ~[hazelcast-3.1.jar:3.1]
+        at com.hazelcast.query.impl.AndResultSet$It.hasNext(AndResultSet.java:95) ~[hazelcast-3.1.jar:3.1]
+        at com.hazelcast.query.impl.AndResultSet$It.hasNext(AndResultSet.java:96) ~[hazelcast-3.1.jar:3.1]
+        at com.hazelcast.query.impl.AndResultSet$It.hasNext(AndResultSet.java:96) ~[hazelcast-3.1.jar:3.1]
+        at com.hazelcast.query.impl.AndResultSet$It.hasNext(AndResultSet.java:96) ~[hazelcast-3.1.jar:3.1]
+…..
+
+and is cause by a clumsy, recursive implementation of the hasNext:
+
+AndResultSet:
+public boolean hasNext() {
+            if (!it.hasNext()) return false;
+            currentEntry = it.next();
+            if (otherIndexedResults != null) {
+                for (Set<QueryableEntry> otherIndexedResult : otherIndexedResults) {
+                    if (!otherIndexedResult.contains(currentEntry)) {
+                        return hasNext();
+                    }
+                }
+            }
+            if (lsNoIndexPredicates != null) {
+                for (Predicate noIndexPredicate : lsNoIndexPredicates) {
+                    if (!noIndexPredicate.apply(currentEntry)) {
+                        return hasNext();
+                    }
+                }
+            }
+            return true;
+        }
+
+Please correct it not only in this part of the code, but wherever you create recursive iterators.

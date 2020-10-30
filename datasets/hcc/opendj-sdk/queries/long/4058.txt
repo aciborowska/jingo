@@ -1,0 +1,32 @@
+The customer has a keypair set up in the keystore that the IDM plugin will be using, and the certificate correctly added to the truststore that the IDM plugin will be using.
+
+The subject DN of the certificate is (as displayed by keytool) "EMAILADDRESS=user.name@example.com, O=Test, C=DE".
+
+When they try to create the IDM plugin config entry using ldapmodify, they set:
+
+
+ds-cfg-certificate-subject-dn: EMAILADDRESS=user.name@example.com, O=Test, C=DE
+
+
+
+The Modify Result contains this warning:
+
+
+LDAP: error code 80 - The attempt to apply the configuration add failed. The preliminary checks were all successful and the entry was added to the server configuration, but at least one of the configuration add listeners reported an error when attempting to apply the change: An error occurred while trying to initialize an instance of class org.forgerock.openidm.accountchange.OpenidmAccountStatusNotificationHandler as an account status notification handler as defined in configuration entry cn=OpenIDM Notification Handler,cn=Account Status Notification Handlers,cn=config: ConfigException: An error occurred during OpenIDM Password Sync plugin initialization because the certificate-subject-dn 'EMAILADDRESS=user.name@example.com,O=Test,C=DE' is not found in provided truststore. (OpenidmAccountStatusNotificationHandler.java:336 OpenidmAccountStatusNotificationHandler.java:285 OpenidmAccountStatusNotificationHandler.java:187 OpenidmAccountStatusNotificationHandler.java:116 AccountStatusNotificationHandlerConfigManager.java:356 AccountStatusNotificationHandlerConfigManager.java:310 AccountStatusNotificationHandlerConfigManager.java:255 AccountStatusNotificationHandlerConfigManager.java:49 ServerManagedObjectAddListenerAdaptor.java:50 ConfigAddListenerAdaptor.java:159 ConfigurationHandler.java:482 ConfigurationBackend.java:408 LocalBackendAddOperation.java:465 LocalBackendAddOperation.java:163 LocalBackendWorkflowElement.java:476 LocalBackendWorkflowElement.java:605 AddOperationBasis.java:498 TraditionalWorkerThread.java:148)
+
+
+
+This prevents the plugin from being able to work.
+
+Line 336 of OpenidmAccountStatusNotificationHandler.java is the getServerCertificate() method, which is comparing the configuration DN to the subjects of all the accepted issuer certificates in the truststore.
+
+However it does this incorrectly by converting all DNs to strings and doing case-insensitive matching to compare them. This is failing for the customer's certificate. In the customer's case the truststore certificate subject was converted to this string:
+
+
+1.2.840.113549.1.9.1=#1615757365722e6e616d65406578616d706c652e636f6d,o=test,c=de
+
+
+
+This is a valid LDAPv3 string representation of a DN, but it does not string match against "EMAILADDRESS=user.name@example.com, O=Test, C=DE".
+
+The fix is to convert to Dn objects and compare those for equality with the configuration Dn.

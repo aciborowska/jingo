@@ -1,0 +1,38 @@
+Using Jetty 8.1.7 the following request hangs indefinitely when it should return a 400 error due to the invalid query parameter:
+
+
+ curl --request GET --user kvaughan:bribery http://localhost:9999/users/bjensen?foo=bar
+
+
+
+This works fine in other containers (Grizzly 2.3, Tomcat 6/7) and I'm sure it used to work with older versions of Jetty. It also works with Jetty 9, so it looks like a bug in Jetty 8.
+
+Debugging shows that the authn filter asynchronously authenticates the user and then invokes the remainder of the filter chain. Then the Rest2LDAP servlet processes the request synchronously, since the request contains an error, and immediately commits the response (introspection shows that the HttpServletResponse.isCommitted() returns true at this point). Control is immediately returned back up the filter chain to the authn filter which should have nothing left to do. However:
+
+
+	no response is actually sent to the client, leaving the client hanged
+	the authn filter's async listener is never invoked.
+
+
+
+It looks like Jetty 8 requires that async filters detect synchronous downstream completion and commit their async context, even though it should have been committed by the downstream servlet. This clearly a bug in Jetty's async implementation, but there seems to be a simple fix which works for Jetty 8 and should be benign in other containers. In org.forgerock.opendj.rest2ldap.servlet.Rest2LDAPAuthnFilter.doBind(...).new ResultHandler() 
+{...}.handleResult(...).new ResultHandler() {...}
+.handleResult(BindResult):
+
+
+// Invoke the remainder of the filter chain.
+sync.signal();
+if (sync.isAsync()) {
+    try {
+        chain.doFilter(request, response);
+
+        // ***** Fix for JETTY8 - detect synchronous force completion!
+        if (response.isCommitted()) {
+            sync.signalAndComplete();
+        }
+        // ***** End of fix.
+    } catch (Throwable t) {
+        sync.signalAndComplete(asResourceException(t));
+    }
+}
+

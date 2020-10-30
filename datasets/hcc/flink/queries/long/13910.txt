@@ -1,0 +1,43 @@
+Currently, many serializable classes in Flink have no explicit 'serialVersionUID'. As official doc said, Serializable classes must define a Serial Version UID. 
+
+No 'serialVersionUID' would cause compatibility problem. Take TwoPhaseCommitSinkFunction for example, since no explicit 'serialVersionUID' defined, after FLINK-10455 introduced, its default 'serialVersionUID' has changed from "4584405056408828651" to "4064406918549730832". In other words, if we submit a job from Flink-1.6.3 local home to remote Flink-1.6.2 cluster with the usage of TwoPhaseCommitSinkFunction, we would get exception like:
+
+
+org.apache.flink.streaming.runtime.tasks.StreamTaskException: Cannot instantiate user function.
+        at org.apache.flink.streaming.api.graph.StreamConfig.getStreamOperator(StreamConfig.java:239)
+        at org.apache.flink.streaming.runtime.tasks.OperatorChain.<init>(OperatorChain.java:104)
+        at org.apache.flink.streaming.runtime.tasks.StreamTask.invoke(StreamTask.java:267)
+        at org.apache.flink.runtime.taskmanager.Task.run(Task.java:711)
+        at java.lang.Thread.run(Thread.java:748)
+Caused by: java.io.InvalidClassException: org.apache.flink.streaming.api.functions.sink.TwoPhaseCommitSinkFunction; local class incompatible: stream classdesc serialVersionUID = 4584405056408828651, local class serialVersionUID = 4064406918549730832
+        at java.io.ObjectStreamClass.initNonProxy(ObjectStreamClass.java:699)
+        at java.io.ObjectInputStream.readNonProxyDesc(ObjectInputStream.java:1885)
+        at java.io.ObjectInputStream.readClassDesc(ObjectInputStream.java:1751)
+        at java.io.ObjectInputStream.readNonProxyDesc(ObjectInputStream.java:1885)
+        at java.io.ObjectInputStream.readClassDesc(ObjectInputStream.java:1751)
+        at java.io.ObjectInputStream.readOrdinaryObject(ObjectInputStream.java:2042)
+        at java.io.ObjectInputStream.readObject0(ObjectInputStream.java:1573)
+        at java.io.ObjectInputStream.defaultReadFields(ObjectInputStream.java:2287)
+        at java.io.ObjectInputStream.readSerialData(ObjectInputStream.java:2211)
+        at java.io.ObjectInputStream.readOrdinaryObject(ObjectInputStream.java:2069)
+        at java.io.ObjectInputStream.readObject0(ObjectInputStream.java:1573)
+        at java.io.ObjectInputStream.readObject(ObjectInputStream.java:431)
+        at org.apache.flink.util.InstantiationUtil.deserializeObject(InstantiationUtil.java:537)
+        at org.apache.flink.util.InstantiationUtil.deserializeObject(InstantiationUtil.java:524)
+        at org.apache.flink.util.InstantiationUtil.deserializeObject(InstantiationUtil.java:512)
+        at org.apache.flink.util.InstantiationUtil.readObjectFromConfig(InstantiationUtil.java:473)
+        at org.apache.flink.streaming.api.graph.StreamConfig.getStreamOperator(StreamConfig.java:224)
+        ... 4 more
+
+
+
+Similar problems existed in  org.apache.flink.streaming.api.operators.SimpleOperatorFactory which has different 'serialVersionUID' from release-1.9 and current master branch.
+
+IMO, we might have two options to fix this bug:
+
+	Add explicit serialVersionUID for those classes which is identical to latest Flink-1.9.0 release code.
+	Use similar mechanism like FailureTolerantObjectInputStream in InstantiationUtil to ignore serialVersionUID mismatch.
+
+
+
+I have collected all production classes without serialVersionUID from latest master branch in the attachment, which counts to 639 classes.

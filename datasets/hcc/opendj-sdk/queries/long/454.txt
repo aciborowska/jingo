@@ -1,0 +1,102 @@
+Invoking a naming conflict as a result of 2 adds with same DN, but for example with different attribute values leaves DIT inconsistent.
+
+
+	Stop replication between the servers.
+
+m1/bin/dsconfig set-replication-server-prop --provider-name "Multimaster Synchronization" --reset replication-server -h gary-laptop -p 1444 -D "cn=directory manager" -w "secret12" -n -X
+
+m2/bin/dsconfig set-replication-server-prop --provider-name "Multimaster Synchronization" --reset replication-server -h gary-laptop -p 2444 -D "cn=directory manager" -w "secret12" -n -X
+
+
+	Add entry in M1
+
+m1/bin/ldapmodify -a -p 1389 -D "cn=directory manager" -w "secret12" <<EOF
+dn: cn=F, o=People, dc=europe,dc=com
+objectclass:top
+objectclass:organizationalperson
+objectclass:inetorgperson
+objectclass:person
+sn:User
+cn:Test User
+uid:1
+givenname:DUMMY ENTRY
+EOF
+
+Processing ADD request for cn=F,o=People,dc=europe,dc=com
+ADD operation successful for DN cn=F,o=People,dc=europe,dc=com
+
+
+	Add entry in M2
+
+m2/bin/ldapmodify -a -p 2389 -D "cn=directory manager" -w "secret12" <<EOF
+dn: cn=F, o=People, dc=europe,dc=com
+objectclass:top
+objectclass:organizationalperson
+objectclass:inetorgperson
+objectclass:person
+sn:User
+cn:Test User
+uid:2
+givenname:DUMMY ENTRY
+EOF
+
+Processing ADD request for cn=F,o=People,dc=europe,dc=com
+ADD operation successful for DN cn=F,o=People,dc=europe,dc=com
+
+
+	Re-enable replication between the 2 servers M1 and M2
+
+m1/bin/dsconfig set-replication-server-prop --provider-name "Multimaster Synchronization" --add replication-server:gary-laptop:1989 --add replication-server:gary-laptop:2989 -h gary-laptop -p 1444 -D "cn=directory manager" -w "secret12" -n -X
+
+
+	Search shows that we have 2 different entries, each with a conflict entry.
+
+m1/bin/ldapsearch -h gary-laptop -D "cn=directory manager" -w secret12 -b "dc=europe,dc=com" -p 1389 "givenname=DUMMY ENTRY" ds-sync-conflict uid cn
+
+dn: cn=F,o=People,dc=europe,dc=com
+uid: 1
+cn: Test User
+cn: F
+
+dn: entryuuid=44c9d8d8-064a-42ab-ac05-615079b42721+cn=F,o=People,dc=europe,dc=co
+ m
+uid: 2
+cn: Test User
+cn: F
+ds-sync-conflict: cn=f,o=people,dc=europe,dc=com
+
+
+
+m2/bin/ldapsearch -h gary-laptop -D "cn=directory manager" -w secret12 -b "dc=europe,dc=com" -p 2389 "givenname=DUMMY ENTRY" ds-sync-conflict uid cn
+dn: cn=F,o=People,dc=europe,dc=com
+uid: 2
+cn: Test User
+cn: F
+
+dn: entryuuid=37df3c62-09b8-415f-ad1b-076aa8ce57a7+cn=F,o=People,dc=europe,dc=co
+ m
+uid: 1
+cn: Test User
+cn: F
+ds-sync-conflict: cn=f,o=people,dc=europe,dc=com
+
+
+	The conflict is flagged as unresolved.
+
+m1/bin/ldapsearch -h gary-laptop -D "cn=directory manager" -w secret12 -b "cn=monitor" -p 2389 "&(domain-name=dc=europe,dc=com)(cn=Replication Domain *)" resolved-naming-conflicts unresolved-naming-conflicts resolved-modify-conflicts domain-name
+dn: cn=Replication Domain 20495,cn=dc_europe_dc_com,cn=replication,cn=monitor
+domain-name: dc=europe,dc=com
+resolved-naming-conflicts: 0
+unresolved-naming-conflicts: 1
+resolved-modify-conflicts: 0
+
+m2/bin/ldapsearch -h gary-laptop -D "cn=directory manager" -w secret12 -b "cn=monitor" -p 2389 "&(domain-name=dc=europe,dc=com)(cn=Replication Domain *)" resolved-naming-conflicts unresolved-naming-conflicts resolved-modify-conflicts domain-name
+dn: cn=Replication Domain 20495,cn=dc_europe_dc_com,cn=replication,cn=monitor
+domain-name: dc=europe,dc=com
+resolved-naming-conflicts: 0
+unresolved-naming-conflicts: 1
+resolved-modify-conflicts: 0
+
+
+But it would be also nice to be able to solve the inconsistency in the DIT between the 2 servers.
+

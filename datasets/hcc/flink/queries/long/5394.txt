@@ -1,0 +1,30 @@
+The estimateRowCount method of DataSetCalc didn't work now. 
+If I run the following code,
+
+
+Table table = tableEnv
+  .fromDataSet(data, "a, b, c")
+  .where("a == 1")
+  .groupBy("a")
+  .select("a, a.avg, b.sum, c.count");
+
+
+
+the cost of every node in Optimized node tree is :
+
+
+DataSetAggregate(groupBy=[a], select=[a, AVG(a) AS TMP_0, SUM(b) AS TMP_1, COUNT(c) AS TMP_2]): rowcount = 1000.0, cumulative cost = {3000.0 rows, 5000.0 cpu, 28000.0 io}
+  DataSetCalc(select=[a, b, c], where=[=(a, 1)]): rowcount = 1000.0, cumulative cost = {2000.0 rows, 2000.0 cpu, 0.0 io}
+      DataSetScan(table=[[_DataSetTable_0]]): rowcount = 1000.0, cumulative cost = {1000.0 rows, 1000.0 cpu, 0.0 io}
+
+
+
+We expect the input rowcount of DataSetAggregate less than 1000, however the actual input rowcount is still 1000 because the the estimateRowCount method of DataSetCalc didn't work. 
+
+There are two reasons caused to this:
+1. Didn't provide custom metadataProvider yet. So when DataSetAggregate calls RelMetadataQuery.getRowCount(DataSetCalc) to estimate its input rowcount which would dispatch to RelMdRowCount.
+2. DataSetCalc is subclass of SingleRel. So previous function call would match getRowCount(SingleRel rel, RelMetadataQuery mq) which would never use DataSetCalc.estimateRowCount.
+
+The question would also appear to all Flink RelNodes which are subclass of SingleRel.
+
+I plan to resolve this problem by adding a FlinkRelMdRowCount which contains specific getRowCount of Flink RelNodes.

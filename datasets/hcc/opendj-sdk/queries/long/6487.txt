@@ -1,0 +1,47 @@
+Found with 7.0.0-SNAPSHOT rev. dd9df5a85cd.
+ Possible root cause is commit for OPENDJ-6205.
+
+Automated test:
+
+python3  run-pybot.py -s security_group.pkcs12 -v DJ
+
+
+Manual steps:
+ 1. setup server with default options
+ 2. generate self sign cert
+
+keytool -genkey -alias server-cert -dname "cn=pyforge.example.com,O=OpenDJ RSA Self-Signed Certificate" -storetype PKCS12 -keystore "/tmp/server-keystore-pkcs12" -keypass servercert -storepass servercert -keyalg RSA -keysize 2048 -validity 360
+
+
+3. configure the key-manager-provider to use it
+
+dsconfig -h pyforge.example.com -p 4444 -D "uid=admin" -w password -X set-key-manager-provider-prop --provider-name "PKCS12" --set key-store-file:/tmp/server-keystore-pkcs12 --set key-store-pin:servercert --set enabled:true -n
+
+
+4. try to connect to the server
+
+./dsconfig -h pyforge.example.com -p 4444 -D "cn=myself" -w password -X set-trust-manager-provider-prop --provider-name "Blind Trust" --set enabled:true -n
+
+
+Above is a command from a test but simple interactive dsconfig triggers the issue as well. ./dsconfig -D "cn=myself" -p 4444 -w password -h pyforge.example.com.
+
+Current behavior:
+ Point 4. fails with rc==91.
+
+Unable to connect to the server at "pyforge.example.com" on port 4444
+
+
+In logs there is following info for above operation:
+
+{"eventName":"DJ-LDAP","client":{"ip":"127.0.0.1","port":40574},"server":{"ip":"127.0.2.2","port":4444},"request":{"protocol":"LDAPS","operation":"CONNECT","connId":4},"transactionId":"0","response":{"status":"SUCCESSFUL","statusCode":"0","elapsedTime":0,"elapsedTimeUnits":"MILLISECONDS"},"timestamp":"2019-07-26T06:57:46.806Z","_id":"175ad60a-234d-420b-9a9b-a6d3f51324e8-98"}
+{"eventName":"DJ-LDAP","client":{"ip":"127.0.0.1","port":40574},"server":{"ip":"127.0.2.2","port":4444},"request":{"protocol":"LDAPS","operation":"DISCONNECT","connId":4},"transactionId":"0","response":{"status":"SUCCESSFUL","statusCode":"0","elapsedTime":0,"elapsedTimeUnits":"MILLISECONDS","reason":"Protocol Error"},"timestamp":"2019-07-26T06:57:46.891Z","_id":"175ad60a-234d-420b-9a9b-a6d3f51324e8-100"}
+
+
+Disconnected due to Protocol error
+
+Expected behavior:
+ Admin should be able to connect to the server.
+
+NOTE:
+ We have around 50 tests failed due to this, so I am marking this issue as test-impact and with a flag.
+ Above test case (framework command) is simplest case to reproduce the issue but I can provide other tests to run.

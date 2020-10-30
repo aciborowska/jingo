@@ -1,0 +1,47 @@
+Steps to reproduce:
+1. install 2 servers with replication enabled 
+
+unzip OpenDJ-4.0.0.zip 
+   cd opendj/
+   ./setup  directory-server  --rootUserDN "cn=Directory Manager"  --rootUserPassword password  --hostname dj-proxy-1.example.com  --ldapPort 1389  --ldapsPort 1636  --httpPort 8080  --httpsPort 8443  --adminConnectorPort 4444  --baseDN dc=example,dc=com  -d 2000 
+   ./bin/dsconfig --hostname dj-proxy-1.example.com --port 4444 --bindDN cn=directory\ manager --bindPassword password -X set-root-dn-prop --add default-root-privilege-name:proxied-auth --no-prompt
+
+unzip OpenDJ-4.0.0.zip 
+   cd opendj/
+   ./setup  directory-server  --rootUserDN "cn=Directory Manager"  --rootUserPassword password  --hostname dj-proxy-2.example.com  --ldapPort 1389  --ldapsPort 1636  --httpPort 8080  --httpsPort 8443  --adminConnectorPort 4444  --baseDN dc=example,dc=com  -d 2000 
+   ./bin/dsconfig --hostname dj-proxy-2.example.com --port 4444 --bindDN cn=directory\ manager --bindPassword password -X set-root-dn-prop --add default-root-privilege-name:proxied-auth --no-prompt
+
+./bin/dsreplication enable --adminUID admin --adminPassword password --baseDN dc=example,dc=com --host1 dj-proxy-1.example.com --port1 4444 --bindDN1 "cn=Directory Manager" --bindPassword1 password --replicationPort1 8989 --host2 dj-proxy-2.example.com --port2 4444 --bindDN2 "cn=Directory Manager" --bindPassword2 password --replicationPort2 8989 --trustAll --no-prompt
+
+
+./bin/dsreplication  initialize-all  --adminUID admin  --adminPassword password  --baseDN dc=example,dc=com  --hostname dj-proxy-1.example.com  --port 4444  --trustAll  --no-prompt
+
+
+
+2. Install a proxy instance
+
+./setup directory-server --adminConnectorPort 4444 --rootUserDN cn=directory\ manager --rootUserPassword password --ldapPort 1389 --hostname dj-proxy-master.example.com
+
+
+
+3. create replication discovery mechanism
+
+./bin/dsconfig  create-service-discovery-mechanism  --hostname dj-proxy-master.example.com  --port 4444  --bindDN "cn=Directory Manager"  --bindPassword password  --mechanism-name "Replication Service Discovery Mechanism"  --type replication  --set bind-dn:"uid=admin,cn=Administrators,cn=admin data"  --set bind-password:password  --set replication-server:dj-proxy-1.example.com:8989  --set replication-server:dj-proxy-2.example.com:8989  --set use-ssl:true  --trustAll  --no-prompt
+
+
+
+4. create proxy backend
+
+./bin/dsconfig --hostname dj-proxy-master.example.com --port 4444 --bindDN cn=directory\ manager --bindPassword password -X create-backend --set enabled:true --set proxy-dn:cn=directory\ manager --set proxy-password:password --set route-all:true --set service-discovery-mechanism:replication --set load-balancing-algorithm:least-requests --type proxy --backend-name proxy --no-prompt
+
+
+
+Current behavior
+After a minute I can see error messages in logs like:
+
+category=CORE severity=ERROR msgID=762 msg=Could not retrieve the list of replicas from replication server 'dj-proxy-1.example.com:8989' for replication server group 'Replication Service Discovery Mechanism'. Exception : Server Connection Closed: An error occurred during establishment of a connection: org.forgerock.opendj.ldap.LdapException: Local Error: SSL handshake failed
+
+
+
+Expected behavior
+I expect no errors in logs and also that the proxy server is able to discover all machines.

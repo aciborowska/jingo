@@ -1,0 +1,49 @@
+I have a Vue.js app with a generated Swagger API, producing POST requests with JSON bodies. That works fine usually, but sometimes I get errors about invalid JSON in the POST body.
+
+I checked the request in firebug and chrome, it is always the same, but from time to time the server really gets only half of the JSON body, in JsonContentProcessor.onData I can clearly see that if I debug into that.
+
+Going back where this comes from brought me to `HttpStreamsHandler.handleReadHttpContent`:
+
+```
+    private void handleReadHttpContent(ChannelHandlerContext ctx, HttpContent content) {
+        if (!ignoreBodyRead) {
+            if (content instanceof LastHttpContent) {
+
+                if (content.content().readableBytes() > 0 ||
+                    !((LastHttpContent) content).trailingHeaders().isEmpty()) {
+                    // It has data or trailing headers, send them
+                    ctx.fireChannelRead(content);
+                } else {
+                    ReferenceCountUtil.release(content);
+                }
+
+                removeHandlerIfActive(ctx, ctx.name() + "-body-publisher");
+                currentlyStreamedMessage = null;
+                consumedInMessage(ctx);
+
+            } else {
+                ctx.fireChannelRead(content);
+            }
+
+        } else {
+            ReferenceCountUtil.release(content);
+            if (content instanceof LastHttpContent) {
+                ignoreBodyRead = false;
+                if (currentlyStreamedMessage != null) {
+                    removeHandlerIfActive(ctx, ctx.name() + "-body-publisher");
+                }
+                currentlyStreamedMessage = null;
+            }
+        }
+    }
+```
+
+It turns out that sometimes the `content` (coming from netty) is not a LastHttpContent, but a `io.netty.handler.codec.http.DefaultHttpContent`. In that case we're jumping directly to else-branch (`ctx.fireChannelRead(content)`) and subsequently we end up in `JsonContentProcessor.onData` with only half of the JSON stream.
+
+Interestingly, if I resend exact the same request from firebug a second time, then it works, and that is reproducable.
+
+I know that sounds weird, and unfortunately my code is part of a bigger project that I cannot share; I also don't know if I could easily extract a demo app for you to check that. 
+
+That is why I debugged into micronaut, trying to figure our what is going on here, and I think the root cause is somewhere in the method above, but I'm no netty expert. 
+
+Hope you can somehow deal with it, otherwise I'd need to try extract a dummy project there....

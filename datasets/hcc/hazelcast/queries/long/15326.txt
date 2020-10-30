@@ -1,0 +1,166 @@
+```
+com.hazelcast.nio.serialization.HazelcastSerializationException: com.hazelcast.internal.serialization.impl.ArrayDataSerializableFactory@7c980f9c is not be able to create an instance for ID: 83886080 on factory ID: 0
+    at com.hazelcast.internal.serialization.impl.DataSerializableSerializer.readInternal(DataSerializableSerializer.java:145) ~[hazelcast-3.12.1.jar!/:3.12.1]
+    at com.hazelcast.internal.serialization.impl.DataSerializableSerializer.read(DataSerializableSerializer.java:106) ~[hazelcast-3.12.1.jar!/:3.12.1]
+    at com.hazelcast.internal.serialization.impl.DataSerializableSerializer.read(DataSerializableSerializer.java:51) ~[hazelcast-3.12.1.jar!/:3.12.1]
+    at com.hazelcast.internal.serialization.impl.StreamSerializerAdapter.read(StreamSerializerAdapter.java:48) ~[hazelcast-3.12.1.jar!/:3.12.1]
+    at com.hazelcast.internal.serialization.impl.AbstractSerializationService.toObject(AbstractSerializationService.java:187) ~[hazelcast-3.12.1.jar!/:3.12.1]
+    at com.hazelcast.nio.tcp.BindHandler.process(BindHandler.java:61) ~[hazelcast-3.12.1.jar!/:3.12.1]
+    at com.hazelcast.nio.tcp.TcpIpEndpointManager.accept(TcpIpEndpointManager.java:166) ~[hazelcast-3.12.1.jar!/:3.12.1]
+    at com.hazelcast.nio.tcp.TcpIpEndpointManager.accept(TcpIpEndpointManager.java:67) ~[hazelcast-3.12.1.jar!/:3.12.1]
+    at com.hazelcast.spi.impl.PacketDispatcher.accept(PacketDispatcher.java:76) [hazelcast-3.12.1.jar!/:3.12.1]
+    at com.hazelcast.spi.impl.PacketDispatcher.accept(PacketDispatcher.java:33) [hazelcast-3.12.1.jar!/:3.12.1]
+    at com.hazelcast.nio.tcp.PacketDecoder.onPacketComplete(PacketDecoder.java:83) [hazelcast-3.12.1.jar!/:3.12.1]
+    at com.hazelcast.nio.tcp.PacketDecoder.onRead(PacketDecoder.java:65) [hazelcast-3.12.1.jar!/:3.12.1]
+    at com.hazelcast.internal.networking.nio.NioInboundPipeline.process(NioInboundPipeline.java:135) [hazelcast-3.12.1.jar!/:3.12.1]
+    at com.hazelcast.internal.networking.nio.NioThread.processSelectionKey(NioThread.java:369) [hazelcast-3.12.1.jar!/:3.12.1]
+    at com.hazelcast.internal.networking.nio.NioThread.processSelectionKeys(NioThread.java:354) [hazelcast-3.12.1.jar!/:3.12.1]
+    at com.hazelcast.internal.networking.nio.NioThread.selectLoop(NioThread.java:280) [hazelcast-3.12.1.jar!/:3.12.1]
+    at com.hazelcast.internal.networking.nio.NioThread.run(NioThread.java:235) [hazelcast-3.12.1.jar!/:3.12.1]
+```
+
+Problem occurs even in a stable 3.12 cluster with no user operations or topology changes. There are no registered data serializable factories. 
+
+The root cause seems to be customized serialization config (useNativeByteOrder, allowUnsafe). After reverting to the default, the problem went away.
+
+Below is the configuration. The problem happens even without a client application. Just start a 5 node cluster and the logs were showing the reported exception with 1-2 minutes of starting without any user triggered grid operation:
+
+Config:
+```yaml
+hazelcast:
+  group:
+    name: local
+    
+  properties:    
+    hazelcast.logging.type: slf4j
+    hazelcast.jmx: true
+    hazelcast.phone.home.enabled: false
+    hazelcast.max.no.heartbeat.seconds: 150    
+#    hazelcast.partition.count: 271
+    hazelcast.index.copy.behavior: NEVER
+#    hazelcast.query.predicate.parallel.evaluation
+    hazelcast.slow.operation.detector.stacktrace.logging.enabled: false
+##    hazelcast.operation.responsequeue.idlestrategy: backoff    
+#    hazelcast.backpressure.enabled: false
+#    hazelcast.backpressure.max.concurrent.invocations.per.partition: 100
+#    hazelcast.prefer.ipv4.stack: true
+#    hazelcast.compat.classloading.cache.disabled: false
+#    hazelcast.socket.receive.buffer.size: 192
+#    hazelcast.socket.send.buffer.size: 192
+#    hazelcast.diagnostics.enabled: true
+#    hazelcast.diagnostics.metric.level: info
+#    hazelcast.diagnostics.invocation.sample.period.seconds: 30
+#    hazelcast.diagnostics.pending.invocations.period.seconds: 30
+#    hazelcast.diagnostics.slowoperations.period.seconds: 30
+#    hazelcast.diagnostics.directory: /path/to/your/log/directory
+#    hazelcast.enterprise.license.key:
+    
+  serialization:    
+    use-native-byte-order: true  
+    allow-unsafe: true
+#    global-serializer:
+#       class-name: info.jerrinot.subzero.Serializer
+#       override-java-serialization: true
+           
+  network:    
+    join:
+      multicast:
+        enabled: false
+      aws:
+        enabled: false        
+        region: us-west-1        
+        tag-key: type
+        tag-value: hz-nodes
+        connection-timeout-seconds: 11
+        hz-port: 5701
+      kubernetes:
+        enabled: false
+        namespace: MY-KUBERNETES-NAMESPACE
+        service-name: MY-SERVICE-NAME
+#        service-label-name: MY-SERVICE-LABEL-NAME
+#        service-label-value: MY-SERVICE-LABEL-VALUE
+#        kubernetes-master: 
+#        api-token:
+#        ca-certificate:
+#        service-dns: MY-SERVICE-DNS-NAME
+      tcp-ip:
+        enabled: true
+        interface: 127.0.0.1
+    rest-api:
+      enabled: false
+      endpoint-groups:                
+        DATA:
+          enabled: true
+             
+  management-center:
+    enabled: false
+    url: http://localhost:8080/hazelcast-mancenter 
+          
+  queue:
+    default:
+      max-size: 0
+      backup-count: 1
+      async-backup-count: 0
+      empty-queue-ttl: -1
+      merge-policy:
+        batch-size: 100
+        class-name: com.hazelcast.spi.merge.PutIfAbsentMergePolicy
+        
+  map:
+    default:
+      cache-deserialized-values: NEVER
+      read-backup-data: true
+      in-memory-format: BINARY
+      metadata-policy: CREATE_ON_UPDATE
+      backup-count: 1
+      async-backup-count: 0
+      time-to-live-seconds: 0
+      max-idle-seconds: 0
+      eviction-policy: NONE
+      max-size:
+#        policy: PER_NODE
+        policy: USED_HEAP_SIZE
+        max-size: 0
+      eviction-percentage: 25
+      min-eviction-check-millis: 100
+      merge-policy:
+        batch-size: 100
+#        class-name: com.hazelcast.spi.merge.PutIfAbsentMergePolicy
+        class-name: LatestUpdateMergePolicy
+        
+    applicationResource:
+      cache-deserialized-values: NEVER
+      eviction-policy: LFU
+      max-size:
+        policy: USED_HEAP_SIZE
+        max-size: 250
+      read-backup-data: true    
+      
+  semaphore:
+    jobPool:
+      initial-permits: 100
+      backup-count: 1
+      async-backup-count: 0
+
+  cache:
+    default:
+      statistics-enabled: true
+      management-enabled: true
+      in-memory-format: BINARY
+      backup-count: 1
+      async-backup-count: 0
+      eviction:
+#        size: 0
+        max-size-policy: ENTRY_COUNT
+        eviction-policy: LFU     
+      merge-policy: com.hazelcast.cache.merge.LatestAccessCacheMergePolicy
+      
+  cardinality-estimator:
+    default:
+      backup-count: 0
+      
+#  user-code-deployment:    
+#    class-cache-mode: ETERNAL
+#    provider-mode: LOCAL_AND_CACHED_CLASSES
+#    enabled: true
+```

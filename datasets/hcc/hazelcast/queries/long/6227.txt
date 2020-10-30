@@ -1,0 +1,60 @@
+Hi, Found an issue in version 3.4.2 which I think is a bug, please correct if this is desired behavior.
+
+Run the following example and one can clearly see that expiration time is pushed forward the same amount of seconds as the sleep.
+
+Trying get instead of getAll and the expire time is not altered.
+
+``` java
+import java.util.Arrays;
+import java.util.HashSet;
+
+import com.hazelcast.config.Config;
+import com.hazelcast.config.EvictionPolicy;
+import com.hazelcast.config.InMemoryFormat;
+import com.hazelcast.config.MapConfig;
+import com.hazelcast.config.MaxSizeConfig;
+import com.hazelcast.core.Hazelcast;
+import com.hazelcast.core.HazelcastInstance;
+import com.hazelcast.core.IMap;
+
+public class TestTttlWithGetAll
+{
+    public static void main(String[] args) throws InterruptedException
+    {
+            MapConfig mapConfig = new MapConfig("mymap");
+            mapConfig.setMaxSizeConfig(new MaxSizeConfig(300, MaxSizeConfig.MaxSizePolicy.PER_NODE));
+            mapConfig.setStatisticsEnabled(true);
+            mapConfig.setTimeToLiveSeconds(60);
+            mapConfig.setMaxIdleSeconds(60);
+            mapConfig.setEvictionPolicy(EvictionPolicy.LRU);
+            mapConfig.setMinEvictionCheckMillis(100L);
+            mapConfig.setBackupCount(1);
+            mapConfig.setInMemoryFormat(InMemoryFormat.BINARY);
+
+            Config config = new Config("4885");
+            config.addMapConfig(mapConfig);
+            HazelcastInstance instance = Hazelcast.getOrCreateHazelcastInstance(config);
+
+            IMap<Integer, String> mymap = instance.getMap("mymap");
+            mymap.put(1, "value");
+
+
+            for (int i=0;i<20;i++)
+            {
+                // Pushes expiration time forwards, which seems wrong because
+                // item will never get evicted as long as get-requests are made
+                mymap.getAll(new HashSet<>(Arrays.asList(1)));
+
+                // Does not alter expiration time
+//              mymap.get(1);
+
+                System.out.println();
+                System.out.println("Exp time: " + new java.util.Date(mymap.getEntryView(1).getExpirationTime()));
+                System.out.println("Cr time: " + new java.util.Date(mymap.getEntryView(1).getCreationTime()));
+                System.out.println("Up time: " + new java.util.Date(mymap.getEntryView(1).getLastUpdateTime()));
+
+                Thread.sleep(3000);
+            }
+    }
+}
+```

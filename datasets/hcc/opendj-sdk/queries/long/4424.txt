@@ -1,0 +1,64 @@
+Found with OpenDJ 6.0.0 rev (0ce29eb96e0)
+
+We setup 1 DJ with some data under o=example in userRoot backend.
+We create a second backend on this DJ and import data in it.
+
+./DJ1/opendj/bin/dsconfig -h localhost -p 4444 -D "cn=myself" -w password -X create-backend --backend-name AD --type je --set base-dn:"dc=AD,dc=com" --set db-cache-percent:5 --set enabled:true --set writability-mode:enabled -n
+
+./DJ1/opendj/bin/import-ldif -h localhost -p 4444 -D "cn=myself" -w password -X -n AD -O  -l /tmp/data/pta_group/pta_AD10.ldif
+ 
+
+
+We setup 2 other DJs  and create a second backend as well with another set of data under "dc=AD,dc=com".
+
+In our test to verify that a user with a LDAP PTA unmapped policy can authenticated to remote server, we do the following:
+
+./DJ1/opendj/bin/dsconfig -h localhost -p 4444 -D "cn=myself" -w password -X create-password-policy --set primary-remote-ldap-server:localhost:1390 --set mapping-policy:unmapped --set secondary-remote-ldap-server:localhost:1391 --type ldap-pass-through --policy-name "LDAP PTA" -n
+
+./DJ1/opendj/bin/dsconfig -h localhost -p 4444 -D "cn=myself" -w password -X get-password-policy-prop --policy-name "LDAP PTA" -n
+
+./DJ1/opendj/bin/ldapmodify -h localhost -p 1389 -D "cn=myself" -w password 	
+dn: uid=jwallace, ou=People, dc=AD,dc=com
+changetype: modify
+add: ds-pwp-password-policy-dn
+ds-pwp-password-policy-dn: cn=LDAP PTA,cn=Password Policies,cn=config
+
+
+
+Then we perform some checks:
+
+./DJ1/opendj/bin/ldapsearch -h nameserver.example.com -p 1389 -D "cn=myself" -w password -b "uid=jwallace, ou=People, dc=AD,dc=com" "(objectclass=*)" ds-pwp-password-policy-dn
+dn: uid=jwallace,ou=People,dc=AD,dc=com
+ds-pwp-password-policy-dn: cn=LDAP PTA,cn=Password Policies,cn=config
+
+./DJ1/opendj/bin/ldapsearch -h localhost -p 1389 -D "uid=jwallace, ou=People, dc=AD,dc=com" -w linear -b "uid=jwallace, ou=People, dc=AD,dc=com" -s base "(objectclass=*)" 
+dn: uid=jwallace,ou=People,dc=AD,dc=com
+objectClass: top
+objectClass: inetOrgPerson
+objectClass: organizationalPerson
+objectClass: person
+mail: jwallace@example.com
+sn: Wallace
+roomNumber: 1033
+cn: Judy Wallace
+ou: People
+givenName: Judy
+telephoneNumber: +1 408 555 0319
+facsimileTelephoneNumber: +1 408 555 8473
+description: I am now a remote ldap pta user
+l: Sunnyvale
+uid: jwallace
+
+
+./DJ1/opendj/bin/ldapsearch -h localhost -p 1389 -D "cn=myself" -w password -b "uid=jwallace, ou=People, dc=AD,dc=com" -s base "(objectclass=*)" + 	
+15:59:52.583 	WARN 	ERROR:
+-- rc --
+returned 80, expected 0
+-- stdout --
+# The LDAP search request failed: 80 (Other)
+# Additional Information:  java.lang.NullPointerException
+
+
+
+
+This test used to work fine with previous versions of OpenDJ.

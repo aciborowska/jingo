@@ -1,0 +1,74 @@
+Found with 7.0.0 rev (cdf1432e7ec)
+
+We set up 2 DJ servers with data, in production mode, replicated.
+Then we configure a proxy in production mode front of these servers.
+This proxy is configured with a specific proxy user. 
+We configure a global access policy for authentified users.
+
+./bin/dsconfig -h nameserver.example.com -p 4446 -D "cn=myself" -w password -X create-global-access-control-policy --policy-name "Authenticated access all entries" -n 	
+
+./bin/dsconfig -h nameserver.example.com -p 4446 -D "cn=myself" -w password -X set-global-access-control-policy-prop --policy-name "Authenticated access all entries" --add permission:read --add permission:write --add allowed-control:* --set allowed-attribute:* -n 	
+
+
+
+We add an administrative user that has some specific acis to be able to perform some operations
+
+./bin/ldapmodify -h nameserver.example.com -p 1389 -D "cn=myself" -w password  --useStartTls -X 	
+dn: uid=data admin,dc=example,dc=com
+objectClass: person
+objectClass: inetorgperson
+objectClass: organizationalperson
+objectClass: top
+uid: data admin
+userPassword: $up3r$tr0ng
+cn: data admin
+ds-privilege-name: config-read
+ds-privilege-name: password-reset
+sn: data admin
+
+./bin/ldapmodify -h nameserver.example.com -p 1389 -D "cn=myself" -w password  --useStartTls -X 	
+dn: dc=example,dc=com
+changetype: modify
+add: aci
+aci: (targetattr="*")(version 3.0; acl "allow add and write to data admin user"; allow (add,write,delete) userdn="ldap:///uid=data admin,dc=example,dc=com";)
+
+./bin/ldapmodify -h nameserver.example.com -p 1389 -D "cn=myself" -w password  --useStartTls -X 	
+dn: dc=example,dc=com
+changetype: modify
+add: aci
+aci: (target="ldap:///uid=data admin,dc=example,dc=com")(targetattr = "*")(version 3.0; acl "Allow cn=proxy,dc=example,dc=com to use proxy auth"; allow(all,proxy) userdn = "ldap:///cn=proxy,dc=example,dc=com";)
+
+./bin/dsconfig -h nameserver.example.com -p 4444 -D "cn=myself" -w password -X set-access-control-handler-prop --add "global-aci:(targetcontrol=\"1.2.840.113556.1.4.805\")(version 3.0; acl \"allow subtree delete\"; allow(read) userdn=\"ldap:///uid=data admin,dc=example,dc=com\";)" -n
+
+
+
+Then we perform some tests.
+One of them consists in checking the access to read the schema.
+In anonymous, no entry is displayed.
+We try to read it as an authentified user and expect  to be asked for security option (as starttls is enabled, we should have to pass the --useStartTls -X options to ldapsearch).
+But the options are not required:
+
+
+./PROXY1/opendj/bin/ldapsearch -h nameserver.example.com -p 1391 -D "uid=data admin,dc=example,dc=com" -w $up3r$tr0ng -b "cn=schema" -s base "(&)" objectClasses
+
+ERROR:
+-- rc --
+returned 0, expected to be in [13]
+-- stdout --
+dn: cn=schema
+objectClasses: ( 2.5.6.0 NAME 'top' ABSTRACT MUST objectClass X-ORIGIN 'RFC 4512' X-SCHEMA-FILE '00-core.ldif' )
+objectClasses: ( 2.5.6.1 NAME 'alias' SUP top STRUCTURAL MUST aliasedObjectName X-ORIGIN 'RFC 4512' X-SCHEMA-FILE '00-core.ldif' )
+objectClasses: ( 2.5.6.2 NAME 'country' SUP top STRUCTURAL MUST c MAY ( searchGuide $ description ) X-ORIGIN 'RFC 4519' X-SCHEMA-FILE '00-core.ldif' )
+objectClasses: ( 2.5.6.3 NAME 'locality' SUP top STRUCTURAL MAY ( street $ seeAlso $ searchGuide $ st $ l $ description ) X-ORIGIN 'RFC 4519' X-SCHEMA-FILE '00-core.ldif' )
+objectClasses: ( 2.5.6.4 NAME 'organization' SUP top STRUCTURAL MUST o MAY ( userPassword $ searchGuide $ seeAlso $ businessCategory $ x121Address $ registeredAddress $ destinationIndicator $ preferredDeliveryMethod $ telexNumber $ teletexTerminalIdentifier $ telephoneNumber $ internationaliSDNNumber $ facsimileTelephoneNumber $ street $ postOfficeBox $ postalCode $ postalAddress $ physicalDeliveryOfficeName $ st $ l $ description ) X-ORIGIN 'RFC 4519' X-SCHEMA-FILE '00-core.ldif' )
+...
+
+
+
+Is there something wrong with the configuration or is it a bug?
+
+To reproduce:
+
+
+./run-pybot.py -n -v  -s proxy_group.ProductionMode -t Authenticated_User_Can_Read_Schema opendj
+

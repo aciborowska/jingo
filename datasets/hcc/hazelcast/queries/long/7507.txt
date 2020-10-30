@@ -1,0 +1,90 @@
+Hazelcast version : 3.5.2
+Follwoing is my method to refresh a cache. What I basically do in this is I get Map of values by explicitly callign mapStore.loadAll and I do a putTransient on map with expiry time 0. I need to do this because I can't rely on load and loadAll() of IMap.
+
+```java
+public String blockingRefresh(String cacheName,RefreshType refreshType){
+        log.info("Refreshing map {} RefreshType {}",cacheName,refreshType);
+        IMap<String,String> hazelcastLoadingCache =                     hazelcastInstance.getMap(HAZELCAST_LOADING_CACHE_NAME);
+            hazelcastLoadingCache.lock(cacheName);
+             String refreshStatus=null;
+            try {
+               IMap iMap = checkAndGetHazelcastMap(cacheName);
+               if (iMap != null) {
+                  MapStore mapStore = getMapStore(iMap);
+                  if(mapStore == null) {
+                    log.warn("Mapstore not configured for {}", iMap.getName());
+                    refreshStatus= "Mapstore not configured for "+iMap.getName();
+                    return refreshStatus;
+                  }
+                 int i = 0;
+                 Set<Object> nullValueKeys = new HashSet<>();
+                 Object value = null;
+                 Set<Object> keys = new HashSet<>();
+                 for (Object o : mapStore.loadAllKeys()) {
+                     keys.add(o);
+                   }
+                    Set<Object> existingKeys = new HashSet<>();
+                    existingKeys.addAll(iMap.keySet());
+
+                    existingKeys.removeAll(keys);
+
+                    log.debug("Keys {}, Map {}", keys.size(), iMap.getName());
+                    Map fromStore = mapStore.loadAll(keys);
+                    log.debug("Object from mapstore {}", fromStore.size());
+
+                    for (Object key : keys) {
+                        value = fromStore.get(key);
+                        if (value != null)
+                            iMap.putTransient(key, value, 0, TimeUnit.MILLISECONDS);
+                        else {
+                            iMap.evict(key);
+                            nullValueKeys.add(key);
+                        }
+                        i++;
+                    }
+                    if (!existingKeys.isEmpty()) {
+                        log.info("Keys being removed not present in store {}", existingKeys);
+                        for (Object key : existingKeys) {
+                            iMap.lock(key);
+                            log.info("Evicted key {} {}",key,iMap.evict(key));
+                            iMap.unlock(key);
+                        }
+                    } else {
+                        log.info("Existing keys set is empty");
+                    }
+
+                refreshStatus = "Loaded "+i+" keys for cache "+cacheName+" KeysWithNullValue="+nullValueKeys;
+                log.info(refreshStatus);
+            }else{
+                log.warn("Map not found {}",cacheName);
+            }
+        }catch(Exception e){
+            log.error("Error refreshing cache {}",cacheName,e);
+            refreshStatus = "Error refreshing cache "+cacheName;
+        }finally {
+            hazelcastLoadingCache.unlock(cacheName);
+        }
+        return refreshStatus;
+    }
+```
+
+Now the problem there are couple of keys that don't get removed from the map even after calling evict on those keys explicitly.
+
+Below are the logs:
+```
+ Keys being removed not present in store [193, 195, 194]
+2016-02-11 21:56:41.679 [localhost-startStop-1] [] INFO  c.n.i.s.c.d.r.HazelcastMapRefresher.blockingRefresh:133 - Evicted key 193 **false**
+2016-02-11 21:56:41.680 [localhost-startStop-1] [] INFO  c.n.i.s.c.d.r.HazelcastMapRefresher.blockingRefresh:133 - Evicted key 195 **false**
+2016-02-11 21:56:41.681 [localhost-startStop-1] [] INFO  c.n.i.s.c.d.r.HazelcastMapRefresher.blockingRefresh:133 - Evicted key 194 **false**
+2016-02-11 21:56:41.682 [localhost-startStop-1] [] INFO  c.n.i.s.c.d.r.HazelcastMapRefresher.blockingRefresh:148 - Loaded 2 keys for cache marketEnvDSMap KeysWithNullValue=[]
+```
+After refresh, the map should contain only 2 keys. But it contains 3 more though with null value.
+
+Map configuration
+
+```xml
+<hz:map name="marketEnvDSMap" backup-count="1" eviction-policy="NONE" in-memory-format="BINARY">
+                <hz:map-store enabled="true" write-delay-seconds="0" implementation="marketEnvMapStore"/>
+                <hz:near-cache time-to-live-seconds="0" eviction-policy="LRU" max-size="1000" invalidate-on-change="true"/>
+            </hz:map>
+```

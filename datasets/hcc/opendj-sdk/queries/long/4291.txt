@@ -1,0 +1,39 @@
+Given the following example application:
+
+
+Options options = Options.defaultOptions()
+                .set(AUTHN_BIND_REQUEST, Requests.newSimpleBindRequest("cn=Directory Manager", "secret".toCharArray()))
+                .set(HEARTBEAT_ENABLED, true)
+                .set(HEARTBEAT_INTERVAL, Duration.duration(1, TimeUnit.SECONDS))
+                .set(HEARTBEAT_TIMEOUT, Duration.duration(3, TimeUnit.SECONDS));
+        ClientSocketFactory cf = new LdapClientSocketFactory("localhost", 1389, options);
+        cf = Connections.newFailoverLoadBalancer(Collections.singleton(cf), Options.defaultOptions());
+        cf = Connections.newCachedConnectionPool(cf, 0, 10, 15l, TimeUnit.SECONDS);
+        final Connection conn = new LdapConnectionFactory(cf, options).getConnection();
+        conn.searchSingleEntry(Requests.newSearchRequest("dc=user", SearchScope.BASE_OBJECT, "objectclass=*"));
+        conn.searchSingleEntry(Requests.newSearchRequest("dc=user", SearchScope.BASE_OBJECT, "objectclass=*"));
+
+
+
+The access log will look like this:
+
+[13/szept./2017:14:45:21 +0100] CONNECT conn=3 from=127.0.0.1:59895 to=127.0.0.1:20389 protocol=LDAP
+[13/szept./2017:14:45:22 +0100] BIND REQ conn=3 op=0 msgID=1 version=3 type=SIMPLE dn="cn=Directory Manager"
+[13/szept./2017:14:45:22 +0100] BIND RES conn=3 op=0 msgID=1 result=0 authDN="cn=Directory Manager,cn=Root DNs,cn=config" etime=1
+[13/szept./2017:14:45:22 +0100] SEARCH REQ conn=3 op=1 msgID=2 base="dc=user" scope=base filter="(objectClass=*)" attrs="ALL"
+[13/szept./2017:14:45:22 +0100] SEARCH RES conn=3 op=1 msgID=2 result=0 nentries=1 etime=1
+[13/szept./2017:14:45:22 +0100] UNBIND REQ conn=3 op=2 msgID=3
+[13/szept./2017:14:45:22 +0100] DISCONNECT conn=3 reason="Client Unbind"
+[13/szept./2017:14:45:24 +0100] CONNECT conn=4 from=127.0.0.1:59896 to=127.0.0.1:20389 protocol=LDAP
+[13/szept./2017:14:45:24 +0100] BIND REQ conn=4 op=0 msgID=1 version=3 type=SIMPLE dn="cn=Directory Manager"
+[13/szept./2017:14:45:24 +0100] BIND RES conn=4 op=0 msgID=1 result=0 authDN="cn=Directory Manager,cn=Root DNs,cn=config" etime=3
+[13/szept./2017:14:45:24 +0100] SEARCH REQ conn=4 op=1 msgID=2 base="dc=user" scope=base filter="(objectClass=*)" attrs="ALL"
+[13/szept./2017:14:45:24 +0100] SEARCH RES conn=4 op=1 msgID=2 result=0 nentries=1 etime=1
+[13/szept./2017:14:45:24 +0100] UNBIND REQ conn=4 op=2 msgID=3
+[13/szept./2017:14:45:24 +0100] DISCONNECT conn=4 reason="Client Unbind"
+
+
+
+It seems like LoadBalancer#executeRequest is very keen on closing the connection (when context is not null) and doesn't really care about whether the connection was part of a pool or not.
+
+My understanding is that closing connections is the API user's responsibility, if this has changed then I would like to know how can one use load balanced connection pools without the connections being closed down after every operation.

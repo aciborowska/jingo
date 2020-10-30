@@ -1,0 +1,81 @@
+What can be done to reproduce the situation?
+
+Consider 2 threads and the following piece of code. 
+
+tx.begin()
+//Thread 1 is here and waiting for the lock on key1
+put(key1,value1);
+put(key2,value2);
+// Thread 2 is here and about to commit the transaction
+tx.commit();
+
+Can simulate this using appropriate break points in debug mode.
+
+What is the issue?
+Thread 1 when calls commit it throws a NPE.
+
+Why this issue?
+1. The localLock in the code below is null
+2. ShouldUnlock evaluates to false as localLock == null
+3. The else part of the code puts the entry into the map and tries localLock.decrementAndGet() which gives a NPE.
+
+public Object  put(String name, Object key, Object value, long timeout, long ttl, long txnId) {
+            Object result = null;
+            if (txnId != -1) {
+                ThreadContext tc = ThreadContext.get();
+                Data dataKey = toData(key);
+                CMap cmap = getMap(name);
+                LocalLock localLock = cmap.mapLocalLocks.get(dataKey);
+                boolean shouldUnlock = localLock != null
+                        && localLock.getThreadId() == tc.getThreadId()
+                        && localLock.getCount() == 1;
+                if (shouldUnlock) {
+                    result = txnalPut(CONCURRENT_MAP_PUT_AND_UNLOCK, name, key, value, timeout, ttl, -1);
+                    cmap.mapLocalLocks.remove(dataKey);
+                } else {
+                    result = txnalPut(CONCURRENT_MAP_PUT, name, key, value, timeout, ttl, -1);
+                    localLock.decrementAndGet();             //EVEN WHEN localLock is null!
+                }
+            }
+            return result;
+        }
+
+What is the outcome?
+
+The commit method of tx.commit() catches the exception but the finally block marks the transaction committed. Which makes it impossible to rollback because of the following condition check in the rollback method.
+
+if (status == TXN_STATUS_NO_TXN || status == TXN_STATUS_UNKNOWN
+                || status == TXN_STATUS_COMMITTED || status == TXN_STATUS_ROLLED_BACK)
+            throw new IllegalStateException("Transaction is not ready to rollback. Status= "
+                    + status)
+
+<code>
+public void  commit() throws IllegalStateException {
+        if (status != TXN_STATUS_ACTIVE)
+            throw new IllegalStateException("Transaction is not active");
+        status = TXN_STATUS_COMMITTING;
+        try {
+            ThreadContext.get().setCurrentFactory(factory);
+
+```
+        for (TransactionRecord transactionRecord : transactionRecords) {
+                   transactionRecord.commit();
+        }
+
+    } catch (RuntimeException e) {
+
+        throw e;
+
+    } catch (Exception e) {
+        throw new RuntimeException(e);
+    } finally {
+       finalizeTxn();
+        status = TXN_STATUS_COMMITTED;
+    }
+```
+
+   }
+</code>
+
+What are the risks?
+NON ATOMIC TRANSACTIONS

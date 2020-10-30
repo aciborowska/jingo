@@ -1,0 +1,48 @@
+We have a cluster of 2 hazelcast nodes and 1 client running on 2 JVMs: 
+(1) a JVM with only a Hazelcast node running
+(2) a JVM running both a node and a client which obtains a distributed lock
+
+When we first kill JVM (2)  (in Windows terminate process, on Linux kill -9) and after this we restart it, the client hangs forever on trying to re-obtain the lock. (although we expect it to obtain the lock directly or after the operation timeout of 5 minutes) 
+
+The code to reproduce the problem:
+
+```
+public class JVM1 {
+    public static void main(String[] args) {
+        System.out.println("JVM(1): Launching Hazelcast server instance");
+        Hazelcast.newHazelcastInstance();
+        System.out.println("JVM(1): Finished launching Hazelcast server instance");
+    }
+}
+```
+
+```
+public class JVM2 {
+    public static void main(String[] args) {
+        System.out.println("JVM(2): Launching Hazelcast server instance");
+        Hazelcast.newHazelcastInstance();
+
+        System.out.println("JVM(2): Launching client..");
+        HazelcastInstance hzClient = HazelcastClient.newHazelcastClient();
+
+        System.out.println("JVM(2): Using client to retrieve lock");
+        ILock lock = hzClient.getLock("MYLOCK");
+        System.out.println("JVM(2): using client to lock lock ");
+        lock.lock();
+        System.out.println("JVM(2):Lock succesfully obtained");
+    }
+}
+```
+
+The steps to reproduce the problem:
+1) Launch class JVM(1)
+2) Launch JVM(2)
+3) Kill JVM(2)
+4) Relaunch JVM(2)
+=> JVM(2) hangs forever on lock.lock();
+
+Note 1: We are able to reproduce the problem about 85% of the time when we run the experiment.
+
+Note 2: the problem only occurs when we use the _client instance_ to obtain the lock in JVM2, when we use the server instance the lock always seems to be released after a kill. 
+
+We found the problem using 3.1.5, but the problem still occurs in 3.2.1.

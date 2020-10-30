@@ -1,0 +1,59 @@
+I encountered this problem in our private fork of Flink, after taking a look at the current master branch of Apache Flink, I think the problem exists here also.
+
+Problem Detail:
+ 1. checkpoint canceled because of expiration, so will call the canceller such as below
+
+
+final Runnable canceller = () -> {
+   synchronized (lock) {
+      // only do the work if the checkpoint is not discarded anyways
+      // note that checkpoint completion discards the pending checkpoint object
+      if (!checkpoint.isDiscarded()) {
+         LOG.info("Checkpoint {} of job {} expired before completing.", checkpointID, job);
+
+         failPendingCheckpoint(checkpoint, CheckpointFailureReason.CHECKPOINT_EXPIRED);
+         pendingCheckpoints.remove(checkpointID);
+         rememberRecentCheckpointId(checkpointID);
+
+         triggerQueuedRequests();
+      }
+   }
+};
+
+ 
+ But failPendingCheckpoint may throw exceptions because it will call
+
+CheckpointCoordinator#failPendingCheckpoint
+
+-> PendingCheckpoint#abort
+
+->  PendingCheckpoint#reportFailedCheckpoint
+
+-> initialize a FailedCheckpointStates,  may throw an exception by checkArgument 
+
+Did not find more about why there ever failed the checkArgument currently(this problem did not reproduce frequently), will create an issue for that if I have more findings.
+
+ 
+
+2. when trigger checkpoint next, we'll first check if there already are too many checkpoints such as below
+
+
+private void checkConcurrentCheckpoints() throws CheckpointException {
+   if (pendingCheckpoints.size() >= maxConcurrentCheckpointAttempts) {
+      triggerRequestQueued = true;
+      if (currentPeriodicTrigger != null) {
+         currentPeriodicTrigger.cancel(false);
+         currentPeriodicTrigger = null;
+      }
+      throw new CheckpointException(CheckpointFailureReason.TOO_MANY_CONCURRENT_CHECKPOINTS);
+   }
+}
+
+
+the pendingCheckpoints.zie() >= maxConcurrentCheckpoitnAttempts will always true
+
+3. no checkpoint will be triggered ever from that on.
+
+ Because of the failPendingCheckpoint may throw Exception, so we may place the remove pending checkpoint logic in a finally block.
+
+I'd like to file a pr for this if this really needs to fix.

@@ -1,0 +1,163 @@
+Hi,
+
+Currently, I have discovered an inconsistency with the `QueryCache#values(Predicate)`. Depending on the passed `Predicate` we could receive an object which is whether connected or disconnected from the `QueryCache`. By "connected object" I mean that any modification on this object is reflected in the following invocation. Below is an example (hope this make it more clear).
+
+Java version: 1.8.0_171
+Hazelcast version: 3.11
+
+Here is a hazelcast configuration:
+```java
+public class Hazelcast {
+    private static final Logger log = LoggerFactory.getLogger(Hazelcast.class);
+
+    public static final String MAP_NAME = "DummyMap";
+
+    public static HazelcastInstance createHazelcastInstance() {
+        HazelcastInstance hazelcastInstance = newHazelcastInstance(configuration());
+        configureIndex(hazelcastInstance);
+        log.info("Started Hazelcast Node");
+        return hazelcastInstance;
+    }
+
+    private static Config configuration() {
+        return new Config()
+                .setProperty("hazelcast.logging.type", "slf4j")
+                .addMapConfig(mapConfig());
+    }
+
+    private static MapConfig mapConfig() {
+        return new MapConfig(MAP_NAME)
+                .setCacheDeserializedValues(NEVER)
+                .setInMemoryFormat(BINARY)
+                .addQueryCacheConfig(queryCacheConfig());
+}
+
+    private static QueryCacheConfig queryCacheConfig() {
+        return new QueryCacheConfig()
+                .setName(MAP_NAME)
+                .setPredicateConfig(new PredicateConfig(TruePredicate.INSTANCE))
+                .setIncludeValue(true)
+                .setInMemoryFormat(BINARY)
+                .setPopulate(true)
+                .setDelaySeconds(0);
+    }
+
+    private static void configureIndex(HazelcastInstance hazelcast) {
+        hazelcast.getMap(MAP_NAME).getQueryCache(MAP_NAME).addIndex("email", false);
+    }
+}
+```
+
+A Dummy object:
+```java
+public class Dummy implements Serializable {
+    private String name; // also a key in map
+    private String email; // with index
+    private Integer age;
+    
+    /* constructor, getter, setter, hashCode, equals */
+}
+```
+And here is a main:
+```java
+public class Test {
+    private static final Logger log = LoggerFactory.getLogger(Test.class);
+
+    private static final String NAME = "dummy";
+    private static final String EMAIL = "dummy@dummy.dummy";
+    private static final int AGE = 999;
+
+    public static void main(String[] args) {
+        HazelcastInstance hazelcast = createHazelcastInstance();
+
+        IMap<String, Dummy> map = hazelcast.getMap(MAP_NAME);
+        log.info("create one dummy and insert it to map");
+        Dummy dummy = new Dummy(NAME, EMAIL, AGE);
+        map.put(dummy.getName(), dummy);
+        log.info("map insert: {}", dummy);
+
+        log.info("make sure changes are in query caches so lets sleep a bit");
+        sleepUninterruptibly(500, MILLISECONDS);
+
+        QueryCache<String, Dummy> queryCache = map.getQueryCache(MAP_NAME);
+
+
+        Predicate unindexedPredicate = unindexedPredicate(NAME);
+        Predicate indexedPredicate = indexedPredicate(NAME, EMAIL);
+
+        log.info("before any modification");
+        log.info("query cache contains: {}", queryCache.values());
+        log.info("unindexed predicate {} {}", unindexedPredicate, queryCache.values(unindexedPredicate));
+        log.info("indexed predicate {} {}", indexedPredicate, queryCache.values(indexedPredicate));
+
+
+        queryCache.values(unindexedPredicate).iterator().next().setName("noop");
+        log.info("after modification on unindexed predicate");
+        log.info("query cache contains: {}", queryCache.values());
+        log.info("unindexed predicate {} {}", unindexedPredicate, queryCache.values(unindexedPredicate));
+        log.info("indexed predicate {} {}", indexedPredicate, queryCache.values(indexedPredicate));
+
+
+        queryCache.values(indexedPredicate).iterator().next().setName("noop");
+        log.info("after modification on indexed predicate");
+        log.info("query cache contains: {}", queryCache.values());
+        log.info("unindexed predicate {} {}", unindexedPredicate, queryCache.values(unindexedPredicate));
+        log.info("indexed predicate {} {}", indexedPredicate, queryCache.values(indexedPredicate)); // <-- this is not right
+        log.info("indexed predicate on map {} {}", indexedPredicate, map.values(indexedPredicate)); // <-- this is right
+
+
+        log.info("all done, exiting");
+        System.exit(0);
+    }
+
+    private static Predicate unindexedPredicate(String name) {
+        return Predicates.equal("name", name);
+    }
+
+    private static Predicate indexedPredicate(String name, String email) {
+        return Predicates.and(
+                unindexedPredicate(name),
+                Predicates.equal("email", email)  // indexed
+        );
+    }
+}
+```
+
+
+The above example produces the following output:
+```log
+before any modification 
+     query cache contains: [Dummy{name='dummy', email='dummy@dummy.dummy', age=999}]
+     unindexed predicate name=dummy
+                           [Dummy{name='dummy', email='dummy@dummy.dummy', age=999}]
+     indexed predicate (name=dummy AND email=dummy@dummy.dummy)
+                           [Dummy{name='dummy', email='dummy@dummy.dummy', age=999}]
+
+
+after modification on unindexed predicate
+     query cache contains: [Dummy{name='dummy', email='dummy@dummy.dummy', age=999}]
+     unindexed predicate name=dummy
+                           [Dummy{name='dummy', email='dummy@dummy.dummy', age=999}]
+     indexed predicate (name=dummy AND email=dummy@dummy.dummy)
+                           [Dummy{name='dummy', email='dummy@dummy.dummy', age=999}]
+
+
+after modification on indexed predicate
+     query cache contains: [Dummy{name='dummy', email='dummy@dummy.dummy', age=999}]
+     unindexed predicate name=dummy
+                           [Dummy{name='dummy', email='dummy@dummy.dummy', age=999}]
+     indexed predicate (name=dummy AND email=dummy@dummy.dummy)
+                           []   <-- there is no result due to the changes in dummy#name
+     indexed predicate on map (name=dummy AND email=dummy@dummy.dummy)
+                           [Dummy{name='dummy', email='dummy@dummy.dummy', age=999}]
+```
+
+Looking at the above example we could notice that the results returned by `Predicate` which use indexed property are backed by the `QueryCache`.
+
+From the `IMap#values(Predicate)` documentation:
+> The collection is NOT backed by the map, so changes to the map are NOT reflected in the collection, and vice-versa.
+
+Taking this into consideration it looks like the behavior of the `QueryCache` is not as we could expect.
+
+Best regards,
+Adrian

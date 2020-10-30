@@ -1,0 +1,41 @@
+We keep loosing entries in our distributed HZ map randomly with Hazelcast 3.2.(1/2)
+It keeps happening once every few days and may be related to the fact that our Cluster members' process sometimes gets killed/shutdown forcefully. (We are aware of the fact that is not a "good practice" ;-))
+Nevertheless this shouldn't lead to lost map entries, at least in our point of view - especially as we make use of MEMBER_AWARE PARTITION_GROUPS and ASYNC BACKUPS.
+
+I also created a Unit Test to reproduce this issue: 
+
+```
+public void testMap_entry_loss_on_instance_terminate() {
+    for(int j = 0; j<100; j++) {
+        //Setting ENABLED_STATISTICS to TRUE/FALSE does not change anything (It seems that setting it to TRUE makes it fail even faster)
+        final Config hazelcastConfig = new Config().addMapConfig(new MapConfig("myMap").setStatisticsEnabled(true).setAsyncBackupCount(1)
+                .setEvictionPolicy(MapConfig.EvictionPolicy.NONE).setReadBackupData(false));
+        int noOfRecords = 100;
+
+        final HazelcastInstance instance1 = Hazelcast.newHazelcastInstance(hazelcastConfig);
+        final HazelcastInstance instance2 = Hazelcast.newHazelcastInstance(hazelcastConfig);
+        final HazelcastInstance instance3 = Hazelcast.newHazelcastInstance(hazelcastConfig);
+
+        IMap<Integer, Integer> myMap = instance1.getMap(Settings.SHARED_MAP_NAME);
+        for (int i = 0; i < noOfRecords; i++) {
+            myMap.put(i, i);
+        }
+        instance2.getLifecycleService().terminate();
+        //instance3.getLifecycleService().terminate();
+
+        Assert.assertEquals("Some records have been lost at iteration: " + j, noOfRecords, myMap.values().size());
+        Hazelcast.shutdownAll();
+        try {
+            Thread.sleep(1000);
+        } catch (Exception ignore){}
+    }
+}
+```
+
+The error typically doesn't occur at the first, but between the 3rd and 10th iteration:
+junit.framework.AssertionFailedError: Some records have been lost at iteration: 3 
+Expected :100
+Actual   :98
+
+Please let us know if this is intended behaviour, misuage or a real issue. 
+Thank you. 

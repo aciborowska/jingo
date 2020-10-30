@@ -1,0 +1,60 @@
+I filed this issue as i got no response at https://groups.google.com/forum/#!topic/hazelcast/Gf18lU75Ae4
+
+We are getting really strange issues while running Hazelcast 3.5.2. It seems as now an then, Heartbeats are not send or received in the cluster, which leads to cluster member removal. We can see the following warnings in the log files:
+
+[WARN ] 2015-11-27 07:37:14,955 [cached43.appservices.null] com.hazelcast.cluster.ClusterService - [_]:_ [_] [3.5.2] Removing Member [_]:\* because it has not sent any heartbeats for 15000 ms.
+- were IP Adresses and ports, which are left blank for security reasons.
+
+Cluster Heartbeat interval(hazelcast.heartbeat.interval.seconds) is configured with 1 second, and maximum for no heartbeat(hazelcast.max.no.heartbeat.seconds) is set to 15 seconds. So it seems as 15 Heartbeats were not sent or received. Quite strage is also the following line:
+
+[INFO ] 2015-11-27 07:36:58,954 [cached39.appservices.null] com.hazelcast.cluster.ClusterService - [_]:_ [*] [3.5.2] System clock apparently jumped from 2015-11-27T07:36:27.760 to 2015-11-27T07:36:58.953 since last heartbeat (+30193ms).
+
+I am guessing here that the heartbeat was sent, but was not processed "just in time", but for some reason about 30seconds later, which is the logged difference in the system clock.
+
+What might be a reason for this behavior? Is this bound to heavy load, or too small queue sizes? We have also seen this effect on an almost idle test system. We have checked the system clock and are almost sure that there were not updates or other sync problems.
+
+Taking a look at the source code of ClusterServiceImpl might raise another issue:
+
+``` java
+private void heartBeater() {
+    if (!node.joined() || !node.isActive()) {
+        return;
+    }
+
+    long now = Clock.currentTimeMillis();
+
+    /*
+     * Compensate for any abrupt jumps forward in the system clock.
+     */
+    long clockJump = 0L;
+    if (lastHeartBeat != 0L) {
+        clockJump = now - lastHeartBeat - TimeUnit.SECONDS.toMillis(heartbeatInterval);
+        if (Math.abs(clockJump) > HEARTBEAT_LOG_THRESHOLD) {
+            SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS");
+            logger.info("System clock apparently jumped from " + sdf.format(new Date(lastHeartBeat)) + " to " +
+                    sdf.format(new Date(now)) + " since last heartbeat (" + String.format("%+d", clockJump) + "ms).");
+        }
+        clockJump = Math.max(0L, clockJump);
+
+        if (clockJump >= maxNoMasterConfirmationMillis / 2) {
+            logger.warning(
+                    "Resetting master confirmation timestamps because of huge system clock jump! " + "Clock-Jump: "
+                            + clockJump + "ms, Master-Confirmation-Timeout: " + maxNoMasterConfirmationMillis
+                            + "ms.");
+            resetMemberMasterConfirmations();
+        }
+    }
+    lastHeartBeat = now;
+
+    if (node.isMaster()) {
+        heartBeaterMaster(now, clockJump);
+    } else {
+        heartBeaterSlave(now, clockJump);
+    }
+}
+```
+
+The heartBeater Method is fired every second, but the lastHeartBeat is only updated if the node is joined and active(if statement in the first two lines). Now, might it be possible that if a join operation takes longer than the configured max no heartbeat interval, the node is removed from the cluster, automatically rejoined which will trigger the same missing heartbeats problem? Shouldn't the lastHeartBeat be updated in any case?
+
+Thanks in advance,
+Mirko

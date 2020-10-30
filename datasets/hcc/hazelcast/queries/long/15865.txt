@@ -1,0 +1,123 @@
+A client can use query predicates against Portable even if the Portable classes and factory are not on the server's classpath.
+
+If a paging predicate is used, this breaks on the 2nd page with the message `Caused by: com.hazelcast.nio.serialization.HazelcastSerializationException: Could not find PortableFactory for factory-id: 123` as the server is unable to do the implicit sorting to produce the second page.
+Thereafter, the client hangs.
+
+This exhibits two issues, paging predicates are allowed for classes without known factories, and more significant  that this incorrect use then stops the operation from returning.
+
+Reproducer for 4.0-SNAPSHOT, same behavior on 3.12.3.
+
+```
+public class Application implements PortableFactory {
+
+	public static final int PAYLOAD_FACTORY_ID = 123;
+	public static final int PAYLOAD_CLASS_ID = 456;
+	
+	public static void main(String[] args) {
+		Application application = new Application();
+		application.go();
+	}
+	
+	@SuppressWarnings({ "rawtypes", "unchecked" })
+	void go() {
+		// Server does not need portable factory
+		HazelcastInstance hazelcastServer = Hazelcast.newHazelcastInstance();
+		
+		ClientConfig clientConfig = new ClientConfig();
+
+		Map<Integer, PortableFactory> portableFactories = new HashMap<>();		
+		portableFactories.put(PAYLOAD_FACTORY_ID, this);
+		
+		clientConfig.getSerializationConfig().setPortableFactories(portableFactories);
+		
+		HazelcastInstance hazelcastClient = HazelcastClient.newHazelcastClient(clientConfig);
+		
+		Predicate predicate = Predicates.alwaysTrue();
+		PagingPredicate pagingPredicate = Predicates.pagingPredicate(predicate, 2);
+		
+		// IMap<Integer, Payload> works, IMap<Payload, Integer> fails
+		IMap<Payload, Integer> payloadMap = 
+				hazelcastClient.getMap(Payload.class.getSimpleName());
+		
+		for (int i = 0 ; i < 5 ; i ++) {
+			Payload payload = new Payload();
+			payload.setI(i);
+			
+			payloadMap.set(payload, i);
+		}
+		
+		// Prove reading works
+		payloadMap
+		.keySet()
+		.forEach(key -> System.out.println("Key==" + key + ",Value==" + payloadMap.get(key)));			
+
+		// First page gives exception, second page never returns
+		for (int pageCount = 0 ; pageCount < 2 ; pageCount++) {
+			
+			Collection<Payload> page = payloadMap.keySet(pagingPredicate);
+			try {
+				System.out.println("Page " + pageCount + " size " + page.size());
+			} catch (Exception e1) {
+				System.err.println("Page " + pageCount + " size " + e1.getMessage());
+			}
+			try {
+				for (Payload value : page) {
+					System.out.println("Page " + pageCount + " value " + value);
+				}
+			} catch (Exception e2) {
+				System.err.println("Page " + pageCount + " value " + e2.getMessage());
+			}
+			
+			pagingPredicate.nextPage();
+		}
+
+		// Code is never reached
+		System.out.println("After : Map " + payloadMap.getName() + " has size " + payloadMap.size());
+
+		hazelcastClient.shutdown();
+		hazelcastServer.shutdown();
+	}
+
+	public Portable create(int classId) {
+		if (classId == PAYLOAD_CLASS_ID) {
+			return new Payload();
+		}
+		return null;
+	}
+
+	static class Payload implements Comparable<Payload>, Portable {
+
+		static final String FIELD_I = "i";
+		private int i;
+		
+		public int getFactoryId() {
+			return PAYLOAD_FACTORY_ID;
+		}
+		public int getClassId() {
+			return PAYLOAD_CLASS_ID;
+		}
+		public void writePortable(PortableWriter writer) throws IOException {
+			writer.writeInt(FIELD_I, this.i);
+		}
+		public void readPortable(PortableReader reader) throws IOException {
+			this.i = reader.readInt(FIELD_I);
+		}
+
+		@Override
+		public int compareTo(Payload that) {
+			return this.i - that.getI();
+		}
+		
+		public int getI() {
+			return i;
+		}
+		public void setI(int i) {
+			this.i = i;
+		}
+		@Override
+		public String toString() {
+			return "Payload [i=" + i + "]";
+		}
+	}
+}
+```

@@ -1,0 +1,61 @@
+OpenDJ's Quicksetup is unable to start the server after setting it up if the hostname of a machine could not be resolved. I know that these are very rare circumstances. However, Quicksetup should work in such environments.
+
+This issue can be reproduced using the following steps:
+1.) getent host $(hostname) gives an empty output which means that the machine's hostname isn't resolvable.
+2.) Run Setup: ./setup -i -b "dc=example,dc=org" -w secret -n
+
+Some minutes later, the setup process is unable to start the server:
+
+Starting Directory Server ........................................................... Stopping Directory Server ..... Done.
+
+Could not connect to the server after after requesting start.  Verify that the server has access rights to port 4444.
+If you want to report this error, provide the contents of file /tmp/opendj-setup-8683317197518450493.log
+
+
+
+The opendj-setup log file contains, amongst others, the following messages:
+
+javax.naming.CommunicationException: 0.0.0.0:4444 [Root exception is java.net.UnknownHostException: centos-unresolvable: centos-unresolvable]
+...
+Caused by: java.net.UnknownHostException: centos-unresolvable: centos-unresolvable
+     at java.net.InetAddress.getLocalHost(InetAddress.java:1426)
+     at java.net.AbstractPlainSocketImpl.connectToAddress(AbstractPlainSocketImpl.java:174)
+     ...
+Could not connect to the server after after requesting start.  Verify that the server has access rights to port 4444.
+     at org.opends.quicksetup.util.ServerController.startServer(ServerController.java:559)
+     at org.opends.quicksetup.util.ServerController.startServer(ServerController.java:318)
+
+
+
+Looking at the sources I found some strange if-expressions in ServerController.java.
+
+	Line 488 contains if (((dig >= 3) || (dig <= 4)) which is the same as if (true)
+	Line 495 contains if (((dig >= 5) || (dig <= 6))) which is the same as if (true)
+
+
+
+So line 502 of ServerController.java will always contain "0.0.0.0" in the ldapUrl.
+
+The following patch should fix both, the strange if-expressions and the startup problems when the machine's hostname is not resolvable:
+
+--- src/quicksetup/org/opends/quicksetup/util/ServerController.java     (revision 7802)
++++ src/quicksetup/org/opends/quicksetup/util/ServerController.java     (working copy)
+@@ -485,14 +485,14 @@
+ 
+             int dig = i % 10;
+ 
+-            if (((dig >= 3) || (dig <= 4)) &&
++            if (((dig == 3) || (dig == 4)) &&
+             !"localhost".equals(hostName))
+             {
+               // Try with local host.  This might be necessary in certain
+               // network configurations.
+               hostName = "localhost";
+             }
+-            if (((dig >= 5) || (dig <= 6)))
++            if (((dig == 5) || (dig == 6)))
+             {
+               // Try with 0.0.0.0.  This might be necessary in certain
+               // network configurations.
+
+

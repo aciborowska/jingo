@@ -1,0 +1,70 @@
+### Steps to Reproduce
+
+I have following Controller:
+```
+package org.example.test.micronaut.jsonstream
+
+import io.micronaut.http.HttpResponse
+import io.micronaut.http.MediaType
+import io.micronaut.http.annotation.Body
+import io.micronaut.http.annotation.Controller
+import io.micronaut.http.annotation.Post
+import io.reactivex.Flowable
+import io.reactivex.Single
+import io.reactivex.schedulers.Schedulers
+import org.slf4j.LoggerFactory
+
+@Controller("/jsonStream")
+class JsonStreamController {
+
+    private val log = LoggerFactory.getLogger(javaClass)!!
+
+    @Post("/", consumes = [MediaType.APPLICATION_JSON_STREAM])
+    fun load(@Body data: Flowable<Map<Any,Any>>): Single<HttpResponse<Map<String, Boolean>>> {
+        return data.subscribeOn(Schedulers.io())
+                .map { map: Map<Any, Any> ->
+                    log.info("$map")
+                    1L
+                }
+                .count()
+                .map {
+                    log.info("Handled $it json objects successfully.")
+                    HttpResponse.ok(mapOf("success" to true, "handled" to it))
+                }
+    }
+
+}
+```
+But it takes only the first json object from POST body:
+```
+curl -s -H"Content-Type: application/x-json-stream" -XPOST "localhost:8080/jsonStream" --data-binary '{"foo":"bar"}
+{"foo2":"bar2"}' | jq .
+```
+Returns `{"success": true,"handled": 1}`
+
+But
+```
+curl -s -H"Content-Type: application/x-json-stream" -XPOST "localhost:8080/jsonStream" --data-binary '[{"foo":"bar"},{"foo2":"bar2"}]' | jq .
+```
+Returns `{"success": true,"handled": 2}`
+So it seems that instead of handling stream of JSON objects it is handling objects wrapped in JSON array.
+
+### Expected Behaviour
+
+MediaType application/x-json-stream should handle all passed JSON objects separated by newline.
+At least that is what the other projects like Rucio and .NET do. See e.g. https://rucio.readthedocs.io/en/latest/rest.html and https://github.com/Microsoft/ApplicationInsights-dotnet/blob/master/src/Microsoft.ApplicationInsights/Extensibility/Implementation/JsonSerializer.cs
+
+### Actual Behaviour
+
+It is handling only the first JSON object of body.
+
+### Environment Information
+
+- **Operating System**: Ubuntu 16.04.5 LTS
+- **Micronaut Version:** 1.0.1
+- **JDK Version:** 1.8.0_191
+
+### Example Application
+
+https://github.com/make/micronaut-test-json-stream
+

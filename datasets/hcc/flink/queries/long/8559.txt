@@ -1,0 +1,36 @@
+In the RocksDBKeyedStatebackend#snapshotIncrementally we can find this code
+ 
+
+
+final RocksDBIncrementalSnapshotOperation<K> snapshotOperation =
+	new RocksDBIncrementalSnapshotOperation<>(
+		this,
+		checkpointStreamFactory,
+		checkpointId,
+		checkpointTimestamp);
+
+snapshotOperation.takeSnapshot();
+
+return new FutureTask<KeyedStateHandle>(
+	new Callable<KeyedStateHandle>() {
+		@Override
+		public KeyedStateHandle call() throws Exception {
+			return snapshotOperation.materializeSnapshot();
+		}
+	}
+) {
+	@Override
+	public boolean cancel(boolean mayInterruptIfRunning) {
+		snapshotOperation.stop();
+		return super.cancel(mayInterruptIfRunning);
+	}
+
+	@Override
+	protected void done() {
+		snapshotOperation.releaseResources(isCancelled());
+	}
+};
+
+
+
+In the constructor of RocksDBIncrementalSnapshotOperation we call aquireResource() on the RocksDB ResourceGuard. If snapshotOperation.takeSnapshot() fails with an exception these resources are never released. When the task is shutdown due to the exception it will get stuck on releasing RocksDB.

@@ -1,0 +1,57 @@
+Using OpenAM-14 with an external DJ-4 (for config, CTS and datastore) + rest2ldap  GW configured on Tomcat (see attched json config) with an oauth2 rfc7762 resolver (i.e. to use OpenAM introspect endpoint).
+
+1. Generate an access_token directly with OpenAM:
+
+ curl --request POST --user clientOIDC:password --data grant_type='password&username=user.0&password=password&scope=uid' 'http://bigmac.internal.forgerock.com:8080/openam/oauth2/access_token?realm=/myrealm'
+{"access_token":"31f2f54a-1bff-42eb-994f-e9ee10909e14","scope":"uid","token_type":"Bearer","expires_in":3599}
+
+
+
+2. Try to access user.0 using the previous access_token
+
+ curl -v -H "Authorization: Bearer 31f2f54a-1bff-42eb-994f-e9ee10909e14" http://bigmac.internal.forgerock.com:8082/rest2ldap/users/user.0
+*   Trying 127.0.0.1...
+* Connected to bigmac.internal.forgerock.com (127.0.0.1) port 8082 (#0)
+> GET /rest2ldap/users/user.0 HTTP/1.1
+> Host: bigmac.internal.forgerock.com:8082
+> User-Agent: curl/7.43.0
+> Accept: */*
+> Authorization: Bearer 31f2f54a-1bff-42eb-994f-e9ee10909e14
+>
+< HTTP/1.1 401 Unauthorized
+< Server: Apache-Coyote/1.1
+< WWW-Authenticate: Bearer realm="myrealm", error="invalid_token", error_description="The access token provided is expired, revoked, malformed, or invalid for other reasons."
+< Transfer-Encoding: chunked
+< Date: Tue, 31 May 2016 13:57:11 GMT
+<
+* Connection #0 to host bigmac.internal.forgerock.com left intact
+
+
+
+
+=> Looking at the traffic between the Rest2ldap gateway and OpenAM, we see the token was actually flagged as valid:
+
+T 127.0.0.1:64085 -> 127.0.0.1:8080 [AP]
+POST /openam/oauth2/myrealm/introspect HTTP/1.1.
+Accept: application/json.
+Authorization: Basic Y2xpZW50T0lEQzpwYXNzd29yZA==.
+Content-Length: 71.
+Content-Type: application/x-www-form-urlencoded.
+Host: bigmac.internal.forgerock.com:8080.
+Connection: Keep-Alive.
+User-Agent: Apache-HttpAsyncClient/4.1 (Java/1.8.0_25).
+.
+token=31f2f54a-1bff-42eb-994f-e9ee10909e14&token_type_hint=access_token
+
+T 127.0.0.1:8080 -> 127.0.0.1:64085 [AP]
+HTTP/1.1 200 OK.
+Date: Tue, 31 May 2016 13:57:11 GMT.
+Accept-Ranges: bytes.
+Server: Restlet-Framework/2.3.4.
+Vary: Accept-Charset, Accept-Encoding, Accept-Language, Accept.
+Content-Type: application/json;charset=UTF-8.
+Transfer-Encoding: chunked.
+.
+c7.
+{"active":true,"scope":"uid","client_id":"clientOIDC","user_id":"user.0","token_type":"access_token","exp":3573,"sub":"user.0","iss":"http://bigmac.internal.forgerock.com:8080/openam/oauth2/myrealm"}.
+

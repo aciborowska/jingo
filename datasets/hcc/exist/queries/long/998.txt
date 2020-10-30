@@ -1,0 +1,23 @@
+As an example, consider the following method from `org.exist.collections.Collection`:
+
+``` java
+    public Iterator<XmldbURI> collectionIterator(final DBBroker broker) throws PermissionDeniedException {
+        if(!getPermissionsNoLock().validate(broker.getCurrentSubject(), Permission.READ)) {
+            throw new PermissionDeniedException("Permission to list sub-collections denied on " + this.getURI());
+        }
+
+        try {
+            getLock().acquire(Lock.READ_LOCK);
+            return subCollections.stableIterator();
+        } catch(final LockException e) {
+            LOG.warn(e.getMessage(), e);
+            return null;
+        } finally {
+            getLock().release(Lock.READ_LOCK);
+        }
+    }
+```
+
+It takes a READ lock on the `subCollections` so that it may take a stable iterator (which copies the keys); However, there are many unlocked accesses to `subCollections` including writes (which defeats the purpose of the above READ locking) e.g. 
+1. `Collection#update`.
+2. `Collection#addCollection`. This is called from `NativeBroker#getOrCreateCollectionExplicit` without a WRITE lock on the collection. Also it seems that `Collection current = getCollection(transaction, XmldbURI.ROOT_COLLECTION_URI);` in `NativeBroker#getOrCreateCollectionExplicit` should instead be `Collection current = getCollection(transaction, XmldbURI.ROOT_COLLECTION_URI, Lock.WRITE_LOCK);`

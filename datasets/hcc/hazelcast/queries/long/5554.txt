@@ -1,0 +1,95 @@
+Creating this issue as suggested by @bilalyasar (see [discussion on the Hazelcast Google Groups forum](https://groups.google.com/forum/#!topic/hazelcast/G1P43tORJPA))
+
+Hazelcast version that you use: `3.4.2`, `3.5`
+Cluster size: `1`
+Number of the clients: `1`
+Version of Java: `OracleJDK 1.7.0_80, x86_64`, `OracleJDK 1.8.0_45, x86_64`
+Operating system: `OS X Yosemite 10.10.3 (14D136)`
+Logs and stack traces: See the console output from executing the TestNG test case below
+Detailed description of the steps to reproduce your issue: See the TestNG test case below
+Unit test with the hazelcast.xml file: 
+
+``` java
+import static org.testng.Assert.assertEquals;
+import static org.testng.Assert.assertNotNull;
+
+import org.testng.annotations.AfterClass;
+import org.testng.annotations.BeforeClass;
+import org.testng.annotations.Test;
+
+import com.hazelcast.client.HazelcastClient;
+import com.hazelcast.core.DistributedObjectEvent;
+import com.hazelcast.core.DistributedObjectListener;
+import com.hazelcast.core.Hazelcast;
+import com.hazelcast.core.HazelcastInstance;
+import com.hazelcast.core.IMap;
+
+public class IMapDestroyTest {
+
+    private HazelcastInstance server;
+    private HazelcastInstance client;
+
+    @BeforeClass
+    public void setUpBeforeClass() {
+        server = Hazelcast.newHazelcastInstance();
+        sleep(2000);
+        client = HazelcastClient.newHazelcastClient();
+        client.addDistributedObjectListener(new DistributedObjectListener() {
+            @Override public void distributedObjectDestroyed(final DistributedObjectEvent event) {
+                System.out.println("\n\tdistributedObjectDestroyed(): " + event);
+            }
+            @Override public void distributedObjectCreated(final DistributedObjectEvent event) {
+                System.out.println("\n\tdistributedObjectCreated(): " + event);
+            }
+        });
+    }
+
+    @AfterClass
+    public void tearDownAfterClass() {
+        client.shutdown();
+        server.shutdown();
+    }
+
+    @Test
+    public void testIMapDestroy() {
+        System.out.print("Creating 'foo' map... ");
+        IMap<String, String> fooMap = client.getMap("foo");
+        assertNotNull(fooMap);
+        System.out.println("done.");
+        System.out.println("All known distributed objects: " + client.getDistributedObjects());
+        System.out.print("Inserting an entry... ");
+        fooMap.put("fu", "bar");
+        System.out.print("done.\nRetrieving the entry... ");
+        String value = fooMap.get("fu");
+        assertEquals(value, "bar");
+        System.out.print("done.\nDestroying the map... ");
+        fooMap.destroy();
+        System.out.println("done.");
+        System.out.println("All known distributed objects: " + client.getDistributedObjects());
+    }
+
+    private void sleep(final int millis) {
+        try {
+            Thread.sleep(millis);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+}
+```
+
+Console output:
+
+```
+Creating 'foo' map...
+        distributedObjectCreated(): DistributedObjectEvent{eventType=CREATED, serviceName='hz:impl:mapService', distributedObject=IMap{name='foo'}}
+done.
+All known distributed objects: [IMap{name='foo'}]
+Inserting an entry... done.
+Retrieving the entry... done.
+Destroying the map...
+        distributedObjectDestroyed(): DistributedObjectEvent{eventType=DESTROYED, serviceName='hz:impl:mapService', distributedObject=IMap{name='foo'}}
+        distributedObjectCreated(): DistributedObjectEvent{eventType=CREATED, serviceName='hz:impl:mapService', distributedObject=IMap{name='foo'}}
+done.
+All known distributed objects: [IMap{name='foo'}]
+```

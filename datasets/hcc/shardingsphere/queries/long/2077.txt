@@ -1,0 +1,159 @@
+## Bug Report
+
+When the ShardingSphere keyGenerator is part of table union primary key, Saga revert `INSERT` SQL will miss non-generated primary key parameters.
+
+### Which version of ShardingSphere did you use?
+
+4.0.0-RC1-SNAPSHOT
+
+### Which project did you use? Sharding-JDBC or Sharding-Proxy?
+
+Sharding-JDBC
+
+### Expected behavior
+
+Revert SQL successfully.
+
+### Actual behavior
+
+```
+[ERROR] 2019-03-25 10:47:11,620 --main-- [org.apache.servicecomb.saga.core.FallbackPolicy] Failed to send compensation to demo_ds_1 
+org.apache.servicecomb.saga.core.TransportFailedException: Execute SQL `SagaBranchTransaction(dataSourceName=demo_ds_1, sql=DELETE FROM t_order_1 WHERE order_id = ? AND user_id = ?, parameterSets=[[316889452515426305]])` occur exception.
+	at io.shardingsphere.transaction.saga.servicecomb.transport.ShardingSQLTransport.executeSQL(ShardingSQLTransport.java:90)
+	at io.shardingsphere.transaction.saga.servicecomb.transport.ShardingSQLTransport.with(ShardingSQLTransport.java:58)
+	at org.apache.servicecomb.saga.format.JacksonSQLOperation.send(JacksonSQLOperation.java:47)
+	at org.apache.servicecomb.saga.core.FallbackPolicy.apply(FallbackPolicy.java:36)
+	at org.apache.servicecomb.saga.core.RequestProcessTask.compensate(RequestProcessTask.java:58)
+	at org.apache.servicecomb.saga.core.CompensationTaskConsumer.consume(CompensationTaskConsumer.java:47)
+	at org.apache.servicecomb.saga.core.TaskRunner.run(TaskRunner.java:57)
+	at org.apache.servicecomb.saga.core.GraphBasedSaga.run(GraphBasedSaga.java:89)
+	at org.apache.servicecomb.saga.core.application.SagaExecutionComponent.run(SagaExecutionComponent.java:63)
+	at io.shardingsphere.transaction.saga.SagaShardingTransactionManager.submitToSagaEngine(SagaShardingTransactionManager.java:130)
+	at io.shardingsphere.transaction.saga.SagaShardingTransactionManager.rollback(SagaShardingTransactionManager.java:115)
+	at org.apache.shardingsphere.shardingjdbc.jdbc.adapter.AbstractConnectionAdapter.rollback(AbstractConnectionAdapter.java:237)
+	at org.springframework.jdbc.datasource.DataSourceTransactionManager.doRollback(DataSourceTransactionManager.java:328)
+	at org.springframework.transaction.support.AbstractPlatformTransactionManager.processRollback(AbstractPlatformTransactionManager.java:857)
+	at org.springframework.transaction.support.AbstractPlatformTransactionManager.rollback(AbstractPlatformTransactionManager.java:834)
+	at org.springframework.transaction.interceptor.TransactionAspectSupport.completeTransactionAfterThrowing(TransactionAspectSupport.java:536)
+	at org.springframework.transaction.interceptor.TransactionAspectSupport.invokeWithinTransaction(TransactionAspectSupport.java:286)
+	at org.springframework.transaction.interceptor.TransactionInterceptor.invoke(TransactionInterceptor.java:96)
+	at org.springframework.aop.framework.ReflectiveMethodInvocation.proceed(ReflectiveMethodInvocation.java:179)
+	at org.springframework.aop.framework.adapter.MethodBeforeAdviceInterceptor.invoke(MethodBeforeAdviceInterceptor.java:56)
+	at org.springframework.aop.framework.ReflectiveMethodInvocation.proceed(ReflectiveMethodInvocation.java:168)
+	at org.springframework.aop.aspectj.AspectJAfterAdvice.invoke(AspectJAfterAdvice.java:47)
+	at org.springframework.aop.framework.ReflectiveMethodInvocation.proceed(ReflectiveMethodInvocation.java:168)
+	at org.springframework.aop.interceptor.ExposeInvocationInterceptor.invoke(ExposeInvocationInterceptor.java:92)
+	at org.springframework.aop.framework.ReflectiveMethodInvocation.proceed(ReflectiveMethodInvocation.java:179)
+	at org.springframework.aop.framework.CglibAopProxy$DynamicAdvisedInterceptor.intercept(CglibAopProxy.java:671)
+	at io.shardingsphere.example.transaction.saga.spring.namespace.SagaTransactionalService$$EnhancerBySpringCGLIB$$a3ffce67.processFailure(<generated>)
+	at io.shardingsphere.example.transaction.saga.spring.namespace.SpringNamespaceExample.processSagaTransaction(SpringNamespaceExample.java:39)
+	at io.shardingsphere.example.transaction.saga.spring.namespace.SpringNamespaceExample.main(SpringNamespaceExample.java:30)
+Caused by: java.sql.SQLException: No value specified for parameter 2
+	at com.mysql.jdbc.SQLError.createSQLException(SQLError.java:964)
+	at com.mysql.jdbc.SQLError.createSQLException(SQLError.java:897)
+	at com.mysql.jdbc.SQLError.createSQLException(SQLError.java:886)
+	at com.mysql.jdbc.SQLError.createSQLException(SQLError.java:860)
+	at com.mysql.jdbc.PreparedStatement.checkAllParametersSet(PreparedStatement.java:2211)
+	at com.mysql.jdbc.PreparedStatement.addBatch(PreparedStatement.java:898)
+	at com.zaxxer.hikari.pool.HikariProxyPreparedStatement.addBatch(HikariProxyPreparedStatement.java)
+	at io.shardingsphere.transaction.saga.servicecomb.transport.ShardingSQLTransport.executeBatch(ShardingSQLTransport.java:112)
+	at io.shardingsphere.transaction.saga.servicecomb.transport.ShardingSQLTransport.executeSQL(ShardingSQLTransport.java:87)
+	... 28 common frames omitted
+```
+
+### Reason analyze (If you can)
+
+RevertInsert operator use primary keys of `TableMetaData` to generate revert SQL, but only add parameter of keyGenerator so that the number of parameter is inconsistent.
+And the revertEngine has no information about the keyGenerator, including keyGenerator columnName and value, So it can't distinguish which key column is keyGenerator.
+
+### Steps to reproduce the behavior, such as: SQL to execute, sharding rule configuration, when exception occur etc.
+
+sharding rule configuration:
+```
+<?xml version="1.0" encoding="UTF-8"?>
+<beans xmlns="http://www.springframework.org/schema/beans"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xmlns:context="http://www.springframework.org/schema/context" 
+    xmlns:tx="http://www.springframework.org/schema/tx" 
+    xmlns:sharding="http://shardingsphere.apache.org/schema/shardingsphere/sharding"
+    xsi:schemaLocation="http://www.springframework.org/schema/beans
+                        http://www.springframework.org/schema/beans/spring-beans.xsd 
+                        http://www.springframework.org/schema/tx 
+                        http://www.springframework.org/schema/tx/spring-tx.xsd
+                        http://www.springframework.org/schema/context 
+                        http://www.springframework.org/schema/context/spring-context.xsd
+                        http://shardingsphere.apache.org/schema/shardingsphere/sharding
+                        http://shardingsphere.apache.org/schema/shardingsphere/sharding/sharding.xsd">
+
+    <import resource="classpath:META-INF/shardingTransaction.xml"/>
+
+    <context:component-scan base-package="io.shardingsphere.example" />
+    
+    <bean id="demo_ds_0" class="com.zaxxer.hikari.HikariDataSource" destroy-method="close">
+        <property name="driverClassName" value="com.mysql.jdbc.Driver"/>
+        <property name="jdbcUrl" value="jdbc:mysql://localhost:3306/demo_ds_0?useSSL=false"/>
+        <property name="username" value="root"/>
+        <property name="password" value=""/>
+    </bean>
+    
+    <bean id="demo_ds_1" class="com.zaxxer.hikari.HikariDataSource" destroy-method="close">
+        <property name="driverClassName" value="com.mysql.jdbc.Driver"/>
+        <property name="jdbcUrl" value="jdbc:mysql://localhost:3306/demo_ds_1?useSSL=false"/>
+        <property name="username" value="root"/>
+        <property name="password" value=""/>
+    </bean>
+    
+    <sharding:inline-strategy id="databaseStrategy" sharding-column="user_id" algorithm-expression="demo_ds_${user_id % 2}" />
+    <sharding:inline-strategy id="orderTableStrategy" sharding-column="order_id" algorithm-expression="t_order_${order_id % 2}" />
+    <sharding:inline-strategy id="orderItemTableStrategy" sharding-column="order_id" algorithm-expression="t_order_item_${order_id % 2}" />
+    
+    <sharding:key-generator id="orderKeyGenerator" type="SNOWFLAKE" column="order_id" />
+    <sharding:key-generator id="itemKeyGenerator" type="SNOWFLAKE" column="order_item_id" />
+    
+    <sharding:data-source id="shardingDataSource">
+        <sharding:sharding-rule data-source-names="demo_ds_0, demo_ds_1">
+            <sharding:table-rules>
+                <sharding:table-rule logic-table="t_order" actual-data-nodes="demo_ds_${0..1}.t_order_${0..1}" database-strategy-ref="databaseStrategy" table-strategy-ref="orderTableStrategy" key-generator-ref="orderKeyGenerator" />
+                <sharding:table-rule logic-table="t_order_item" actual-data-nodes="demo_ds_${0..1}.t_order_item_${0..1}" database-strategy-ref="databaseStrategy" table-strategy-ref="orderItemTableStrategy" key-generator-ref="itemKeyGenerator" />
+            </sharding:table-rules>
+        </sharding:sharding-rule>
+        <sharding:props>
+            <prop key="sql.show">false</prop>
+        </sharding:props>
+    </sharding:data-source>
+    
+    <bean id="transactionManager" class="org.springframework.jdbc.datasource.DataSourceTransactionManager">
+        <property name="dataSource" ref="shardingDataSource" />
+    </bean>
+    <tx:annotation-driven />
+    
+    <bean id="sqlSessionFactory" class="org.mybatis.spring.SqlSessionFactoryBean">
+        <property name="dataSource" ref="shardingDataSource"/>
+        <property name="mapperLocations" value="classpath*:META-INF/mappers/*.xml"/>
+    </bean>
+    
+    <bean class="org.mybatis.spring.mapper.MapperScannerConfigurer">
+        <property name="basePackage" value="io.shardingsphere.example.common.mybatis.repository"/>
+        <property name="sqlSessionFactoryBeanName" value="sqlSessionFactory"/>
+    </bean>
+</beans>
+```
+
+SQLs:
+```
+    <update id="createTableIfNotExists">
+        CREATE TABLE IF NOT EXISTS t_order (order_id BIGINT AUTO_INCREMENT, user_id INT NOT NULL, status VARCHAR(50), PRIMARY KEY (order_id, user_id));
+    </update>
+
+    <insert id="insert" useGeneratedKeys="true" keyProperty="orderId">
+        INSERT INTO t_order (user_id, status) VALUES (#{userId,jdbcType=INTEGER}, #{status,jdbcType=VARCHAR});
+    </insert>
+```
+
+### Example codes for reproduce this issue (such as a github link).
+
+https://github.com/KomachiSion/sharding-sphere-example/tree/revert-insert-error
+
+```
+sharding-sphere-example/sharding-jdbc-example/transaction-example/transaction-base-saga-example/transaction-saga-spring-namespace-example/src/main/java/io/shardingsphere/example/transaction/saga/spring/namespace/SpringNamespaceExample.java
+```

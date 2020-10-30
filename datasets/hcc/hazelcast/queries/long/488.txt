@@ -1,0 +1,48 @@
+Hey,
+
+I was trying to setup the wan replication on a distributed map running a Jersey/Spring server, and kept getting "no merge policies defined" severe error in the logs whenever the replication kicked in. And, sure thing, my nodes were not replicating themselves, confirmed by breakpointing and reading from the maps directly.
+
+The config was pretty much copy/paste from the spring config doc:
+
+``` xml
+<hz:map ...>
+    <hz:wan-replication-ref name="replicated-cluster"
+                    merge-policy="hz.PASS_THROUGH" />
+</hx:map>
+```
+
+Digging some more, I found CMap.getMergePolicy(String) ends up always returning null:
+https://github.com/hazelcast/hazelcast/blob/master/hazelcast/src/main/java/com/hazelcast/impl/CMap.java#L319
+
+The node's config always has an empty Map for the mergePolicyConfig attribute, at least when going with the default, out of the box, spring configuration.
+Putting a breakpoint in Config.setMergePolicyConfigs(Map), I indeed get a call, apparently from Spring's context factory, setting the field to an empty map.
+
+Eclipse is acting up on me and bluntly refusing to attach jar sources when debugging, so I didn't go much further than that, my best guess here is that the HazelcastConfigBeanDefinitionParser is wrongfully assigning an empty merge policy config when no merge-policies tag is present, effectively overriding the implicit, hardcoded default values in Config's default constructor.
+
+The result is that CMap.getMergePolicy(String) always returns null, for all merge policies, even the default ones (hz.LATEST_UPDATE, hz.PASS_THROUGH, etc.). This affects the wan replication, but also the map's merge policy, which sounds like a big problem.
+
+I confirmed this with hazelcast 2.4.1 and 2.5.1, using the maven artifacts.
+
+The workaround I've found is to explicitly define the merge policies beans used by the map/wan-replication, give them custom names and refer to those in the config rather than the default names, for instance:
+
+``` xml
+<bean id="otPassThroughMergePolicy" class="com.hazelcast.merge.PassThroughMergePolicy" />
+<bean id="otLatestUpdateMergePolicy" class="com.hazelcast.merge.LatestUpdateMergePolicy" />
+
+<hz:hazelcast id="hazelcast">
+    <hz:config>
+        <hz:map ...>
+            <hz:wan-replication-ref name="replicated-cluster"
+                    merge-policy="ot.PASS_THROUGH" />
+        </hx:map>
+
+        <hz:merge-policies>
+            <hz:map-merge-policy name="ot.PASS_THROUGH"
+                class-name="com.hazelcast.merge.PassThroughMergePolicy"
+                implementation="otPassThroughMergePolicy" />
+            <hz:map-merge-policy name="ot.LATEST_UPDATE"
+                class-name="com.hazelcast.merge.LatestUpdateMergePolicy"
+                implementation="otLatestUpdateMergePolicy" />
+    </hz:merge-policies>
+</hz:hazelcast>
+```

@@ -1,0 +1,84 @@
+We are running Flink 1.8.1 in HA mode with Zookeeper 3.4.11.
+
+When we list/submit/cancel from the CLI on a job manager, the operation fails with a TimeoutException. Here is an example:
+
+$ ./bin/flink list
+Waiting for response... ------------------------------------------------------------
+The program finished with the following exception:
+org.apache.flink.util.FlinkException: Failed to retrieve job list.
+at org.apache.flink.client.cli.CliFrontend.listJobs(CliFrontend.java:448)
+at org.apache.flink.client.cli.CliFrontend.lambda$list$0(CliFrontend.java:430)
+at org.apache.flink.client.cli.CliFrontend.runClusterAction(CliFrontend.java:985)
+at org.apache.flink.client.cli.CliFrontend.list(CliFrontend.java:427)
+at org.apache.flink.client.cli.CliFrontend.parseParameters(CliFrontend.java:1053)
+at org.apache.flink.client.cli.CliFrontend.lambda$main$11(CliFrontend.java:1126)
+at org.apache.flink.runtime.security.NoOpSecurityContext.runSecured(NoOpSecurityContext.java:30)
+at org.apache.flink.client.cli.CliFrontend.main(CliFrontend.java:1126)
+Caused by: java.util.concurrent.TimeoutException
+at org.apache.flink.runtime.concurrent.FutureUtils$Timeout.run(FutureUtils.java:943)
+at org.apache.flink.runtime.concurrent.DirectExecutorService.execute(DirectExecutorService.java:211)
+at org.apache.flink.runtime.concurrent.FutureUtils.lambda$orTimeout$11(FutureUtils.java:361)
+at java.util.concurrent.Executors$RunnableAdapter.call(Executors.java:511)
+at java.util.concurrent.FutureTask.run(FutureTask.java:266)
+at java.util.concurrent.ScheduledThreadPoolExecutor$ScheduledFutureTask.access$201(ScheduledThreadPoolExecutor.java:180)
+at java.util.concurrent.ScheduledThreadPoolExecutor$ScheduledFutureTask.run(ScheduledThreadPoolExecutor.java:293)
+at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1149)
+at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:624)
+at java.lang.Thread.run(Thread.java:748)
+
+
+When the same command is run with strace, we see that the CLI only manages to connect out to zookeeper and hangs on that connection:
+
+$ strace -f -e connect ./bin/flink list
+...
+[pid 29445] connect(27, \{sa_family=AF_INET, sin_port=htons(53), sin_addr=inet_addr("gateway ip")}, 16) = 0
+...
+[pid 29445] connect(27,\{sa_family=AF_INET, sin_port=htons(2181), sin_addr=inet_addr("zookeeper ip")}, 16) = -1 EINPROGRESS (Operation now in progress)
+strace: Process 29448 attached
+Waiting for response...
+...
+Exception
+
+
+The CLI is able to successfully connect to zookeeper and even appears to submit commands. This is verified by logs from zookeeper:
+
+INFO [NIOServerCxn.Factory:0.0.0.0/0.0.0.0:2181:NIOServerCnxnFactory@215] - Accepted socket connection from /JOB_MANAGER_IP:52074
+DEBUG [NIOServerCxn.Factory:0.0.0.0/0.0.0.0:2181:ZooKeeperServer@880] - Session establishment request from client /JOB_MANAGER_IP:52074 client's lastZxid is 0x0
+INFO [NIOServerCxn.Factory:0.0.0.0/0.0.0.0:2181:ZooKeeperServer@938] - Client attempting to establish new session at /JOB_MANAGER_IP:52074
+DEBUG [FollowerRequestProcessor:3:CommitProcessor@174] - Processing request:: sessionid:0x30037a90dce0001 type:createSession cxid:0x0 zxid:0xfffffffffffffffe txntype:unknown reqpath:n/a
+DEBUG [QuorumPeer[myid=3]/0.0.0.0:2181:CommitProcessor@164] - Committing request:: sessionid:0x30037a90dce0001 type:createSession cxid:0x0 zxid:0x10200000109 txntype:-10 reqpath:n/a
+DEBUG [CommitProcessor:3:FinalRequestProcessor@89] - Processing request:: sessionid:0x30037a90dce0001 type:createSession cxid:0x0 zxid:0x10200000109 txntype:-10 reqpath:n/a
+DEBUG [CommitProcessor:3:FinalRequestProcessor@161] - sessionid:0x30037a90dce0001 type:createSession cxid:0x0 zxid:0x10200000109 txntype:-10 reqpath:n/a
+INFO [CommitProcessor:3:ZooKeeperServer@683] - Established session 0x30037a90dce0001 with negotiated timeout 40000 for client /JOB_MANAGER_IP:52074
+DEBUG [FollowerRequestProcessor:3:CommitProcessor@174] - Processing request:: sessionid:0x30037a90dce0001 type:exists cxid:0x1 zxid:0xfffffffffffffffe txntype:unknown reqpath:/flink
+DEBUG [CommitProcessor:3:FinalRequestProcessor@89] - Processing request:: sessionid:0x30037a90dce0001 type:exists cxid:0x1 zxid:0xfffffffffffffffe txntype:unknown reqpath:/flink
+DEBUG [CommitProcessor:3:FinalRequestProcessor@161] - sessionid:0x30037a90dce0001 type:exists cxid:0x1 zxid:0xfffffffffffffffe txntype:unknown reqpath:/flink
+DEBUG [FollowerRequestProcessor:3:CommitProcessor@174] - Processing request:: sessionid:0x30037a90dce0001 type:exists cxid:0x2 zxid:0xfffffffffffffffe txntype:unknown reqpath:/flink/CLUSTER_NAME
+DEBUG [CommitProcessor:3:FinalRequestProcessor@89] - Processing request:: sessionid:0x30037a90dce0001 type:exists cxid:0x2 zxid:0xfffffffffffffffe txntype:unknown reqpath:/flink/CLUSTER_NAME
+DEBUG [CommitProcessor:3:FinalRequestProcessor@161] - sessionid:0x30037a90dce0001 type:exists cxid:0x2 zxid:0xfffffffffffffffe txntype:unknown reqpath:/flink/CLUSTER_NAME
+DEBUG [FollowerRequestProcessor:3:CommitProcessor@174] - Processing request:: sessionid:0x30037a90dce0001 type:exists cxid:0x3 zxid:0xfffffffffffffffe txntype:unknown reqpath:/flink
+DEBUG [CommitProcessor:3:FinalRequestProcessor@89] - Processing request:: sessionid:0x30037a90dce0001 type:exists cxid:0x3 zxid:0xfffffffffffffffe txntype:unknown reqpath:/flink
+DEBUG [CommitProcessor:3:FinalRequestProcessor@161] - sessionid:0x30037a90dce0001 type:exists cxid:0x3 zxid:0xfffffffffffffffe txntype:unknown reqpath:/flink
+DEBUG [FollowerRequestProcessor:3:CommitProcessor@174] - Processing request:: sessionid:0x30037a90dce0001 type:exists cxid:0x4 zxid:0xfffffffffffffffe txntype:unknown reqpath:/flink/CLUSTER_NAME
+DEBUG [CommitProcessor:3:FinalRequestProcessor@89] - Processing request:: sessionid:0x30037a90dce0001 type:exists cxid:0x4 zxid:0xfffffffffffffffe txntype:unknown reqpath:/flink/CLUSTER_NAME
+DEBUG [CommitProcessor:3:FinalRequestProcessor@161] - sessionid:0x30037a90dce0001 type:exists cxid:0x4 zxid:0xfffffffffffffffe txntype:unknown reqpath:/flink/CLUSTER_NAME
+DEBUG [FollowerRequestProcessor:3:CommitProcessor@174] - Processing request:: sessionid:0x30037a90dce0001 type:exists cxid:0x5 zxid:0xfffffffffffffffe txntype:unknown reqpath:/flink/CLUSTER_NAME/leader
+DEBUG [CommitProcessor:3:FinalRequestProcessor@89] - Processing request:: sessionid:0x30037a90dce0001 type:exists cxid:0x5 zxid:0xfffffffffffffffe txntype:unknown reqpath:/flink/CLUSTER_NAME/leader
+DEBUG [CommitProcessor:3:FinalRequestProcessor@161] - sessionid:0x30037a90dce0001 type:exists cxid:0x5 zxid:0xfffffffffffffffe txntype:unknown reqpath:/flink/CLUSTER_NAME/leader
+DEBUG [FollowerRequestProcessor:3:CommitProcessor@174] - Processing request:: sessionid:0x30037a90dce0001 type:exists cxid:0x6 zxid:0xfffffffffffffffe txntype:unknown reqpath:/flink/CLUSTER_NAME/leader/rest_server_lock
+DEBUG [FollowerRequestProcessor:3:CommitProcessor@174] - Processing request:: sessionid:0x30037a90dce0001 type:exists cxid:0x7 zxid:0xfffffffffffffffe txntype:unknown reqpath:/flink
+DEBUG [CommitProcessor:3:FinalRequestProcessor@89] - Processing request:: sessionid:0x30037a90dce0001 type:exists cxid:0x6 zxid:0xfffffffffffffffe txntype:unknown reqpath:/flink/CLUSTER_NAME/leader/rest_server_lock
+DEBUG [CommitProcessor:3:FinalRequestProcessor@161] - sessionid:0x30037a90dce0001 type:exists cxid:0x6 zxid:0xfffffffffffffffe txntype:unknown reqpath:/flink/CLUSTER_NAME/leader/rest_server_lock
+
+
+Based on those logs I can speculate the the CLI has difficulty obtaining the rest server lock, but I don't really know.
+
+In case it matters, we recently upgraded to Flink 1.8.
+
+Here are a few instances of similar issues we have found online which don't seem to have conclusive endings:
+
+https://stackoverflow.com/questions/53716795/flink-1-6-timeoutexception-while-submitting-the-job
+
+https://mail-archives.apache.org/mod_mbox/flink-user/201812.mbox/%3Ca80ea545-cd42-a5a3-4321-d4ebfc79e516@apache.org%3E
+
+https://mail-archives.apache.org/mod_mbox/flink-user/201809.mbox/%3cCAC2R296TEsd00qra9DrD+atFNgTRJ0GcRXnPN-BvVCUVD4-BCA@mail.gmail.com%3e

@@ -1,0 +1,101 @@
+Hazelcast version: 3.9
+Java version: 1.8.0_111-b14
+
+When a member is **promoted** (using method hz.getCluster ().promoteLocalLiteMember ()) a new member instance is created.
+The member instance retrieved with the method HazelcastInstance.getCluster ().getLocalMember () is correctly updated (refers to **new member** instance).
+The member instance retrieved with the method HazelcastInstance.getCluster ().getMembers () is not updated (refers to the **old member** instance).
+I found the problem because in my use case, I set some attributes using **local member** (after promoting a local member)
+but retrieving the member from getMembers() method, the attributes don't exist. 
+
+Below the junit test to verify the problem
+
+```
+import static org.hamcrest.Matchers.equalTo;
+import static org.hamcrest.Matchers.sameInstance;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertThat;
+
+import java.util.Map;
+import java.util.Set;
+
+import org.junit.Test;
+
+import com.hazelcast.config.Config;
+import com.hazelcast.core.Hazelcast;
+import com.hazelcast.core.HazelcastInstance;
+import com.hazelcast.core.Member;
+
+/**
+ * When a member is promoted (using method hz.getCluster ().promoteLocalLiteMember ()) a new member instance is created.
+ * The member instance retrieved with the method HazelcastInstance.getCluster ().getLocalMember () is correctly updated (refers to new member instance).
+ * The member instance retrieved with the method HazelcastInstance.getCluster ().getMembers () is not updated (refers to the old member instance).
+ * 
+ * I found the problem because in my use case, I set some attributes using local member (after promoting a local member)
+ * but retrieving the member from getMembers() method, the attributes don't exist. 
+ */
+public class PromoteLocalMemberTest {
+
+	private static final String A_VALUE = "aValue";
+	private static final String[] KEYS_ATTRIBUTE = {
+			"ATTRIBUTE_BEFORE_PROMOTION",
+			"ATTRIBUTE_AFTER_PROMOTION"
+	};
+
+	@Test
+	public void testPromoteLocalLiteMember () throws Exception {
+
+		Config config = new Config ();
+		config.setLiteMember ( true );
+
+		// New instance of lite member
+		HazelcastInstance hz = Hazelcast.newHazelcastInstance ( config );
+		assertThat ( hz.getCluster ().getMembers ().size (), equalTo ( 1 ) );
+
+		// Get local member and SET attribute BEFORE promotion
+		Member localMember = hz.getCluster ().getLocalMember ();
+		localMember.setStringAttribute ( KEYS_ATTRIBUTE[0], A_VALUE );
+		checkAttribute ( localMember, KEYS_ATTRIBUTE[0] );
+
+		// Promote local Lite member
+		hz.getCluster ().promoteLocalLiteMember ();
+
+		// Get local member and SET attribute AFTER promotion
+		localMember = hz.getCluster ().getLocalMember ();
+		localMember.setStringAttribute ( KEYS_ATTRIBUTE[1], A_VALUE );
+
+		// Check attribute from localMember
+		checkAttribute ( localMember, KEYS_ATTRIBUTE[1] );
+
+		// Check the localMember and the member retrieved by getMembers is the same instance
+		assertThat ( "Member retrieved with method 'getLocalMember()' is not the same instance of member retrieved with 'getMembers ()'", localMember,
+				sameInstance ( hz.getCluster ().getMembers ().iterator ().next () ) );
+
+		// Check all attributes from cluster members set
+		checkAttributesFromMemberSet ( hz );
+
+	}
+
+	protected void checkAttribute ( Member member, String attributeKey ) {
+
+		Map<String, Object> attributes = member.getAttributes ();
+		assertNotNull ( "Attribute key '" + attributeKey + "' is not present", attributes.get ( attributeKey ) );
+		assertThat ( String.valueOf ( attributes.get ( attributeKey ) ), equalTo ( A_VALUE ) );
+	}
+
+	protected void checkAttributesFromMemberSet ( HazelcastInstance hz ) {
+
+		assertThat ( hz.getCluster ().getMembers ().size (), equalTo ( 1 ) );
+
+		Set<Member> members = hz.getCluster ().getMembers ();
+
+		// Retrieve the only member and check all attributes
+		Member next = members.iterator ().next ();
+		for ( String key : KEYS_ATTRIBUTE ) {
+			checkAttribute ( next, key );
+		}
+
+	}
+
+}
+```
+

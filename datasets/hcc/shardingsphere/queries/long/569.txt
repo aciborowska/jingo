@@ -1,0 +1,31 @@
+不知道有没有人提过这个问题，没细看issue
+Oracle的分页  路由到各个数据库执行的SQL语句在rownum的值错误，
+测试环境：Oracle分库（ds_0、ds_1、ds_2）
+我在ParsingSQLRouter#router(String, List, SQLStatement)里面打印了rewriteEngine.generateSQL()生成的SQL语句
+
+1.这种情况下没有问题
+
+> 输入SQL : SELECT * FROM ( SELECT ROWNUM AS rowno, T.* FROM t_person T WHERE age=23 AND ROWNUM <= 20) table_alias WHERE table_alias.rowno >= 1
+
+输出ds_2 : SELECT * FROM ( SELECT ROWNUM AS rowno, T.* FROM t_person T WHERE age=23 AND ROWNUM <= 20) table_alias WHERE table_alias.rowno >= 0
+输出ds_1 : SELECT * FROM ( SELECT ROWNUM AS rowno, T.* FROM t_person T WHERE age=23 AND ROWNUM <= 20) table_alias WHERE table_alias.rowno >= 0
+输出ds_0 : SELECT * FROM ( SELECT ROWNUM AS rowno, T.* FROM t_person T WHERE age=23 AND ROWNUM <= 20) table_alias WHERE table_alias.rowno >= 0
+
+2.调转一下where后面跟着的条件顺序，会出现rownum由20变成220
+
+> 输入SQL : SELECT * FROM ( SELECT ROWNUM AS rowno, T.* FROM t_person T WHERE ROWNUM <= 20 AND age=23) table_alias WHERE table_alias.rowno >= 1
+
+输出ds_2 : SELECT * FROM ( SELECT ROWNUM AS rowno, T.* FROM t_person T WHERE ROWNUM <= 220AND age=23) table_alias WHERE table_alias.rowno >= 0
+输出ds_1 : SELECT * FROM ( SELECT ROWNUM AS rowno, T.* FROM t_person T WHERE ROWNUM <= 220AND age=23) table_alias WHERE table_alias.rowno >= 0
+输出ds_0 : SELECT * FROM ( SELECT ROWNUM AS rowno, T.* FROM t_person T WHERE ROWNUM <= 220AND age=23) table_alias WHERE table_alias.rowno >= 0
+
+
+3.在1的情况下增加order by，会出现2一样的情况，rownum由20变成220
+
+> 输入SQL: SELECT * FROM ( SELECT ROWNUM AS rowno, T.* FROM t_person T WHERE age=23 AND ROWNUM <= 20 ORDER BY account) table_alias WHERE table_alias.rowno >= 1
+
+输出ds_2 : SELECT * FROM ( SELECT ROWNUM AS rowno, T.* , account AS ORDER_BY_DERIVED_0 FROM t_person T WHERE age=23 AND ROWNUM <= 220ORDER BY account) table_alias WHERE table_alias.rowno >= 0
+输出ds_1 : SELECT * FROM ( SELECT ROWNUM AS rowno, T.* , account AS ORDER_BY_DERIVED_0 FROM t_person T WHERE age=23 AND ROWNUM <= 220ORDER BY account) table_alias WHERE table_alias.rowno >= 0
+输出ds_0 : SELECT * FROM ( SELECT ROWNUM AS rowno, T.* , account AS ORDER_BY_DERIVED_0 FROM t_person T WHERE age=23 AND ROWNUM <= 220ORDER BY account) table_alias WHERE table_alias.rowno >= 0
+
+看上去应该是rownum如果有跟着其它的什么条件就会出现rownum变大的情况

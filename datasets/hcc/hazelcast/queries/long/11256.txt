@@ -1,0 +1,19 @@
+The behaviour was observed when testing WAN replication with the discovery SPI on EC2. The WAN connection manager will try and connect to the target endpoint by calling `com.hazelcast.nio.ConnectionManager#getOrConnect(com.hazelcast.nio.Address)` and it chooses the public IP of the EC2 instance returned by the AWS API. Unfortunately hazelcast instances started on EC2 instances automatically bind to the private rather than the public IP. This can be fixed by setting the public IP in the hazelcast config but this both complicates deployment and isn’t enough in some cases. Those cases include having a cluster on EC2 instance and having this cluster as a WAN endpoint at the same time. In this case, the cluster members will (usually) connect to the private IP while WAN will connect to the public IP. This is a conflicting requirement as an instance cannot bind itself to both the private and public IP at the same time. 
+This is why we tend to get messages like these, both on the ACTIVE and PASSIVE cluster:
+```
+Wrong bind request from /34.202.160.90, identified as /107.22.159.0
+```
+and
+```
+Wrong bind request from [107.22.159.0]:5701! This node is not the requested endpoint: [184.72.209.93]:5701
+```
+The solution might be disabling the spoofing checks by using `-Dhazelcast.nio.tcp.spoofing.checks=false` and `-Dhazelcast.socket.client.bind.any=false` and in some sense this is fine. The only objection so far is that the value "false" for `hazelcast.socket.client.bind.any` is counterintuitive - I would expect the value to be "true".
+
+This works mainly fine, the only remaining problem is that the `TcpIpConnectionManager` will register the connection in the `connectionsMap` under the address which is provided by the remoteEndpoint, specifically `bind.getLocalAddress()` - see https://github.com/hazelcast/hazelcast/blob/36a1545eb8994ce8fe23b57aca7b707bcad7b6fe/hazelcast/src/main/java/com/hazelcast/nio/tcp/TcpIpConnectionManager.java#L195
+
+This will actually be the private IP of the remote endpoint so even though the connection was requested on the public IP :
+`connectionManager.getOrConnect(remotePublicAddress)`
+The map contains the entry :
+`remotePrivateAddress ==> Connection[id=1, localPrivateAddress->, endpoint=remotePublicAddress, alive=true, type=MEMBER]`
+
+And because of this, the WAN connection manager will retry reestablishing a connection which already exists, just under a different address.

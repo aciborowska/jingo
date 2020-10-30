@@ -1,0 +1,83 @@
+Found with 6.5.0 rev 5bccabdca459650c1586de83467bade9dd77dcc7
+
+Some of our upgrade tests are failing today with a regression while upgrading a split DS/RS topology from 3.0.0 to 6.5.0.
+
+We set up 4 dj instances, one with some data.
+We then configure replication between DS1 => RS1, DS1 => DS2, DS1 => RS2
+We initialize replication.
+We perform some ldap operations and make sure replication is working fine:
+
+
+/DJ_REPL_DS1/opendj/bin/dsreplication status -h localhost -p 4460 -b dc=com -I admin -w password --script-friendly -X -n 	
+
+dc=com	localhost:4460	208	true	11350			0
+dc=com	localhost:4462	208	true	14207			0
+	localhost:4461		true		3585	9006			false
+	localhost:4463		true		21228	9008			false
+
+
+
+Then we upgrade first RS:
+
+
+./DJ_REPL_RS1/opendj/upgrade -n --acceptLicense --force
+./DJ_REPL_RS1/opendj/bin/start-ds
+
+
+
+We perform some ldap operations and check if replication is still working fine, which seems to be the case.
+Then we use dsreplication status:
+
+
+./DJ_REPL_DS1/opendj/bin/dsreplication status -h localhost -p 4460 -b dc=com -I admin -w password --script-friendly -X -n 	
+
+dc=com	localhost:4460	208	true	11350			0
+dc=com	localhost:4462	208	true	14207			0
+	localhost:4463		true		21228	9008			false
+
+The displayed information might not be complete because the following errors were encountered reading the configuration of the existing servers: Error on localhost:4461: An error occurred connecting to the server. Details: javax.naming.NoPermissionException: [LDAP: error code 50 - You do not have sufficient privileges to read directory server monitoring information]; remaining name 'cn=monitor'
+
+
+
+Then we upgrade the second ds:
+
+./DJ_REPL_DS2/opendj/upgrade -n --acceptLicense --force
+
+
+
+At this point, we check indexes are ok but here, we get some errors:
+
+/DJ_REPL_DS2/opendj/bin/verify-index -b dc=com --countErrors 	
+03:58:50.287 	WARN 	ERROR:
+-- rc --
+returned 255, expected 0
+-- stdout --
+[11/06/2018:01:58:49 +0000] category=BACKEND seq=0 severity=FINE msg=JE backend 'userRoot' does not specify the number of cleaner threads: defaulting to 10 threads
+[11/06/2018:01:58:49 +0000] category=BACKEND seq=1 severity=FINE msg=JE backend 'userRoot' does not specify the number of lock tables: defaulting to 79
+[11/06/2018:01:58:50 +0000] category=BACKEND seq=647 severity=INFO msg=Checked 208 entries and found 611 error(s) in 0 seconds (average rate 759.1/sec)
+
+-- stderr --
+[11/06/2018:01:58:49 +0000] category=BACKEND seq=36 severity=SEVERE msg=Missing ID 209
+Index: /dc=com/objectClass.objectIdentifierMatch
+Key:
+      74 6F 70                                           top
+
+[11/06/2018:01:58:49 +0000] category=BACKEND seq=37 severity=SEVERE msg=Missing ID 210
+Index: /dc=com/objectClass.objectIdentifierMatch
+Key:
+      6F 72 67 61 6E 69 7A 61   74 69 6F 6E 61 6C 75 6E  organiza tionalun
+      69 74                                              it
+
+[11/06/2018:01:58:49 +0000] category=BACKEND seq=38 severity=SEVERE msg=Missing ID 210
+Index: /dc=com/objectClass.objectIdentifierMatch
+Key:
+      74 6F 70                                           top
+
+...
+
+
+
+To reproduce:
+
+
+./run-pybot.py -n -v -s upgrade_group.replication -t Replication_Topology_Split_DS_RS opendj

@@ -1,0 +1,36 @@
+Replaying a large number of modify operations to a large group may sometimes fail because we cannot get a write lock:
+
+
+[26/Apr/2013:09:52:01 +0100] MODIFY RES conn=-1 op=16867 msgID=16868 result=80 message="Entry cn=jumbo,dc=example,dc=com cannot be modified because the server failed to obtain a write lock for this entry after multiple attempts" etime=9002
+
+
+
+This test turned off the replica, and did 14000 separate modify operations to add new uniquemember values to an existing group entry. Then the replica was turned on. All the original modify operations succeeded, but a proportion of the replayed modifies did not.
+
+The etimes for the original modifies slowed down considerably over time - at the end they were about 1400ms each. On the replica they often exceeded 5 seconds, and sometimes 10.
+
+Some jstacks of the replica while it was replaying are attached. The vast majority of stacks seem to be managing ds-sync-hist:
+
+
+
+"Replica replay thread 7" prio=5 tid=7f9efdbeb800 nid=0x118d7d000 runnable [118d7c000]
+   java.lang.Thread.State: RUNNABLE
+	at org.opends.server.replication.plugin.AttrValueHistorical.equals(AttrValueHistorical.java:69)
+	at java.util.ArrayList.remove(ArrayList.java:423)
+	at org.opends.server.replication.plugin.AttrHistoricalMultiple.add(AttrHistoricalMultiple.java:199)
+	at org.opends.server.replication.plugin.AttrHistoricalMultiple.assign(AttrHistoricalMultiple.java:651)
+	at org.opends.server.replication.plugin.EntryHistorical.newInstanceFromEntry(EntryHistorical.java:769)
+	at org.opends.server.replication.plugin.LDAPReplicationDomain.handleConflictResolution(LDAPReplicationDomain.java:2245)
+	at org.opends.server.replication.plugin.MultimasterReplication.handleConflictResolution(MultimasterReplication.java:438)
+	at org.opends.server.workflowelement.localbackend.LocalBackendModifyOperation.handleConflictResolution(LocalBackendModifyOperation.java:2213)
+	at org.opends.server.workflowelement.localbackend.LocalBackendModifyOperation.processLocalModify(LocalBackendModifyOperation.java:472)
+	at org.opends.server.workflowelement.localbackend.LocalBackendWorkflowElement.execute(LocalBackendWorkflowElement.java:609)
+	at org.opends.server.core.WorkflowImpl.execute(WorkflowImpl.java:197)
+	at org.opends.server.core.WorkflowTopologyNode.execute(WorkflowTopologyNode.java:100)
+	at org.opends.server.core.ModifyOperationBasis.run(ModifyOperationBasis.java:520)
+	at org.opends.server.replication.plugin.LDAPReplicationDomain.replay(LDAPReplicationDomain.java:2647)
+	at org.opends.server.replication.plugin.ReplayThread.run(ReplayThread.java:109)
+
+   Locked ownable synchronizers:
+	- <7f197a848> (a java.util.concurrent.locks.ReentrantReadWriteLock$FairSync)
+

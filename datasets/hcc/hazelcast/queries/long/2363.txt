@@ -1,0 +1,64 @@
+When a distributed map is cleared, near-cache values in connected clients should be removed.
+
+``` java
+import com.hazelcast.client.HazelcastClient;
+import com.hazelcast.client.config.ClientConfig;
+import com.hazelcast.client.config.ClientNetworkConfig;
+import com.hazelcast.config.*;
+import com.hazelcast.core.Hazelcast;
+import com.hazelcast.core.HazelcastInstance;
+import com.hazelcast.core.IMap;
+import org.junit.After;
+import org.junit.Test;
+
+import static org.junit.Assert.*;
+
+public class HzClientNearCacheTest {
+
+    @Test
+    public void testClearDistributedMapWithNearCacheOnClient() throws InterruptedException {
+        final String testMapName = "testMap";
+
+        final NetworkConfig networkConfig = new NetworkConfig()
+                .setInterfaces(new InterfacesConfig().addInterface("127.0.0.1"))
+                .setJoin(new JoinConfig()
+                        .setTcpIpConfig(new TcpIpConfig().addMember("127.0.0.1:5701").setEnabled(true))
+                        .setMulticastConfig(new MulticastConfig().setEnabled(false)));
+
+        final HazelcastInstance member = Hazelcast.newHazelcastInstance(new Config()
+                .addMapConfig(new MapConfig(testMapName))
+                .setNetworkConfig(networkConfig));
+
+        final ClientConfig clientConfig = new ClientConfig().addNearCacheConfig(testMapName, new NearCacheConfig());
+        clientConfig.setNetworkConfig(new ClientNetworkConfig().addAddress("127.0.0.1:5701"));
+        final HazelcastInstance client = HazelcastClient.newHazelcastClient(clientConfig);
+
+        Thread.sleep(500);
+
+        final IMap<String, String> memberMap = member.getMap(testMapName);
+        final IMap<String, String> clientMap = client.getMap(testMapName);
+
+        final int size = 100;
+
+        for (int i = 0; i < size; i++) {
+            memberMap.put("key" + i, String.valueOf(i));
+        }
+
+        for (int i = 0; i < size; i++) {
+            assertEquals(String.valueOf(i), clientMap.get("key" + i));
+        }
+
+        memberMap.clear();
+        Thread.sleep(500);
+
+        for (int i = 0; i < size; i++) {
+            assertNull(clientMap.get("key" + i));
+        }
+    }
+
+    @After
+    public void tearDown() throws Exception {
+        Hazelcast.shutdownAll();
+    }
+}
+```

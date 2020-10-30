@@ -1,0 +1,50 @@
+Using searchrate to perform large search requests can fail like this:
+
+
+# 10000 x's in the filter
+./bin/searchrate -h gary-laptop.local -p 1389 -w secret12 -D cn=directory\ manager -s base -c 1 -t 4 -F -m 16 -b dc=example,dc=com '(!(description=xxx...xxxx))'
+-------------------------------------------------------------------------------
+     Throughput                            Response Time                       
+   (ops/second)                           (milliseconds)                       
+recent  average  recent  average  99.9%  99.99%  99.999%  err/sec  Entries/Srch
+-------------------------------------------------------------------------------
+Error occurred on one or more connections: Result(resultCode=Protocol Error,
+matchedDN=, diagnosticMessage=Cannot decode the provided ASN.1 sequence as an
+LDAP message because the second element of the sequence could not be decoded
+as the protocol op:  org.opends.server.types.LDAPException: Cannot decode the
+provided ASN.1 element as an LDAP search request protocol op because the
+requested attribute set could not be decoded:
+org.opends.server.protocols.asn1.ASN1Exception: Cannot decode the ASN.1
+element because an unexpected end of file was reached while reading the type
+byte, referrals=[], controls=[])
+   6.6      6.6  15.684   15.684  126.188  126.188  126.188      6.4           1.0
+
+
+
+Enabling logging shows that the initial LDAP messages are being split:
+
+
+export OPENDJ_JAVA_ARGS="-Djava.util.logging.config.file=/home/matt/logging.properties"
+
+Feb 6, 2012 3:28:06 PM org.glassfish.grizzly.nio.transport.TCPNIOTransport write
+FINE: TCPNIOConnection (TCPNIOConnection{localSocketAddress=/10.10.0.113:43004, peerSocketAddress=gary-laptop.local/10.10.0.162:1389}) (plain) write 10,732 bytes
+Feb 6, 2012 3:28:06 PM org.glassfish.grizzly.nio.transport.TCPNIOTransport write
+FINE: TCPNIOConnection (TCPNIOConnection{localSocketAddress=/10.10.0.113:43004, peerSocketAddress=gary-laptop.local/10.10.0.162:1389}) (plain) write 10,136 bytes
+Feb 6, 2012 3:28:06 PM org.glassfish.grizzly.nio.transport.TCPNIOTransport write
+FINE: TCPNIOConnection (TCPNIOConnection{localSocketAddress=/10.10.0.113:43004, peerSocketAddress=gary-laptop.local/10.10.0.162:1389}) (plain) write 0 bytes
+Feb 6, 2012 3:28:06 PM org.glassfish.grizzly.nio.transport.TCPNIOTransport write
+FINE: TCPNIOConnection (TCPNIOConnection{localSocketAddress=/10.10.0.113:43004, peerSocketAddress=gary-laptop.local/10.10.0.162:1389}) (plain) write 0 bytes
+Feb 6, 2012 3:28:06 PM org.glassfish.grizzly.nio.transport.TCPNIOTransport write
+FINE: TCPNIOConnection (TCPNIOConnection{localSocketAddress=/10.10.0.113:43004, peerSocketAddress=gary-laptop.local/10.10.0.162:1389}) (plain) write 0 bytes
+Feb 6, 2012 3:28:06 PM org.glassfish.grizzly.nio.transport.TCPNIOTransport write
+FINE: TCPNIOConnection (TCPNIOConnection{localSocketAddress=/10.10.0.113:43004, peerSocketAddress=gary-laptop.local/10.10.0.162:1389}) (plain) write 596 bytes
+Feb 6, 2012 3:28:06 PM org.glassfish.grizzly.nio.transport.TCPNIOTransport write
+FINE: TCPNIOConnection (TCPNIOConnection{localSocketAddress=/10.10.0.113:43004, peerSocketAddress=gary-laptop.local/10.10.0.162:1389}) (plain) write 10,732 bytes
+Feb 6, 2012 3:28:06 PM org.glassfish.grizzly.nio.transport.TCPNIOTransport write
+FINE: TCPNIOConnection (TCPNIOConnection{localSocketAddress=/10.10.0.113:43004, peerSocketAddress=gary-laptop.local/10.10.0.162:1389}) (plain) write 10,732 bytes
+Feb 6, 2012 3:28:06 PM org.glassfish.grizzly.nio.transport.TCPNIOTransport write
+FINE: TCPNIOConnection (TCPNIOConnection{localSocketAddress=/10.10.0.113:43004, peerSocketAddress=gary-laptop.local/10.10.0.162:1389}) (plain) write 10,732 bytes
+
+
+
+Discussions with the Grizzly devs reveals that the Grizzly Connection API requires synchronization when used in blocking mode. We should either upgrade to 2.2 in order to take advantage of non-blocking IO (before 2.2 it was not possible to constrain the write queue size), or continue to use blocking IO with synchronization. The Grizzly developers have raised http://java.net/jira/browse/GRIZZLY-1191 in order to track the inconsistent Connection API sync requirements.

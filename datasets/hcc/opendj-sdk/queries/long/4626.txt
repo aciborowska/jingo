@@ -1,0 +1,81 @@
+Setup fails with a NPE when running the following command:
+
+
+
+/opt/opendj/setup -p 1389 --ldapsPort 1636 --enableStartTLS --adminConnectorPort 4444 --instancePath ./data --baseDN dc=openam,dc=forgerock,dc=org -h localhost --rootUserPassword password --acceptLicense --sampleData 100
+
+
+
+The error log:
+
+
+
+[04/01/2018:17:29:04 +0000] category=org.forgerock.opendj.setup.model seq=0 severity=INFO msg=Setup tool launched January 4, 2018 5:29:04 PM GMT
+[04/01/2018:17:29:07 +0000] category=JVM seq=2 severity=INFO msg=Installation Directory:  /opt/opendj
+[04/01/2018:17:29:07 +0000] category=JVM seq=3 severity=INFO msg=Instance Directory:      /opt/opendj/data
+[04/01/2018:17:29:07 +0000] category=JVM seq=4 severity=INFO msg=JVM Information: 1.8.0_151-b12 by Oracle Corporation, 64-bit architecture, 1860698112 bytes heap size
+[04/01/2018:17:29:07 +0000] category=JVM seq=5 severity=INFO msg=JVM Host: configstore-0.configstore.default.svc.cluster.local, running Linux 4.9.13 amd64, 8371458048 bytes physical memory size, number of processors available 2
+[04/01/2018:17:29:07 +0000] category=JVM seq=6 severity=INFO msg=JVM Arguments: "-XX:+UnlockExperimentalVMOptions", "-XX:+UseCGroupMemoryLimitForHeap", "-Dorg.opends.server.scriptName=setup"
+[04/01/2018:17:29:08 +0000] category=BACKEND seq=22 severity=INFO msg=ForgeRock Directory Services 6.0.0-SNAPSHOT starting import (build 20180104004154, R16866ac5f201a4860fd0a8b3aec1dde793384196)
+[04/01/2018:17:29:08 +0000] category=BACKEND seq=23 severity=INFO msg=The amount of free memory available to the import task is 893809008 bytes. The number of phase one buffers required is 42 buffers
+[04/01/2018:17:29:08 +0000] category=BACKEND seq=24 severity=INFO msg=Setting DB cache size to 33554432 bytes and phase one buffer size to 21281166 bytes
+[04/01/2018:17:29:08 +0000] category=BACKEND seq=25 severity=INFO msg=Import Thread Count: 2 threads
+[04/01/2018:17:29:09 +0000] category=TOOLS seq=27 severity=SEVERE msg=An error occurred while attempting to process the LDIF import:  NullPointerException(DirectoryServer.java:2334)
+
+
+
+
+This is using the cgroups jvm option that sets the heap according to the container size.
+
+Turning this option off changes the error slightly, but the NPE is in the same code:
+
+
+
+[04/01/2018:18:12:34 +0000] category=org.forgerock.opendj.setup.model seq=0 severity=INFO msg=Setup tool launched January 4, 2018 6:12:34 PM GMT
+[04/01/2018:18:12:37 +0000] category=JVM seq=2 severity=INFO msg=Installation Directory:  /opt/opendj
+[04/01/2018:18:12:37 +0000] category=JVM seq=3 severity=INFO msg=Instance Directory:      /opt/opendj/data
+[04/01/2018:18:12:37 +0000] category=JVM seq=4 severity=INFO msg=JVM Information: 1.8.0_151-b12 by Oracle Corporation, 64-bit architecture, 1860698112 bytes heap size
+[04/01/2018:18:12:37 +0000] category=JVM seq=5 severity=INFO msg=JVM Host: configstore-0.configstore.default.svc.cluster.local, running Linux 4.9.13 amd64, 8371458048 bytes physical memory size, number of processors available 2
+[04/01/2018:18:12:37 +0000] category=JVM seq=6 severity=INFO msg=JVM Arguments: "-Dorg.opends.server.scriptName=setup"
+[04/01/2018:18:12:38 +0000] category=BACKEND seq=22 severity=INFO msg=ForgeRock Directory Services 6.0.0-SNAPSHOT starting import (build 20180104004154, R16866ac5f201a4860fd0a8b3aec1dde793384196)
+[04/01/2018:18:12:38 +0000] category=BACKEND seq=23 severity=INFO msg=The amount of free memory available to the import task is 893806008 bytes. The number of phase one buffers required is 42 buffers
+[04/01/2018:18:12:38 +0000] category=BACKEND seq=24 severity=INFO msg=Setting DB cache size to 33554432 bytes and phase one buffer size to 21281095 bytes
+[04/01/2018:18:12:38 +0000] category=BACKEND seq=25 severity=INFO msg=Import Thread Count: 2 threads
+[04/01/2018:18:12:39 +0000] category=BACKEND seq=27 severity=INFO msg=Index /dc=org,dc=forgerock,dc=openam/givenName.caseIgnoreSubstringsMatch:6 phase two started processing 1 buffers in 1 batches
+[04/01/2018:18:12:39 +0000] category=BACKEND seq=28 severity=INFO msg=Index /dc=org,dc=forgerock,dc=openam/givenName.caseIgnoreSubstringsMatch:6 phase two processing completed
+[04/01/2018:18:12:39 +0000] category=BACKEND seq=29 severity=INFO msg=Index /dc=org,dc=forgerock,dc=openam/mail.caseIgnoreIA5SubstringsMatch:6 phase two started processing 1 buffers in 1 batches
+[04/01/2018:18:12:39 +0000] category=BACKEND seq=30 severity=INFO msg=Index /dc=org,dc=forgerock,dc=openam/mail.caseIgnoreIA5SubstringsMatch:6 phase two processing completed
+[04/01/2018:18:12:39 +0000] category=TOOLS seq=31 severity=SEVERE msg=An error occurred while attempting to process the LDIF import:  NullPointerException(DirectoryServer.java:2334)
+
+
+
+
+Matt thinks this is in the following code:
+
+
+
+
+public static void deregisterMonitorProvider(MonitorProvider<? extends MonitorProviderCfg> monitorProvider) {
+    Dn monitorDn = monitorProvider.getMonitorInstanceDn();
+    MonitorProvider<?> provider = directoryServer.monitorProviders.remove(monitorDn);
+    // Try to deregister the monitor provider as an MBean and metric.
+    if (provider != null) {
+        try {
+            JMXMBean mBean = directoryServer.mBeans.get(monitorDn);
+            if (mBean != null) {
+                mBean.removeMonitorProvider(provider);
+            }
+        } catch (Exception e) {
+            logger.traceException(e);
+        }
+    }
+    final String monitorMetricName = getMonitorMetricName(monitorDn);
+    monitorProvider.getMetrics().forEach(
+        (metricKey, value) -> directoryServer.metricRegistry.remove(name(monitorMetricName, metricKey)));
+    directoryServer.metricRegistry.remove(monitorMetricName);
+}
+
+
+
+
+"monitorProvider must be null"

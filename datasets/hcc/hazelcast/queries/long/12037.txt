@@ -1,0 +1,71 @@
+https://hazelcast-l337.ci.cloudbees.com/view/split/job/split-map/
+
+https://hazelcast-l337.ci.cloudbees.com/view/split/job/split-map/18/consoleFull
+http://54.82.84.143/~jenkins/workspace/split-map/3.10-SNAPSHOT/2017_12_20-07_14_58/map/map/
+
+fail HzMember3HZBB split_validate_mapC hzcmd.map.multi.SizeAssert threadId=0 global.AssertionException: mapBak1_split_C0 size 199 != 200 
+from the script
+http://54.82.84.143/~jenkins/workspace/split-map/3.10-SNAPSHOT/2017_12_20-07_14_58/map/map/go
+
+after we split the cluster and after Cluster AA Size is 2 and Cluster BB Size is 3
+
+we are loading 500 maps mapBak1_split_C* in both split cluster's with 100 unique keys
+
+but we do not check if either cluster is safe before we load map's mapBak1_split_C*
+
+when the cluster is joined we assert the size of the mapBak1_split_C* map's it 200
+
+could it be that the data loss happens when we are loading the data into the map's mapBak1_split_C* as we do not check for cluster safe, and not at the time of merging the 2 clusters.
+
+I will add a validation for the size of the map's mapBak1_split_C* to be 100 in each cluster before
+healing the split.
+
+typically the next run with the added validation passed
+https://hazelcast-l337.ci.cloudbees.com/view/split/job/split-map/19/consoleFull
+
+showing the issue is not so easy to reproduce
+
+
+and a next run fails
+https://hazelcast-l337.ci.cloudbees.com/view/split/job/split-map/20/console
+
+but we can see
+```
+11:56:35 split all AA [BB]
+11:56:36 untilClusterAASize2@class=hzcmd.ops.UntilClusterSize [driver=Member.*AA, threads=1, warmup=0, duration=300, bench=Metrics, interval=0, recordException=false, size=2]
+11:56:52 untilClusterSize2 Done
+11:56:52 untilClusterBBSize3@class=hzcmd.ops.UntilClusterSize [driver=Member.*BB, threads=1, warmup=0, duration=300, bench=Metrics, interval=0, recordException=false, size=3]
+11:56:52 untilClusterSize3 Done
+11:56:53 split_load_mapB@class=hzcmd.map.member.multi.MultiLoad [driver=Member, threads=1, warmup=0, duration=0, bench=Metrics, interval=0, recordException=true, count=500, keyDomain=100, name=mapBak1_split_B]
+11:57:00 loadB Done
+11:57:00 split_load_mapC_AA@class=hzcmd.map.member.multi.MultiLoad [driver=Member.*AA, threads=1, warmup=0, duration=0, bench=Metrics, interval=0, recordException=true, count=500, keyDomain=100, keyDomainMin=0, name=mapBak1_split_C]
+11:57:00 split_load_mapC_BB@class=hzcmd.map.member.multi.MultiLoad [driver=Member.*BB, threads=1, warmup=0, duration=0, bench=Metrics, interval=0, recordException=true, count=500, keyDomain=200, keyDomainMin=100, name=mapBak1_split_C]
+11:57:06 loadC Done
+11:57:07 split_validate_mapC@class=hzcmd.map.multi.SizeAssert [driver=Member, threads=1, warmup=0, duration=0, bench=Metrics, interval=0, recordException=true, count=500, size=100, name=mapBak1_split_C]
+11:57:08 fail HzMember1HZAA split_validate_mapC hzcmd.map.multi.SizeAssert threadId=0 global.AssertionException: mapBak1_split_C0 size 99 != 100 
+11:57:10 heal [.*]
+11:57:11 clusterAAMerged@class=hzcmd.ops.Merged [driver=Member.*AA, threads=1, warmup=0, duration=400, bench=Metrics, interval=0, recordException=true]
+11:58:43 until_AA_merged Done
+11:58:43 untilClusterSafe@class=hzcmd.ops.UntilClusterSafe [driver=Member, threads=1, warmup=0, duration=0, bench=Metrics, interval=0, recordException=true]
+11:59:54 untilClusterSafe Done
+11:59:55 split_validate_mapA@class=hzcmd.map.multi.SizeAssert [driver=Member, threads=1, warmup=0, duration=0, bench=Metrics, interval=0, recordException=true, count=500, size=100, name=mapBak1_split_A]
+11:59:56 validateA Done
+11:59:57 split_validate_mapB@class=hzcmd.map.multi.SizeAssert [driver=Member, threads=1, warmup=0, duration=0, bench=Metrics, interval=0, recordException=true, count=500, size=100, name=mapBak1_split_B]
+11:59:58 validateB Done
+11:59:59 split_validate_mapC@class=hzcmd.map.multi.SizeAssert [driver=Member, threads=1, warmup=0, duration=0, bench=Metrics, interval=0, recordException=true, count=500, size=200, name=mapBak1_split_C]
+12:00:00 fail HzMember3HZBB split_validate_mapC hzcmd.map.multi.SizeAssert threadId=0 global.AssertionException: mapBak1_split_C0 size 199 != 200 
+the validation of map's mapBak1_split_C* to be 100 in each cluster fails. before we join the clusters together
+```
+
+so this issue is not with split brain heal join, but rather adding the data into the 2 sub clusters
+before the cluster's are "safe"
+
+with the extra validation  we can see the problem some time happens, not at the cluster merge stage, but in putting to the sub clusters before they are healed and joined
+
+
+making map put operations, while cluster size reports the correct size
+but might not be in a "safe" stage results in data loss
+
+do we expect to loose data, when making put operations while partition migration operations are running
+
+  

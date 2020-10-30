@@ -1,0 +1,54 @@
+Greetings!
+I am having a huge issue with the ReplicatedMap reserving and consuming enormous amounts of heap memory. 
+The problem gets even worse when there are 2 or more members. This is my scenario.
+
+1. Start pod-1 with Spring Boot + Kafka + Hazelcast. (Replication factor : 1)
+2. The app inits the HazelcastInstace, but NOT the Kafka Consumer.
+3. Fetch 1milion rows from the DB and do a putAll in a ReplicatedMap 
+**( for loop + put performance is obnoxiously bad)**
+4. At this point the HealthMonitor raises and Alert message for Memory Consumption . Spikes up to ~  1.5 - 2GB USED mem. (xmx 5g)
+5. At this point the Kafka Consumer kicks in and starts getting from the ReplicatedMap
+6. At this point the app uses around 1.5- 2GB steadily ( for the next hours as far as I have monitored). 
+ Now if I force a GC the app uses 1.0 - 1.5 const. 
+**The problematic object taking most of the memory is byte[]**
+
+So far so good. For the next step lets assume I haven't done a force GC on POD-1 and it is using ~1.5 - 2GB heap.
+
+7. Start POD-2 (replication factor 2) while the first one happily running.
+8. POD-2 skips loading anything from the DB. POD-2 starts really fast and joins cluster. 
+ Pod-2 Is visible in the Member rebalance message.
+
+9. Pod-1 DOUBLES the USED heap memory = ~4 - 5GB. Apparently for replicating the data to POD-2. 
+**byte[] is taking like 2-3GBs of heap.**
+
+At this point there are 2 scenarios. 
+
+Either POD-1 dies (due to the memory consumption), replication fails. (SocketConnectException memberAlive:false)
+Then POD-1 restarts skips initial DB load and gets the not fully replicated data back from POD-2 and they both live happily ever after. (1.5gb each)
+
+OR 
+
+You start it with XMX 6-8GB and replication succeeds, BUT 
+POD-1 shows 4-5GB heap used out of 6-8. (confirmed with profiler)
+POD-2 shows 1.5GB heap used out of 6-8.
+POD-1 **NEVER** goes below those 4-5 GB USED ( left it overnight, it evens grows). **byte[] still being the culprit.** 
+What's even better is that a force GC on POD-1 drops the used memory to 1.5GB. And now there are 9GB of memory reserved not used at all and not being reclaimed (this might be on our side)
+
+
+The root of the problem : We can't really start the cluster on Prod with 5milion records.
+
+
+**Important notes:
+Same scenario holds true even with KAFKA disabled.
+If POD-1 and POD-2 are started simultaneously the problem persists.
+Loading 10k objects leaves enormous footprint as well. 2.5GB**
+
+ 
+Hazelcast Version: 3.12.8
+Topology: Embedded
+Discovery: Zookeeper
+Serializer : StreamSerializer
+Cluster Members: 1 we need 2-3
+Cluster Backpressure : OFF
+ReplicatedMap - setAsyncFillup(false);
+JAVA - -Xmx5120m -XX:+UseSerialGC -Xms512m -XX:-AggressiveHeap 

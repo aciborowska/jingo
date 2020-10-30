@@ -1,0 +1,9 @@
+We are using Flink session cluster as a service for ad-hoc queries. After running some queries, we found that the memory usage of TaskManager grows and cannot be garbage collected. Eventually, we found that it was the object (class name and lock object) in parallelLockMap of AppClassloader and ExtClassloader cannot be recycled. And we found the classes were generated ones and should be never loaded by system classloader.
+
+The codegen classes are loaded by org.codehaus.janino.ByteArrayClassLoader which is a parent first classloader and will rely  on its parent classloader, e.g. Flink user classloader to load the class first, flink user classloader will also try to load the class with its parent classloader, and finally it will reach AppClassloader and ExtClassloader. Both the AppClassloader and ExtClassloader are SecureClassLoader and will add class name and a lock object to the parallelLockMap when loading a new class.
+
+I think we should never let the system classloader try to load the generated classes which is doomed to fail. We need to prune the process of loading codegen classes and avoid those classes reaching the system classloader. Two ways can achieve that:
+
+	We give a special prefix to codegen class name and filter class with those prefix in Flink user classloader.
+	We implement a new child first classloader which filters the codegen class and never loads the codegen class with Flink user classloader and set this class loader as the parent classloader of org.codehaus.janino.ByteArrayClassLoader instead of the Flink user classloader.
+

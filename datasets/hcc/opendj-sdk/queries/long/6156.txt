@@ -1,0 +1,72 @@
+Found with 7.0.0-SNAPSHOT rev. 774f01c092a.  
+
+Test to reproduce the issue:
+  
+
+python3 run-pybot.py -v -c stress -s proxy.basicNoSSL -t Modrate_Substring -t Modrate_Substring_SSL OpenDJ
+
+
+
+Topology description:
+
+	2DS behind single proxy
+	SDK doing mod operations
+
+
+
+Test steps:
+
+	setup topology
+	create substring index on description attribute on each DS
+	rebuild indexes
+	run modrate
+	remove substring index on each DS
+	rebuild indexes
+
+
+
+During the test above an error messages are logged to logs/errors. All messages are same like following message:
+
+[23/Mar/2019:06:06:13 +0100] category=SYNC severity=ERROR msgID=32 msg=An unexpected error happened handling 
+connection with Replica DS(dj1) for domain "o=example" ChangelogException: Unable to position a changelog reader to key 
+'01030169a8d924000001259fdj2' using strategy 'GREATER_THAN_KEY_ENFORCE_KEY_PRESENCE'. 
+Changelog may be corrupted. Directory servers connected to this replication server may need to be reinitialized.
+ (BlockLogReader.java:447 BlockLogReader.java:418 BlockLogReader.java:128 LogFile.java:552 Log.java:1061 
+Log.java:1217 FileReplicaDBCursor.java:76 CompositeDBCursor.java:143 DomainDBCursor.java:78 CompositeDBCursor.java:91
+ DomainDBCursor.java:25 ServerHandler.java:777 ServerHandler.java:752 ServerWriter.java:89).  This connection is going to be closed
+
+
+I noticed that those messages are logged during rebuild-index and after it until the DJ was stopped in test teardown:
+
+rebuild-index -h comte.internal.forgerock.com -p 4444 -D "cn=Directory Manager" -w password -X -b o=example --rebuildAll
+
+
+output:
+
+Rebuild Index task 20190323060532520 scheduled to start immediately
+[23/Mar/2019:06:05:32 +0100] severity="NOTICE" msgCount=0 msgID=org.opends.messages.backend-413 message="Rebuild Index task 20190323060532520 started execution"
+[23/Mar/2019:06:05:37 +0100] severity="NOTICE" msgCount=1 msgID=org.opends.messages.backend-370 message="The backend userRoot is now taken offline"
+[23/Mar/2019:06:05:37 +0100] severity="INFORMATION" msgCount=2 msgID=org.opends.messages.backend-410 message="JE backend 'userRoot' does not specify the number of cleaner threads: defaulting to 4 threads"
+[23/Mar/2019:06:05:37 +0100] severity="INFORMATION" msgCount=3 msgID=org.opends.messages.backend-411 message="JE backend 'userRoot' does not specify the number of lock tables: defaulting to 31"
+[23/Mar/2019:06:05:47 +0100] severity="NOTICE" msgCount=4 msgID=org.opends.messages.backend-537 message="Rebuild of all indexes started with 100003 total entries to process"
+[23/Mar/2019:06:05:48 +0100] severity="NOTICE" msgCount=5 msgID=org.opends.messages.backend-528 message="The amount of free memory available to the import task is 7592801872 bytes. The number of phase one buffers required is 176 buffers"
+[23/Mar/2019:06:05:48 +0100] severity="NOTICE" msgCount=6 msgID=org.opends.messages.backend-520 message="Setting DB cache size to 33554432 bytes and phase one buffer size to 4194304 bytes"
+[23/Mar/2019:06:06:03 +0100] severity="NOTICE" msgCount=7 msgID=org.opends.messages.backend-540 message="Rebuild complete. Processed 100003 entries in 7 seconds (average rate 13062.0/sec)"
+[23/Mar/2019:06:06:03 +0100] severity="INFORMATION" msgCount=8 msgID=org.opends.messages.backend-410 message="JE backend 'userRoot' does not specify the number of cleaner threads: defaulting to 4 threads"
+[23/Mar/2019:06:06:03 +0100] severity="INFORMATION" msgCount=9 msgID=org.opends.messages.backend-411 message="JE backend 'userRoot' does not specify the number of lock tables: defaulting to 31"
+[23/Mar/2019:06:06:12 +0100] severity="NOTICE" msgCount=10 msgID=org.opends.messages.backend-513 message="The database backend userRoot containing 100003 entries has started"
+[23/Mar/2019:06:06:12 +0100] severity="INFORMATION" msgCount=11 msgID=org.opends.messages.access_control-50 message="Added 2 Access Control Instruction (ACI) attribute types found in context "o=example" to the access control evaluation engine"
+[23/Mar/2019:06:06:13 +0100] severity="NOTICE" msgCount=12 msgID=org.opends.messages.replication-62 message="Directory server DS(dj1) has connected to replication server RS(dj1) for domain "o=example" at 172.16.204.14:8989 with generation ID 18641960"
+[23/Mar/2019:06:06:13 +0100] severity="NOTICE" msgCount=13 msgID=org.opends.messages.backend-414 message="Rebuild Index task 20190323060532520 finished execution in the state Completed successfully"
+[23/Mar/2019:06:06:13 +0100] severity="WARNING" msgCount=14 msgID=org.opends.messages.replication-63 message="Replication server RS(dj1) at 172.16.204.14:8989 has closed the connection to this directory server DS(dj1). This directory server will now try to connect to another replication server in order to receive changes for the domain "o=example""
+Rebuild Index task 20190323060532520 has been successfully completed
+[23/03/2019:06:06:13 +0100] category=SDK seq=0 severity=FINE msg=LdapClientImpl 'org.forgerock.opendj.ldap.LdapClientImpl@6236eb5f' is closing while 1 active connections remain
+
+
+This rebuild index usually takes ~20s to finish but it took 44s to finish. This rebuild index is the one after removing the substring index.
+
+Modrate command:
+
+modrate -h comte.internal.forgerock.com -p 1391 -D "cn=proxy_user,o=example" -w password -d 1800
+ -b uid=user.{1},ou=People,o=example -S -g "rand(0,99999)" -c 40 -t 3 -i 18  -F -g "randstr(200)" "description:{2}"
+

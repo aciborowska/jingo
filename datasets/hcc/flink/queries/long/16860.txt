@@ -1,0 +1,38 @@
+We have a batch job which we currently have on a flink cluster running 1.8.2
+ The job runs fine. We wanted to upgrade to flink 1.10, but that yielded errors, so we started downgrading until we found that the issue is in flink 1.9.2
+
+The job on 1.9.2 fails with:
+
+
+Caused by: org.apache.flink.table.api.TableException: Failed to push filter into table source! table source with pushdown capability must override and change explainSource() API to explain the pushdown applied!
+
+Which is not happening on flink 1.8.2. You can check the logs for the exactly same job, just running on different cluster versions: flink-1.8.2.txt flink-1.9.2.txt
+
+ 
+
+I tried to narrow it down and it seems that this exception has been added in FLINK-12399 and there was a small discussion regarding the exception: https://github.com/apache/flink/pull/8468#discussion_r329876088
+
+Our code looks something like this:
+
+ 
+
+
+String tempTableName = "tempTable";
+String sql = SqlBuilder.buildSql(tempTableName);
+BatchTableEnvironment tableEnv = BatchTableEnvironment.create(env);
+OrcTableSource orcTableSource = OrcTableSource.builder()
+ .path(hdfsFolder, true)
+ .forOrcSchema(ORC.getSchema())
+ .withConfiguration(config)
+ .build();
+tableEnv.registerTableSource(tempTableName, orcTableSource);
+Table tempTable = tableEnv.sqlQuery(sql);
+return tableEnv.toDataSet(tempTable, Row.class); 
+
+
+Where the sql build is nothing more than
+
+
+SELECT * FROM table WHERE id IN (1,2,3) AND mid IN(4,5,6)
+
+ 

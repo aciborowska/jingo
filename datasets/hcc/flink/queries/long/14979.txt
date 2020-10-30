@@ -1,0 +1,31 @@
+As reported by a user on the user mailing list, TwoPhaseCommitSinkFunction#notifyCheckpointComplete can fail with the following exception:
+
+
+java.lang.RuntimeException: Error while confirming checkpoint
+    at org.apache.flink.runtime.taskmanager.Task$2.run(Task.java:1205)
+    at java.util.concurrent.Executors$RunnableAdapter.call(Executors.java:511)
+    at java.util.concurrent.FutureTask.run(FutureTask.java:266)
+    at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1149)
+    at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:624)
+    at java.lang.Thread.run(Thread.java:748)
+Caused by: java.lang.IllegalStateException: checkpoint completed, but no transaction pending
+    at org.apache.flink.util.Preconditions.checkState(Preconditions.java:195)
+    at org.apache.flink.streaming.api.functions.sink.TwoPhaseCommitSinkFunction.notifyCheckpointComplete(TwoPhaseCommitSinkFunction.java:267)
+    at org.apache.flink.streaming.api.operators.AbstractUdfStreamOperator.notifyCheckpointComplete(AbstractUdfStreamOperator.java:130)
+    at org.apache.flink.streaming.runtime.tasks.StreamTask.notifyCheckpointComplete(StreamTask.java:822)
+    at org.apache.flink.runtime.taskmanager.Task$2.run(Task.java:1200)
+    ... 5 more
+
+
+This can happen in the following scenario:
+
+	savepoint is triggered
+	checkpoint is triggered
+	checkpoint completes (but it doesn't subsume the savepoint, because checkpoints subsume only other checkpoints).
+	savepoint completes
+
+
+
+In this case, TwoPhaseCommitSinkFunction receives first notification that the later checkpoint completed, it commits both savepoint and the checkpoint. Later when savepoint notifyCheckpointComplete arrives, the above error will occur. 
+
+Possible trivial fix is to remove that failing checkState.

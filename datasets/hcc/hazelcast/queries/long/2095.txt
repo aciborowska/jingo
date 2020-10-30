@@ -1,0 +1,258 @@
+Hi,
+
+I discovered unnecessary MapStore.store() calls when one node is removed at runtime. The version I'm using is a git checkout of this afternoon (of the master branch for 3.2).
+
+Assume we have two nodes A and B. On node A I'm doing map.put() and map.remove() calls. Node B dutifully executes MapStore.store() and MapStore.delete() operations. Now we shutdown node B. Before stopping, node B executes pending MapStore operations and then stops. _Now_, shortly afterwards, node A jumps in and re-executes the MapStore.store() calls which were already performed by node B.
+
+This is bad for two reasons:
+1. Store operations might happen twice
+2. _Only_ the store operations happen twice :-) Which means that if you store and delete map entries shortly after each other and then remove a node from your cluster, those removed map entries might pop up again in your MapStore - not good.
+
+Here is a test which reproduces the problem:
+
+``` java
+package com.nm.test.hazelcast;
+
+import com.hazelcast.config.Config;
+import com.hazelcast.config.MapConfig;
+import com.hazelcast.config.MapStoreConfig;
+import com.hazelcast.config.XmlConfigBuilder;
+import com.hazelcast.core.Hazelcast;
+import com.hazelcast.core.HazelcastInstance;
+import com.hazelcast.core.IMap;
+import com.hazelcast.core.MapStore;
+import org.apache.log4j.BasicConfigurator;
+import org.apache.log4j.Logger;
+import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+import junit.framework.TestCase;
+
+public class TestMapStore3 extends TestCase {
+
+    private static final Logger logger = Logger.getLogger(TestMapStore3.class);
+
+    private static final String mapName = "testMap";
+
+    private static final int numIterations = 50;
+
+    private static final int writeDelaySeconds = 5;
+
+    private static final boolean simulateSecondNode = true;
+
+    public static void main(String[] args) throws Exception {
+
+        // configure logging
+        BasicConfigurator.configure();
+
+        // run test
+        TestMapStore3 test = new TestMapStore3();
+        test.testMapStore();
+    }
+
+    public void testMapStore() throws Exception {
+
+        // create shared hazelcast config
+        final Config config = new XmlConfigBuilder().build();
+        config.setProperty("hazelcast.logging.type", "log4j");
+
+        // create shared map store implementation
+        RecordingMapStore store = new RecordingMapStore();
+
+        // configure map store
+        MapStoreConfig mapStoreConfig = new MapStoreConfig();
+        mapStoreConfig.setEnabled(true);
+        mapStoreConfig.setWriteDelaySeconds(writeDelaySeconds);
+        mapStoreConfig.setClassName(null);
+        mapStoreConfig.setImplementation(store);
+        MapConfig mapConfig = config.getMapConfig(mapName);
+        mapConfig.setMapStoreConfig(mapStoreConfig);
+
+        // thread 1:
+        // add and remove entries
+        Thread thread1 = new Thread(new Runnable() {
+
+            @Override
+            public void run() {
+                HazelcastInstance hcInstance = Hazelcast.newHazelcastInstance(config);
+
+                // try-finally to stop hazelcast instance
+                try {
+
+                    // log begin put/remove
+                    logger.info(Thread.currentThread().getName() + " starting put/remove...");
+
+                    // loop over num iterations
+                    IMap<String, String> map = hcInstance.getMap(mapName);
+                    for (int k = 0; k < numIterations; k++) {
+                        String key = String.valueOf(k + 10); // 2 digits for sorting in output
+                        String value = "v:" + key;
+
+                        // add entry
+                        map.put(key, value);
+                        //logger.info("Put: " + key);
+
+                        // remove entry 
+                        map.remove(key);
+                        //logger.info("Remove: " + key);
+
+                        // sleep 300ms
+                        sleep(300, false);
+                    }
+
+                    // log end put/remove
+                    logger.info(Thread.currentThread().getName() + " put/remove done.");
+
+                    // sleep 20s
+                    sleep(20000, true);
+
+                } finally {
+                    hcInstance.getLifecycleService().shutdown();
+                }
+                logger.info(Thread.currentThread().getName() + " done.");
+            }
+        }, "Thread 1");
+        thread1.start();
+
+        // wait 6s after starting first thread
+        sleep(6000, true);
+
+        // thread 2:
+        // simulate a second member which joins the cluster
+        Thread thread2 = new Thread(new Runnable() {
+
+            @Override
+            public void run() {
+                HazelcastInstance hcInstance = Hazelcast.newHazelcastInstance(config);
+
+                // log joined
+                logger.info(Thread.currentThread().getName() + " hazelcast instance joined.");
+
+                // try-finally to stop hazelcast instance
+                try {
+
+                    // sleep 15s
+                    sleep(15000, true);
+
+                } finally {
+                    hcInstance.getLifecycleService().shutdown();
+                }
+                logger.info(Thread.currentThread().getName() + " done.");
+            }
+        }, "Thread 2");
+        if (simulateSecondNode) {
+            thread2.start();
+        }
+
+        // join threads
+        thread1.join();
+        if (simulateSecondNode) {
+            thread2.join();
+        }
+
+        // print store content
+        TreeSet<String> setSorted = new TreeSet<String>(store.getStore().keySet());
+        logger.info("Store: " + setSorted);
+        if (!setSorted.isEmpty()) {
+            fail("Left-over entries exist: " + setSorted);
+        }
+    }
+
+    private static void sleep(long ms, boolean log) {
+        try {
+            Thread.sleep(ms);
+            if (log) {
+                logger.info("Slept " + (ms / 1000) + "s.");
+            }
+        } catch (InterruptedException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    public static class RecordingMapStore implements MapStore<String, String> {
+
+        private static final Logger logger = Logger.getLogger(RecordingMapStore.class);
+
+        private ConcurrentHashMap<String, String> store = new ConcurrentHashMap<String, String>();
+
+        public ConcurrentHashMap<String, String> getStore() {
+            return store;
+        }
+
+        @Override
+        public String load(String key) {
+            //logger.info("load(" + key + ") called.");
+            return store.get(key);
+        }
+
+        @Override
+        public Map<String, String> loadAll(Collection<String> keys) {
+            List<String> keysList = new ArrayList<String>(keys);
+            Collections.sort(keysList);
+            logger.info("loadAll(" + keysList + ") called.");
+            Map<String, String> result = new HashMap<String, String>();
+            for (String key : keys) {
+                String value = store.get(key);
+                if (value != null) {
+                    result.put(key, value);
+                }
+            }
+            return result;
+        }
+
+        @Override
+        public Set<String> loadAllKeys() {
+            logger.info("loadAllKeys() called.");
+            Set<String> result = new HashSet<String>(store.keySet());
+            logger.info("loadAllKeys result = " + result);
+            return result;
+        }
+
+        @Override
+        public void store(String key, String value) {
+            logger.info("store(" + key + ") called.");
+            String valuePrev = store.put(key, value);
+            if (valuePrev != null) {
+                logger.warn("- Unexpected Update (operations reordered?): " + key);
+            }
+        }
+
+        @Override
+        public void storeAll(Map<String, String> map) {
+            TreeSet<String> setSorted = new TreeSet<String>(map.keySet());
+            logger.info("storeAll(" + setSorted + ") called.");
+            store.putAll(map);
+        }
+
+        @Override
+        public void delete(String key) {
+            logger.info("delete(" + key + ") called.");
+            String valuePrev = store.remove(key);
+            if (valuePrev == null) {
+                logger.warn("- Unnecessary delete (operations reordered?): " + key);
+            }
+        }
+
+        @Override
+        public void deleteAll(Collection<String> keys) {
+            List<String> keysList = new ArrayList<String>(keys);
+            Collections.sort(keysList);
+            logger.info("deleteAll(" + keysList + ") called.");
+            for (String key : keys) {
+                String valuePrev = store.remove(key);
+                if (valuePrev == null) {
+                    logger.warn("- Unnecessary delete (operations reordered?): " + key);
+                }
+            }
+        }
+
+    }
+
+}
+```
+
+(the test is relatively long, however you need two nodes plus a map store to discover the issue.)
+
+I don't really know where the bug comes from, however, my guess would be to look into the backup replicas of the MapStore operations. It is also interesting to note, that these unnecessary MapStore.store() operations happen quite exactly 10s after the original MapStore.store() operations.
+
+Thanks and best,
+Lukas

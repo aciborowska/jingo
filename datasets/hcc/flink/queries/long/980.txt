@@ -1,0 +1,11 @@
+An empty Buffer sent via OutputChannel escapes the respective LocalBufferPool, because the early return in OutputChannel#sendBuffer(Buffer) misses the buffer recycling step.
+
+
+
+The distributed runtime uses a global network buffer pool per TaskManager, which is distributed to local buffer pools on a per task level at runtime. The output side of the task gets a single local sub pool (1 pool for n OutputGates) and each InputGate gets one (m pools for m InputGates).
+
+To ensure deadlock free execution, the output pool needs to have at least one buffer per logical channel (OutputChannel). (The same reasoning applies to the input side, but this is not relevant here.) When a record is collected by the UDF it is serialized to one or more buffers from the pool and dispatched. After dispatching, a buffer is recycled and becomes available again in the pool.
+
+Each Buffer has a fixed maximum size for the backing MemorySegment. If the network buffer is only partially filled, the size of the Buffer is limited to the respective size. If an empty buffer (size 0) is send, the sending of the buffer is entirely skipped and the dispatcher is never called. 
+
+Because the recycling happens in the dispatcher, this respective buffer escapes the buffer pool.

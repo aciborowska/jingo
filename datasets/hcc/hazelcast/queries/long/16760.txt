@@ -1,0 +1,82 @@
+This code
+
+```
+    public static void main(String[] args) throws Exception {
+        Config config = new Config();
+        config.getNetworkConfig().getJoin().getMulticastConfig().setEnabled(false);
+        HazelcastInstance hazelcastInstance = Hazelcast.newHazelcastInstance(config);
+
+        IMap<Integer, Object> map = hazelcastInstance.getMap("test");
+        
+        int key = 1;
+        // This this -- int[] megabytes = { 20, 20, 20 };
+        int[] megabytes = { 10, 15, 20 };
+        for (int mega : megabytes) {
+            byte[] value = new byte[mega * MEGABYTE];
+
+            for (int i = 0 ; i < 10 ; i++) {
+                System.out.println("Write: " + key + ", size " + value.length + " when freeMemory()=="
+                        + (Runtime.getRuntime().freeMemory() / MEGABYTE) + "MB");
+                map.set(key, value);
+                key++;
+            }
+        }
+        
+        hazelcastInstance.shutdown();
+    }
+```
+gives an OOME with usually about 100MB free memory reported, for a 20MB object.
+
+Typical output I get
+```
+Write: 2, size 10485760 when freeMemory()==439MB
+Write: 3, size 10485760 when freeMemory()==417MB
+Write: 4, size 10485760 when freeMemory()==395MB
+Write: 5, size 10485760 when freeMemory()==373MB
+Write: 6, size 10485760 when freeMemory()==351MB
+Write: 7, size 10485760 when freeMemory()==329MB
+Write: 8, size 10485760 when freeMemory()==307MB
+Write: 9, size 10485760 when freeMemory()==284MB
+Write: 10, size 10485760 when freeMemory()==262MB
+Write: 11, size 15728640 when freeMemory()==356MB
+Write: 12, size 15728640 when freeMemory()==324MB
+Write: 13, size 15728640 when freeMemory()==292MB
+Write: 14, size 15728640 when freeMemory()==314MB
+Write: 15, size 15728640 when freeMemory()==282MB
+Write: 16, size 15728640 when freeMemory()==282MB
+Write: 17, size 15728640 when freeMemory()==266MB
+Write: 18, size 15728640 when freeMemory()==250MB
+Write: 19, size 15728640 when freeMemory()==234MB
+Write: 20, size 15728640 when freeMemory()==218MB
+Write: 21, size 20971520 when freeMemory()==214MB
+Write: 22, size 20971520 when freeMemory()==171MB
+Write: 23, size 20971520 when freeMemory()==150MB
+Write: 24, size 20971520 when freeMemory()==129MB
+Exception in thread "main" java.lang.reflect.InvocationTargetException
+	at java.base/jdk.internal.reflect.NativeMethodAccessorImpl.invoke0(Native Method)
+	at java.base/jdk.internal.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:62)
+	at java.base/jdk.internal.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)
+	at java.base/java.lang.reflect.Method.invoke(Method.java:566)
+	at org.springframework.boot.loader.MainMethodRunner.run(MainMethodRunner.java:48)
+	at org.springframework.boot.loader.Launcher.launch(Launcher.java:87)
+	at org.springframework.boot.loader.Launcher.launch(Launcher.java:51)
+	at org.springframework.boot.loader.JarLauncher.main(JarLauncher.java:52)
+Caused by: java.lang.OutOfMemoryError: Java heap space
+	at com.hazelcast.internal.serialization.impl.ByteArrayObjectDataOutput.toByteArray(ByteArrayObjectDataOutput.java:424)
+	at com.hazelcast.internal.serialization.impl.ByteArrayObjectDataOutput.toByteArray(ByteArrayObjectDataOutput.java:415)
+	at com.hazelcast.internal.serialization.impl.AbstractSerializationService.toBytes(AbstractSerializationService.java:155)
+	at com.hazelcast.internal.serialization.impl.AbstractSerializationService.toBytes(AbstractSerializationService.java:133)
+	at com.hazelcast.internal.serialization.impl.AbstractSerializationService.toData(AbstractSerializationService.java:118)
+	at com.hazelcast.internal.serialization.impl.AbstractSerializationService.toData(AbstractSerializationService.java:106)
+	at com.hazelcast.spi.impl.NodeEngineImpl.toData(NodeEngineImpl.java:334)
+	at com.hazelcast.spi.impl.AbstractDistributedObject.toData(AbstractDistributedObject.java:78)
+	at com.hazelcast.map.impl.proxy.MapProxyImpl.set(MapProxyImpl.java:234)
+	at com.hazelcast.map.impl.proxy.MapProxyImpl.set(MapProxyImpl.java:225)
+	at neil.demo.Application.main(Application.java:28)
+```
+
+The issue seems to occur if ten 10MB objects are inserted, then ten 15MB objects before
+ten 20MB objects.
+If all objects are 20MB heap size runs down to near zero before failure, as you would expect.
+
+Tried on IMDG 3.12.6 and 4.0, using AdoptOpenJDK (build 11.0.6+10) on OSX 10.15.3

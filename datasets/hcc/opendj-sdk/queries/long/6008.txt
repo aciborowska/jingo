@@ -1,0 +1,122 @@
+Steps to reproduce:
+1. Install a fresh OpenDJ instance (setup with a "DSEE compatible" (i.e ACI based) access control handler by default)
+2. Delete the access control handler so that we can use a policy based one:
+
+bin/dsconfig delete-access-control-handler \
+          --hostname localhost \
+          --port 4444 \
+          --bindDn cn=Directory\ Manager \
+          --trustAll \
+          --bindPassword password \
+          --no-prompt
+
+
+
+3. Create a policy based ACH:
+
+	Interactive mode:
+
+>>>> Access Control Handler management menu
+
+What would you like to do?
+
+    1)  Create a new Access Control Handler
+    2)  View and edit the Access Control Handler
+    3)  Delete an existing Access Control Handler
+    4)  Show the Access Control Handler
+
+    a)  show advanced components and properties
+    q)  quit
+    b)  back
+
+Enter choice [b]: 1
+
+
+>>>> Select the type of Access Control Handler that you want to create:
+
+    1)  DSEE Compatible Access Control Handler
+    2)  Policy Based Access Control Handler
+
+    a)  show advanced components and properties
+    q)  quit
+    c)  cancel
+    ?)  help
+
+Enter choice [c]: 2
+
+[...]
+Enter choice [f]: 
+
+Some values provided are invalid according to the property's syntax. Please
+correct them.
+Error reported by the server was: Entry "cn=Root DSE access,cn=Global Access
+Control Policies,cn=Access Control Handler,cn=config" contains a value "" for
+attribute ds-cfg-request-target-dn-equal-to that is invalid according to the
+syntax for that attribute: The provided value "" is not allowed for attributes
+with syntax 'DirectoryString'. It neither match the syntax nor an expression.
+
+
+
+>>>> Configure the properties of the Policy Based Access Control Handler
+
+        Property  Value(s)
+        ------------------
+    1)  enabled   true
+
+    a)  show advanced components and properties
+    q)  quit
+    c)  cancel
+    f)  finish - create the new Access Control Handler
+    ?)  help
+
+Enter choice [f]: 
+
+The Policy Based Access Control Handler could not be created because there is
+already an existing one with the same name
+
+Press RETURN to continue 
+
+
+
+
+
+Expected behavior: dsconfig works as expected and access control is now performed using the following global policies:
+
+$ bin/dsconfig list-global-access-control-policies           --hostname localhost           --port 4444           --bindDn cn=Directory\ Manager           --trustAll           --bindPassword password           --no-prompt
+
+Global Access Control Policy
+--------------------------------
+Anonymous access all entries
+Authenticated access all entries
+Root DSE access
+Schema access
+Self access
+
+
+
+Observed behavior:
+dsconfig prints a verbose error message and fall back on the same menu as before, when the user choose f)  finish - create the new Access Control Handler a second time, dsconfig reports that there is already one configured, so the user can be completely lost.
+In effect, the message printed is a warning, the ACH is created but with the Root DSE access policy missing.
+
+
+	Non interactive mode behaves as the interactive one:
+
+$ bin/dsconfig create-access-control-handler           --type policy-based           --set enabled:true           --hostname localhost           --port 4444           --bindDn cn=Directory\ Manager           --trustAll           --bindPassword password           --no-prompt
+
+Invalid Attribute Syntax: Entry "cn=Root DSE access,cn=Global Access Control
+Policies,cn=Access Control Handler,cn=config" contains a value "" for
+attribute ds-cfg-request-target-dn-equal-to that is invalid according to the
+syntax for that attribute: The provided value "" is not allowed for attributes
+with syntax 'DirectoryString'. It neither match the syntax nor an expression.
+
+$ echo $?
+1
+
+
+
+
+
+Note that alternative consists in stopping the server and use the dsconfig offline mode to do the change.
+Issue is caused by OPENDJ-3860 and the fact that switching the ACH is now possible whereas it was forbidden  before the issue resolution.
+
+Issue cause is the fact that schema validation is performed against global policies definitions when server is online and the empty DN representing the Root DSE entry for attribute ds-cfg-request-target-dn-equal-to is getting rejected by DirectoryStringSyntaxImpl#valueIsAcceptable.

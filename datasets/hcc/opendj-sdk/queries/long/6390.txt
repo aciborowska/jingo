@@ -1,0 +1,232 @@
+Steps to reproduce...
+
+1. Install DS with HTTP (and/or HTTPS) connection handler enabled.
+ 2. As part of installation process, create example 2000 user entries for dc=example,dc=com
+ 3. After DS instance has been created, enable HTTP endpoint for /api (if not already enabled)
+ 4. Create new user entry where per user size limit is set to unlimited. For example, the following user entry has been created...
+
+
+Vincents-MacBook-Pro:bin vincent.tran$ ./ldapsearch -p 1389 -D "cn=directory manager" -w welcome1 -b "dc=example,dc=com" uid=ckent "*" ds-rlim-size-limit
+dn: uid=ckent,ou=people,dc=example,dc=com
+objectClass: top
+objectClass: person
+objectClass: organizationalPerson
+objectClass: inetOrgPerson
+cn: Clark Kent
+givenName: Clark
+sn: Kent
+uid: ckent
+userPassword: {SSHA512}4PF4wZPHfJDRdxj4a3jLzwa/5R3my8wP0nvPsOBEYwiqF7KFAF7JCtyJdBCnYyuoatzVJpWde16vLLXt3WJ9UYEUAh/dDSoN
+ds-rlim-size-limit: 0
+Vincents-MacBook-Pro:bin vincent.tran$
+
+
+ 
+
+5. Confirm that the user entry can successfully retrieve all entries via search filter of "uid=*".
+
+
+Vincents-MacBook-Pro:bin vincent.tran$ ./ldapsearch -p 1389 -D "uid=ckent,ou=people,dc=example,dc=com" -w welcome -b "dc=example,dc=com" uid=* dn | grep -c "^dn:"
+2001
+Vincents-MacBook-Pro:bin vincent.tran$
+
+
+6. Perform the equivalent search via RESTful request using curl, but hit size limit exceeded error.
+
+
+Vincents-MacBook-Pro:bin vincent.tran$ curl --user ckent:welcome "http://localhost:1080/api/users?_queryFilter=_id+pr&_prettyPrint=true"
+ (
+ "code" : 413,
+ "reason" : "Request Entity Too Large",
+ "message" : "Size Limit Exceeded: This search operation has sent the maximum of 1000 entries to the client"
+ )Vincents-MacBook-Pro:bin vincent.tran$
+
+
+
+7. With additional internal operations logging enabled for the file based access log, we find the following logging output generated...
+
+
+[26/Apr/2019:10:33:51 -0600] SEARCH REQ conn=-1 op=82 msgID=83 base="dc=example,dc=com" scope=sub filter="(uid=ckent)" attrs="*,+"
+[26/Apr/2019:10:33:51 -0600] SEARCH RES conn=-1 op=82 msgID=83 result=0 nentries=1 etime=1
+[26/Apr/2019:10:33:51 -0600] BIND REQ conn=-1 op=83 msgID=84 version=3 type=SIMPLE dn="uid=ckent,ou=people,dc=example,dc=com"
+[26/Apr/2019:10:33:51 -0600] BIND RES conn=-1 op=83 msgID=84 result=0 authDN="cn=Internal Client" etime=0
+[26/Apr/2019:10:33:51 -0600] SEARCH REQ conn=21 op=0 msgID=0 base="ou=people,dc=example,dc=com" scope=one filter="(uid=*)" attrs="objectClass,uid,etag,createTimestamp,modifyTimestamp,mail,cn,givenName,sn,description,manager,isMemberOf,telephoneNumber,uidNumber,gidNumber,homeDirectory,loginShell,gecos"
+[26/Apr/2019:10:33:51 -0600] SEARCH RES conn=21 op=0 msgID=0 result=4 message="This search operation has sent the maximum of 1000 entries to the client" nentries=1000 etime=129
+[26/Apr/2019:10:33:51 -0600] DISCONNECT conn=21 reason="Client Unbind"
+
+
+ 
+
+Notice how the BIND REQ comes in as "uid=ckent,ou=people,dc=example,dc=com" (as expected), but the BIND RES somehow converts uid=ckent to authDN="cn=Internal Client". Not sure why this is and perhaps a separate jira/bug needs to be submitted to investigate this aspect, but let's move on and continue to focus on per user resource limits for which this jira/bug was submitted.
+
+ 
+
+8. Since it appears that the search is actually being performed as "cn=Internal Client", we'll go ahead and create the necessary account for "cn=Internal Client".
+
+ 
+
+
+./dsconfig \
+create-backend \
+--hostname Vincents-MacBook-Pro.local \
+--port 1444 \
+--bindDN "cn=Directory Manager" \
+--bindPassword welcome1 \
+--backend-name internalClient \
+--type ldif \
+--set enabled:true \
+--set base-dn:cn=Internal\ Client \
+--set ldif-file:db/internalClient/internalClient.ldif \
+--set is-private-backend:true \
+--trustAll \
+--no-prompt
+
+Vincents-MacBook-Pro:ldif vincent.tran$ cat addInternalClient65.ldif
+dn: cn=Internal Client
+objectClass: top
+objectClass: person
+objectClass: organizationalPerson
+objectClass: inetOrgPerson
+givenName: Internal
+sn: Client
+ds-rlim-size-limit: 0
+ds-rlim-time-limit: 0
+ds-rlim-idle-time-limit: 0
+ds-rlim-lookthrough-limit: 0
+ds-rlim-cursor-entry-limit: 100000
+ds-pwp-password-policy-dn: cn=Root Password Policy,cn=Password Policies,cn=config
+ds-privilege-name: bypass-lockdown
+ds-privilege-name: bypass-acl
+ds-privilege-name: modify-acl
+ds-privilege-name: config-read
+ds-privilege-name: config-write
+ds-privilege-name: ldif-import
+ds-privilege-name: ldif-export
+ds-privilege-name: backend-backup
+ds-privilege-name: backend-restore
+ds-privilege-name: server-lockdown
+ds-privilege-name: server-shutdown
+ds-privilege-name: server-restart
+ds-privilege-name: disconnect-client
+ds-privilege-name: cancel-request
+ds-privilege-name: password-reset
+ds-privilege-name: update-schema
+ds-privilege-name: privilege-change
+ds-privilege-name: unindexed-search
+ds-privilege-name: subentry-write
+ds-privilege-name: changelog-read
+ds-privilege-name: monitor-read
+cn: Internal Client
+userPassword: welcome1
+Vincents-MacBook-Pro:ldif vincent.tran$
+
+./import-ldif \
+--hostname Vincents-MacBook-Pro.local \
+--port 1444 \
+--bindDN "cn=Directory Manager" \
+--bindPassword welcome1 \
+--backendID internalClient \
+--ldifFile /Users/vincent.tran/ldif/addInternalClient65.ldif \
+--trustAll
+
+Vincents-MacBook-Pro:bin vincent.tran$ ./ldapsearch -p 1389 -D "cn=directory manager" -w welcome1 -b "cn=internal client" objectclass=* "*" ds-rlim-size-limit
+dn: cn=Internal Client
+objectClass: top
+objectClass: person
+objectClass: organizationalPerson
+objectClass: inetOrgPerson
+cn: Internal Client
+givenName: Internal
+sn: Client
+userPassword: {PBKDF2}10000:Ngfe1i8vmjyumX4RscHhkB3F5WIQR+rQVDNISQ==
+ds-rlim-size-limit: 0
+Vincents-MacBook-Pro:bin vincent.tran$
+
+
+ 
+
+ 
+
+9. Confirm that "cn=internal client" can successfully retrieve all entries via search filter of "uid=*".
+
+
+Vincents-MacBook-Pro:bin vincent.tran$ ./ldapsearch -p 1389 -D "cn=internal client" -w welcome1 -b "dc=example,dc=com" uid=* dn | grep -c "^dn:"
+2001
+Vincents-MacBook-Pro:bin vincent.tran${code}
+
+10. However, the curl command still hits the same size limit exceeded error.
+
+
+Vincents-MacBook-Pro:bin vincent.tran$ curl --user ckent:welcome "http://localhost:1080/api/users?_queryFilter=_id+pr&_prettyPrint=true"
+(
+ "code" : 413,
+ "reason" : "Request Entity Too Large",
+ "message" : "Size Limit Exceeded: This search operation has sent the maximum of 1000 entries to the client"
+)Vincents-MacBook-Pro:bin vincent.tran$
+
+
+
+The per user resource limit setting (i.e. ds-rlim-size-limit) is being recognized and honored via ldapsearch, but not for the equivalent RESTful operation request.
+
+The customer has encountered the same for look through limit in there 5.5.0 env...
+
+ 
+
+
+I'm using postman with this query:
+
+https://host:port/api/users?_queryFilter=pwdChangedTime ge "2018-01-14T00:00:00Z" and pwdChangedTime lt "2018-01-14T23:59:59Z"
+
+And here is the error I'm getting:
+(
+ "code": 413,
+ "reason": "Request Entity Too Large",
+ "message": "Administrative Limit Exceeded: This search operation has checked the maximum of 5000 entries for matches"
+)
+
+[23/Apr/2019:13:43:57 -0500] SEARCH REQ conn=-1 op=177 msgID=178 base="dc=ldap,dc=bmc,dc=com" scope=sub filter="(uid=ad-xiaowang)" attrs="*,+"
+[23/Apr/2019:13:43:57 -0500] SEARCH RES conn=-1 op=177 msgID=178 result=0 nentries=1 etime=0
+[23/Apr/2019:13:43:57 -0500] BIND REQ conn=-1 op=178 msgID=179 version=3 type=SIMPLE dn="uid=ad-xiaowang,ou=admins,ou=internal,dc=ldap,dc=bmc,dc=com"
+[23/Apr/2019:13:43:57 -0500] BIND RES conn=-1 op=178 msgID=179 result=0 authDN="cn=Internal Client,cn=Root DNs,cn=config" etime=0
+[23/Apr/2019:13:43:57 -0500] SEARCH REQ conn=182 op=0 msgID=0 base="ou=users,ou=External,dc=ldap,dc=bmc,dc=com" scope=one filter="(&(pwdChangedTime>=20180114000000Z)(&(pwdChangedTime<=20180114235959Z)(!(pwdChangedTime=20180114235959Z))))" attrs="objectClass,uid,etag,createTimestamp,modifyTimestamp,mail,cn,givenName,sn,bmc-guid,bmc-jobFunction,bmc-primaryRole,bmc-partnerPendingFlag,bmc-profilePendingFlag,bmc-startdate,bmc-supportPendingFlag,bmc-contactIntegrationId,bmc-tcAgreementFlag,bmc-country,preferredLanguage,creatorsName,description,lastLoginTime,ds-pwp-account-disabled,ds-pwp-password-expiration-time,entryDN,entryUUID,modifiersName,pwdChangedTime,manager,isMemberOf,telephoneNumber,uidNumber,gidNumber,homeDirectory,loginShell,gecos"
+[23/Apr/2019:13:43:57 -0500] SEARCH RES conn=182 op=0 msgID=0 result=11 message="This search operation has checked the maximum of 5000 entries for matches" nentries=0 etime=51
+[23/Apr/2019:13:43:57 -0500] DISCONNECT conn=182 reason="Client Unbind" 
+
+
+ 
+
+I've run the same test (that was performed in 6.5.1) in 5.5.2 and have observed the same behavior.
+
+ 
+
+I also went back a bit further and tested with 3.5.3. What's interesting in 3.5.3 is that the bind DN for the RESTful operation request remains intact (e.g. uid=ckent for both BIND REQ and BIND RES).
+
+
+[24/Apr/2019:14:03:26 -0600] SEARCH REQ conn=-1 op=48 msgID=49 base="dc=example,dc=com" scope=sub filter="(uid=ckent)" attrs="*,+"
+[24/Apr/2019:14:03:26 -0600] SEARCH RES conn=-1 op=48 msgID=49 result=0 nentries=1 etime=3
+[24/Apr/2019:14:03:26 -0600] BIND REQ conn=-1 op=49 msgID=50 version=3 type=SIMPLE dn="uid=ckent,ou=people,dc=example,dc=com"
+[24/Apr/2019:14:03:26 -0600] BIND RES conn=-1 op=49 msgID=50 result=0 authDN="uid=ckent,ou=people,dc=example,dc=com" etime=1
+[24/Apr/2019:14:03:26 -0600] SEARCH REQ conn=1 op=0 msgID=0 base="ou=people,dc=example,dc=com" scope=one filter="(uid=*)" attrs="objectClass,uid,etag,createTimestamp,modifyTimestamp,mail,cn,givenName,sn,description,manager,isMemberOf,telephoneNumber,uidNumber,gidNumber,homeDirectory,loginShell,gecos"
+[24/Apr/2019:14:03:29 -0600] SEARCH RES conn=1 op=0 msgID=0 result=4 message="This search operation has sent the maximum of 1000 entries to the client" nentries=1000 etime=2854
+[24/Apr/2019:14:03:29 -0600] UNBIND REQ conn=1 op=1 msgID=1
+[24/Apr/2019:14:03:29 -0600] DISCONNECT conn=1 reason="Client Unbind"
+
+
+However, per user resource limit settings still seem to be ignored by the DS when handling RESTful operation requests as the same size limit exceeded error is still encountered.
+
+
+Vincents-MacBook-Pro:bin vincent.tran$ curl --user ckent:welcome "http://localhost:1080/api/users?_queryFilter=_id+pr&_prettyPrint=true"
+(
+  "code" : 413,
+  "reason" : "Request Entity Too Large",
+  "message" : "Size Limit Exceeded: This search operation has sent the maximum of 1000 entries to the client"
+)Vincents-MacBook-Pro:bin vincent.tran$
+
+
+ While ldapsearch succeeds as expected.
+
+
+Vincents-MacBook-Pro:bin vincent.tran$ ./ldapsearch -p 1389 -D "uid=ckent,ou=people,dc=example,dc=com" -w welcome -b "dc=example,dc=com" uid=* dn | grep -c "^dn:"
+ 2001
+ Vincents-MacBook-Pro:bin vincent.tran$
+

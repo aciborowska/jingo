@@ -1,0 +1,23 @@
+To reproduce in Hazelcast 3.2.1:
+- Create a cluster with two nodes
+- Connect to the cluster with two clients
+  - Have client-1 subscribe to events on an IMap with addEntryListener - subscription can be to whole map, specific key or by predicate
+  - Have client-2 update a key/value in the map that causes a subscription callback to be sent to client-1
+- Repeat the following steps until the problem is seen
+  - Kill a cluster node, wait for migration to complete
+  - Start a new cluster node, wait for migration to complete
+  - Have client-2 update a key/value in the map that causes a subscription callback to be sent to client-1
+
+Once the problem occurs, client-1 will receive two callbacks whenever client-2 updates a value in the map.
+
+Superficially the problem is that the registrations HashSet in EventServiceImpl has two keys for the same subscription. For example, the contents from the debugger of the "registrations" parameter in the call to EventServiceImpl.publishEvent() after the problem occurs: 
+(line 254 in com.hazelcast.spi.impl.EventServiceImpl)
+
+```
+[Registration{filter=com.hazelcast.map.EntryEventFilter@4cfdbb9f, id='eadb264d-9155-4b9b-a2de-39c97b156de9', serviceName='hz:impl:mapService', subscriber=Address[127.0.0.1]:5702, listener=null}, 
+Registration{filter=com.hazelcast.map.EntryEventFilter@aae525c,  id='eadb264d-9155-4b9b-a2de-39c97b156de9', serviceName='hz:impl:mapService', subscriber=Address[127.0.0.1]:5702, listener=null}]
+```
+
+The Registration class hashCode / equals methods rely on the hashCode / equals of the filter. Both EntryEventFilter and QueryEventFilter don't implement these methods, which is why the "same" Registration can be in there twice. 
+
+I don't know exactly how subscriptions are meant to be managed in the cluster and migrated when nodes fail. So it might be that fixing the filter classes is not the right approach and this is meant to be addressed somewhere else during partition migration.

@@ -1,0 +1,143 @@
+Hello.
+I am using hazelcast 3.7.4 on a server node, as well as a hazelcast client node.
+I have configured a cache using XML on the server node similar to, using read-through and specifying a cache loader factory.
+
+On the client side, I am receiving a `com.hazelcast.nio.serialization.HazelcastSerializationException: java.lang.ClassNotFoundException` for my CacheLoader's implementation class, since it is not available in the client's classpath.
+
+While searching, I've found a similar _closed_ issue: #6676
+Looking at the tests, I found [one test](https://github.com/hazelcast/hazelcast/blob/9d2eb04228da9c121161435410d90125a1ab597a/hazelcast-client/src/test/java/com/hazelcast/client/cache/ClientCacheReadWriteThroughTest.java#L79) that seems to test the exact issue I am experiencing, however I believe the test is incorrect and passes while it shouldn't, since it doesn't actually use a Hazelcast _Client_ caching provider.
+
+I gave it a go to write a test for the issue I'm trying to describe. While not _quite_ good a test, I had some feedback that the CacheLoader is required on the client, it fails with an IllegalStateException on Factory's writeExternal method.
+
+    package com.hazelcast.client.cache;
+
+    import com.hazelcast.cache.impl.HazelcastServerCachingProvider;
+    import com.hazelcast.client.HazelcastClient;
+    import com.hazelcast.client.cache.impl.HazelcastClientCachingProvider;
+    import com.hazelcast.client.config.ClientConfig;
+    import com.hazelcast.client.impl.HazelcastClientInstanceImpl;
+    import com.hazelcast.config.CacheConfig;
+    import com.hazelcast.config.Config;
+    import com.hazelcast.core.Hazelcast;
+    import com.hazelcast.core.HazelcastInstance;
+    import com.hazelcast.core.HazelcastInstanceAware;
+    import com.hazelcast.instance.HazelcastInstanceImpl;
+    import com.hazelcast.internal.util.ThreadLocalRandom;
+    import org.junit.Test;
+
+    import javax.cache.Cache;
+    import javax.cache.configuration.CompleteConfiguration;
+    import javax.cache.configuration.Factory;
+    import javax.cache.integration.CacheLoader;
+    import javax.cache.integration.CacheLoaderException;
+    import javax.cache.spi.CachingProvider;
+    import java.io.Externalizable;
+    import java.io.IOException;
+    import java.io.ObjectInput;
+    import java.io.ObjectOutput;
+    import java.util.HashMap;
+    import java.util.Map;
+    import java.util.UUID;
+
+    public class ClientCacheReadThroughNoCacheLoader {
+        @Test
+        public void clientDoesNotNeedCacheLoader() throws Exception {
+            final String serverName = UUID.randomUUID().toString();
+            final Config serverConfig = new Config(serverName);
+            final int port = ThreadLocalRandom.current().nextInt(5000, 15000);
+            serverConfig.getNetworkConfig().setPort(port).setPublicAddress("localhost");
+
+            final HazelcastInstance server = Hazelcast.newHazelcastInstance(serverConfig);
+            CachingProvider serverProvider = HazelcastServerCachingProvider.createCachingProvider(server);
+            CompleteConfiguration<Integer, String> cacheConfig =
+                    new CacheConfig<Integer, String>()
+                            .setTypes(Integer.class, String.class)
+                            .setReadThrough(true)
+                            .setCacheLoaderFactory(new ServerSideCacheLoaderFactory());
+
+            final String cacheName = UUID.randomUUID().toString();
+            serverProvider.getCacheManager().createCache(cacheName, cacheConfig);
+
+            System.out.println("Creating client now");
+
+            final String clientName = UUID.randomUUID().toString();
+            final ClientConfig clientConfig = new ClientConfig();
+            clientConfig.setInstanceName(clientName);
+            clientConfig.getNetworkConfig().addAddress("localhost:"+port);
+
+            final HazelcastInstance client = HazelcastClient.newHazelcastClient(clientConfig);
+            CachingProvider clientCachingProvider = HazelcastClientCachingProvider.createCachingProvider(client);
+            Cache<Integer, String> clientCache = clientCachingProvider.getCacheManager()
+                    .getCache(cacheName, Integer.class, String.class);
+        }
+
+        public static class ServerSideCacheLoaderFactory
+                implements Factory<ServerSideCacheLoader>, HazelcastInstanceAware, Externalizable {
+
+            private transient HazelcastInstance hazelcastInstance;
+            public ServerSideCacheLoaderFactory() {
+                System.out.println("initialized with instance: " + hazelcastInstance);
+            }
+
+            @Override
+            public void setHazelcastInstance(HazelcastInstance hazelcastInstance) {
+                this.hazelcastInstance = hazelcastInstance;
+            }
+
+            @Override
+            public ServerSideCacheLoader create() {
+                System.out.println("create called");
+                if (hazelcastInstance instanceof HazelcastInstanceImpl) {
+                    return new ServerSideCacheLoader();
+                } else {
+                    throw new IllegalStateException("This factory can only be used at server side!");
+                }
+            }
+
+            @Override
+            public void writeExternal(ObjectOutput out) throws IOException {
+                if(hazelcastInstance != null) {
+                    if(hazelcastInstance instanceof HazelcastClientInstanceImpl) {
+                        throw new IllegalStateException("This factory can only be used at server side!");
+                    }
+                }
+                System.out.println("write with instance: " + hazelcastInstance);
+            }
+
+            @Override
+            public void readExternal(ObjectInput in) throws IOException, ClassNotFoundException {
+                if(hazelcastInstance != null) {
+                    if(hazelcastInstance instanceof HazelcastClientInstanceImpl) {
+                        throw new IllegalStateException("This factory can only be used at server side!");
+                    }
+                }
+                System.out.println("read with instance: " + hazelcastInstance);
+            }
+        }
+
+        private static class ServerSideCacheLoader implements CacheLoader<Integer, String> {
+
+            static String valueOf(Integer key) {
+                return "value-of-" + key;
+            }
+
+            @Override
+            public String load(Integer key) {
+                return valueOf(key);
+            }
+
+            @Override
+            public Map<Integer, String> loadAll(Iterable<? extends Integer> keys) throws CacheLoaderException {
+                Map<Integer, String> result = new HashMap<Integer, String>();
+                for (Integer key : keys) {
+                    String value = load(key);
+                    result.put(key, value);
+                }
+                return result;
+            }
+
+        }
+    }
+
+
+

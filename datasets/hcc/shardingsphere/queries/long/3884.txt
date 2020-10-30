@@ -1,0 +1,80 @@
+## Bug Report
+
+According to the discussion in #3644. the value of shardingColumns should not be `null`.
+But I found that there are different behavior between literal SQL and parameters SQL.
+
+When I use literal SQL like `INSERT INTO t_order (order_id, user_id, status) VALUES (100, null, 'xxx')`, The SQL will be routed to multiple data nodes. 
+
+And if I use parameters SQL like `INSERT INTO t_order (order_id, user_id, status) VALUES (?, ?, ?) paramters=[100, null, 'xxx']`, the SQL will throw sharding column can't be null exception.
+
+So I think it's a bug for literal insert SQL.
+
+### Which version of ShardingSphere did you use?
+
+4.0.0-RC3
+
+### Which project did you use? Sharding-JDBC or Sharding-Proxy?
+
+Sharding-JDBC
+
+### Expected behavior
+
+Throw same exception for literal insert SQL with null value of sharding columns.
+
+### Actual behavior
+
+Routed to multiple data nodes.
+
+### Reason analyze (If you can)
+
+The reason is in `InsertClauseShardingConditionEngine.createShardingCondition`. 
+
+ExpressionSegment of null value in literal insert SQL is `CommonExpressionSegment`, but the method do not handle `CommonExpressionSegment`. So the null value do not be added to shardingValues and also not throw exception.
+
+When routingEngine get shardingValues, the shardingValues is empty. So SQL be routed to all nodes. 
+
+### Steps to reproduce the behavior, such as: SQL to execute, sharding rule configuration, when exception occur etc.
+
+shardingConfiguration:
+```
+spring:
+  shardingsphere:
+    datasource:
+      names: ds0, ds1
+      ds0:
+        type: com.zaxxer.hikari.HikariDataSource
+        driver-class-name: com.mysql.cj.jdbc.Driver
+        username: root
+        password: ""
+        jdbcUrl: jdbc:mysql://localhost:3306/demo_ds_0?useUnicode=true&characterEncoding=UTF-8&allowMultiQueries=true&zeroDateTimeBehavior=convertToNull&useSSL=false&serverTimezone=Asia/Shanghai
+      ds1:
+        type: com.zaxxer.hikari.HikariDataSource
+        driver-class-name: com.mysql.cj.jdbc.Driver
+        username: root
+        password: ""
+        jdbcUrl: jdbc:mysql://localhost:3306/demo_ds_1?useUnicode=true&characterEncoding=UTF-8&allowMultiQueries=true&zeroDateTimeBehavior=convertToNull&useSSL=false&serverTimezone=Asia/Shanghai
+    sharding:
+      tables:
+        t_order:
+          actual-data-nodes: ds$->{0..1}.t_order_$->{0..1}
+          key-generator:
+            column: order_id
+            type: SNOWFLAKE
+          database-strategy:
+            inline:
+              sharding-column: user_id
+              algorithm-expression: ds$->{user_id % 2}
+          table-strategy:
+            inline:
+              sharding-column: order_id
+              algorithm-expression: t_order_$->{order_id % 2}
+    props:
+      sql:
+        show: true
+```
+
+SQL:
+```
+CREATE TABLE IF NOT EXISTS `t_order` (order_id bigint primary key, user_id int, status varchar(50));
+INSERT INTO `t_order` (order_id, user_id, status) VALUES (100, null, 'xxx')
+```

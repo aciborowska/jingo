@@ -1,0 +1,22 @@
+Currently, the runtime support implementation of Bounded[One|Multi]Input#endInput has the following problems:
+
+	The runtime are propagating endInput immediately on the operator chain when input of the head operator is finished. Because some operators flush the buffered data in close, the downstream operators still receive records after executing endInput. This need the operators to flush the buffered data in endInput instead of close, like the PRs for fixing issue#13491 and issue#13376.
+
+
+
+
+	Timers are not taken into account.
+
+
+
+Actually, StreamOperator#close tells the operator to finish all its processing and flush output (all remaining buffered data), while endInput indicates that no more data will arrive on some input of the operator. That is to say, for the non-tail operators on the operator chain, when the upstream operator is closed, the input of its downstream operator arrives at the end. So for an operator chain {{OP1 -> OP2 -> ... }},  the logic should be:
+
+	(Source/Network)Input of OP1 is finished.
+	call OP1#endInput
+	quiesce ProcessingTimeService to disallow OP1 from registering new timers.
+	wait for the pending timers (in processing) of OP1 to finish.
+	call OP1#close
+	call OP2#endInput
+	quiesce ProcessingTimeService to disallow OP2 from registering new timers.
+	...
+

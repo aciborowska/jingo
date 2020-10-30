@@ -1,0 +1,50 @@
+Some of the async invocations fail when running this test
+
+``` java
+    static CountDownLatch latch = new CountDownLatch(270);
+
+    @Test
+    public void testAsyncInvocation_DifferentPartition() throws Exception {
+        TestHazelcastInstanceFactory nodes = createHazelcastInstanceFactory(2);
+        HazelcastInstance hz[] = nodes.newInstances();
+
+        Node node = getNode(hz[0]);
+        NodeEngineImpl nodeEngine = node.nodeEngine;
+        InternalOperationService opService = nodeEngine.getOperationService();
+
+        Operation op = new MyOp();
+        opService.invokeOnPartition(SERVICE_NAME, op, 1).get();
+
+        assertTrue("No responses from: " + latch.getCount(), latch.await(1L, TimeUnit.SECONDS) );
+    }
+
+    static class MyOp extends AbstractMapOperation implements PartitionAwareOperation, ExecutionCallback {
+
+        public MyOp() {
+            super("map");
+        }
+
+        @Override
+        public void run() throws Exception {
+            NodeEngine ne = mapService.getMapServiceContext().getNodeEngine();
+            InternalOperationService opService = (InternalOperationService) ne.getOperationService();
+
+            for(int i = 0; i < 271; i++) {
+                PartitionCheckIfLoadedOperation op = new PartitionCheckIfLoadedOperation("map");
+                if (i != getPartitionId())
+                    opService.asyncInvokeOnPartition(SERVICE_NAME, op, i, this);
+            }
+        }
+
+        @Override
+        public void onResponse(Object response) {
+            latch.countDown();
+        }
+
+        @Override
+        public void onFailure(Throwable t) {
+            t.printStackTrace();
+        }
+
+    }
+```

@@ -1,0 +1,153 @@
+Hi,
+
+remember #1861 ? It was fixed then, but the problem was reintroduced with 3.2 when _not_ caching local entries.
+
+See the following test:
+
+``` java
+package com.nm.test.hazelcast;
+
+import com.hazelcast.config.*;
+import com.hazelcast.core.Hazelcast;
+import com.hazelcast.core.HazelcastInstance;
+import com.hazelcast.core.IMap;
+import org.apache.log4j.BasicConfigurator;
+import org.apache.log4j.Logger;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Random;
+import junit.framework.TestCase;
+
+public class TestPutIfAbsent2 extends TestCase {
+
+    private static final Logger logger = Logger.getLogger(TestPutIfAbsent2.class);
+
+    private static final int numWorkThreads = 16;
+
+    private static final int numIterations = 5000;
+
+    public static void main(String[] args) {
+
+        // configure logging
+        BasicConfigurator.configure();
+
+        // run test
+        TestPutIfAbsent2 test = new TestPutIfAbsent2();
+        test.testPutIfAbsent();
+    }
+
+    private static class Result {
+
+        public String msg;
+    }
+
+    public void testPutIfAbsent() {
+
+        // create shared hazelcast config
+        final Config config = new XmlConfigBuilder().build();
+        config.setProperty("hazelcast.logging.type", "log4j");
+
+        // configure min cluster size
+        config.setProperty("hazelcast.initial.min.cluster.size", "2");
+
+        // configure near cache
+        MapConfig mapConfig = config.getMapConfig("testMap");
+        NearCacheConfig nearCacheConfig = new NearCacheConfig();
+        nearCacheConfig.setCacheLocalEntries(false); // TODO if true, the test will pass 
+        nearCacheConfig.setMaxSize(0);
+        nearCacheConfig.setTimeToLiveSeconds(0);
+        nearCacheConfig.setMaxIdleSeconds(0);
+        nearCacheConfig.setEvictionPolicy("NONE");
+        nearCacheConfig.setInvalidateOnChange(true);
+        nearCacheConfig.setInMemoryFormat(InMemoryFormat.BINARY);
+        mapConfig.setNearCacheConfig(nearCacheConfig);
+
+        // result
+        final Result result = new Result();
+
+        // two nodes
+        List<Thread> nodeThreads = new ArrayList<Thread>();
+        for (int n = 0; n < 2; n++) {
+            final int nodeIndex = n;
+            Thread nodeThread = new Thread(new Runnable() {
+
+                @Override
+                public void run() {
+
+                    // create hazelcast instance
+                    HazelcastInstance hcInstance = Hazelcast.newHazelcastInstance(config);
+
+                    // get map
+                    final IMap<String, String> map = hcInstance.getMap("testMap");
+
+                    // create threads
+                    List<Thread> workThreads = new ArrayList<Thread>();
+                    for (int i = 0; i < numWorkThreads; i++) {
+                        Thread workThread = new Thread(new Runnable() {
+
+                            @Override
+                            public void run() {
+                                Random random = new Random();
+
+                                // loop over keys
+                                for (int k = 0; k < numIterations; k++) {
+                                    int keyInt = random.nextInt(1024);
+                                    String key = String.valueOf(keyInt);
+                                    String value = "merhaba" + keyInt;
+                                    map.get(key); // TODO this causes the problem
+                                    map.putIfAbsent(key, value);
+                                    String value2 = map.get(key);
+                                    if (value2 == null) {
+                                        result.msg = "Value should never be null here.";
+                                    }
+                                }
+                            }
+
+                        }, "node" + nodeIndex + "_thread" + i);
+                        workThreads.add(workThread);
+                        workThread.start();
+                    }
+
+                    // join work threads
+                    for (Thread workThread : workThreads) {
+                        try {
+                            workThread.join();
+                        } catch (InterruptedException ignored) {
+                        }
+                    }
+
+                    // sleep a bit and stop hazelcast
+                    try {
+                        Thread.sleep(10000);
+                    } catch (InterruptedException e) {
+                        throw new RuntimeException(e);
+                    }
+                    hcInstance.getLifecycleService().shutdown();
+                }
+            }, "Node " + n);
+            nodeThreads.add(nodeThread);
+            nodeThread.start();
+        }
+
+        // join nodes
+        for (Thread nodeThread : nodeThreads) {
+            try {
+                nodeThread.join();
+            } catch (InterruptedException ignored) {
+            }
+        }
+
+        // fail if error encountered
+        if (result.msg != null) {
+            fail(result.msg);
+        }
+        logger.info("Test done.");
+    }
+
+}
+```
+
+If you set nearCacheConfig.setCacheLocalEntries(true), then the test will pass as expected.
+
+Cheers,
+Lukas

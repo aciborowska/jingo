@@ -1,0 +1,375 @@
+I may have found a bug in Hazelcast 3.5, that leads to the client hanging forever in the authenticate method.
+
+I could only reproduce this behaviour with Hazelcast 3.5, with 3.4.2 showed no problems on connect/reconnect.
+# Setup:
+
+The problem occurs in two situations:
+1. When the client gets started before the server is available, then the server becomes available and the client tries to connect.
+2. After the client has lost the connection to the server and the server becomes available again and the client tries to reconnect.
+
+The problem only seems to occur when 
+- using the Hazelcast Spring configuration for the client.
+  (When creating the Hazelcast client programmatically, i could not reproduce it. - See the tests.)
+- a serialization config is present in the Spring client configuration (it may even be empty)
+  `<hz:serialization></hz:serialization>`
+
+Tested with Java 1.7 and Java 1.8
+## JVM Details:
+
+JVM: Java HotSpot(TM) 64-Bit Server VM (24.0-b56, mixed mode)
+Java: version 1.7.0_40, vendor Oracle Corporation
+
+JVM: Java HotSpot(TM) 64-Bit Server VM (25.45-b02, mixed mode)
+Java: version 1.8.0_45, vendor Oracle Corporation
+# Stacktraces
+
+Stacktraces of the moment when the Hazelcast clients hang (in the authenticate method):
+## testStartSpringClientBeforeServer
+
+```
+"SpringClientRunner" daemon prio=6 tid=0x00000000111c6800 nid=0x318c in Object.wait() [0x0000000011a4d000]
+   java.lang.Thread.State: TIMED_WAITING (on object monitor)
+    at java.lang.Object.wait(Native Method)
+    - waiting on <0x00000007af03b910> (a com.hazelcast.client.spi.impl.ClientInvocationFuture)
+    at com.hazelcast.client.spi.impl.ClientInvocationFuture.get(ClientInvocationFuture.java:104)
+    - locked <0x00000007af03b910> (a com.hazelcast.client.spi.impl.ClientInvocationFuture)
+    at com.hazelcast.client.spi.impl.ClientInvocationFuture.get(ClientInvocationFuture.java:89)
+    at com.hazelcast.client.spi.impl.ClusterListenerSupport$ManagerAuthenticator.authenticate(ClusterListenerSupport.java:120)
+    at com.hazelcast.client.connection.nio.ClientConnectionManagerImpl.authenticate(ClientConnectionManagerImpl.java:208)
+    at com.hazelcast.client.connection.nio.ClientConnectionManagerImpl.getOrConnect(ClientConnectionManagerImpl.java:197)
+    - locked <0x00000007aef68ad8> (a java.lang.Object)
+    at com.hazelcast.client.connection.nio.ClientConnectionManagerImpl.getOrConnect(ClientConnectionManagerImpl.java:65)
+    at com.hazelcast.client.spi.impl.ClusterListenerSupport.connect(ClusterListenerSupport.java:214)
+    at com.hazelcast.client.spi.impl.ClusterListenerSupport.connectToOne(ClusterListenerSupport.java:182)
+    at com.hazelcast.client.spi.impl.ClusterListenerSupport.connectToCluster(ClusterListenerSupport.java:134)
+    at com.hazelcast.client.spi.impl.ClientClusterServiceImpl.start(ClientClusterServiceImpl.java:182)
+    at com.hazelcast.client.impl.HazelcastClientInstanceImpl.start(HazelcastClientInstanceImpl.java:233)
+    at com.hazelcast.client.HazelcastClient.newHazelcastClient(HazelcastClient.java:82)
+    at sun.reflect.NativeMethodAccessorImpl.invoke0(Native Method)
+    at sun.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:57)
+    at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)
+    at java.lang.reflect.Method.invoke(Method.java:606)
+    at org.springframework.beans.factory.support.SimpleInstantiationStrategy.instantiate(SimpleInstantiationStrategy.java:162)
+    at org.springframework.beans.factory.support.ConstructorResolver.instantiateUsingFactoryMethod(ConstructorResolver.java:588)
+    at org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory.instantiateUsingFactoryMethod(AbstractAutowireCapableBeanFactory.java:1119)
+    at org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory.createBeanInstance(AbstractAutowireCapableBeanFactory.java:1014)
+    at org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory.doCreateBean(AbstractAutowireCapableBeanFactory.java:504)
+    at org.springframework.beans.factory.support.AbstractAutowireCapableBeanFactory.createBean(AbstractAutowireCapableBeanFactory.java:476)
+    at org.springframework.beans.factory.support.AbstractBeanFactory$1.getObject(AbstractBeanFactory.java:303)
+    at org.springframework.beans.factory.support.DefaultSingletonBeanRegistry.getSingleton(DefaultSingletonBeanRegistry.java:230)
+    - locked <0x00000007af06dd70> (a java.util.concurrent.ConcurrentHashMap)
+    at org.springframework.beans.factory.support.AbstractBeanFactory.doGetBean(AbstractBeanFactory.java:299)
+    at org.springframework.beans.factory.support.AbstractBeanFactory.getBean(AbstractBeanFactory.java:194)
+    at org.springframework.beans.factory.support.DefaultListableBeanFactory.preInstantiateSingletons(DefaultListableBeanFactory.java:755)
+    at org.springframework.context.support.AbstractApplicationContext.finishBeanFactoryInitialization(AbstractApplicationContext.java:757)
+    at org.springframework.context.support.AbstractApplicationContext.refresh(AbstractApplicationContext.java:480)
+    - locked <0x00000007af0623d0> (a java.lang.Object)
+    at org.springframework.boot.SpringApplication.refresh(SpringApplication.java:686)
+    at org.springframework.boot.SpringApplication.run(SpringApplication.java:320)
+    at org.springframework.boot.builder.SpringApplicationBuilder.run(SpringApplicationBuilder.java:139)
+    - locked <0x00000007af03bc78> (a java.util.concurrent.atomic.AtomicBoolean)
+    at test.hazelcast.EmbeddedSpringHazelcastTest$SpringClientRunner.run(EmbeddedSpringHazelcastTest.java:88)
+
+   Locked ownable synchronizers:
+    - None
+```
+## testSpringClientReconnect
+
+```
+"hz.client_0_dev.internal-1" prio=6 tid=0x0000000011338800 nid=0x3b20 in Object.wait() [0x0000000013b7e000]
+   java.lang.Thread.State: TIMED_WAITING (on object monitor)
+    at java.lang.Object.wait(Native Method)
+    - waiting on <0x00000007abdc2838> (a com.hazelcast.client.spi.impl.ClientInvocationFuture)
+    at com.hazelcast.client.spi.impl.ClientInvocationFuture.get(ClientInvocationFuture.java:104)
+    - locked <0x00000007abdc2838> (a com.hazelcast.client.spi.impl.ClientInvocationFuture)
+    at com.hazelcast.client.spi.impl.ClientInvocationFuture.get(ClientInvocationFuture.java:89)
+    at com.hazelcast.client.spi.impl.ClusterListenerSupport$ManagerAuthenticator.authenticate(ClusterListenerSupport.java:120)
+    at com.hazelcast.client.connection.nio.ClientConnectionManagerImpl.authenticate(ClientConnectionManagerImpl.java:208)
+    at com.hazelcast.client.connection.nio.ClientConnectionManagerImpl.getOrConnect(ClientConnectionManagerImpl.java:197)
+    - locked <0x00000007abdade18> (a java.lang.Object)
+    at com.hazelcast.client.connection.nio.ClientConnectionManagerImpl.getOrConnect(ClientConnectionManagerImpl.java:65)
+    at com.hazelcast.client.spi.impl.ClusterListenerSupport.connect(ClusterListenerSupport.java:214)
+    at com.hazelcast.client.spi.impl.ClusterListenerSupport.connectToOne(ClusterListenerSupport.java:182)
+    at com.hazelcast.client.spi.impl.ClusterListenerSupport.connectToCluster(ClusterListenerSupport.java:134)
+    at com.hazelcast.client.spi.impl.ClusterListenerSupport$1.run(ClusterListenerSupport.java:246)
+    at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1145)
+    at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:615)
+    at java.lang.Thread.run(Thread.java:724)
+    at com.hazelcast.util.executor.HazelcastManagedThread.executeRun(HazelcastManagedThread.java:76)
+    at com.hazelcast.util.executor.HazelcastManagedThread.run(HazelcastManagedThread.java:92)
+
+   Locked ownable synchronizers:
+    - <0x00000007aaf50ed0> (a java.util.concurrent.ThreadPoolExecutor$Worker)
+```
+# Attachments
+
+Find below the pom, spring config and the JUnit test that reproduces the bug:
+## EmbeddedSpringHazelcastTest.java
+
+```
+package test.hazelcast;
+
+import java.util.Map;
+import java.util.concurrent.TimeUnit;
+
+import org.junit.After;
+import org.junit.Assert;
+import org.junit.Before;
+import org.junit.Test;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.boot.builder.SpringApplicationBuilder;
+import org.springframework.context.annotation.ImportResource;
+
+import com.hazelcast.client.HazelcastClient;
+import com.hazelcast.client.config.ClientConfig;
+import com.hazelcast.client.config.ClientNetworkConfig;
+import com.hazelcast.config.Config;
+import com.hazelcast.config.GroupConfig;
+import com.hazelcast.config.SerializationConfig;
+import com.hazelcast.core.Hazelcast;
+import com.hazelcast.core.HazelcastInstance;
+
+public class EmbeddedSpringHazelcastTest {
+
+    public static final String TEST_MAP_NAME_HZ = "hzTestMap";
+    public static final String TEST_MAP_NAME_SPRING = "springTestMap";
+    public static final String TEST_KEY_NAME = "testKey";
+    private ServerRunner serverRunner;
+    private AbstractHazelcastClientRunner clientRunner;    
+
+    @ImportResource(value="hazelcast-context.xml")
+    @SpringBootApplication
+    public static class SpringHazelcastClientApplication {
+
+    }
+
+    private static abstract class AbstractHazelcastClientRunner extends Thread {
+        public AbstractHazelcastClientRunner(String name) {
+            super(name);
+        }
+        public abstract void updateValue(String value);
+        public abstract void shutdown();
+    }
+
+    private static class SpringClientRunner extends AbstractHazelcastClientRunner {
+
+        public SpringClientRunner() {
+            super("SpringClientRunner");
+        }
+
+        private Map testMap;
+        private SpringApplicationBuilder builder;
+
+        @Override
+        public void run() {
+            builder = new SpringApplicationBuilder(SpringHazelcastClientApplication.class);
+            builder.run();
+            testMap = (Map) builder.context().getBean(TEST_MAP_NAME_SPRING);
+        }
+
+        @Override
+        public void updateValue(String value) {
+            testMap.put(TEST_KEY_NAME, value);
+        }
+
+        @Override
+        public void shutdown() {
+            if (builder.context() != null) {
+                builder.context().close();
+            }
+        }
+    }
+
+    public static class ServerRunner extends Thread {
+
+        private HazelcastInstance hazelcastServerInstance;
+        private Map map;
+
+        public void run() {
+            Config config = new Config("hazelcast-test");
+            GroupConfig groupConfigServer = new GroupConfig("dev", "dev-pass");
+            config.setGroupConfig(groupConfigServer);
+
+            hazelcastServerInstance = Hazelcast.getOrCreateHazelcastInstance(config);
+            map = hazelcastServerInstance.getMap(TEST_MAP_NAME_HZ);
+        }
+
+        public void assertValue(String expected) {
+            Assert.assertEquals(expected, map.get(TEST_KEY_NAME));
+
+        }
+
+        public void shutdown() {
+            if (hazelcastServerInstance != null) {
+                try {
+                    hazelcastServerInstance.shutdown();
+                } catch (Exception e) {
+
+                }
+            }
+        }
+    }    
+
+    public static class ClientRunner extends AbstractHazelcastClientRunner {
+        private HazelcastInstance hazelcastClientInstance;
+        private Map map;
+
+        public ClientRunner() {
+            super("ClientRunner");
+        }
+
+        @Override
+        public void run() {
+            ClientConfig clientConfig = new ClientConfig();
+            GroupConfig groupConfigClient = new GroupConfig("dev", "dev-pass");
+            clientConfig.setGroupConfig(groupConfigClient);
+            ClientNetworkConfig networkConfig = new ClientNetworkConfig();
+            SerializationConfig serializationConfig = new SerializationConfig();
+            clientConfig.setSerializationConfig(serializationConfig);
+            networkConfig.setConnectionAttemptLimit(999);
+            clientConfig.setNetworkConfig(networkConfig);
+            hazelcastClientInstance = HazelcastClient.newHazelcastClient(clientConfig);
+            map = hazelcastClientInstance.getMap(TEST_MAP_NAME_HZ);
+        }
+
+        @Override
+        public void updateValue(String update) {
+            map.put(TEST_KEY_NAME, update);     
+        }
+
+        @Override
+        public void shutdown() {
+            hazelcastClientInstance.shutdown();
+        }        
+    }   
+
+    @Before
+    public void prepare() {
+        serverRunner = new ServerRunner();
+    }
+
+    @After
+    public void destroy() {
+        clientRunner.shutdown();
+        serverRunner.shutdown();
+    }
+
+    public void testStartClientBeforeServer(AbstractHazelcastClientRunner runner) throws InterruptedException {
+        clientRunner = runner;
+        clientRunner.start();
+
+        Thread.sleep(TimeUnit.SECONDS.toMillis(10));
+
+        serverRunner.start();
+
+        clientRunner.join();
+        clientRunner.updateValue("1");
+
+        serverRunner.assertValue("1");
+    }
+
+    public void testClientReconnect(AbstractHazelcastClientRunner runner) throws InterruptedException {
+        clientRunner = runner;
+        serverRunner.start();
+
+        serverRunner.join();
+
+        clientRunner.start();
+        clientRunner.join();
+
+        clientRunner.updateValue("1");
+        serverRunner.assertValue("1");
+
+        serverRunner.shutdown();
+
+        serverRunner = new ServerRunner();
+        serverRunner.start();
+        serverRunner.join();
+
+        clientRunner.updateValue("2");
+
+        serverRunner.assertValue("2");
+    }
+
+    @Test(timeout=60000)
+    public void testStartProgrammaticClientBeforeServer() throws InterruptedException {
+        testStartClientBeforeServer(new ClientRunner());
+    }    
+
+    @Test(timeout=60000)
+    public void testProgrammaticClientReconnect() throws InterruptedException {
+        testClientReconnect(new ClientRunner());
+    }    
+
+    @Test(timeout=60000)
+    public void testStartSpringClientBeforeServer() throws InterruptedException {
+        testStartClientBeforeServer(new SpringClientRunner());
+    }    
+
+    @Test(timeout=60000)
+    public void testSpringClientReconnect() throws InterruptedException {
+        testClientReconnect(new SpringClientRunner());
+    }        
+
+}
+
+```
+## pom.xml
+
+```
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>test.hazelcast</groupId>
+  <artifactId>hazestcast-test</artifactId>
+  <version>0.0.1-SNAPSHOT</version>
+  <name>Hazelcast Test</name>
+  <parent>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-parent</artifactId>
+    <version>1.2.3.RELEASE</version>
+  </parent>  
+    <properties>
+        <java.version>1.8</java.version>
+    </properties>  
+  <dependencies>
+    <dependency>
+        <groupId>com.hazelcast</groupId>
+        <artifactId>hazelcast-all</artifactId>
+        <version>3.5</version>
+        <!-- 
+        <version>3.4.2</version>
+         -->
+    </dependency>
+    <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter</artifactId>
+    </dependency>
+    <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-test</artifactId>
+        <scope>test</scope>
+    </dependency>   
+  </dependencies>
+</project>
+```
+## hazelcast-context.xml
+
+```
+<?xml version="1.0" encoding="UTF-8"?>
+<beans xmlns="http://www.springframework.org/schema/beans"
+       xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+       xmlns:hz="http://www.hazelcast.com/schema/spring"
+       xsi:schemaLocation=
+               "http://www.springframework.org/schema/beans
+              http://www.springframework.org/schema/beans/spring-beans.xsd
+              http://www.hazelcast.com/schema/spring
+              http://www.hazelcast.com/schema/spring/hazelcast-spring-3.4.xsd
+       ">
+    <hz:client id="hzInstance">
+        <hz:group name="dev" password="dev-pass"/>
+        <hz:network connection-attempt-limit="999"></hz:network>
+        <hz:serialization></hz:serialization>
+    </hz:client>
+    <hz:map id="springTestMap" instance-ref="hzInstance" name="hzTestMap" lazy-init="false"/>
+</beans>
+```

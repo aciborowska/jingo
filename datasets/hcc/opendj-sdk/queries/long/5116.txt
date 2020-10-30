@@ -1,0 +1,144 @@
+Download DJ 6.0.0 from backstage and set up with the default configuration:
+
+dj-6/opendj/setup directory-server \
+--instancePath /development/utilities/dj-6/opendj \
+--rootUserDn cn=Directory\ Manager \
+--rootUserPassword ****** \
+--hostname local.forrest.org \
+--adminConnectorPort 4444 \
+--ldapPort 1389 \
+--enableStartTls \
+--ldapsPort 1636 \
+--httpsPort 8443 \
+--sampleData 2000 \
+--baseDn dc=openam,dc=forgerock,dc=org
+
+Validating parameters..... Done
+Configuring certificates..... Done
+Configuring server..... Done
+Importing automatically-generated data (2000 entries)......... Done
+Starting directory server................. Done
+
+Having done this created a new user:
+
+opendj/bin/ldapmodify -h local.forrest.org -p 1389 -D "cn=Directory Manager" -w qwerqwer -f ~/Downloads/dj-user.ldif
+
+# MODIFY operation successful for DN dc=openam,dc=forgerock,dc=org
+# ADD operation successful for DN ou=admins,dc=openam,dc=forgerock,dc=org
+# ADD operation successful for DN uid=openam,ou=admins,dc=openam,dc=forgerock,dc=org
+
+Next setup AM to use this external DJ instance:
+
+#!/bin/bash
+
+SERVER_URL=http://openam.forrest.org:8080
+DEPLOYMENT_URI=/openam
+COOKIE_DOMAIN=forrest.org
+BASE_DIR=/development/servers/am-conf
+PASSWORD=qwerqwer
+
+curl --verbose --request POST "$SERVER_URL$DEPLOYMENT_URI/config/configurator" \
+--header "Content-Type:application/x-www-form-urlencoded" \
+--data-urlencode "SERVER_URL=$SERVER_URL" \
+--data-urlencode "DEPLOYMENT_URI=$DEPLOYMENT_URI" \
+--data-urlencode "BASE_DIR=$BASE_DIR" \
+--data-urlencode "locale=en_US" \
+--data-urlencode "PLATFORM_LOCALE=en_US" \
+--data-urlencode "ADMIN_PWD=$PASSWORD" \
+--data-urlencode "ADMIN_CONFIRM_PWD=$PASSWORD" \
+--data-urlencode "AMLDAPUSERPASSWD=qwerqwer123" \
+--data-urlencode "AMLDAPUSERPASSWD_CONFIRM=qwerqwer123" \
+--data-urlencode "COOKIE_DOMAIN=$COOKIE_DOMAIN" \
+--data-urlencode "DATA_STORE=external" \
+--data-urlencode "DIRECTORY_SSL=SIMPLE" \
+--data-urlencode "DIRECTORY_SERVER=local.forrest.org" \
+--data-urlencode "DIRECTORY_PORT=1389" \
+--data-urlencode "DIRECTORY_ADMIN_PORT=4444" \
+--data-urlencode "DIRECTORY_JMX_PORT=1689" \
+--data-urlencode "ROOT_SUFFIX=dc=openam,dc=forgerock,dc=org" \
+--data-urlencode "DS_DIRMGRDN=cn=Directory Manager" \
+--data-urlencode "DS_DIRMGRPASSWD=$PASSWORD" \
+--data-urlencode "acceptLicense=true"
+
+
+Configuration complete!
+
+Next, I imported 100,000+ blacklist tokens:
+
+opendj/bin/ldapmodify -h local.forrest.org -p 1389 -D "cn=Directory Manager" -w qwerqwer -f ~/Downloads/blacklist.ldif
+
+With setup complete running two ldap searches, one using cn=Directory Manager and the other using the new user, uid=openam,ou=admins,dc=openam,dc=forgerock,dc=org:
+
+opendj/bin/ldapsearch --hostname localhost --port 1389 --bindDN "cn=Directory Manager" --bindPassword qwerqwer --searchScope sub --baseDN ou=famrecords,ou=openam-session,ou=tokens,dc=openam,dc=forgerock,dc=org --simplePageSize 2 "(objectclass=*)"
+
+dn: ou=famrecords,ou=openam-session,ou=tokens,dc=openam,dc=forgerock,dc=org
+objectClass: top
+objectClass: organizationalUnit
+ou: famrecords
+
+dn: coretokenid=0000f0a6-31ce-42b9-9ce7-11cf45178e7b,ou=famrecords,ou=openam-session,ou=tokens,dc=openam,dc=forgerock,dc=org
+objectClass: frCoreToken
+objectClass: top
+coreTokenId: 0000f0a6-31ce-42b9-9ce7-11cf45178e7b
+coreTokenType: SESSION_BLACKLIST
+coretokendate01: 20180621130658.396Z
+coreTokenExpirationDate: 20180621150756Z
+coretokenstring01: 01
+
+Press RETURN to continue
+
+
+opendj/bin/ldapsearch --hostname localhost --port 1389 --bindDN "uid=openam,ou=admins,dc=openam,dc=forgerock,dc=org" --bindPassword secret12 --searchScope sub --baseDN ou=famrecords,ou=openam-session,ou=tokens,dc=openam,dc=forgerock,dc=org --simplePageSize 2 "(objectclass=*)"
+# The LDAP search request failed: 80 (Other)
+# Additional Information: java.lang.NegativeArraySizeException
+
+Note additional information that states the negative array size exception, where the expectation was to have something along the lines of "Insufficient Access Rights: You do not have sufficient privileges to perform an unindexed search".
+
+This is also visible in the AM logs:
+
+CTS: Could not get entries from connection
+at org.forgerock.openam.sm.datalayer.impl.ldap.LdapQueryBuilder$EntryIterator.next(LdapQueryBuilder.java:283)
+at org.forgerock.openam.sm.datalayer.impl.ldap.LdapQueryBuilder$EntryIterator.next(LdapQueryBuilder.java:257)
+at java.util.Iterator.forEachRemaining(Iterator.java:116)
+at org.forgerock.openam.cts.impl.LdapAdapter.partialQuery(LdapAdapter.java:304)
+... 11 more
+Caused by: org.forgerock.openam.cts.exceptions.QueryFailedException:
+CTS: Failed to complete query:
+DN: ou=famrecords,ou=openam-session,ou=tokens,dc=openam,dc=forgerock,dc=org
+Conn: LdapClientSocketConnection
+Filter: (&(&(coreTokenType=OAUTH_BLACKLIST)(coreTokenDate01>=19700101000000Z))(objectClass=frCoreToken))
+at org.forgerock.openam.sm.datalayer.impl.ldap.LdapSearchHandler.performSearch(LdapSearchHandler.java:62)
+at org.forgerock.openam.sm.datalayer.impl.ldap.LdapQueryBuilder.getEntries(LdapQueryBuilder.java:154)
+at org.forgerock.openam.sm.datalayer.impl.ldap.LdapQueryBuilder.access$000(LdapQueryBuilder.java:55)
+at org.forgerock.openam.sm.datalayer.impl.ldap.LdapQueryBuilder$EntryIterator.next(LdapQueryBuilder.java:281)
+... 14 more
+Caused by: Other: java.lang.NegativeArraySizeException
+at org.forgerock.opendj.ldap.LdapException.newLdapException(LdapException.java:231)
+at org.forgerock.opendj.ldap.LdapClientImpl$Exchange.onNext(LdapClientImpl.java:668)
+at org.forgerock.opendj.ldap.LdapClientImpl$Exchange.onNext(LdapClientImpl.java:582)
+at org.forgerock.opendj.ldap.DemultiplexerImpl$DemultiplexedStream.tryOnNextFastPath(DemultiplexerImpl.java:432)
+at org.forgerock.opendj.ldap.DemultiplexerImpl$DemultiplexedStream.onNextAndOptionallyComplete(DemultiplexerImpl.java:392)
+at org.forgerock.opendj.ldap.DemultiplexerImpl.onNext(DemultiplexerImpl.java:162)
+at io.reactivex.internal.operators.flowable.FlowableDoOnEach$DoOnEachSubscriber.onNext(FlowableDoOnEach.java:92)
+at io.reactivex.internal.operators.flowable.FlowableOnErrorNext$OnErrorNextSubscriber.onNext(FlowableOnErrorNext.java:69)
+at io.reactivex.internal.operators.flowable.FlowableFilter$FilterSubscriber.tryOnNext(FlowableFilter.java:74)
+at io.reactivex.internal.operators.flowable.FlowableFilter$FilterSubscriber.onNext(FlowableFilter.java:52)
+at io.reactivex.internal.operators.flowable.FlowableDoOnEach$DoOnEachConditionalSubscriber.onNext(FlowableDoOnEach.java:231)
+at org.forgerock.opendj.grizzly.GrizzlyLdapSocketFilter$GrizzlyReader.handleRead(GrizzlyLdapSocketFilter.java:331)
+at org.forgerock.opendj.grizzly.GrizzlyLdapSocketFilter.handleRead(GrizzlyLdapSocketFilter.java:135)
+at org.glassfish.grizzly.filterchain.ExecutorResolver$9.execute(ExecutorResolver.java:119)
+at org.glassfish.grizzly.filterchain.DefaultFilterChain.executeFilter(DefaultFilterChain.java:284)
+at org.glassfish.grizzly.filterchain.DefaultFilterChain.executeChainPart(DefaultFilterChain.java:201)
+at org.glassfish.grizzly.filterchain.DefaultFilterChain.execute(DefaultFilterChain.java:133)
+at org.glassfish.grizzly.filterchain.DefaultFilterChain.process(DefaultFilterChain.java:112)
+at org.glassfish.grizzly.ProcessorExecutor.execute(ProcessorExecutor.java:77)
+at org.glassfish.grizzly.nio.transport.TCPNIOTransport.fireIOEvent(TCPNIOTransport.java:539)
+at org.glassfish.grizzly.strategies.AbstractIOStrategy.fireIOEvent(AbstractIOStrategy.java:112)
+at org.glassfish.grizzly.strategies.SameThreadIOStrategy.executeIoEvent(SameThreadIOStrategy.java:103)
+at org.glassfish.grizzly.strategies.AbstractIOStrategy.executeIoEvent(AbstractIOStrategy.java:89)
+at org.glassfish.grizzly.nio.SelectorRunner.iterateKeyEvents(SelectorRunner.java:415)
+at org.glassfish.grizzly.nio.SelectorRunner.iterateKeys(SelectorRunner.java:384)
+at org.glassfish.grizzly.nio.SelectorRunner.doSelect(SelectorRunner.java:348)
+at org.glassfish.grizzly.nio.SelectorRunner.run(SelectorRunner.java:279)
+at org.glassfish.grizzly.threadpool.AbstractThreadPool$Worker.doWork(AbstractThreadPool.java:593)
+at org.glassfish.grizzly.threadpool.AbstractThreadPool$Worker.run(AbstractThreadPool.java:573)

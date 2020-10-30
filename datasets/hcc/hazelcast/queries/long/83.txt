@@ -1,0 +1,87 @@
+In Websphere 7.0 Patch 15 environment,
+Using Hazelcast 1.9.4.4
+Within a container Managed Bean
+With REQUIRES_NEW transaction
+
+Using an injected ConnectionFactory in following elementary code fails with exception below :
+
+  @Resource(name = &quot;hz/ref-connection-factory&quot;)
+  ConnectionFactory _cf;
+
+  @TransactionAttribute(value = TransactionAttributeType.REQUIRES_NEW)
+  public void performOperation(final JtaOperation operation) {
+
+```
+Connection connection = _cf.getConnection();
+try {
+  operation.execute();
+}
+catch (final Exception e) {
+  throw new EJBException(e);
+}
+finally {
+  if (connection != null) {
+    try {
+      connection.close();
+    }
+    catch (final Exception ce) {
+      _logger.warn(&quot;Cannot close HZ connection.&quot;, ce);
+    }
+  }
+}
+```
+
+  }
+
+The Hazelcast connection cannot be obtained with following unexpected exception stack trace. I'm quoting the interesting line with ##(x)## tag.
+## (1)## : It seems that when the EJB try to obtain the Hazelcast connection,
+## (2)## : The Websphere container invokes the start() operation on the Hazelcast, the Resource Adapter,
+## (3)## : The a local Hazelcast transaction will begin.
+## (4)## : This will fire a ConnectionEvent
+## (5)## : This event  is then intercepted by the WebSphere container.
+
+I'm not totally aware with the precise specification but this sounds correct for me, but i'm not sure.
+## (6)## : _BUT_ in response of this ConnectionEvent the Websphere container try to invoke twice the start() operation already performed at step ##(2)## :-/
+## (7)## : Hazelcast refuse this new start() taht will invoke again the begin() operation on an already started local transaction.
+
+Why is Websphere invoking again the start operation ?
+Should Hazelcast trigger the ConenctionEvent ?
+What is the spec and whose wrong then ?
+
+Hoping this will help.
+
+Whose wrong ? <p>Migrated from http://code.google.com/p/hazelcast/issues/detail?id=797</p><hr/><h2>earlier comments</h2>
+
+<p><strong>ng.perso said, at 2012-02-21T11:00:52.000Z:</strong></p>
+
+<p>Here is the missing annoted stack trace 
+
+WTRN0078E: An attempt by the transaction manager to call start on a transactional resource has resulted in an error. The error code was XAER_RMFAIL. The exception stack trace follows: javax.transaction.xa.XAException
+    at com.ibm.ejs.j2c.LocalTransactionWrapper.start(LocalTransactionWrapper.java:921)
+##(6)## at com.ibm.ws.Transaction.JTA.JTAResourceBase.start(JTAResourceBase.java:148)
+    at com.ibm.tx.jta.RegisteredResources.startRes(RegisteredResources.java:989)
+    at com.ibm.ws.tx.jta.RegisteredResources.enlistResource(RegisteredResources.java:877)
+    at com.ibm.ws.tx.jta.TransactionImpl.enlistResource(TransactionImpl.java:1781)
+    at com.ibm.ws.tx.jta.TranManagerSet.enlistOnePhase(TranManagerSet.java:612)
+    at com.ibm.ejs.j2c.LocalTransactionWrapper.enlist(LocalTransactionWrapper.java:593)
+##(5)## at com.ibm.ejs.j2c.ConnectionEventListener.localTransactionStarted(ConnectionEventListener.java:845)
+##(4)## at com.hazelcast.jca.ManagedConnectionImpl.fireConnectionEvent(ManagedConnectionImpl.java:122)
+##(3)## at com.hazelcast.jca.ManagedConnectionImpl.begin(ManagedConnectionImpl.java:100)
+##(2)## at com.ibm.ejs.j2c.LocalTransactionWrapper.start(LocalTransactionWrapper.java:902)
+    at com.ibm.ws.Transaction.JTA.JTAResourceBase.start(JTAResourceBase.java:148)
+    at com.ibm.tx.jta.RegisteredResources.startRes(RegisteredResources.java:989)
+    at com.ibm.ws.tx.jta.RegisteredResources.enlistResource(RegisteredResources.java:877)
+    at com.ibm.ws.tx.jta.TransactionImpl.enlistResource(TransactionImpl.java:1781)
+    at com.ibm.ws.tx.jta.TranManagerSet.enlistOnePhase(TranManagerSet.java:612)
+    at com.ibm.ejs.j2c.LocalTransactionWrapper.enlist(LocalTransactionWrapper.java:593)
+    at com.ibm.ejs.j2c.ConnectionManager.initializeForUOW(ConnectionManager.java:1569)
+    at com.ibm.ejs.j2c.ConnectionManager.involveMCInTran(ConnectionManager.java:1196)
+    at com.ibm.ejs.j2c.ConnectionManager.allocateConnection(ConnectionManager.java:698)
+##(1)## at com.hazelcast.jca.ConnectionFactoryImpl.getConnection(ConnectionFactoryImpl.java:43)
+    at com.akazi.util.cache.CMCacheEJBBean.performPut(CMCacheEJBBean.java:28)
+5...]
+Caused by: java.lang.IllegalStateException: Transaction is already active
+##(7)## at com.hazelcast.impl.TransactionImpl.begin(TransactionImpl.java:112)
+    at com.hazelcast.jca.ManagedConnectionImpl.begin(ManagedConnectionImpl.java:99)
+    at com.ibm.ejs.j2c.LocalTransactionWrapper.start(LocalTransactionWrapper.java:902)
+    ... 122 more</p>

@@ -1,0 +1,98 @@
+EntryEvent object passed to entry listener may contain new value as old value. Application must use InMemoryFormat.OBJECT. If some custom EntryProcessor change state of entry value and update this entry, then values in generated EntryEvent would be equal.
+
+EntryOperation uses oldValue to generate entry, then passes it to entry processor,
+ which changes this entry. After all modified oldValue used to generate data.
+
+Another entry operations may have similar problem.
+
+Test case:
+
+``` java
+        Config config = new Config();
+        config.getMapConfig("default").setInMemoryFormat(InMemoryFormat.OBJECT);
+        HazelcastInstance instance = Hazelcast.newHazelcastInstance(config);
+        IMap<Integer, int[]> testMap = instance.getMap("TestMap");
+        testMap.addEntryListener(new EntryListener<Integer, int[]>() {
+
+            @Override
+            public void entryUpdated(EntryEvent<Integer, int[]> event) {
+                if (Arrays.equals(event.getOldValue(), event.getValue())) {
+                    throw new IllegalStateException("Old object equals new object");
+                }
+            }
+
+            @Override
+            public void entryRemoved(EntryEvent<Integer, int[]> event) {
+            }
+
+            @Override
+            public void entryEvicted(EntryEvent<Integer, int[]> event) {
+            }
+
+            @Override
+            public void entryAdded(EntryEvent<Integer, int[]> event) {
+            }
+        }, true);
+        testMap.put(0, new int[] {0});
+        testMap.executeOnKey(0, new EntryProcessor<Integer, int[]>() {
+
+            private static final long serialVersionUID = 1L;
+
+            @Override
+            public Object process(Entry<Integer, int[]> entry) {
+                int[] currentValue = entry.getValue();
+                currentValue[0] = 1;
+                entry.setValue(currentValue);
+                return null;
+            }
+
+            @Override
+            public EntryBackupProcessor<Integer, int[]> getBackupProcessor() {
+                return null;
+            }
+        });
+```
+
+Possible solution
+
+```
+
+---
+ .../src/main/java/com/hazelcast/map/operation/EntryOperation.java  | 7 ++++---
+ 1 file changed, 4 insertions(+), 3 deletions(-)
+
+diff --git a/hazelcast/src/main/java/com/hazelcast/map/operation/EntryOperation.java b/hazelcast/src/main/java/com/hazelcast/map/operation/EntryOperation.java
+index 1ad0674..6aafc32 100644
+--- a/hazelcast/src/main/java/com/hazelcast/map/operation/EntryOperation.java
++++ b/hazelcast/src/main/java/com/hazelcast/map/operation/EntryOperation.java
+@@ -45,7 +45,7 @@ public class EntryOperation extends LockAwareOperation implements BackupAwareOpe
+     private EntryProcessor entryProcessor;
+     private EntryEventType eventType;
+     private Object response;
+-    protected Object oldValue;
++    protected Data oldValueData;
+
+
+     public EntryOperation(String name, Data dataKey, EntryProcessor entryProcessor) {
+@@ -63,7 +63,8 @@ public class EntryOperation extends LockAwareOperation implements BackupAwareOpe
+
+     public void run() {
+         final long start = System.currentTimeMillis();
+-        oldValue = recordStore.getMapEntry(dataKey).getValue();
++        Object oldValue = recordStore.getMapEntry(dataKey).getValue();
++        oldValueData = mapService.toData(oldValue);
+         final LocalMapStatsImpl mapStats = mapService.getLocalMapStatsImpl(name);
+         final Object valueBeforeProcess = mapService.toObject(oldValue);
+         final MapEntrySimple entry = new MapEntrySimple(mapService.toObject(dataKey), valueBeforeProcess);
+@@ -102,7 +103,7 @@ public class EntryOperation extends LockAwareOperation implements BackupAwareOpe
+         if (eventType == __NO_NEED_TO_FIRE_EVENT) {
+             return;
+         }
+-        mapService.publishEvent(getCallerAddress(), name, eventType, dataKey, mapService.toData(oldValue), dataValue);
++        mapService.publishEvent(getCallerAddress(), name, eventType, dataKey, oldValueData, dataValue);
+         invalidateNearCaches();
+         if (mapContainer.getWanReplicationPublisher() != null && mapContainer.getWanMergePolicy() != null) {
+             if (EntryEventType.REMOVED.equals(eventType)) {
+-- 
+2.0.0
+```

@@ -1,0 +1,89 @@
+**Describe the bug**
+Issue also reported here: From: https://stackoverflow.com/questions/61799724/hazelcast-linkageerror-attempted-duplicate-class-definition-for-name
+
+When usercodedeployment is being used.  
+1. If an inner-class or inner-enum class definition is loaded from a remote node.
+2. Then the outer-class definition is loaded from a remote node.
+
+A LinkageError exception occurs with message “attempted duplicate class definition for name” 
+
+**Expected behavior**
+For Step 2. above, Hazelcast should first check to see whether the child-class/enum has already been loaded.
+
+**To Reproduce**
+- Assume two Hazelcast nodes. Both have userCodeDeployment switched on.
+- Node 1 has MyClass on it's classpath, Node 2 does not.
+- MyClass definition, note the inner enum (I think the inner enum can be swapped for an inner class and the same thing will happen).
+
+```
+public class MyClass implements Serializable {
+
+    private final InnerEnum enumVal;
+    public MyClass(InnerEnum enumVal) {
+        this.enumVal = enumVal;
+    }
+
+    public enum InnerEnum {
+        ONE, TWO, THREE;
+    }
+}
+```
+
+From Node 1, the following code is run:
+
+```
+hz.getMap("myClassMap").put("myClassKey", new MyClass(MyClass.InnerEnum.ONE));
+hz.getMap("myInnerEnumMap").put("myInnerEnumKey", MyClass.InnerEnum.TWO);
+```
+Then, on Node 2, the following code is run:
+
+```
+System.out.println(hz.getMap("myInnerEnumMap").get("myInnerEnumKey"));
+System.out.println(hz.getMap("myClassMap").get("myClassKey"));
+```
+On Node 2, I see the following logged:
+
+```
+[TRACE] ClassLocator Loaded class com.mycompany.MyClass$InnerEnum from Member [myhost]:5701 - cc0b2872-7f5b-484b-a40f-7c7ba1fdc165
+TWO
+[TRACE] ClassLocator Loaded class com.mycompany.MyClass from Member [myhost]:5701 - cc0b2872-7f5b-484b-a40f-7c7ba1fdc165
+
+Exception in thread "main" java.lang.LinkageError: loader (instance of  com/hazelcast/internal/usercodedeployment/impl/ClassSource): attempted  duplicate class definition for name: "com/mycompany/MyClass$InnerEnum"
+    at java.lang.ClassLoader.defineClass1(Native Method)
+    at java.lang.ClassLoader.defineClass(ClassLoader.java:763)
+    at java.lang.ClassLoader.defineClass(ClassLoader.java:642)
+    at com.hazelcast.internal.usercodedeployment.impl.ClassSource.define(ClassSource.java:50)
+    at com.hazelcast.internal.usercodedeployment.impl.ClassLocator.tryToGetClassFromRemote(ClassLocator.java:163)
+    at com.hazelcast.internal.usercodedeployment.impl.ClassLocator.handleClassNotFoundException(ClassLocator.java:95)
+    at com.hazelcast.internal.usercodedeployment.UserCodeDeploymentService.handleClassNotFoundException(UserCodeDeploymentService.java:89)
+    at com.hazelcast.internal.usercodedeployment.UserCodeDeploymentClassLoader.loadClass(UserCodeDeploymentClassLoader.java:57)
+    at java.lang.ClassLoader.loadClass(ClassLoader.java:357)
+    at com.hazelcast.nio.ClassLoaderUtil.tryLoadClass(ClassLoaderUtil.java:288)
+    at com.hazelcast.nio.ClassLoaderUtil.loadClass(ClassLoaderUtil.java:237)
+    at com.hazelcast.nio.IOUtil$ClassLoaderAwareObjectInputStream.resolveClass(IOUtil.java:646)
+    at java.io.ObjectInputStream.readNonProxyDesc(ObjectInputStream.java:1868)
+    at java.io.ObjectInputStream.readClassDesc(ObjectInputStream.java:1751)
+    at java.io.ObjectInputStream.readOrdinaryObject(ObjectInputStream.java:2042)
+    at java.io.ObjectInputStream.readObject0(ObjectInputStream.java:1573)
+    at java.io.ObjectInputStream.readObject(ObjectInputStream.java:431)
+    at com.hazelcast.internal.serialization.impl.JavaDefaultSerializers$JavaSerializer.read(JavaDefaultSerializers.java:82)
+    at com.hazelcast.internal.serialization.impl.JavaDefaultSerializers$JavaSerializer.read(JavaDefaultSerializers.java:75)
+    at com.hazelcast.internal.serialization.impl.StreamSerializerAdapter.read(StreamSerializerAdapter.java:48)
+    at com.hazelcast.internal.serialization.impl.AbstractSerializationService.toObject(AbstractSerializationService.java:187)
+    at com.hazelcast.map.impl.proxy.MapProxySupport.toObject(MapProxySupport.java:1245)
+    at com.hazelcast.map.impl.proxy.MapProxyImpl.get(MapProxyImpl.java:120)
+    at com.mycompany.main(Node2.java:74)
+```
+Child class loading appears to happen here (from Hazelcast 3.11.1) com.hazelcast.internal.usercodedeployment.impl.ClassLocator:160
+
+```java:
+Map<String, byte[]> innerClassDefinitions = classData.getInnerClassDefinitions();
+classSource.define(name, classData.getMainClassDefinition());
+for (Map.Entry<String, byte[]> entry : innerClassDefinitions.entrySet()) {
+    classSource.define(entry.getKey(), entry.getValue());
+}
+```
+
+**Additional context**
+- Hazelcast version is 3.11.1
+- Java version: Oracle 64-Bit 1.8.0_202-b34

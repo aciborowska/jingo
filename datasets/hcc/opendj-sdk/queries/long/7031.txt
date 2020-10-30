@@ -1,0 +1,132 @@
+Rebuild-Index is not deleting the vlv.<index>.counter database which holds the number of entries contained in the index.
+
+As a result, this database becomes inconsistent after a rebuild-index which could leads to unpredictable behavior when the index is involved in sorting/paging.
+
+This bug has been seen on 7.0.0 and 6.5.0 but possibly all versions are impacted.
+
+Step to reproduce:
+
+
+	Setup DS with some entries in it.
+
+#$ /setup \
+          --instancePath /opt/opendj \
+          --serverId Chrysler_Wesoloski \
+          --deploymentKeyPassword password \
+          --rootUserDn uid=admin \
+          --rootUserPassword password \
+          --hostname localhost \
+          --adminConnectorPort 4444 \
+          --ldapPort 1389 \
+          --enableStartTls \
+          --ldapsPort 1636 \
+          --httpsPort 8443 \
+          --replicationPort 8989 \
+          --profile ds-evaluation \
+          --set ds-evaluation/generatedUsers:100000
+
+
+
+
+
+
+	Create a vlv-index:
+
+#$ ./bin/dsconfig create-backend-vlv-index --hostname localhost --port 4444 --bindDn "uid=admin" --bindPassword password --backend-name dsEvaluation --index-name oauth-blacklist --set filter:"(employeeNumber>=1)" --set scope:whole-subtree --set base-dn:dc=example,dc=com --set sort-order:employeeNumber --trustAll --no-prompt
+
+
+
+
+
+
+	Clear its degraded state
+
+#$ ./bin/rebuild-index --clearDegradedState -i vlv.oauth-blacklist -b "dc=example,dc=com" -D "uid=admin" -w password -p 4444 --trustAll
+
+
+
+
+
+
+	Add/Delete some entries
+
+#$ ./bin/addrate -p 1389 -f -c 10 -C random -s 10000 -D "uid=admin" -w password addrate.template
+
+
+
+
+
+
+	Stop DS and check counter with backendstat (the values are not important):
+
+#$ ./bin/stop-ds
+#$ ./bin/backendstat dump-index --backendId dsEvaluation -b "dc=example,dc=com" --indexName counter.vlv.oauth-blacklist
+
+Key (len 10): nbRecordsC
+Value (len 4): -643
+Key (len 10): nbRecordsD
+Value (len 1): 103
+Key (len 10): nbRecordsE
+Value (len 1): 48
+Key (len 10): nbRecordsF
+Value (len 1): 125
+Key (len 10): nbRecordsG
+Value (len 1): 102
+Key (len 10): nbRecordsH
+Value (len 4): 150
+Key (len 10): nbRecordsI
+Value (len 1): 115
+
+Total Records: 7
+Total / Average Key Size: 70 bytes / 10 bytes
+Total / Average Data Size: 13 bytes / 1 bytes
+
+
+
+
+
+
+	Rebuild the index:
+
+#$ ./bin/rebuild-index -i vlv.oauth-blacklist -b "dc=example,dc=com" --offline
+
+
+	Check backendstat again and see that all stayed the same but a new key appeared.
+Current result:
+
+$ ./bin/backendstat dump-index --backendId dsEvaluation -b "dc=example,dc=com" --indexName counter.vlv.oauth-blacklist
+Key (len 10): nbRecordsC
+Value (len 4): -643
+Key (len 10): nbRecordsD
+Value (len 1): 103
+Key (len 10): nbRecordsE
+Value (len 1): 48
+Key (len 10): nbRecordsF
+Value (len 1): 125
+Key (len 10): nbRecordsG
+Value (len 1): 102
+Key (len 10): nbRecordsH
+Value (len 4): 150
+Key (len 10): nbRecordsI
+Value (len 1): 115
+Key (len 10): nbRecordsQ
+Value (len 4): 99999
+
+Total Records: 8
+Total / Average Key Size: 80 bytes / 10 bytes
+Total / Average Data Size: 17 bytes / 2 bytes
+
+
+
+
+
+Expected results: only one key with the correct number of entries
+
+$ ./bin/backendstat dump-index --backendId dsEvaluation -b "dc=example,dc=com" --indexName counter.vlv.oauth-blacklist
+Key (len 10): nbRecordsQ
+Value (len 4): 99999
+
+Total Records: 1
+Total / Average Key Size: 10 bytes / 10 bytes
+Total / Average Data Size: 4 bytes / 4 bytes
+

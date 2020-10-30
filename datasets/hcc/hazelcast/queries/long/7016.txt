@@ -1,0 +1,54 @@
+Hi,
+
+I made the simple following example to show the problem (it must be run twice):
+
+``` java
+import com.hazelcast.config.Config;
+import com.hazelcast.core.Hazelcast;
+import com.hazelcast.core.HazelcastInstance;
+
+public class GettingStarted {
+    public static void main(String[] args) throws Exception {
+
+        final Config config = new Config();
+        config.setProperty("hazelcast.socket.bind.any", "false");
+        config.getNetworkConfig().setReuseAddress(true).setPort(7900).setPortAutoIncrement(true).getInterfaces()
+                .addInterface("127.0.0.1")
+                .setEnabled(true);
+        config.getNetworkConfig().getJoin().getMulticastConfig().setEnabled(false);
+        config.getNetworkConfig().getJoin().getAwsConfig().setEnabled(false);
+        config.getNetworkConfig().getJoin().getTcpIpConfig().addMember("localhost:7900").addMember("localhost:7901")
+                .setEnabled(true);
+        config.getGroupConfig().setName("test-cluster").setPassword("testPassword");
+
+        HazelcastInstance hazelcastInstance = Hazelcast.newHazelcastInstance(config);
+
+        Thread.sleep(10000);
+
+        System.out.println(hazelcastInstance.getCluster().getMembers());
+    }
+}
+```
+
+Basically, they both start and don't consider each other as members of the same cluster, even though they successfully connect to each others.
+If running in debug, it seems they each consider the other one is not there and thus assume the master role.
+
+Maybe the problem comes from the fact that the first node blacklist the second one (because when it is started the second one is not yet up) and thus decide to ignore it later?
+
+The first one says:
+
+```
+Dec 07, 2015 2:24:28 PM com.hazelcast.nio.tcp.SocketConnector
+INFO: [localhost]:7900 [test-cluster] [3.5.4] Could not connect to: /127.0.0.1:7901. Reason: SocketException[Connection refused to address /127.0.0.1:7901]
+Dec 07, 2015 2:24:28 PM com.hazelcast.cluster.impl.TcpIpJoiner
+INFO: [localhost]:7900 [test-cluster] [3.5.4] Address[127.0.0.1]:7901 is added to the blacklist.
+```
+
+The second one says:
+
+```
+Dec 07, 2015 2:24:32 PM com.hazelcast.nio.tcp.SocketConnector
+INFO: [localhost]:7901 [test-cluster] [3.5.4] Connecting to /127.0.0.1:7900, timeout: 0, bind-any: false
+Dec 07, 2015 2:24:32 PM com.hazelcast.nio.tcp.TcpIpConnectionManager
+INFO: [localhost]:7901 [test-cluster] [3.5.4] Established socket connection between /127.0.0.1:54269
+```

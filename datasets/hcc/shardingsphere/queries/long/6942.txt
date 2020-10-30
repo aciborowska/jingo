@@ -1,0 +1,76 @@
+## Bug Report
+
+### Which version of ShardingSphere did you use?
+5.0.0-RC1-SNAPSHOT
+
+### Which project did you use? ShardingSphere-JDBC or ShardingSphere-Proxy?
+ShardingSphere-Proxy
+
+### Expected behavior
+Sql could be executed correctly, just like MySQL 5.7 server.
+
+### Actual behavior
+Exception thrown:
+```
+Exception in thread "main" java.sql.SQLException: Statement parameter 5 not set.
+	at com.mysql.jdbc.SQLError.createSQLException(SQLError.java:965)
+	at com.mysql.jdbc.SQLError.createSQLException(SQLError.java:898)
+	at com.mysql.jdbc.SQLError.createSQLException(SQLError.java:887)
+	at com.mysql.jdbc.SQLError.createSQLException(SQLError.java:861)
+	at com.mysql.jdbc.ServerPreparedStatement.serverExecute(ServerPreparedStatement.java:1174)
+	at com.mysql.jdbc.ServerPreparedStatement.executeInternal(ServerPreparedStatement.java:787)
+	at com.mysql.jdbc.PreparedStatement.executeUpdateInternal(PreparedStatement.java:2133)
+	at com.mysql.jdbc.PreparedStatement.executeUpdateInternal(PreparedStatement.java:2067)
+	at com.mysql.jdbc.PreparedStatement.executeLargeUpdate(PreparedStatement.java:5175)
+	at com.mysql.jdbc.PreparedStatement.executeUpdate(PreparedStatement.java:2052)
+```
+
+### Reason analyze (If you can)
+```
+mysql-connector-java-5.1.48
+ServerPreparedStatement.java, serverPrepare(String sql)
+                Buffer prepareResultPacket = mysql.sendCommand(MysqlDefs.COM_PREPARE, sql, null, false, characterEncoding, 0);
+
+                if (this.connection.versionMeetsMinimum(4, 1, 1)) {
+                    // 4.1.1 and newer use the first byte as an 'ok' or 'error' flag, so move the buffer pointer past it to start reading the statement id.
+                    prepareResultPacket.setPosition(1);
+                } else {
+                    // 4.1.0 doesn't use the first byte as an 'ok' or 'error' flag
+                    prepareResultPacket.setPosition(0);
+                }
+
+                this.serverStatementId = prepareResultPacket.readLong();
+                this.fieldCount = prepareResultPacket.readInt();
+                this.parameterCount = prepareResultPacket.readInt();
+                this.parameterBindings = new BindValue[this.parameterCount];
+this.parameterCount is 5, which is from proxy server side, but it's 4 in fact
+```
+
+```
+org.apache.shardingsphere.proxy.frontend.mysql.command.query.binary.prepare.MySQLComStmtPrepareExecutor.java, execute()
+        SQLStatement sqlStatement = schema.getRuntimeContext().getSqlParserEngine().parse(packet.getSql(), true);
+        if (!MySQLComStmtPrepareChecker.isStatementAllowed(sqlStatement)) {
+            result.add(new MySQLErrPacket(++currentSequenceId, MySQLServerErrorCode.ER_UNSUPPORTED_PS));
+            return result;
+        }
+        int parametersCount = sqlStatement.getParameterCount();
+parametersCount is 5 after parsing
+```
+
+### Steps to reproduce the behavior, such as: SQL to execute, sharding rule configuration, when exception occur etc.
+Run sql via jdbc:
+```
+jdbcUrl:
+jdbc:mysql://127.0.0.1:3307/sharding_db?serverTimezone=UTC&useSSL=false&useServerPrepStmts=true&cachePrepStmts=true
+
+try (PreparedStatement statement = connection.prepareStatement(
+        "insert into t_order (order_id, user_id, status) values (?, ?, ?) ON DUPLICATE KEY UPDATE status = ?")) {
+	statement.setInt(1, orderId);
+	statement.setInt(2, userId);
+	statement.setString(3, status);
+	statement.setString(4, "DUPLICATED");
+	statement.executeUpdate();
+}
+```
+
+### Example codes for reproduce this issue (such as a github link).

@@ -1,0 +1,70 @@
+``` java
+import junit.framework.TestCase;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import com.hazelcast.config.Config;
+import com.hazelcast.core.Hazelcast;
+import com.hazelcast.core.HazelcastInstance;
+import com.hazelcast.core.IMap;
+import com.hazelcast.core.TransactionalMap;
+import com.hazelcast.instance.GroupProperties;
+import com.hazelcast.query.TruePredicate;
+import com.hazelcast.transaction.TransactionContext;
+import com.hazelcast.transaction.TransactionOptions;
+import com.hazelcast.transaction.TransactionOptions.TransactionType;
+
+public class Hazelcast33TxnTest extends TestCase {
+
+    private static final Logger logger = LoggerFactory.getLogger(Hazelcast33TxnTest.class);
+    private HazelcastInstance hzInstance;
+
+    @Override
+    public void setUp() {
+        System.setProperty(GroupProperties.PROP_LOGGING_TYPE, "slf4j");
+        Config config = new Config();
+
+        hzInstance = Hazelcast.newHazelcastInstance(config);
+    }
+
+    @Override
+    public void tearDown() {
+        Hazelcast.shutdownAll();
+    }
+
+    public void testTxn() throws Exception {
+        IMap<Object, Object> imap = hzInstance.getMap("testIMap");
+        imap.put("key-a", "value-a");
+        imap.put("key-b", "value-b");
+
+        TransactionOptions options = new TransactionOptions().setTransactionType(TransactionType.LOCAL);
+        TransactionContext context = hzInstance.newTransactionContext(options);
+        context.beginTransaction();
+        TransactionalMap<Object, Object> txnIMap = context.getMap("testIMap");
+        try {
+            txnIMap.set("key-a", "changed-value-a"); // change entry 'key-a' value
+            txnIMap.set("key-c", "value-c"); // add new entry
+
+            // query
+            logger.debug("query result with predicate: {}", txnIMap.values(TruePredicate.INSTANCE));
+            logger.debug("query result without predicate: {}", txnIMap.values());
+
+            context.commitTransaction();
+        } catch (Exception exp) {
+            logger.error(exp.getMessage(), exp);
+            context.rollbackTransaction();
+        }
+    }
+}
+
+```
+
+The execution result will be:
+
+```
+19:30:18.155 [main] query result with predicate: [value-c, value-b, changed-value-a]
+19:30:18.174 [main] query result without predicate: [value-b, value-a, value-c]
+```
+
+As you know txnIMap.values() return 'value-a', it is wrong!

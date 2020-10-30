@@ -1,0 +1,58 @@
+Because the root bean definition was changed from `ShardingRuleConfiguration.class` to `AlgorithmProvidedShardingRuleConfiguration.class` when parsing the namespace,  
+so there is no suitable converter to convert `AlgorithmProvidedShardingRuleConfiguration` to `Yaml` configuration when persisting `Sharding`  rules to config center. 
+
+The `MasterSlave` and `Encrypt` rules are the same as above.
+
+There are code segments: 
+
+`ShardingRuleBeanDefinitionParser.java`
+```
+@Override
+    protected AbstractBeanDefinition parseInternal(final Element element, final ParserContext parserContext) {
+        BeanDefinitionBuilder factory = BeanDefinitionBuilder.rootBeanDefinition(AlgorithmProvidedShardingRuleConfiguration.class);
+        factory.addConstructorArgValue(parseTableRulesConfiguration(element));
+        factory.addConstructorArgValue(parseAutoTableRulesConfiguration(element));
+        factory.addConstructorArgValue(parseBindingTablesConfiguration(element));
+        factory.addConstructorArgValue(parseBroadcastTables(element));
+        addDefaultDatabaseShardingStrategyRef(element, factory);
+        addDefaultTableShardingStrategyRef(element, factory);
+        addDefaultKeyGenerateStrategyRef(element, factory);
+        factory.addConstructorArgValue(ShardingSphereAlgorithmBeanRegistry.getAlgorithmBeanReferences(parserContext, ShardingAlgorithmFactoryBean.class));
+        factory.addConstructorArgValue(ShardingSphereAlgorithmBeanRegistry.getAlgorithmBeanReferences(parserContext, KeyGenerateAlgorithmFactoryBean.class));
+        return factory.getBeanDefinition();
+    }
+```
+
+`ConfigCenter.java`
+
+```
+private void persistRuleConfigurations(final String shardingSchemaName, final Collection<RuleConfiguration> ruleConfigurations) {
+        Collection<RuleConfiguration> configurations = new LinkedList<>();
+        for (RuleConfiguration each : ruleConfigurations) {
+            if (each instanceof ShardingRuleConfiguration) {
+                ShardingRuleConfiguration config = (ShardingRuleConfiguration) each;
+                Preconditions.checkState(!config.getTables().isEmpty() || null != config.getDefaultTableShardingStrategy(),
+                        "No available sharding rule configuration in `%s` for orchestration.", shardingSchemaName);
+                configurations.add(each);
+            } else if (each instanceof MasterSlaveRuleConfiguration) {
+                MasterSlaveRuleConfiguration config = (MasterSlaveRuleConfiguration) each;
+                config.getDataSources().forEach(group -> Preconditions.checkState(
+                        !group.getMasterDataSourceName().isEmpty(), "No available master-slave rule configuration in `%s` for orchestration.", shardingSchemaName));
+                configurations.add(each);
+            } else if (each instanceof EncryptRuleConfiguration) {
+                EncryptRuleConfiguration config = (EncryptRuleConfiguration) each;
+                Preconditions.checkState(!config.getEncryptors().isEmpty(), "No available encrypt rule configuration in `%s` for orchestration.", shardingSchemaName);
+                configurations.add(each);
+            } else if (each instanceof ShadowRuleConfiguration) {
+                ShadowRuleConfiguration config = (ShadowRuleConfiguration) each;
+                Preconditions.checkState(!config.getColumn().isEmpty() && null != config.getShadowMappings(), "No available shadow rule configuration in `%s` for orchestration.", shardingSchemaName);
+                configurations.add(each);
+            }
+        }
+        YamlRootRuleConfigurations yamlRuleConfigurations = new YamlRootRuleConfigurations();
+        yamlRuleConfigurations.setRules(new YamlRuleConfigurationSwapperEngine().swapToYamlConfigurations(configurations));
+        repository.persist(node.getRulePath(shardingSchemaName), YamlEngine.marshal(yamlRuleConfigurations));
+    }
+```
+
+I will try to fix it later.

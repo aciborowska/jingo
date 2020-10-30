@@ -1,0 +1,71 @@
+I used ehcache in my project,I get the following exception when using per job mode：
+
+java.lang.IllegalStateException: UserManagedCacheBuilder failed to build.java.lang.IllegalStateException: UserManagedCacheBuilder failed to build. at org.ehcache.config.builders.UserManagedCacheBuilder.build(UserManagedCacheBuilder.java:182) at org.ehcache.config.builders.UserManagedCacheBuilder.build(UserManagedCacheBuilder.java:404) at lookupabletable.cache.AllCache.init(AllCache.java:46) at lookupabletable.function.AbstractTableFunction.initCache(AbstractTableFunction.java:83) at lookupabletable.function.AbstractTableFunction.open(AbstractTableFunction.java:65) at LookupFunction$7.open(Unknown Source) at org.apache.flink.api.common.functions.util.FunctionUtils.openFunction(FunctionUtils.java:36) at org.apache.flink.table.runtime.operators.join.lookup.LookupJoinRunner.open(LookupJoinRunner.java:68) at org.apache.flink.api.common.functions.util.FunctionUtils.openFunction(FunctionUtils.java:36) at org.apache.flink.streaming.api.operators.AbstractUdfStreamOperator.open(AbstractUdfStreamOperator.java:102) at org.apache.flink.streaming.api.operators.ProcessOperator.open(ProcessOperator.java:56) at org.apache.flink.streaming.runtime.tasks.StreamTask.openAllOperators(StreamTask.java:532) at org.apache.flink.streaming.runtime.tasks.StreamTask.invoke(StreamTask.java:396) at org.apache.flink.runtime.taskmanager.Task.doRun(Task.java:705) at org.apache.flink.runtime.taskmanager.Task.run(Task.java:530) at java.lang.Thread.run(Thread.java:748)Caused by: java.lang.IllegalStateException: org.ehcache.core.spi.ServiceLocator$DependencyException: Failed to find provider with satisfied dependency set for interface org.ehcache.core.spi.store.Store$Provider [candidates [org.ehcache.impl.internal.store.heap.OnHeapStoreProviderFactory@5a58dd22, org.ehcache.impl.internal.store.offheap.OffHeapStoreProviderFactory@4d766540, org.ehcache.impl.internal.store.disk.OffHeapDiskStoreProviderFactory@784d016d, org.ehcache.impl.internal.store.tiering.TieredStoreProviderFactory@25b63026, org.ehcache.impl.internal.store.loaderwriter.LoaderWriterStoreProviderFactory@776ed22b]] at org.ehcache.core.spi.ServiceLocator$DependencySet.build(ServiceLocator.java:350) at org.ehcache.config.builders.UserManagedCacheBuilder.build(UserManagedCacheBuilder.java:179) ... 15 moreCaused by: org.ehcache.core.spi.ServiceLocator$DependencyException: Failed to find provider with satisfied dependency set for interface org.ehcache.core.spi.store.Store$Provider [candidates [org.ehcache.impl.internal.store.heap.OnHeapStoreProviderFactory@5a58dd22, org.ehcache.impl.internal.store.offheap.OffHeapStoreProviderFactory@4d766540, org.ehcache.impl.internal.store.disk.OffHeapDiskStoreProviderFactory@784d016d, org.ehcache.impl.internal.store.tiering.TieredStoreProviderFactory@25b63026, org.ehcache.impl.internal.store.loaderwriter.LoaderWriterStoreProviderFactory@776ed22b]] at org.ehcache.core.spi.ServiceLocator$DependencySet.lookupService(ServiceLocator.java:401) at org.ehcache.core.spi.ServiceLocator$DependencySet.build(ServiceLocator.java:322) ... 16 more
+
+but No problem in standalone mode.
+
+Any help ?
+
+ 
+
+My code-->
+
+public class AllCache extends AbstractCache<String, Row> {
+ private static final long serialVersionUID = -3639314692125067324L;
+
+ private PersistentUserManagedCache<String, Row> cache;
+ private String tempDir;
+ private LocalPersistenceService persistenceService;
+
+ public AllCache(CacheInfo cacheInfo) 
+{
+ super(cacheInfo);
+ }
+
+ @Override
+ public void init() 
+{
+ tempDir = System.getProperty("java.io.tmpdir") + File.separator
+ + cacheInfo.getCacheTmpDir() + File.separator
+ + UUID.randomUUID().toString() + File.separator
+ + Thread.currentThread().getId();
+ persistenceService = new DefaultLocalPersistenceService(
+ new DefaultPersistenceConfiguration(new File(tempDir)));
+ cache = UserManagedCacheBuilder.newUserManagedCacheBuilder(String.class, Row.class)
+ .with(new UserManagedPersistenceContext<>("persistentCache", persistenceService))
+ .withResourcePools(ResourcePoolsBuilder.newResourcePoolsBuilder()
+ .heap(cacheInfo.getCacheMaxMb(), MemoryUnit.MB)
+ .disk(10, MemoryUnit.GB, false)
+ ).build(true);
+ }
+
+ @Override
+ public Row get(String key) 
+{
+ return cache.get(key);
+ }
+
+ @Override
+ public void put(String key, Row value) 
+{
+ cache.put(key, value);
+ }
+
+ @Override
+ public void putAll(Map<String, Row> data) 
+{
+ cache.putAll(data);
+ }
+
+ @Override
+ public void close() {
+ try 
+{
+ cache.close();
+ cache.destroy();
+ persistenceService.stop();
+ }
+ catch (Exception ignore) {
+ }
+ }
+}

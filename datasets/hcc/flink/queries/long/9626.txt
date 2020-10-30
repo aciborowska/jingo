@@ -1,0 +1,33 @@
+There is a potential resource leak in org.apache.flink.core.fs.FileSystem#getUnguardedFileSystem.
+
+Inside it there is a code:
+
+ 
+
+
+// this "default" initialization makes sure that the FileSystem class works
+// even when not configured with an explicit Flink configuration, like on
+// JobManager or TaskManager setup
+if (FS_FACTORIES.isEmpty()) {
+   initialize(new Configuration());
+}
+
+
+
+which is executed on each cache miss. However this initialize method is also doing
+
+ 
+
+ 
+
+
+CACHE.clear();
+
+
+without closing file systems in CACHE (this could be problematic for HadoopFileSystem which is a wrapper around org.apache.hadoop.fs.FileSystem which is closable).
+
+Now if for example we are constantly accessing two different file systems (file systems are differentiated by combination of schema and authority part from the file system's URI) initialized from FALLBACK_FACTORY, each time we call getUnguardedFileSystem for one of them, that call will clear from CACHE entry for the other one. Thus we will constantly be creating new FileSystems without closing them.
+
+Solution could be to either not clear the CACHE or make sure that FileSystems are properly closed.
+
+ 

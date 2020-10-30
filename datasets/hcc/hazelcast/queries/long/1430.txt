@@ -1,0 +1,22 @@
+I don't have detailed technical information about where this bug resides but I strongly suggest you test in the following scenario.
+A cluster of 2 nodes on 2 different servers with packet loss between them. 
+I had this setup unintentionally in my test lab. We had a bad hub and netstat -i gave something like this on only 1 server
+
+```
+Iface       MTU Met    RX-OK RX-ERR RX-DRP RX-OVR    TX-OK TX-ERR TX-DRP TX-OVR Flg
+eth0       1500   0 340450985 9986610      0      0 293935175      0      0      0 BMRU
+```
+
+My application, using hazelcast to replicate data, was working fine when it was started fresh, but when I tested the next morning, all my requests were failing. Each thread that called a hazelcast method was never returning; they were all stuck on InvocationImpl.waitForResponse(), at the line 326 (response = responseQ.poll(pollTimeout, TimeUnit.MILLISECONDS);).
+
+The only way to unlock those threads was by shutting down the 2nd instance 
+
+speculation: It's like if during the night some essential messages were lost between the 2 hazelcast instances and they fell into a state of not fully connected not fully disconnected.
+
+In my case this is totally unacceptable; I can't have requests that never return
+
+Since I wasn't sure how to fix this issue. I implemented an ugly hack of proxying all requests made to hazelcast and forking with an error after 3 seconds to make sure my application can try and continue its work.
+
+I tested other network failures, killing instances, disconnecting wires, dropping all packets in one or both directions, and these work as expected, only suffering from delays caused by the merge and actions that lock the node.
+
+P.S.I had to tweak all the timer configurations to be more aggressive since my application is real time. The default values are way to high.

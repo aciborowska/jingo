@@ -1,0 +1,35 @@
+With an equality and substring index (all default) for an attribute and more than the index limits number of values, debugsearchindex can return UNINDEXED when it should return LIMIT-EXCEEDED.
+
+Test:
+
+	5000 entries containing a givenName of "Paul".
+	One entry with a givenName of "Paulette".
+
+
+
+
+$ bin/ldapsearch -h localhost -p 1389 -b dc=example,dc=com -s sub "(givenname=Paul)" debugsearchindex
+dn: cn=debugsearch
+debugsearchindex: filter=(givenName=Paul)[INDEX:givenName.equality][LIMIT-EXCEEDED] scope=wholeSubtree[LIMIT-EXCEEDED:5003] final=[LIMIT-EXCEEDED:5003]
+
+$ bin/ldapsearch -h localhost -p 1389 -b dc=example,dc=com -s sub "(givenname=Paul*)" debugsearchindex
+dn: cn=debugsearch
+debugsearchindex: filter=(givenName=Paul*)[INDEX:givenName.substring][NOT-INDEXED] scope=wholeSubtree[LIMIT-EXCEEDED:5003] final=[NOT-INDEXED]
+
+$ bin/ldapsearch -h localhost -p 1389 -b dc=example,dc=com -s sub "(givenname=Paule*)" debugsearchindex
+dn: cn=debugsearch
+debugsearchindex: filter=(givenName=Paule*)[INDEX:givenName.equality][COUNT:1] final=[COUNT:1]
+
+
+
+It looks like if one of those keys hits the limit, we incorrectly return UNINDEXED when we should return LIMIT-EXCEEDED.
+
+The code getting called in evaluateSubstringFilter(): is
+
+
+          EntryIDSet list = matchInitialSubstring(normBytes);
+          results.retainAll(list);
+
+
+
+The (list) is set to "LIMIT-EXCEEDED", and because retainAll() doesn't update the results's keyBytes field, results.toString() returns "UNINDEXED" after the retainAll(). This code has been refactored in 3.0, and avoids this problem.

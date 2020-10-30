@@ -1,0 +1,87 @@
+I have copy pasted the content of zendesk ticket 381. The problem is that if destroy is called on one member in the cluster, and other members keep using that map, then it can be that their listeners don't work anymore (no event) or get duplicate events.
+
+---
+
+I think I have reproduces the issue with the lost listeners:
+
+First start Unhappy and then start Happy.
+
+Then you will see the following logging:
+
+On Happy
+
+```
+EntryEvent {map} key=1, oldValue=null, value=1, event=ADDED, by Member [192.168.1.103]:5702 this
+After destroy
+EntryEvent {map} key=2, oldValue=null, value=2, event=ADDED, by Member [192.168.1.103]:5702 this
+```
+
+On Unhappy
+
+```
+EntryEvent {map} key=1, oldValue=null, value=1, event=ADDED, by Member [192.168.1.103]:5702
+```
+
+So after the map is destroy, unhappy doesn't receive any events. This is because his event listener is lost
+
+```
+public class Unhappy {
+
+public static void main(String[] args) {
+    MapConfig mapConfig = new MapConfig("map");
+    mapConfig.addEntryListenerConfig(new EntryListenerConfig(MapEntryListenerImpl.class.getName(), false, true));
+
+    Config config = new Config();
+    config.addMapConfig(mapConfig);
+
+    HazelcastInstance hz = Hazelcast.newHazelcastInstance(config);
+
+    IMap map = hz.getMap("map");
+}
+}
+
+public class Happy {
+
+public static void main(String[] args) {
+    MapConfig mapConfig = new MapConfig("map");
+    mapConfig.addEntryListenerConfig(new EntryListenerConfig(MapEntryListenerImpl.class.getName(),false,true));
+
+    Config config = new Config();
+    config.addMapConfig(mapConfig);
+
+    HazelcastInstance hz = Hazelcast.newHazelcastInstance(config);
+
+    IMap map = hz.getMap("map");
+
+    map.put("1", "1");
+
+    System.out.println("After destroy");
+     map.destroy();
+    map = hz.getMap("map");
+    map.put("2", "2");
+}
+}
+
+public class MapEntryListenerImpl implements EntryListener {
+
+@Override
+public void entryAdded(EntryEvent event) {
+    System.out.println(event);
+}
+
+@Override
+public void entryRemoved(EntryEvent event) {
+    System.out.println(event);
+}
+
+@Override
+public void entryUpdated(EntryEvent event) {
+    System.out.println(event);
+}
+
+@Override
+public void entryEvicted(EntryEvent event) {
+    System.out.println(event);
+}
+}
+```

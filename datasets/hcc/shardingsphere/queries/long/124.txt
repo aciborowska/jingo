@@ -1,0 +1,67 @@
+Bug修复建议：
+com.dangdang.ddframe.rdb.sharding.jdbc.adapter.AbstractStatementAdapter中的重写的getUpdateCount方法
+    @Override
+    public final int getUpdateCount() throws SQLException {
+        int result = 0;
+        for (Statement each : getRoutedStatements()) {
+            result += each.getUpdateCount();
+        }
+        return result;
+    }
+应该修改为
+    @Override
+    public final int getUpdateCount() throws SQLException {
+        int result = -1;
+        for (Statement each : getRoutedStatements()) {
+            if(each.getUpdateCount() == -1){
+                continue;
+            }
+            result += each.getUpdateCount();
+        }
+        return result;
+    }
+
+Bug说明：
+测试时，发现当多表查询时，每个表中都没有结果时
+1、each.getUpdateCount()会返回-1。若多个查询statement均没有结果时，result += each.getUpdateCount()返回-4（2库，表水平分2），此时，会调用org.apache.ibatis.logging.jdbc.ResultSetLogger的invoke(Object proxy, Method method, Object[] params)方法，将resultSet设置为close
+
+2、在org.apache.ibatis.executor.resultset.DefaultResultSetHandler中代码逻辑中，若获取到的getUpdateCount不是-1，会继续返回resultSet，然后继续调用getMetaData
+if (stmt.getConnection().getMetaData().supportsMultipleResultSets()) {
+        // Crazy Standard JDBC way of determining if there are more results
+        if (!((!stmt.getMoreResults()) && (stmt.getUpdateCount() == -1))) {
+          ResultSet rs = stmt.getResultSet();
+          return rs != null ? new ResultSetWrapper(rs, configuration) : null;
+        }
+}
+
+3、此时org.apache.ibatis.logging.jdbc.ResultSetLogger的invoke(Object proxy, Method method, Object[] params)方法,proxy=resultSet{close=true}，method=getMetaData，导致异常，异常信息：java.sql.SQLException: Operation not allowed after ResultSet closed
+
+org.apache.ibatis.logging.jdbc.ResultSetLogger相关代码如下
+public Object invoke(Object proxy, Method method, Object[] params) throws Throwable {
+    try {
+      if (Object.class.equals(method.getDeclaringClass())) {
+        return method.invoke(this, params);
+      }  
+      Object o = method.invoke(rs, params);
+      if ("next".equals(method.getName())) {
+        if (((Boolean) o)) {
+          rows++;
+          if (isTraceEnabled()) {
+            ResultSetMetaData rsmd = rs.getMetaData();
+            final int columnCount = rsmd.getColumnCount();
+            if (first) {
+              first = false;
+              printColumnHeaders(rsmd, columnCount);
+            }
+            printColumnValues(columnCount);
+          }
+        } else {
+          debug("     Total: " + rows, false);
+        }
+      }
+      clearColumnInfo();
+      return o;
+    } catch (Throwable t) {
+      throw ExceptionUtil.unwrapThrowable(t);
+    }
+  }

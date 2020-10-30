@@ -1,0 +1,252 @@
+Context:
+
+A backup storage is designed to store each version of each file only once to allow saving time and space.
+ Each time a backend file is to be backed up, its fingerprint is computed and compared to the fingerprints in the backup storage.
+ If the fingerprint is new, the file is added to the backup storage, else the existing file in the backup storage is reused.
+
+While all other backends use SHA-256 to compute fingerprints, JE backends use an optimized fingerprinting algorithm.
+ JE only appends data to files and, once the file is full, it opens a new file with a different name. Therefore, in JE backends, the combination of the file name and the file length is sufficient as a fingerprint. To avoid clashing with JE backend files from other backends and servers, the fingerprints also include the backend name and server ID.
+Bug description
+
+The JE backend optimized fingerprinting algorithm works well only if we never go back in time. Alas, when restoring a backup or when replacing an existing backend with an empty backend with the same name and same server ID, we effectively go back in time. See the following simplified example that illustrates the problem:
+
+This example shows recurring backups on a JE backend with one file:
+
+
+
+File content
+fingerprint
+backup #
+file sent to storage
+backup content
+
+
+There
+5
+1
+yes
+There
+
+
+There is
+8
+2
+yes
+There is
+
+
+There is a
+10
+3
+yes
+There is a
+
+
+There is a bug
+14
+4
+yes
+There is a bug
+
+
+
+
+
+At this point, everything works well, now let's restore to backup #2 and continue to take regular backups:
+
+
+
+File content
+fingerprint
+backup #
+file sent to storage
+backup content
+
+
+There is
+ 
+2
+ 
+ 
+
+
+There is no
+11
+5
+yes
+There is
+
+
+There is no pb
+14
+6
+no
+There is bug
+
+
+
+
+
+At the time of taking backup #6, the backup storage does not have a file with the content "There is no pb" but already contains a file with fingerprint 14.
+ Therefore, the file "There is no pb" is not transferred to the backup storage and if someone restores backup #6, it will restore "There is a bug".
+Reproduce case:
+
+Here is a shell script that reproduces the following scenario:
+
+	backup#0
+	add a byte
+	backup#1
+	restore backup#0
+	add a different byte
+	backup#2
+	add a byte
+	restore to backup#2 -> Bug! instead of restoring backup#2 state, it restored backup#1 state
+
+
+
+First, setup a server like so:
+
+./opendj/setup \
+          --instancePath /Users/cyril/deploy/opendj \
+          --serverId Godiva_Modigh \
+          --deploymentKeyPassword password \
+          --rootUserDn uid=admin \
+          --rootUserPassword password \
+          --hostname macgrady \
+          --adminConnectorPort 4444 \
+          --doNotStart \
+          --ldapPort 1389 \
+          --enableStartTls \
+          --ldapsPort 1636 \
+          --httpsPort 8443 \
+          --replicationPort 8989
+
+./opendj/bin/dsconfig create-backend \
+          --set base-dn:dc=example,dc=com \
+          --set enabled:true \
+          --type je \
+          --backend-name testBackend \
+          --offline \
+          --configFile /Users/cyril/deploy/opendj/config/config.ldif \
+          --no-prompt
+
+./opendj/bin/start-ds
+./opendj/bin/stop-ds
+
+
+Then run this script:
+
+STATE_0=$(shasum ./opendj/db/testBackend/00000000.jdb | head -c 40)
+STATE_0_BACKUP=$(./opendj/bin/dsbackup create --offline --backupDirectory bakForTest --backendName testBackend | grep "backup ID" | tail -c 31 | sed 's/.$//')
+
+printf "\x01" >> ./opendj/db/testBackend/00000000.jdb
+STATE_1=$(shasum ./opendj/db/testBackend/00000000.jdb | head -c 40)
+STATE_1_BACKUP=$(./opendj/bin/dsbackup create --offline --backupDirectory bakForTest --backendName testBackend | grep "backup ID" | tail -c 31 | sed 's/.$//')
+
+./opendj/bin/dsbackup restore --offline --backupDirectory bakForTest --backupId $STATE_0_BACKUP
+STATE_0_CONTROL=$(shasum ./opendj/db/testBackend/00000000.jdb | head -c 40)
+if [ $STATE_0_CONTROL != $STATE_0 ]; then
+echo "There is a new unexpected bug to dsbackup"
+fi
+
+printf "\x02" >> ./opendj/db/testBackend/00000000.jdb
+STATE_2=$(shasum ./opendj/db/testBackend/00000000.jdb | head -c 40)
+STATE_2_BACKUP=$(./opendj/bin/dsbackup create --offline --backupDirectory bakForTest --backendName testBackend | grep "backup ID" | tail -c 31 | sed 's/.$//')
+
+printf "\x02" >> ./opendj/db/testBackend/00000000.jdb
+
+./opendj/bin/dsbackup restore --offline --backupDirectory bakForTest --backupId $STATE_2_BACKUP
+STATE_2_CONTROL=$(shasum ./opendj/db/testBackend/00000000.jdb | head -c 40)
+
+if [ $STATE_2_CONTROL = $STATE_2 ]; then
+echo "The bug is fixed"
+else
+echo "dsbackup is broken"
+fi
+
+
+Suggested fix:
+
+Given that a server ID may be reused for different servers (not at the same time, obviously), and that, in a server, a backend may be deleted and replaced with the same name, and that, restoring a backup can effectively shrink a file, the combination of server ID, backend name and file length is not sufficient to avoid collisions.
+ To fix this, JE backend could do the following:
+
+	Generate a UUID when the backend is created and store that in a file.
+	Include the UUID in every fingerprint.
+	Generate a new UUID every time the backend is restored.
+
+
+
+With this UUID, it will be unnecessary to include the server ID and backend name to the fingerprint.
+ This fix will be backward compatible.
+ See how this fix applies to the example above, the UUID length has been reduced for clarity:
+
+
+
+File content
+fingerprint
+backup #
+file sent to storage
+backup content
+
+
+There
+7283_5
+1
+yes
+There
+
+
+There is
+7283_8
+2
+yes
+There is
+
+
+There is a
+7283_10
+3
+yes
+There is a
+
+
+There is a bug
+7283_14
+4
+yes
+There is a bug
+
+
+File content
+fingerprint
+backup #
+file sent to storage
+backup content
+
+
+There is
+7283_8
+2
+yes
+There is
+
+
+There is no
+1975_11
+5
+yes
+There is
+
+
+There is no pb
+1975_14
+6
+yes
+There is no pb
+
+
+
+
+Limitations:
+
+The major problem with this approach is that the first backup after a restore will transfer all the backend files to the backup storage, even if the storage already contains most of the backend files. This may be a big deal for a cloud deployment where DS containers can be destroyed and reinitialized from a backup every 24 hours.

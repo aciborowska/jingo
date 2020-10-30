@@ -1,0 +1,301 @@
+First of all, my English is not very good.(所以, 抱歉咯, 问题描述不清楚, 也不能怪我咯)
+### Which version of ShardingSphere did you use?
+version: 4.1.0
+### Which project did you use? ShardingSphere-JDBC or ShardingSphere-Proxy?
+ShardingSphere-JDBC 
+### Expected behavior
+Execute SQL normally.
+ShardingSphere-JDBC Version 4.0.0 does not have this problem
+### Actual behavior
+throw NullPointerException
+### Reason analyze (If you can)
+The following SQL is causing the problem
+```
+update xxx_table
+<trim prefix="set" suffixOverrides=",">
+    <trim prefix="column1= case" suffix="end," >
+        <foreach collection="list" item="item" index="index">
+            <if test="item.column1 != null">
+                when id = #{item.id} then #{item.column1}
+            </if>
+        </foreach>
+        else column1
+    </trim>
+    <trim prefix="column2 = case" suffix="end," >
+        <foreach collection="list" item="item" index="index">
+            <if test="item.column2 != null">
+                when id = #{item.id} then #{item.column2}
+            </if>
+        </foreach>
+        else column2
+    </trim>
+</trim>
+where
+<foreach collection="list" item="item" open="( " separator=") or (" close=" )">
+    id = #{item.id}
+</foreach>
+```
+
+The actual SQL may be like this
+```
+UPDATE
+    xxx_table 
+SET
+    column1 =
+CASE
+		WHEN id = 1 THEN 'value1'
+		WHEN id = 2 THEN 'value2'
+		ELSE column1
+END,
+    column2 =
+CASE
+		WHEN id = 1 THEN 'value21'
+		WHEN id = 2 THEN 'value22'
+		ELSE update_user 
+END 
+WHERE
+(
+    id = 1 or id = 2
+)
+```
+
+This is just a personal analysis, it may be wrong.
+
+When analyzing this condition
+```<trim prefix="column1= case" suffix="end," >```
+MySQLVisitor#visitCaseExpression (MySQLVisitor.java line 585)call AbstractParseTreeVisitor#visit(CaseExpressionContext#simpleExpr)
+will throw NullPointerException
+
+Below is the stack information: 
+```
+org.mybatis.spring.MyBatisSystemException: nested exception is org.apache.ibatis.exceptions.PersistenceException: 
+### Error updating database.  Cause: java.lang.NullPointerException
+### The error may involve defaultParameterMap
+### The error occurred while setting parameters
+### SQL: update class_conf  set `value` = case when id = ? then ?   else `value` end,          update_user = case when id = ? then ?  else update_user end  where  ( id = ? )
+### Cause: java.lang.NullPointerException
+	at org.mybatis.spring.MyBatisExceptionTranslator.translateExceptionIfPossible(MyBatisExceptionTranslator.java:77)
+	at org.mybatis.spring.SqlSessionTemplate$SqlSessionInterceptor.invoke(SqlSessionTemplate.java:446)
+	at com.sun.proxy.$Proxy165.update(Unknown Source)
+	at org.mybatis.spring.SqlSessionTemplate.update(SqlSessionTemplate.java:294)
+	at org.apache.ibatis.binding.MapperMethod.execute(MapperMethod.java:62)
+	at org.apache.ibatis.binding.MapperProxy.invoke(MapperProxy.java:59)
+	at com.sun.proxy.$Proxy174.batchUpdateClassConf(Unknown Source)
+	at sun.reflect.NativeMethodAccessorImpl.invoke0(Native Method)
+	at sun.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:62)
+	at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)
+	at java.lang.reflect.Method.invoke(Method.java:498)
+	at org.springframework.aop.support.AopUtils.invokeJoinpointUsingReflection(AopUtils.java:333)
+	at org.springframework.aop.framework.ReflectiveMethodInvocation.invokeJoinpoint(ReflectiveMethodInvocation.java:190)
+	at org.springframework.aop.framework.ReflectiveMethodInvocation.proceed(ReflectiveMethodInvocation.java:157)
+	at org.springframework.aop.framework.adapter.MethodBeforeAdviceInterceptor.invoke(MethodBeforeAdviceInterceptor.java:52)
+	at org.springframework.aop.framework.ReflectiveMethodInvocation.proceed(ReflectiveMethodInvocation.java:179)
+	at org.springframework.aop.aspectj.AspectJAfterAdvice.invoke(AspectJAfterAdvice.java:47)
+	at org.springframework.aop.framework.ReflectiveMethodInvocation.proceed(ReflectiveMethodInvocation.java:179)
+	at org.springframework.aop.interceptor.ExposeInvocationInterceptor.invoke(ExposeInvocationInterceptor.java:92)
+	at org.springframework.aop.framework.ReflectiveMethodInvocation.proceed(ReflectiveMethodInvocation.java:179)
+	at org.springframework.aop.framework.JdkDynamicAopProxy.invoke(JdkDynamicAopProxy.java:213)
+	at com.sun.proxy.$Proxy175.batchUpdateClassConf(Unknown Source)
+	at com.ewt360.schooluserservice.service.biz.repo.dao.impl.ClassConfDaoImpl.batchUpdateAndInsertClassConf(ClassConfDaoImpl.java:40)
+	at com.ewt360.schooluserservice.service.biz.repo.dao.impl.ClassConfDaoImpl$$FastClassBySpringCGLIB$$5ea3546e.invoke(<generated>)
+	at org.springframework.cglib.proxy.MethodProxy.invoke(MethodProxy.java:204)
+	at org.springframework.aop.framework.CglibAopProxy$CglibMethodInvocation.invokeJoinpoint(CglibAopProxy.java:738)
+	at org.springframework.aop.framework.ReflectiveMethodInvocation.proceed(ReflectiveMethodInvocation.java:157)
+	at org.springframework.dao.support.PersistenceExceptionTranslationInterceptor.invoke(PersistenceExceptionTranslationInterceptor.java:136)
+	at org.springframework.aop.framework.ReflectiveMethodInvocation.proceed(ReflectiveMethodInvocation.java:179)
+	at org.springframework.aop.framework.adapter.MethodBeforeAdviceInterceptor.invoke(MethodBeforeAdviceInterceptor.java:52)
+	at org.springframework.aop.framework.ReflectiveMethodInvocation.proceed(ReflectiveMethodInvocation.java:179)
+	at org.springframework.aop.aspectj.AspectJAfterAdvice.invoke(AspectJAfterAdvice.java:47)
+	at org.springframework.aop.framework.ReflectiveMethodInvocation.proceed(ReflectiveMethodInvocation.java:179)
+	at org.springframework.transaction.interceptor.TransactionInterceptor$1.proceedWithInvocation(TransactionInterceptor.java:99)
+	at org.springframework.transaction.interceptor.TransactionAspectSupport.invokeWithinTransaction(TransactionAspectSupport.java:282)
+	at org.springframework.transaction.interceptor.TransactionInterceptor.invoke(TransactionInterceptor.java:96)
+	at org.springframework.aop.framework.ReflectiveMethodInvocation.proceed(ReflectiveMethodInvocation.java:179)
+	at org.springframework.aop.interceptor.ExposeInvocationInterceptor.invoke(ExposeInvocationInterceptor.java:92)
+	at org.springframework.aop.framework.ReflectiveMethodInvocation.proceed(ReflectiveMethodInvocation.java:179)
+	at org.springframework.aop.framework.CglibAopProxy$DynamicAdvisedInterceptor.intercept(CglibAopProxy.java:673)
+	at com.ewt360.schooluserservice.service.biz.repo.dao.impl.ClassConfDaoImpl$$EnhancerBySpringCGLIB$$3dcbe6bc.batchUpdateAndInsertClassConf(<generated>)
+	at com.ewt360.schooluserservice.service.biz.service.impl.classes.ClassServiceImpl.batchUpdateClassConf(ClassServiceImpl.java:643)
+	at com.ewt360.schooluserservice.service.biz.service.impl.classes.ClassServiceImpl$$FastClassBySpringCGLIB$$d3833478.invoke(<generated>)
+	at org.springframework.cglib.proxy.MethodProxy.invoke(MethodProxy.java:204)
+	at org.springframework.aop.framework.CglibAopProxy$CglibMethodInvocation.invokeJoinpoint(CglibAopProxy.java:738)
+	at org.springframework.aop.framework.ReflectiveMethodInvocation.proceed(ReflectiveMethodInvocation.java:157)
+	at org.springframework.aop.framework.adapter.MethodBeforeAdviceInterceptor.invoke(MethodBeforeAdviceInterceptor.java:52)
+	at org.springframework.aop.framework.ReflectiveMethodInvocation.proceed(ReflectiveMethodInvocation.java:179)
+	at org.springframework.aop.aspectj.AspectJAfterAdvice.invoke(AspectJAfterAdvice.java:47)
+	at org.springframework.aop.framework.ReflectiveMethodInvocation.proceed(ReflectiveMethodInvocation.java:179)
+	at org.springframework.aop.interceptor.ExposeInvocationInterceptor.invoke(ExposeInvocationInterceptor.java:92)
+	at org.springframework.aop.framework.ReflectiveMethodInvocation.proceed(ReflectiveMethodInvocation.java:179)
+	at org.springframework.aop.framework.CglibAopProxy$DynamicAdvisedInterceptor.intercept(CglibAopProxy.java:673)
+	at com.ewt360.schooluserservice.service.biz.service.impl.classes.ClassServiceImpl$$EnhancerBySpringCGLIB$$c71c74ae.batchUpdateClassConf(<generated>)
+	at com.ewt360.schooluserservice.service.facade.impl.classes.ClassFacadeImpl.batchUpdateClassConf(ClassFacadeImpl.java:174)
+	at com.ewt360.schooluserservice.service.facade.impl.classes.ClassFacadeImpl$$FastClassBySpringCGLIB$$9421d509.invoke(<generated>)
+	at org.springframework.cglib.proxy.MethodProxy.invoke(MethodProxy.java:204)
+	at org.springframework.aop.framework.CglibAopProxy$CglibMethodInvocation.invokeJoinpoint(CglibAopProxy.java:738)
+	at org.springframework.aop.framework.ReflectiveMethodInvocation.proceed(ReflectiveMethodInvocation.java:157)
+	at org.springframework.validation.beanvalidation.MethodValidationInterceptor.invoke(MethodValidationInterceptor.java:150)
+	at org.springframework.aop.framework.ReflectiveMethodInvocation.proceed(ReflectiveMethodInvocation.java:179)
+	at org.springframework.aop.aspectj.MethodInvocationProceedingJoinPoint.proceed(MethodInvocationProceedingJoinPoint.java:85)
+	at com.ewt360.framework.container.web.LogRequestResponse.LogRequestResponseAdvice.handle(LogRequestResponseAdvice.java:68)
+	at sun.reflect.NativeMethodAccessorImpl.invoke0(Native Method)
+	at sun.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:62)
+	at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)
+	at java.lang.reflect.Method.invoke(Method.java:498)
+	at org.springframework.aop.aspectj.AbstractAspectJAdvice.invokeAdviceMethodWithGivenArgs(AbstractAspectJAdvice.java:627)
+	at org.springframework.aop.aspectj.AbstractAspectJAdvice.invokeAdviceMethod(AbstractAspectJAdvice.java:616)
+	at org.springframework.aop.aspectj.AspectJAroundAdvice.invoke(AspectJAroundAdvice.java:70)
+	at org.springframework.aop.framework.ReflectiveMethodInvocation.proceed(ReflectiveMethodInvocation.java:179)
+	at org.springframework.aop.interceptor.ExposeInvocationInterceptor.invoke(ExposeInvocationInterceptor.java:92)
+	at org.springframework.aop.framework.ReflectiveMethodInvocation.proceed(ReflectiveMethodInvocation.java:179)
+	at org.springframework.aop.framework.CglibAopProxy$DynamicAdvisedInterceptor.intercept(CglibAopProxy.java:673)
+	at com.ewt360.schooluserservice.service.facade.impl.classes.ClassFacadeImpl$$EnhancerBySpringCGLIB$$1a370ceb.batchUpdateClassConf(<generated>)
+	at sun.reflect.NativeMethodAccessorImpl.invoke0(Native Method)
+	at sun.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:62)
+	at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)
+	at java.lang.reflect.Method.invoke(Method.java:498)
+	at org.springframework.web.method.support.InvocableHandlerMethod.doInvoke(InvocableHandlerMethod.java:205)
+	at org.springframework.web.method.support.InvocableHandlerMethod.invokeForRequest(InvocableHandlerMethod.java:133)
+	at org.springframework.web.servlet.mvc.method.annotation.ServletInvocableHandlerMethod.invokeAndHandle(ServletInvocableHandlerMethod.java:97)
+	at org.springframework.web.servlet.mvc.method.annotation.RequestMappingHandlerAdapter.invokeHandlerMethod(RequestMappingHandlerAdapter.java:827)
+	at org.springframework.web.servlet.mvc.method.annotation.RequestMappingHandlerAdapter.handleInternal(RequestMappingHandlerAdapter.java:738)
+	at org.springframework.web.servlet.mvc.method.AbstractHandlerMethodAdapter.handle(AbstractHandlerMethodAdapter.java:85)
+	at org.springframework.web.servlet.DispatcherServlet.doDispatch(DispatcherServlet.java:967)
+	at org.springframework.web.servlet.DispatcherServlet.doService(DispatcherServlet.java:901)
+	at org.springframework.web.servlet.FrameworkServlet.processRequest(FrameworkServlet.java:970)
+	at org.springframework.web.servlet.FrameworkServlet.doPost(FrameworkServlet.java:872)
+	at javax.servlet.http.HttpServlet.service(HttpServlet.java:707)
+	at org.springframework.web.servlet.FrameworkServlet.service(FrameworkServlet.java:846)
+	at javax.servlet.http.HttpServlet.service(HttpServlet.java:790)
+	at org.apache.catalina.core.ApplicationFilterChain.internalDoFilter(ApplicationFilterChain.java:231)
+	at org.apache.catalina.core.ApplicationFilterChain.doFilter(ApplicationFilterChain.java:166)
+	at org.apache.tomcat.websocket.server.WsFilter.doFilter(WsFilter.java:52)
+	at org.apache.catalina.core.ApplicationFilterChain.internalDoFilter(ApplicationFilterChain.java:193)
+	at org.apache.catalina.core.ApplicationFilterChain.doFilter(ApplicationFilterChain.java:166)
+	at org.springframework.boot.web.filter.ApplicationContextHeaderFilter.doFilterInternal(ApplicationContextHeaderFilter.java:55)
+	at org.springframework.web.filter.OncePerRequestFilter.doFilter(OncePerRequestFilter.java:107)
+	at org.apache.catalina.core.ApplicationFilterChain.internalDoFilter(ApplicationFilterChain.java:193)
+	at org.apache.catalina.core.ApplicationFilterChain.doFilter(ApplicationFilterChain.java:166)
+	at org.springframework.boot.actuate.trace.WebRequestTraceFilter.doFilterInternal(WebRequestTraceFilter.java:111)
+	at org.springframework.web.filter.OncePerRequestFilter.doFilter(OncePerRequestFilter.java:107)
+	at org.apache.catalina.core.ApplicationFilterChain.internalDoFilter(ApplicationFilterChain.java:193)
+	at org.apache.catalina.core.ApplicationFilterChain.doFilter(ApplicationFilterChain.java:166)
+	at org.springframework.web.filter.RequestContextFilter.doFilterInternal(RequestContextFilter.java:99)
+	at org.springframework.web.filter.OncePerRequestFilter.doFilter(OncePerRequestFilter.java:107)
+	at org.apache.catalina.core.ApplicationFilterChain.internalDoFilter(ApplicationFilterChain.java:193)
+	at org.apache.catalina.core.ApplicationFilterChain.doFilter(ApplicationFilterChain.java:166)
+	at org.springframework.web.filter.HttpPutFormContentFilter.doFilterInternal(HttpPutFormContentFilter.java:109)
+	at org.springframework.web.filter.OncePerRequestFilter.doFilter(OncePerRequestFilter.java:107)
+	at org.apache.catalina.core.ApplicationFilterChain.internalDoFilter(ApplicationFilterChain.java:193)
+	at org.apache.catalina.core.ApplicationFilterChain.doFilter(ApplicationFilterChain.java:166)
+	at org.springframework.web.filter.HiddenHttpMethodFilter.doFilterInternal(HiddenHttpMethodFilter.java:81)
+	at org.springframework.web.filter.OncePerRequestFilter.doFilter(OncePerRequestFilter.java:107)
+	at org.apache.catalina.core.ApplicationFilterChain.internalDoFilter(ApplicationFilterChain.java:193)
+	at org.apache.catalina.core.ApplicationFilterChain.doFilter(ApplicationFilterChain.java:166)
+	at org.springframework.cloud.sleuth.instrument.web.TraceFilter.doFilter(TraceFilter.java:166)
+	at org.apache.catalina.core.ApplicationFilterChain.internalDoFilter(ApplicationFilterChain.java:193)
+	at org.apache.catalina.core.ApplicationFilterChain.doFilter(ApplicationFilterChain.java:166)
+	at org.springframework.web.filter.CharacterEncodingFilter.doFilterInternal(CharacterEncodingFilter.java:197)
+	at org.springframework.web.filter.OncePerRequestFilter.doFilter(OncePerRequestFilter.java:107)
+	at org.apache.catalina.core.ApplicationFilterChain.internalDoFilter(ApplicationFilterChain.java:193)
+	at org.apache.catalina.core.ApplicationFilterChain.doFilter(ApplicationFilterChain.java:166)
+	at org.springframework.boot.actuate.autoconfigure.MetricsFilter.doFilterInternal(MetricsFilter.java:106)
+	at org.springframework.web.filter.OncePerRequestFilter.doFilter(OncePerRequestFilter.java:107)
+	at org.apache.catalina.core.ApplicationFilterChain.internalDoFilter(ApplicationFilterChain.java:193)
+	at org.apache.catalina.core.ApplicationFilterChain.doFilter(ApplicationFilterChain.java:166)
+	at org.apache.catalina.core.StandardWrapperValve.invoke(StandardWrapperValve.java:198)
+	at org.apache.catalina.core.StandardContextValve.invoke(StandardContextValve.java:96)
+	at org.apache.catalina.authenticator.AuthenticatorBase.invoke(AuthenticatorBase.java:496)
+	at org.apache.catalina.core.StandardHostValve.invoke(StandardHostValve.java:140)
+	at org.apache.catalina.valves.ErrorReportValve.invoke(ErrorReportValve.java:81)
+	at org.apache.catalina.core.StandardEngineValve.invoke(StandardEngineValve.java:87)
+	at org.apache.catalina.connector.CoyoteAdapter.service(CoyoteAdapter.java:342)
+	at org.apache.coyote.http11.Http11Processor.service(Http11Processor.java:803)
+	at org.apache.coyote.AbstractProcessorLight.process(AbstractProcessorLight.java:66)
+	at org.apache.coyote.AbstractProtocol$ConnectionHandler.process(AbstractProtocol.java:790)
+	at org.apache.tomcat.util.net.NioEndpoint$SocketProcessor.doRun(NioEndpoint.java:1459)
+	at org.apache.tomcat.util.net.SocketProcessorBase.run(SocketProcessorBase.java:49)
+	at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1149)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:624)
+	at org.apache.tomcat.util.threads.TaskThread$WrappingRunnable.run(TaskThread.java:61)
+	at java.lang.Thread.run(Thread.java:748)
+Caused by: org.apache.ibatis.exceptions.PersistenceException: 
+### Error updating database.  Cause: java.lang.NullPointerException
+### The error may involve defaultParameterMap
+### The error occurred while setting parameters
+### SQL: update class_conf  set `value` = case when id = ? then ?   else `value` end,          update_user = case when id = ? then ?  else update_user end  where  ( id = ? )
+### Cause: java.lang.NullPointerException
+	at org.apache.ibatis.exceptions.ExceptionFactory.wrapException(ExceptionFactory.java:30)
+	at org.apache.ibatis.session.defaults.DefaultSqlSession.update(DefaultSqlSession.java:200)
+	at sun.reflect.NativeMethodAccessorImpl.invoke0(Native Method)
+	at sun.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:62)
+	at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)
+	at java.lang.reflect.Method.invoke(Method.java:498)
+	at org.mybatis.spring.SqlSessionTemplate$SqlSessionInterceptor.invoke(SqlSessionTemplate.java:433)
+	... 142 common frames omitted
+Caused by: java.lang.NullPointerException: null
+	at org.antlr.v4.runtime.tree.AbstractParseTreeVisitor.visit(AbstractParseTreeVisitor.java:18)
+	at org.apache.shardingsphere.sql.parser.mysql.visitor.MySQLVisitor.visitCaseExpression(MySQLVisitor.java:585)
+	at org.apache.shardingsphere.sql.parser.mysql.visitor.MySQLVisitor.visitCaseExpression(MySQLVisitor.java:121)
+	at org.apache.shardingsphere.sql.parser.autogen.MySQLStatementParser$CaseExpressionContext.accept(MySQLStatementParser.java:17875)
+	at org.antlr.v4.runtime.tree.AbstractParseTreeVisitor.visit(AbstractParseTreeVisitor.java:18)
+	at org.apache.shardingsphere.sql.parser.mysql.visitor.MySQLVisitor.visitRemainSimpleExpr(MySQLVisitor.java:572)
+	at org.apache.shardingsphere.sql.parser.mysql.visitor.MySQLVisitor.visitSimpleExpr(MySQLVisitor.java:431)
+	at org.apache.shardingsphere.sql.parser.mysql.visitor.MySQLVisitor.visitSimpleExpr(MySQLVisitor.java:121)
+	at org.apache.shardingsphere.sql.parser.autogen.MySQLStatementParser$SimpleExprContext.accept(MySQLStatementParser.java:12207)
+	at org.antlr.v4.runtime.tree.AbstractParseTreeVisitor.visit(AbstractParseTreeVisitor.java:18)
+	at org.apache.shardingsphere.sql.parser.mysql.visitor.MySQLVisitor.visitBitExpr(MySQLVisitor.java:376)
+	at org.apache.shardingsphere.sql.parser.mysql.visitor.MySQLVisitor.visitBitExpr(MySQLVisitor.java:121)
+	at org.apache.shardingsphere.sql.parser.autogen.MySQLStatementParser$BitExprContext.accept(MySQLStatementParser.java:11916)
+	at org.antlr.v4.runtime.tree.AbstractParseTreeVisitor.visit(AbstractParseTreeVisitor.java:18)
+	at org.apache.shardingsphere.sql.parser.mysql.visitor.MySQLVisitor.visitPredicate(MySQLVisitor.java:316)
+	at org.apache.shardingsphere.sql.parser.mysql.visitor.MySQLVisitor.visitPredicate(MySQLVisitor.java:121)
+	at org.apache.shardingsphere.sql.parser.autogen.MySQLStatementParser$PredicateContext.accept(MySQLStatementParser.java:11690)
+	at org.antlr.v4.runtime.tree.AbstractParseTreeVisitor.visit(AbstractParseTreeVisitor.java:18)
+	at org.apache.shardingsphere.sql.parser.mysql.visitor.MySQLVisitor.visitBooleanPrimary(MySQLVisitor.java:273)
+	at org.apache.shardingsphere.sql.parser.mysql.visitor.MySQLVisitor.visitBooleanPrimary(MySQLVisitor.java:121)
+	at org.apache.shardingsphere.sql.parser.autogen.MySQLStatementParser$BooleanPrimaryContext.accept(MySQLStatementParser.java:11463)
+	at org.antlr.v4.runtime.tree.AbstractParseTreeVisitor.visit(AbstractParseTreeVisitor.java:18)
+	at org.apache.shardingsphere.sql.parser.mysql.visitor.MySQLVisitor.visitExpr(MySQLVisitor.java:258)
+	at org.apache.shardingsphere.sql.parser.mysql.visitor.MySQLVisitor.visitExpr(MySQLVisitor.java:121)
+	at org.apache.shardingsphere.sql.parser.autogen.MySQLStatementParser$ExprContext.accept(MySQLStatementParser.java:11241)
+	at org.antlr.v4.runtime.tree.AbstractParseTreeVisitor.visit(AbstractParseTreeVisitor.java:18)
+	at org.apache.shardingsphere.sql.parser.mysql.visitor.impl.MySQLDMLVisitor.visitAssignmentValue(MySQLDMLVisitor.java:250)
+	at org.apache.shardingsphere.sql.parser.mysql.visitor.impl.MySQLDMLVisitor.visitAssignmentValue(MySQLDMLVisitor.java:127)
+	at org.apache.shardingsphere.sql.parser.autogen.MySQLStatementParser$AssignmentValueContext.accept(MySQLStatementParser.java:1941)
+	at org.antlr.v4.runtime.tree.AbstractParseTreeVisitor.visit(AbstractParseTreeVisitor.java:18)
+	at org.apache.shardingsphere.sql.parser.mysql.visitor.impl.MySQLDMLVisitor.visitAssignment(MySQLDMLVisitor.java:242)
+	at org.apache.shardingsphere.sql.parser.mysql.visitor.impl.MySQLDMLVisitor.visitAssignment(MySQLDMLVisitor.java:127)
+	at org.apache.shardingsphere.sql.parser.autogen.MySQLStatementParser$AssignmentContext.accept(MySQLStatementParser.java:1753)
+	at org.antlr.v4.runtime.tree.AbstractParseTreeVisitor.visit(AbstractParseTreeVisitor.java:18)
+	at org.apache.shardingsphere.sql.parser.mysql.visitor.impl.MySQLDMLVisitor.visitSetAssignmentsClause(MySQLDMLVisitor.java:225)
+	at org.apache.shardingsphere.sql.parser.mysql.visitor.impl.MySQLDMLVisitor.visitSetAssignmentsClause(MySQLDMLVisitor.java:127)
+	at org.apache.shardingsphere.sql.parser.autogen.MySQLStatementParser$SetAssignmentsClauseContext.accept(MySQLStatementParser.java:1801)
+	at org.antlr.v4.runtime.tree.AbstractParseTreeVisitor.visit(AbstractParseTreeVisitor.java:18)
+	at org.apache.shardingsphere.sql.parser.mysql.visitor.impl.MySQLDMLVisitor.visitUpdate(MySQLDMLVisitor.java:213)
+	at org.apache.shardingsphere.sql.parser.mysql.visitor.impl.MySQLDMLVisitor.visitUpdate(MySQLDMLVisitor.java:127)
+	at org.apache.shardingsphere.sql.parser.autogen.MySQLStatementParser$UpdateContext.accept(MySQLStatementParser.java:1622)
+	at org.antlr.v4.runtime.tree.AbstractParseTreeVisitor.visit(AbstractParseTreeVisitor.java:18)
+	at org.apache.shardingsphere.sql.parser.SQLParserEngine.parse0(SQLParserEngine.java:80)
+	at org.apache.shardingsphere.sql.parser.SQLParserEngine.parse(SQLParserEngine.java:61)
+	at org.apache.shardingsphere.underlying.route.DataNodeRouter.createRouteContext(DataNodeRouter.java:97)
+	at org.apache.shardingsphere.underlying.route.DataNodeRouter.executeRoute(DataNodeRouter.java:89)
+	at org.apache.shardingsphere.underlying.route.DataNodeRouter.route(DataNodeRouter.java:76)
+	at org.apache.shardingsphere.underlying.pluggble.prepare.PreparedQueryPrepareEngine.route(PreparedQueryPrepareEngine.java:54)
+	at org.apache.shardingsphere.underlying.pluggble.prepare.BasePrepareEngine.executeRoute(BasePrepareEngine.java:96)
+	at org.apache.shardingsphere.underlying.pluggble.prepare.BasePrepareEngine.prepare(BasePrepareEngine.java:83)
+	at org.apache.shardingsphere.shardingjdbc.jdbc.core.statement.ShardingPreparedStatement.prepare(ShardingPreparedStatement.java:183)
+	at org.apache.shardingsphere.shardingjdbc.jdbc.core.statement.ShardingPreparedStatement.execute(ShardingPreparedStatement.java:143)
+	at org.apache.ibatis.executor.statement.PreparedStatementHandler.update(PreparedStatementHandler.java:46)
+	at org.apache.ibatis.executor.statement.RoutingStatementHandler.update(RoutingStatementHandler.java:74)
+	at org.apache.ibatis.executor.ReuseExecutor.doUpdate(ReuseExecutor.java:52)
+	at org.apache.ibatis.executor.BaseExecutor.update(BaseExecutor.java:117)
+	at org.apache.ibatis.executor.CachingExecutor.update(CachingExecutor.java:76)
+	at sun.reflect.NativeMethodAccessorImpl.invoke0(Native Method)
+	at sun.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:62)
+	at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)
+	at java.lang.reflect.Method.invoke(Method.java:498)
+	at org.apache.ibatis.plugin.Plugin.invoke(Plugin.java:63)
+	at com.sun.proxy.$Proxy197.update(Unknown Source)
+	at org.apache.ibatis.session.defaults.DefaultSqlSession.update(DefaultSqlSession.java:198)
+	... 147 common frames omitted
+```

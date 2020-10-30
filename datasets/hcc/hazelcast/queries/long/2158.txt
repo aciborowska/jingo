@@ -1,0 +1,207 @@
+Hi,
+
+when using a map which has a write-behind MapStore configured and eviction enabled, then a call to map.get() returns the value even though map.remove() was called just before:
+
+So,
+map = IMap(with write-behind MapStore and eviction enabled)
+map.remove(key)
+map.get(key) <-- not null !!! (if you wait for the write behind interval to pass, then it is null)
+
+Even though the combination of a write-behind MapStore combined with eviction leaves some room for argumentation, I think this not the desired behavior :-)
+
+Here is a test which shows the issue:
+
+``` java
+package com.nm.test.hazelcast;
+
+import com.hazelcast.config.*;
+import com.hazelcast.config.MapConfig.EvictionPolicy;
+import com.hazelcast.core.Hazelcast;
+import com.hazelcast.core.HazelcastInstance;
+import com.hazelcast.core.IMap;
+import com.hazelcast.core.MapStore;
+import org.apache.log4j.BasicConfigurator;
+import org.apache.log4j.Logger;
+import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+import junit.framework.TestCase;
+
+public class TestEviction1 extends TestCase {
+
+    private static final Logger logger = Logger.getLogger(TestEviction1.class);
+
+    private static final String mapName = "testMap";
+
+    private static final int numIterations = 5;
+
+    private static final int writeDelaySeconds = 10;
+
+    public static void main(String[] args) throws Exception {
+
+        // configure logging
+        BasicConfigurator.configure();
+
+        // run test
+        TestEviction1 test = new TestEviction1();
+        test.testRemoveGet();
+    }
+
+    public void testRemoveGet() throws Exception {
+
+        // create hazelcast config
+        Config config = new XmlConfigBuilder().build();
+        config.setProperty("hazelcast.logging.type", "log4j");
+
+        // create map store implementation
+        RecordingMapStore store = new RecordingMapStore();
+
+        // configure map store
+        MapStoreConfig mapStoreConfig = new MapStoreConfig();
+        mapStoreConfig.setEnabled(true);
+        mapStoreConfig.setWriteDelaySeconds(writeDelaySeconds);
+        mapStoreConfig.setClassName(null);
+        mapStoreConfig.setImplementation(store);
+        MapConfig mapConfig = config.getMapConfig(mapName);
+        mapConfig.setMapStoreConfig(mapStoreConfig);
+
+        // configure eviction
+        mapConfig.setEvictionPolicy(EvictionPolicy.LRU);
+        mapConfig.setTimeToLiveSeconds(3600);
+
+        // start hazelcast instance
+        HazelcastInstance hcInstance = Hazelcast.newHazelcastInstance(config);
+
+        // add entries
+        IMap<String, String> map = hcInstance.getMap(mapName);
+        for (int k = 0; k < numIterations; k++) {
+            String key = String.valueOf(k + 10); // 2 digits for sorting in output
+            String value = "v:" + key;
+            map.put(key, value);
+        }
+
+        // wait until write delay has passed
+        sleep(2 * 1000 * writeDelaySeconds, true);
+
+        // try-finally to shutdown hazelcast
+        try {
+
+            // test remove and get
+            for (int k = 0; k < numIterations; k++) {
+                String key = String.valueOf(k + 10); // 2 digits for sorting in output
+                if (map.remove(key) == null) {
+                    fail("The entry with key '" + key + "' should exist here.");
+                }
+                if (map.get(key) != null) {
+                    fail("The entry with key '" + key + "' should no longer exist.");
+                }
+            }
+
+            // wait for store to finish
+            sleep(2 * 1000 * writeDelaySeconds, true);
+
+        } finally {
+
+            // shutdown hazelcast instance
+            hcInstance.getLifecycleService().shutdown();
+        }
+
+        // print store content
+        TreeSet<String> setSorted = new TreeSet<String>(store.getStore().keySet());
+        logger.info("Store: " + setSorted);
+        if (!setSorted.isEmpty()) {
+            fail("Left-over entries exist: " + setSorted);
+        }
+    }
+
+    private static void sleep(long ms, boolean log) {
+        try {
+            Thread.sleep(ms);
+            if (log) {
+                logger.info("Slept " + (ms / 1000) + "s.");
+            }
+        } catch (InterruptedException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    public static class RecordingMapStore implements MapStore<String, String> {
+
+        private static final Logger logger = Logger.getLogger(RecordingMapStore.class);
+
+        private ConcurrentHashMap<String, String> store = new ConcurrentHashMap<String, String>();
+
+        public ConcurrentHashMap<String, String> getStore() {
+            return store;
+        }
+
+        @Override
+        public String load(String key) {
+            logger.info("load(" + key + ") called.");
+            return store.get(key);
+        }
+
+        @Override
+        public Map<String, String> loadAll(Collection<String> keys) {
+            List<String> keysList = new ArrayList<String>(keys);
+            Collections.sort(keysList);
+            logger.info("loadAll(" + keysList + ") called.");
+            Map<String, String> result = new HashMap<String, String>();
+            for (String key : keys) {
+                String value = store.get(key);
+                if (value != null) {
+                    result.put(key, value);
+                }
+            }
+            return result;
+        }
+
+        @Override
+        public Set<String> loadAllKeys() {
+            logger.info("loadAllKeys() called.");
+            Set<String> result = new HashSet<String>(store.keySet());
+            logger.info("loadAllKeys result = " + result);
+            return result;
+        }
+
+        @Override
+        public void store(String key, String value) {
+            logger.info("store(" + key + ") called.");
+            store.put(key, value);
+        }
+
+        @Override
+        public void storeAll(Map<String, String> map) {
+            TreeSet<String> setSorted = new TreeSet<String>(map.keySet());
+            logger.info("storeAll(" + setSorted + ") called.");
+            store.putAll(map);
+        }
+
+        @Override
+        public void delete(String key) {
+            logger.info("delete(" + key + ") called.");
+            String valuePrev = store.remove(key);
+            if (valuePrev == null) {
+                logger.warn("- Unnecessary delete: " + key);
+            }
+        }
+
+        @Override
+        public void deleteAll(Collection<String> keys) {
+            List<String> keysList = new ArrayList<String>(keys);
+            Collections.sort(keysList);
+            logger.info("deleteAll(" + keysList + ") called.");
+            for (String key : keys) {
+                String valuePrev = store.remove(key);
+                if (valuePrev == null) {
+                    logger.warn("- Unnecessary delete: " + key);
+                }
+            }
+        }
+
+    }
+
+}
+```
+
+Cheers,
+Lukas

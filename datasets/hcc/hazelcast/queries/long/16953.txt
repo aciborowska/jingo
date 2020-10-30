@@ -1,0 +1,50 @@
+Got  `ConcurrentModificationException` while setting up Query Cache from multiple threads.
+```
+java.util.ConcurrentModificationException: null
+  at java.util.ArrayList$Itr.checkForComodification(ArrayList.java:909)
+  at java.util.ArrayList$Itr.next(ArrayList.java:859)
+  at com.hazelcast.map.impl.querycache.subscriber.NodeQueryCacheConfigurator.findQueryCacheConfigFromMapConfig(NodeQueryCacheConfigurator.java:83)
+  at com.hazelcast.map.impl.querycache.subscriber.NodeQueryCacheConfigurator.getOrNull(NodeQueryCacheConfigurator.java:70)
+  at com.hazelcast.map.impl.querycache.subscriber.AbstractQueryCacheEndToEndConstructor.getOrNullQueryCacheConfig(AbstractQueryCacheEndToEndConstructor.java:157)
+  at com.hazelcast.map.impl.querycache.subscriber.AbstractQueryCacheEndToEndConstructor.initQueryCacheConfig(AbstractQueryCacheEndToEndConstructor.java:134)
+  at com.hazelcast.map.impl.querycache.subscriber.AbstractQueryCacheEndToEndConstructor.createNew(AbstractQueryCacheEndToEndConstructor.java:74)
+  at com.hazelcast.map.impl.querycache.subscriber.AbstractQueryCacheEndToEndConstructor.createNew(AbstractQueryCacheEndToEndConstructor.java:39)
+  at com.hazelcast.map.impl.querycache.subscriber.QueryCacheEndToEndProvider.tryCreateQueryCache(QueryCacheEndToEndProvider.java:92)
+  at com.hazelcast.map.impl.querycache.subscriber.QueryCacheEndToEndProvider.getOrCreateQueryCache(QueryCacheEndToEndProvider.java:60)
+  at com.hazelcast.map.impl.proxy.MapProxyImpl.createQueryCache(MapProxyImpl.java:1074)
+  at com.hazelcast.map.impl.proxy.MapProxyImpl.getQueryCacheInternal(MapProxyImpl.java:1067)
+  at com.hazelcast.map.impl.proxy.MapProxyImpl.getQueryCache(MapProxyImpl.java:1032)
+```
+
+**Expected behavior**
+It is expected that method `getQueryCache` is thread-safe.
+
+**To Reproduce**
+This is a race condition so reproducer is a bit complicated. But the code inside `NodeQueryCacheConfigurator` is obviously not thread-safe. 
+
+**Additional context**
+This happened during Jet job initialization.
+```
+...
+  at com.hazelcast.map.impl.proxy.MapProxyImpl.getQueryCacheInternal(MapProxyImpl.java:1067)
+  at com.hazelcast.map.impl.proxy.MapProxyImpl.getQueryCache(MapProxyImpl.java:1032)
+...
+  at com.hazelcast.jet.impl.execution.ProcessorTasklet.init(ProcessorTasklet.java:231)
+  at java.util.ArrayList.forEach(ArrayList.java:1257)
+  at com.hazelcast.jet.impl.execution.TaskletExecutionService.lambda$submitCooperativeTasklets$4(TaskletExecutionService.java:170)
+  at com.hazelcast.jet.impl.util.Util.doWithClassLoader(Util.java:440)
+  at com.hazelcast.jet.impl.execution.TaskletExecutionService.submitCooperativeTasklets(TaskletExecutionService.java:169)
+...
+  at com.hazelcast.jet.impl.MasterJobContext.invokeStartExecution(MasterJobContext.java:462)
+  at com.hazelcast.jet.impl.MasterJobContext.lambda$onInitStepCompleted$4(MasterJobContext.java:437)
+  at com.hazelcast.jet.impl.JobCoordinationService.lambda$submitToCoordinatorThread$44(JobCoordinationService.java:971)
+  at com.hazelcast.jet.impl.JobCoordinationService.lambda$submitToCoordinatorThread$45(JobCoordinationService.java:990)
+  at com.hazelcast.util.executor.CompletableFutureTask.run(CompletableFutureTask.java:67)
+  at com.hazelcast.util.executor.CachedExecutorServiceDelegate$Worker.run(CachedExecutorServiceDelegate.java:227)
+  at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1149)
+  at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:624)
+  at java.lang.Thread.run(Thread.java:748)
+  at com.hazelcast.util.executor.HazelcastManagedThread.executeRun(HazelcastManagedThread.java:64)
+  at com.hazelcast.util.executor.HazelcastManagedThread.run(HazelcastManagedThread.java:80) 
+```
+Hazelcast Jet 3.2.1

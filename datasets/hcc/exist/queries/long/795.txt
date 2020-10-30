@@ -1,0 +1,75 @@
+I've been experimenting with the whitespace analyzer as a named field as a way to offer case- and punctuation-sensitive full text search alongside the standard case & punctuation-insensitive analyzer.  However I'm getting unexpected results with the named whitespace fields.  The results have been confirmed by @jensopetersen. Below are the test files (a fuller version demonstrating #794 too can be downloaded directly from http://markmail.org/message/heesn3keggjkkmbg):
+
+/db/apps/test/
+- collection.xconf
+- text.xml
+- test.xq
+
+test.xml:
+
+``` xml
+<doc xmlns="test">
+    <para>Hello, my name is Joe.</para>
+</doc>
+```
+
+collection.xconf:
+
+``` xml
+<collection xmlns="http://exist-db.org/collection-config/1.0" xmlns:test="test">
+    <index xmlns:xs="http://www.w3.org/2001/XMLSchema">
+        <fulltext default="none" attributes="false"/>
+        <lucene>
+            <analyzer class="org.apache.lucene.analysis.standard.StandardAnalyzer"/>
+            <analyzer id="ws" class="org.apache.lucene.analysis.core.WhitespaceAnalyzer"/>
+            <text qname="test:para"/>
+            <text qname="test:para" field="para-standard"/>
+            <text qname="test:para" field="para-ws" analyzer="ws"/>
+        </lucene>
+    </index>
+</collection>
+```
+
+test.xq runs several simple queries, the first two which work, the final which does not:
+
+``` xquery
+xquery version "3.0";
+
+declare namespace test = "test";
+
+declare function local:index-keys-by-qname($namespace-uri as xs:string, $qname as xs:string, $start-value as xs:string) {
+    let $qname := QName($namespace-uri, $qname)
+    let $start-value := $start-value
+    let $callback := function($term as xs:string, $data as xs:integer+) { <key>{$term}</key> }
+    let $max-number-returned := 100
+    let $index := 'lucene-index'
+    return
+        <keys>{ util:index-keys-by-qname($qname, $start-value, $callback, $max-number-returned, $index) }</keys>
+};
+
+let $query1 := collection('/db/apps/test')//test:para[ft:query(., 'hello')]
+(: query2 should be identical to query1 :)
+let $query2 := ft:query-field('para-standard', 'hello')
+(: query3 should use the whitespace analyzer - but isn't!? :)
+let $query3 := ft:query-field('para-ws', 'Hello,')
+return
+    element result {
+        element query1 { $query1 },
+        element query2 { $query2 },
+        element query3 { $query3 }
+    }
+```
+
+The results of this query, via eXide:
+
+``` xml
+<result>
+    <query1>
+        <para xmlns="test">Hello, my name is Joe.</para>
+    </query1>
+    <query2>
+        <para xmlns="test">Hello, my name is Joe.</para>
+    </query2>
+    <query3/>
+</result>
+```

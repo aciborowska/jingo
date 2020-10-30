@@ -1,0 +1,44 @@
+I cannot reproduce this error reliably because it requires some type of system problem to cause it. After an OperationTimeoutException is thrown from ILock.tryLock() (and after the system is back in a normal state), the named lock remains locked.
+
+```
+Caused by: com.hazelcast.core.OperationTimeoutException: No response for 240000 ms. Aborting invocation! InvocationFuture{invocation=InvocationImpl{ serviceName='hz:impl:lockService', op=com.hazelcast.concurrent.lock.LockOperation@4025ec6f, partitionId=8, replicaIndex=0, tryCount=250, tryPauseMillis=500, invokeCount=1, callTimeout=120000, target=Address[161.228.120.40]:5701}, done=false}
+      at com.hazelcast.spi.impl.InvocationImpl$InvocationFuture.waitForResponse(InvocationImpl.java:400) ~[hazelcast-3.1.5.jar:3.1.5]
+      at com.hazelcast.spi.impl.InvocationImpl$InvocationFuture.get(InvocationImpl.java:297) ~[hazelcast-3.1.5.jar:3.1.5]
+      at com.hazelcast.spi.impl.InvocationImpl$InvocationFuture.get(InvocationImpl.java:288) ~[hazelcast-3.1.5.jar:3.1.5]
+      at com.hazelcast.concurrent.lock.proxy.LockProxySupport.tryLock(LockProxySupport.java:133) ~[hazelcast-3.1.5.jar:3.1.5]
+      at com.hazelcast.concurrent.lock.proxy.LockProxySupport.tryLock(LockProxySupport.java:119) ~[hazelcast-3.1.5.jar:3.1.5]
+      at com.hazelcast.concurrent.lock.proxy.LockProxy.tryLock(LockProxy.java:79) ~[hazelcast-3.1.5.jar:3.1.5]
+```
+
+For what it's worth, I encountered this problem while attempting to track down an unrelated issue where CPU activity jumps to 100%, similar to the symptoms described in this netty issue: https://github.com/netty/netty/issues/327
+
+The only workaround available to the developer that I can think of is to catch the exception and attempt a follow-up call to an isLockedByCurrentThread followed by destroy.
+
+```
+    boolean locked = false;
+    try
+    {
+      locked = lock.tryLock();
+    }
+    catch (RuntimeException e)
+    {
+      // locked == false
+      try
+      {
+        if (lock.isLockedByCurrentThread())
+        {
+          lock.destroy();
+        }
+      }
+      catch (RuntimeException suppressed)
+      {
+        log.warn("Lock probably still locked and will remain so until system restart.");
+        e.addSuppressed(suppressed);
+      }
+      throw e;
+    }
+```
+
+The limitation here is that if the system is still not receiving messages from the cluster the recovery code can time out. Leaving the developer with the option of hanging until this succeeds or possibly leaving a lock behind.
+
+I'd prefer a guarantee that if a tryLock throws an exception then the lock will not be locked, or the lock will unlock itself in the absence of some kind of confirmation.

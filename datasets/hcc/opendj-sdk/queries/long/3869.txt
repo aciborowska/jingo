@@ -1,0 +1,83 @@
+Found with OpenDJ 4.0.0 rev d39f65ee5dfe8fcdf1faab98bf6fce2c1616a247
+
+Scenario:
+
+1) we install a DJ server with some generated entries using the following command:
+
+/tmp/DJTEST/opendj/setup directory-server -h localhost -p 1393 -D "cn=myself" -w password --adminConnectorPort 4448 -Z 1640 -t je -b dc=com -d 100
+
+
+
+2) we add the proxied-auth privilege:
+/tmp/DJTEST/opendj/bin/dsconfig -h localhost -p 4448 -D "cn=myself" -w password -X set-root-dn-prop --add default-root-privilege-name:proxied-auth -n
+
+3) we setup a proxy server with the following command:
+
+/tmp/PROXYTEST/opendj/setup proxy-server --proxyUserBindDn cn=myself --proxyUserBindPassword password --StaticPrimaryServer  localhost:1393 --loadBalancingAlgorithm least-requests -h localhost -p 1394 -D "cn=myself" -w password --adminConnectorPort 4449 --baseDn dc=com
+
+
+
+4) we check the configuration of the backend using dsconfig, it looks just fine:
+
+       Property                                  Value(s)
+         ----------------------------------------------------------------------
+    1)   backend-id                                proxyRoot
+    2)   base-dn                                   dc=com
+    3)   connection-pool-idle-timeout              10 s
+    4)   connection-pool-max-size                  32
+    5)   connection-pool-min-size                  4
+    6)   connection-timeout                        3 s
+    7)   discovery-interval                        1 m
+    8)   enabled                                   true
+    9)   heartbeat-interval                        10 s
+    10)  load-balancing-algorithm                  least-requests
+    11)  partition-base-dn                         No consistency for
+                                                   add/delete operations.
+    12)  proxy-user-dn                             cn=myself
+    13)  proxy-user-password                       -
+    14)  proxy-user-password-environment-variable  -
+    15)  proxy-user-password-file                  config/proxy_password
+    16)  proxy-user-password-property              -
+    17)  route-all                                 false
+    18)  service-discovery-mechanism               Static Servers Service
+                                                   Discovery Mechanism
+
+    ?)   help
+    f)   finish - apply any changes to the proxyRoot
+    q)   quit
+
+
+
+5) we try ldapsearch on dc=com through the proxy:
+
+/tmp/PROXYTEST$ ./opendj/bin/ldapsearch -h openam.example.com -p 1394 -D "cn=myself" -w password -b dc=com "(objectclass=*)"
+# The LDAP search request failed: 32 (No Such Entry)
+# Additional Information:  The entry dc=com specified as the search base does not exist in the Directory Server
+
+
+
+6) We switch route-all from false to true and then back to false, the query now succeeds:
+
+./opendj/bin/ldapsearch -h openam.example.com -p 1394 -D "cn=myself" -w password -b dc=com "(objectclass=*)"
+dn: dc=com
+objectClass: top
+objectClass: domain
+dc: com
+
+dn: ou=People,dc=com
+objectClass: top
+objectClass: organizationalUnit
+ou: People
+
+dn: uid=user.0,ou=People,dc=com
+objectClass: top
+objectClass: inetOrgPerson
+objectClass: organizationalPerson
+objectClass: person
+mail: user.0@example.com
+initials: ASA
+...
+
+
+
+Actually, it looks like whenever you set base-dn in the proxy configuration, if you do not change the route-all parameter, the base-dn one is not taken into account.

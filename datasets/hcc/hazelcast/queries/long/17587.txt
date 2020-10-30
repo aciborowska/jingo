@@ -1,0 +1,29 @@
+Hi,
+
+I have noticed that some tasks are invoked synchronously when submitted to all members in cluster. It seems to be caused by the ExecutorServiceProxy:checkSync method:
+https://github.com/hazelcast/hazelcast/blob/383581091605b0adcc42dcbc8b43a47ec40a43f4/hazelcast/src/main/java/com/hazelcast/executor/impl/ExecutorServiceProxy.java#L294.
+This overloading mechanism is not adequate for running mixed length tasks on all cluster members, because it may prevent them to be run in parallel, which is particularly important for long tasks. 
+
+Lets imagine following scenario:
+-cluster with multiple members (e.g. 10)
+-a series of short tasks is submitted to all members, they are short enough to start inside the flood detection window (10ms). They increase the flood count to just below the sync threshold (e.g 95).
+-then a long task is submitted to all members. First 5 invocations are still submitted inside the detection window, and they exceed the detection threshold (100). The invocation on next member is executed synchronously. 
+
+The effect is that a just a part of members execute the long task initially, and only after the last one is finished then the task is submitted to the rest of cluster members. This happens in such a specific task type order, but may cause to wait for some task in the middle of submitting tasks to all members and this prevents full parallelisation.
+The worst thing is that there is seemingly no control over this mechanism.
+
+Having read the javadoc of the mechanism I assume that it is a temporary solution, and it has been for some time. So if there aren't any plans to reimplement it completely, I think the better way to implement this mechanism would be waiting for the task but not longer than detection window duration (10ms). This would work the same for short tasks but would also solve problem for longer ones.
+
+Stacktrace snippet showing which executor method is used:
+```
+at java.base@14.0.1/jdk.internal.misc.Unsafe.park(Native Method)
+at java.base@14.0.1/java.util.concurrent.locks.LockSupport.park(LockSupport.java:341)
+at com.hazelcast.spi.impl.AbstractInvocationFuture.get(AbstractInvocationFuture.java:607)
+at com.hazelcast.executor.impl.ExecutorServiceProxy.completedSynchronously(ExecutorServiceProxy.java:703)
+at com.hazelcast.executor.impl.ExecutorServiceProxy.submitToMember(ExecutorServiceProxy.java:347)
+at com.hazelcast.executor.impl.ExecutorServiceProxy.submitToMembers(ExecutorServiceProxy.java:361)
+at com.hazelcast.executor.impl.ExecutorServiceProxy.submitToAllMembers(ExecutorServiceProxy.java:369)
+...
+```
+
+Hazelcast version: 4.0

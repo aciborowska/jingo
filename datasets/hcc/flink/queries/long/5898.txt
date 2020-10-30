@@ -1,0 +1,28 @@
+The Flink Kinesis streaming-connector uses the Amazon Kinesis Producer Library (KPL) to send messages to Kinesis streams. The KPL relies on a native binary client to send messages to achieve better performance.
+
+When a Kinesis Producer is instantiated, the KPL will extract the native binary to a sub-directory of `/tmp` (or whatever the platform-specific temporary directory happens to be).
+
+The KPL tries to prevent multiple processes from extracting the binary at the same time by wrapping the operation in a mutex. Unfortunately, this does not prevent multiple Flink cores from trying to perform this operation at the same time. If two or more processes attempt to do this at the same time, then the native binary in /tmp will be corrupted.
+
+The authors of the KPL are aware of this possibility and suggest that users of the KPL .... not do that ... (sigh):
+https://github.com/awslabs/amazon-kinesis-producer/issues/55#issuecomment-251408897
+
+I encountered this in my production environment when bringing up a new Flink task-manager with multiple cores and restoring from an earlier savepoint, resulting in the instantiation of a KPL client on each core at roughly the same time.
+
+A stack-trace follows:
+
+
+java.lang.RuntimeException: Could not copy native binaries to temp directory /tmp/amazon-kinesis-producer-native-binaries
+	at com.amazonaws.services.kinesis.producer.KinesisProducer.extractBinaries(KinesisProducer.java:849)
+	at com.amazonaws.services.kinesis.producer.KinesisProducer.<init>(KinesisProducer.java:243)
+	at org.apache.flink.streaming.connectors.kinesis.FlinkKinesisProducer.open(FlinkKinesisProducer.java:198)
+	at org.apache.flink.api.common.functions.util.FunctionUtils.openFunction(FunctionUtils.java:36)
+	at org.apache.flink.streaming.api.operators.AbstractUdfStreamOperator.open(AbstractUdfStreamOperator.java:112)
+	at org.apache.flink.streaming.runtime.tasks.StreamTask.openAllOperators(StreamTask.java:376)
+	at org.apache.flink.streaming.runtime.tasks.StreamTask.invoke(StreamTask.java:252)
+	at org.apache.flink.runtime.taskmanager.Task.run(Task.java:655)
+	at java.lang.Thread.run(Thread.java:745)
+Caused by: java.lang.SecurityException: The contents of the binary /tmp/amazon-kinesis-producer-native-binaries/kinesis_producer_e9a87c761db92a73eb74519a4468ee71def87eb2 is not what it's expected to be.
+	at com.amazonaws.services.kinesis.producer.KinesisProducer.extractBinaries(KinesisProducer.java:822)
+	... 8 more
+

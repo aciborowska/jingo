@@ -1,0 +1,166 @@
+I have added an index in my xml configuration which works well on 2.x but not on 3.x. It's not only xml configuration, it seems to occur on every config.
+
+``` java
+public class MapPerformanceTest3 {
+
+    private static int ENTRIES = 100000;
+    private static int GETS = 100;
+    private static int USERS = 10000;
+
+    public static void main(String[] args) {
+
+        Config config = new Config();
+        config.setGroupConfig(new GroupConfig("test", "test"));
+        config.getNetworkConfig().setPort(6701);
+
+        MapConfig mapConfig = new MapConfig("testIndex");
+        mapConfig.addMapIndexConfig(new MapIndexConfig("userId", false));
+        config.addMapConfig(mapConfig);
+
+        mapConfig = new MapConfig("b1n0iUserId-*");
+        mapConfig.addMapIndexConfig(new MapIndexConfig("userId", false));
+        config.addMapConfig(mapConfig);
+
+        HazelcastInstance master = Hazelcast.newHazelcastInstance(config);
+
+        // dummy 2nd instance
+        Hazelcast.newHazelcastInstance(config);
+
+        HazelcastInstance superClient;
+        ClientConfig clientConfig = new ClientConfig();
+        clientConfig.addAddress("localhost:6701");
+        clientConfig.setGroupConfig(new GroupConfig("test", "test"));
+        superClient = HazelcastClient.newHazelcastClient(clientConfig);
+
+        long start = 0;
+        long end = 0;
+
+
+        try {
+            Thread.sleep(10000);
+        } catch (InterruptedException e1) {
+        }
+
+        IMap<Long, Event> map = superClient.getMap("testIndex");
+        start = System.currentTimeMillis();
+        for (long i=0; i<ENTRIES; i++) {
+            map.put(i, new Event(i, getUserId()));
+        }
+        end = System.currentTimeMillis();
+        System.out.println("map testIndex created: " + (end - start));
+
+        start = System.currentTimeMillis();
+        for (int i=1; i<=GETS; i++) {
+            map.values(new SqlPredicate("userId=" + i + " AND id > 5"));
+        }
+        end = System.currentTimeMillis();
+        System.out.println("map testIndex finished: " + (end - start));
+
+        EntryObject e = new PredicateBuilder().getEntryObject().get("userId");
+
+        start = System.currentTimeMillis();
+        for (int i=1; i<=GETS; i++) {
+            map.values(e.equal(i));
+        }
+        end = System.currentTimeMillis();
+        System.out.println("map testIndex finished: " + (end - start));
+
+
+        map = superClient.getMap("b1n0iUserId-testIndex");
+        start = System.currentTimeMillis();
+        for (long i=0; i<ENTRIES; i++) {
+            map.put(i, new Event(i, getUserId()));
+        }
+        end = System.currentTimeMillis();
+        System.out.println("map b1n0iUserId-testIndex created: " + (end - start));
+
+        start = System.currentTimeMillis();
+        for (int i=1; i<=GETS; i++) {
+            map.values(new SqlPredicate("userId=" + i + " AND id > 5"));
+        }
+        end = System.currentTimeMillis();
+        System.out.println("map b1n0iUserId-testIndex finished: " + (end - start));
+
+        start = System.currentTimeMillis();
+        for (int i=1; i<=GETS; i++) {
+            map.values(e.equal(i));
+        }
+        end = System.currentTimeMillis();
+        System.out.println("map b1n0iUserId-testIndex finished: " + (end - start));
+
+
+        master.getMap("testIndexManually").addIndex("userId", false);
+
+        map = superClient.getMap("testIndexManually");
+        start = System.currentTimeMillis();
+        for (long i=0; i<ENTRIES; i++) {
+            map.put(i, new Event(i, getUserId()));
+        }
+        end = System.currentTimeMillis();
+        System.out.println("map testIndexManually created: " + (end - start));
+
+        start = System.currentTimeMillis();
+        for (int i=1; i<=GETS; i++) {
+            map.values(new SqlPredicate("userId=" + i));
+        }
+        end = System.currentTimeMillis();
+        System.out.println("map testIndexManually finished: " + (end - start));
+
+        start = System.currentTimeMillis();
+        for (int i=1; i<=GETS; i++) {
+            map.values(e.equal(i));
+        }
+        end = System.currentTimeMillis();
+        System.out.println("map testIndexManually finished: " + (end - start));
+
+        System.exit(0);
+    }
+
+    private static int getUserId() {
+        return (int)Math.round(Math.random() * USERS) + 1;
+    }
+
+    public static class Event implements Serializable {
+
+        private static final long serialVersionUID = 1L;
+
+        private long id;
+        private int userId;
+
+        public Event(long id, int userId) {
+            this.setId(id);
+            this.setUserId(userId);
+        }
+
+        public void setId(long id) {
+            this.id = id;
+        }
+
+        public long getId() {
+            return id;
+        }
+
+        public void setUserId(int userId) {
+            this.userId = userId;
+        }
+
+        public int getUserId() {
+            return userId;
+        }
+    }
+}
+```
+
+Output:
+
+<pre>
+map testIndex created: 10395
+map testIndex finished: 14833
+map testIndex finished: 14096
+map b1n0iUserId-testIndex created: 9100
+map b1n0iUserId-testIndex finished: 13719
+map b1n0iUserId-testIndex finished: 13757
+map testIndexManually created: 10453
+map testIndexManually finished: 72
+map testIndexManually finished: 135
+</pre>

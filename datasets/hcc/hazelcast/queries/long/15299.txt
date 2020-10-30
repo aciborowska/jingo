@@ -1,0 +1,113 @@
+Hallo im experiencing a strange behaviour and i cannot clarify it:
+- Hazecast 3.12.1, Client and Members
+- Openshift 3.9, kubernetes discovery mechanism. using the hazelcast openshift official template
+- Members java version (the one of your 3.12.1 image)
+- Client uses openjdk8 latest version (docker image)
+- 3 Members.
+
+
+**client network configuration:**
+```
+ clientConfig.getConnectionStrategyConfig().setReconnectMode(ClientConnectionStrategyConfig.ReconnectMode.ASYNC);
+        clientConfig.getConnectionStrategyConfig().getConnectionRetryConfig().setInitialBackoffMillis(1000)
+                .setMaxBackoffMillis(20000)
+                .setMultiplier(100)
+                .setFailOnMaxBackoff(false)
+                .setJitter(0.2)
+                .setEnabled(true);
+```
+
+**Server configuration**
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+        <hazelcast xsi:schemaLocation="http://www.hazelcast.com/schema/config hazelcast-config-3.10.xsd"
+                       xmlns="http://www.hazelcast.com/schema/config"
+                       xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+          <group>
+              <name>qnnect</name>
+          </group>
+          <management-center enabled="true" update-interval="3">http://management-center:8080/hazelcast-mancenter</management-center>
+          <network>
+            <join>
+              <multicast enabled="false"/>
+              <kubernetes enabled="true"/>
+            </join>
+          </network>
+          <cp-subsystem>
+              <cp-member-count>3</cp-member-count>
+          </cp-subsystem>
+        </hazelcast>
+```
+
+I use fenced locks to guarantee a single execution of a task by the clients. 
+
+```
+Lock lock = hazelcastInstance.getCPSubsystem().getLock(lockKey);
+        if (lock.tryLock()) {
+            StopWatch sw = new StopWatch();
+            sw.start();
+            try {
+                log.debug("Executing Cluster Locked Operation: {}", lockKey);
+                Object proceed = execute(joinPoint);
+                log.debug("Executed Cluster Locked Operation: {} in ms: {}", lockKey, sw.getTime());
+
+                return proceed;
+            } catch (Throwable t) {
+                log.warn("Executed Cluster Locked Operation: {} in ms: {}, with the following Error: {}", lockKey, sw.getTime(), t.getMessage());
+                throw t;
+            } finally {
+                lock.unlock();
+            }
+        } else {
+            log.debug("Skip Execution, Operation:  {} is currently locked on the Cluster.", lockKey);
+        }
+```
+
+**Problem**
+
+I didn't figured out yet when this occurs, but happens when either the members restarts (i.E an update of Hazelcast image by your side) or the client restarts.
+
+![image](https://user-images.githubusercontent.com/24875849/60959342-4ee1d680-a308-11e9-8ae2-9d4c9264c723.png)
+
+i got this exception along the way and the clients cannot connect to the CP subsystem anymore  (see below).
+
+After restarting the subsystems with the man-center the issue disappear, but it it will come again.
+```
+2019-07-10 08:24:40 [XXXScheduler-1] ERROR org.springframework.scheduling.support.TaskUtils$LoggingErrorHandler - Unexpected error occurred in scheduled task.
+com.hazelcast.core.OperationTimeoutException: ClientInvocation{clientMessage = ClientMessage{connection=null, length=22, correlationId=7052, operation=CPGroup.createCPGroup, messageType=2101, partitionId=-1, isComplete=false, isRetryable=true, isEvent=false, writeOffset=0}, objectName = EmailReminderScheduler.emailReminderTrigger(), target = random, sendConnection = ClientConnection{alive=true, connectionId=5, channel=NioChannel{/10.1.26.98:49354->/10.1.12.208:5701}, remoteEndpoint=[10.1.12.208]:5701, lastReadTime=2019-07-10 08:24:40.532, lastWriteTime=2019-07-10 08:24:39.707, closedTime=never, connected server version=3.12.1}} timed out because exception occurred after client invocation timeout 120000 ms. Current time: 2019-07-10 08:24:40.532. Start time: 2019-07-10 08:21:46.227. Total elapsed time: 174306 ms. 
+	at com.client.spi.impl.ClientInvocation.newOperationTimeoutException(ClientInvocation.java:333)
+...
+	at com.hazelcast.client.spi.impl.ClientResponseHandlerSupplier$ResponseThread.run(ClientResponseHandlerSupplier.java:182)
+	at ------ submitted from ------.(Unknown Source)
+	at com.hazelcast.client.spi.impl.ClientInvocationFuture.resolveAndThrowIfException(ClientInvocationFuture.java:96)
+	at com.hazelcast.client.spi.impl.ClientInvocationFuture.resolveAndThrowIfException(ClientInvocationFuture.java:33)
+	at com.hazelcast.spi.impl.AbstractInvocationFuture.get(AbstractInvocationFuture.java:163)
+	at com.hazelcast.spi.impl.AbstractInvocationFuture.join(AbstractInvocationFuture.java:144)
+	at com.hazelcast.client.cp.internal.datastructures.proxy.ClientRaftProxyFactory.getGroupId(ClientRaftProxyFactory.java:122)
+	at com.hazelcast.client.cp.internal.datastructures.proxy.ClientRaftProxyFactory.createProxy(ClientRaftProxyFactory.java:70)
+	at com.hazelcast.client.cp.internal.CPSubsystemImpl.getLock(CPSubsystemImpl.java:69)
+	at xxxxxxxxxxxxxx.xxx.x.x.x.x.x.executeWithDistributedLock(ClusterScheduledAspect.java:57)
+	at sun.reflect.GeneratedMethodAccessor470.invoke(Unknown Source)
+	at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)
+	at java.lang.reflect.Method.invoke(Method.java:498)
+	at org.springframework.aop.aspectj.AbstractAspectJAdvice.invokeAdviceMethodWithGivenArgs(AbstractAspectJAdvice.java:629)
+...
+	at org.springframework.aop.framework.CglibAopProxy$DynamicAdvisedInterceptor.intercept(CglibAopProxy.java:673)
+...
+...
+	at org.springframework.scheduling.support.ScheduledMethodRunnable.run(ScheduledMethodRunnable.java:65)
+...
+	at java.lang.Thread.run(Thread.java:748)
+Caused by: com.hazelcast.spi.exception.WrongTargetException: WrongTarget! local: Member [10.1.12.208]:5701 - 47c8db10-f7b7-4f4e-a02f-ab7b68290c2a this, expected-target: null, partitionId: 109, replicaIndex: 0, operation: com.hazelcast.cp.internal.operation.DefaultRaftReplicateOp, service: hz:core:raft
+	at com.hazelcast.spi.impl.operationservice.impl.Invocation.newTargetNullException(Invocation.java:336)
+	at com.hazelcast.spi.impl.operationservice.impl.Invocation.initInvocationTarget(Invocation.java:289)
+...
+	at java.lang.Thread.run(Thread.java:748)
+	at ------ submitted from ------.(Unknown Source)
+	at com.hazelcast.spi.impl.operationservice.impl.InvocationFuture.resolve(InvocationFuture.java:126)
+	at com.hazelcast.spi.impl.AbstractInvocationFuture$1.run(AbstractInvocationFuture.java:251)
+...
+	at java.lang.Thread.run(Thread.java:748)
+	at com.hazelcast.util.executor.HazelcastManagedThread.executeRun(HazelcastManagedThread.java:64)
+at com.hazelcast.util.executor.HazelcastManagedThread.run(HazelcastManagedThread.java:80)
+```

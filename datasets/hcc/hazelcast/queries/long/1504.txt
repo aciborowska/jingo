@@ -1,0 +1,99 @@
+Hi,
+
+we found deadlock in worker thread in our production systems. 
+
+Thread dump:
+
+``` java
+   java.lang.Thread.State: WAITING (parking)
+    at sun.misc.Unsafe.park(ZJ)V(Native Method)
+    - parking to wait for  <0x000000029218e218> (a java.util.concurrent.FutureTask$Sync)
+    at java.util.concurrent.locks.LockSupport.park(Ljava/lang/Object;)V(LockSupport.java:156)
+    at java.util.concurrent.locks.AbstractQueuedSynchronizer.parkAndCheckInterrupt()Z(AbstractQueuedSynchronizer.java:811)
+    at java.util.concurrent.locks.AbstractQueuedSynchronizer.doAcquireSharedInterruptibly(I)V(AbstractQueuedSynchronizer.java:969)
+    at java.util.concurrent.locks.AbstractQueuedSynchronizer.acquireSharedInterruptibly(I)V(AbstractQueuedSynchronizer.java:1281)
+    at java.util.concurrent.FutureTask$Sync.innerGet()Ljava/lang/Object;(FutureTask.java:218)
+    at java.util.concurrent.FutureTask.get()Ljava/lang/Object;(FutureTask.java:83)
+    at com.hazelcast.cluster.ClusterServiceImpl$6.run()V(ClusterServiceImpl.java:593)
+    at com.hazelcast.instance.LifecycleServiceImpl.runUnderLifecycleLock(Ljava/lang/Runnable;)V(LifecycleServiceImpl.java:95)
+    - locked <0x00000002920ed908> (a java.lang.Object)
+    at com.hazelcast.cluster.ClusterServiceImpl.merge(Lcom/hazelcast/nio/Address;)V(ClusterServiceImpl.java:567)
+    at com.hazelcast.cluster.MergeClustersOperation.run()V(MergeClustersOperation.java:53)
+    at com.hazelcast.spi.impl.OperationServiceImpl.doRunOperation(Lcom/hazelcast/spi/Operation;)V(OperationServiceImpl.java:274)
+    at com.hazelcast.spi.impl.OperationServiceImpl.runOperation(Lcom/hazelcast/spi/Operation;)V(OperationServiceImpl.java:184)
+    at com.hazelcast.cluster.AbstractJoiner.startClusterMerge(Lcom/hazelcast/nio/Address;)V(AbstractJoiner.java:244)
+    at com.hazelcast.cluster.MulticastJoiner.searchForOtherClusters()V(MulticastJoiner.java:118)
+    at com.hazelcast.cluster.SplitBrainHandler.searchForOtherClusters()V(SplitBrainHandler.java:46)
+    at com.hazelcast.cluster.SplitBrainHandler.run()V(SplitBrainHandler.java:36)
+    at com.hazelcast.util.executor.ManagedExecutorService$Worker.run()V(ManagedExecutorService.java:166)
+    at java.util.concurrent.ThreadPoolExecutor$Worker.runTask(Ljava/lang/Runnable;)V(ThreadPoolExecutor.java:895)
+    at java.util.concurrent.ThreadPoolExecutor$Worker.run()V(ThreadPoolExecutor.java:918)
+    at java.lang.Thread.run()V(Thread.java:743)
+    at com.hazelcast.util.executor.PoolExecutorThreadFactory$ManagedThread.run()V(PoolExecutorThreadFactory.java:59)
+```
+
+After long time we found the cause. The problem is in Node#join in case when a shutdown method is called:
+
+``` java
+public void join() {
+    final long joinStartTime = joiner != null ? joiner.getStartTime() : Clock.currentTimeMillis();
+    final long maxJoinMillis = getGroupProperties().MAX_JOIN_SECONDS.getInteger() * 1000;
+    try {
+        if (joiner == null) {
+            logger.warning("No join method is enabled! Starting standalone.");
+            setAsMaster();
+        } else {
+            joiner.join(joined);
+        }
+    } catch (Exception e) {
+        if (Clock.currentTimeMillis() - joinStartTime < maxJoinMillis) {
+            logger.warning("Trying to rejoin: " + e.getMessage());
+            rejoin();
+        } else {
+            logger.severe( "Could not join cluster, shutting down!", e);
+            shutdown(true);
+        }
+    }
+}
+```
+
+The shutdown method also shutdown worker thread pool (ExecutionServiceImpl#shutdown), example callstack:
+
+``` java
+ExecutionServiceImpl.shutdown() line: 166   
+NodeEngineImpl.shutdown() line: 346 
+Node.shutdown(boolean) line: 381    
+Node.join() line: 533   
+Node.rejoin() line: 514 
+ClusterServiceImpl$6.run() line: 585
+    ....
+```
+
+Program continued in    ClusterServiceImpl$6.run():
+
+``` java
+node.rejoin();
+final Collection<Future> futures = new LinkedList<Future>();
+for (Runnable task : tasks) {
+    Future f = nodeEngine.getExecutionService().submit("hz:system", task);
+    futures.add(f);
+}
+for (Future f : futures) {
+    try {
+        f.get();
+    } catch (Exception e) {
+        logger.severe("While merging...", e);
+    }
+}
+```
+
+After node.rejoin call, a execution service (ExecutionServiceImpl#cachedExecutorService) had only one thread (current) and it was in shutdown state (didn't accept new tasks). 
+
+The tasks submitted using "nodeEngine.getExecutionService().submit("hz:system", task);" didn't never executed and Future#get caused infinity block.
+
+I created a sample application: https://github.com/samuelbr/hazelcast-lockdemo to reproduce this issue. I must override Node#join - ignoring rejoin because simulate !(Clock.currentTimeMillis() - joinStartTime < maxJoinMillis) is so dificult.
+
+Steps to reproduce:
+1. Compile demo application: mvn clean package.
+2. In target folder run: java -jar lockdemo-0.0.1-SNAPSHOT.jar
+3. After merge operation worker thread is locked.

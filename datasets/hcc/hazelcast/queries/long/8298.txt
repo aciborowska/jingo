@@ -1,0 +1,67 @@
+ReplicatedMap is being miss-configured as IMap.
+This can be easily verified after application startup in jmx client such as java mission control.
+The section for ReplicatedMap is there and the map as well but after checking the MBean's attributes of the map it turns out that the "config" attribute contains the properties of an IMap one:
+
+> MapConfig{name='default'', inMemoryFormat=BINARY', backupCount=1, asyncBackupCount=0, timeToLiveSeconds=0, maxIdleSeconds=0, evictionPolicy='NONE', evictionPercentage=25, minEvictionCheckMillis=100, maxSizeConfig=MaxSizeConfig{maxSizePolicy='PER_NODE', size=2147483647}, readBackupData=false, hotRestart=HotRestartConfig{enabled=false, fsync=false}, nearCacheConfig=null, mapStoreConfig=MapStoreConfig{enabled=false, className='null', factoryClassName='null', writeDelaySeconds=0, writeBatchSize=1, implementation=null, factoryImplementation=null, properties={}, readOnly=null, initialLoadMode=LAZY, writeCoalescing=true}, mergePolicyConfig='com.hazelcast.map.merge.PutIfAbsentMapMergePolicy', wanReplicationRef=null, entryListenerConfigs=[], mapIndexConfigs=[], mapAttributeConfigs=[], quorumName=null, queryCacheConfigs=[], cacheDeserializedValues=INDEX_ONLY} String  config  -1  MapConfig
+
+I believe this is the reason why when using declarative annotation-based caching (i.e. @Cacheable) in the Spring based application leads to creation of another IMap with same "default" name and the ReplicatedMap is never used.
+
+Configuration (Spring Programmatic):
+
+```
+@Configuration
+public class HazelcastInstanceConfig {
+
+    /** Helper constants */
+    private static final String HZ_MEMBERS_SEPARATOR = ",";
+
+    /** Hazelcast Maps */
+    public static final String REPL_MAP = "test";
+
+    @Autowired
+    private EntrySerializableFactory entrySerializableFactory;
+
+
+    @Bean
+    public CacheManager cacheManager() {
+        return new HazelcastCacheManager(hazelcastInstance());
+    }
+
+    @Bean
+    public HazelcastInstance hazelcastInstance() {
+        Config config = new Config();
+
+        //Cluster
+        String clusterName = getClusterName();
+        config.setInstanceName(clusterName);
+        config.getGroupConfig().setName(clusterName);
+        config.getGroupConfig().setPassword(hzProperties.getGroupPassword());
+
+        //Network
+        NetworkConfig network = config.getNetworkConfig();
+        network.setPort(hzProperties.getHazelcastPort());
+        network.setPortAutoIncrement(hzProperties.isPortAutoIncrement());
+        JoinConfig join = network.getJoin();
+        join.getMulticastConfig().setEnabled(false);
+        TcpIpConfig tcpIpConfig = join.getTcpIpConfig();
+        tcpIpConfig.setEnabled(true);
+        tcpIpConfig.setMembers(Arrays.asList(hzProperties.getMembers().split(HZ_MEMBERS_SEPARATOR)));
+
+        //Maps
+        config.addReplicatedMapConfig(new ReplicatedMapConfig().setName(REPL_MAP)
+                .setInMemoryFormat(InMemoryFormat.OBJECT)
+                .setStatisticsEnabled(true));
+
+        //Serializers
+        config.getSerializationConfig().addDataSerializableFactory(
+                EntrySerializableFactory.FACTORY_ID, entrySerializableFactory);
+
+        //Instance
+        return Hazelcast.newHazelcastInstance(config);
+    }
+
+    protected String getClusterName() {
+        return hzProperties.getGroupName();
+    }
+}
+```

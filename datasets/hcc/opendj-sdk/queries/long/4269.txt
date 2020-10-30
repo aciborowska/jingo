@@ -1,0 +1,167 @@
+Use of --bindDN "cn=Directory Manager" with dsreplication disable --disableAll only removes replication configuration from cn=admin data.
+
+	--bindDN "cn=Directory Manager" --adminPassword password fails.
+	--adminUID admin --adminPassword password succeeds.
+
+
+
+Our Doc Guides show the use of -bindDN "cn=Directory Manager" and the *FAIL*ure results when -adminUID admin is required.
+
+ 
+
+
+$ dsreplication \
+ disable \
+ --disableAll \
+ --port 4444 \
+ --hostname opendj2.example.com \
+ --bindDN "cn=Directory Manager" \
+ --adminPassword password \
+ --trustAll \
+ --no-prompt
+Establishing connections ..... Done.
+Disabling replication on base DN cn=admin data of server
+ opendj2.example.com:4444 ..... Done.
+Disabling replication on base DN dc=example,dc=com of server
+ opendj2.example.com:4444 ..... Done.
+Disabling replication on base DN cn=schema of server
+ opendj2.example.com:4444 ..... Done.
+Disabling replication port 8989 of server
+ opendj2.example.com:4444 ..... Done.
+Removing registration information ..... Done.
+Removing truststore information ..... Done.
+
+See
+/var/.../opends-replication-125248191132797765.log
+for a detailed log of this operation.
+
+
+ 
+
+	5.x: Procedure 8.7. To Stop Replication Permanently For a Replica
+	3.5.x: Procedure 8.6. To Stop Replication Permanently For a Replica
+	2.6.x: Procedure 9.5. To Stop Replication Permanently For a Replica
+
+
+
+ 
+Test Case
+
+	Setup 4 DS+RS's (can be less than 4 masters)
+	Disable server on admin port 7444/repl port 11989 using --disableAll using Directory Manager
+	Disable server on admin port 7444/repl port 11989 using --disableAll using Global Admin
+
+
+
+
+
+$ bin/dsreplication status --adminUID admin --adminPassword admin.password --hostname opendj.forgerock.com --port 4444 --trustAll
+Suffix DN         : Server                    : Entries : Replication enabled : DS ID : RS ID : RS Port (1) : M.C. (2) : A.O.M.C. (3) : Security (4)
+------------------:---------------------------:---------:---------------------:-------:-------:-------------:----------:--------------:-------------
+dc=example,dc=com : opendj.forgerock.com:4444 : 10002   : true                : 19934 : 30173 : 8989        : 0        :              : true
+dc=example,dc=com : opendj.forgerock.com:5444 : 10002   : true                : 2251  : 28493 : 9989        : 0        :              : true
+dc=example,dc=com : opendj.forgerock.com:6444 : 10002   : true                : 7143  : 32150 : 10989       : 0        :              : true
+dc=example,dc=com : opendj.forgerock.com:7444 : 10002   : true                : 15515 : 3269  : 11989       : 0        :              : true
+
+
+ 
+
+1) --bindDN "cn=Directory Manager" FAILS
+
+Note the output only shows dsreplication only connecting to the local instance (opendj.forgerock.com:7444) when it should be connecting to all servers in the mix.
+
+
+opendj; bin/$ date; ./dsreplication disable --disableAll --port 7444 --hostname opendj.forgerock.com --bindDN "cn=Directory Manager" --adminPassword password -X -n
+Tue Sep  5 16:08:37 MDT 2017
+Establishing connections ..... Done.
+Disabling replication on base DN cn=schema of server opendj.forgerock.com:7444
+.....Done.
+Disabling replication on base DN dc=example,dc=com of server
+opendj.forgerock.com:7444 .....Done.
+Disabling replication on base DN cn=admin data of server
+opendj.forgerock.com:7444 .....Done.
+Disabling replication port 11989 of server opendj.forgerock.com:7444 ..... Done.
+Removing registration information ..... Done.
+
+See
+/var/folders/32/hqbp0t2n5k73f9ssp3ssc9740000gn/T/opendj-replication-2042248929992298555.log
+for a detailed log of this operation.
+
+
+We can see dsreplication never connects to each server as it should, instead replication plays 2 MODs and 1 DELETE for cn=admin data entries.
+
+
+[05/Sep/2017:16:08:39 -0600] MODIFY REQ conn=-1 op=74 msgID=75 dn="cn=all-servers,cn=Server Groups,cn=admin data" type=synchronization
+[05/Sep/2017:16:08:39 -0600] MODIFY RES conn=-1 op=74 msgID=75 result=0 etime=3
+[05/Sep/2017:16:08:39 -0600] DELETE REQ conn=-1 op=75 msgID=76 dn="cn=opendj.forgerock.com:7444,cn=Servers,cn=admin data" type=synchronization
+[05/Sep/2017:16:08:39 -0600] DELETE RES conn=-1 op=75 msgID=76 result=0 etime=8
+[05/Sep/2017:16:08:39 -0600] MODIFY REQ conn=-1 op=77 msgID=78 dn="cn=admin data" type=synchronization
+[05/Sep/2017:16:08:39 -0600] MODIFY RES conn=-1 op=77 msgID=78 result=0 etime=2
+
+
+Evidence of this is also left in the config files themselves.
+
+
+opendj; true/$ echo -e "\ncn=admin data:\n"; find . ! -type d ! -name "*.tar" -name "admin-backend.ldif" -exec zgrep -in "opendj.forgerock.com:7444" {} /dev/null \;; echo -e "\ncn=config data:\n"; find . ! -type d ! -name "*.tar" -name "config.ldif" -exec zgrep -in "ds-cfg-replication-server: opendj.forgerock.com:11989" {} /dev/null \;
+
+cn=admin data:
+
+* all data removed *
+
+cn=config data:
+
+./master1/config/config.ldif:1746:ds-cfg-replication-server: opendj.forgerock.com:11989
+./master1/config/config.ldif:1768:ds-cfg-replication-server: opendj.forgerock.com:11989
+./master1/config/config.ldif:1790:ds-cfg-replication-server: opendj.forgerock.com:11989
+./master1/config/config.ldif:1811:ds-cfg-replication-server: opendj.forgerock.com:11989
+./master2/config/config.ldif:1752:ds-cfg-replication-server: opendj.forgerock.com:11989
+./master2/config/config.ldif:1774:ds-cfg-replication-server: opendj.forgerock.com:11989
+./master2/config/config.ldif:1796:ds-cfg-replication-server: opendj.forgerock.com:11989
+./master2/config/config.ldif:1817:ds-cfg-replication-server: opendj.forgerock.com:11989
+./master3/config/config.ldif:1752:ds-cfg-replication-server: opendj.forgerock.com:11989
+./master3/config/config.ldif:1774:ds-cfg-replication-server: opendj.forgerock.com:11989
+./master3/config/config.ldif:1796:ds-cfg-replication-server: opendj.forgerock.com:11989
+./master3/config/config.ldif:1817:ds-cfg-replication-server: opendj.forgerock.com:11989
+
+
+ 
+
+2) Global Admin SUCCEEDS 
+
+Here we can see dsreplication connects to and removes all data from each of the four masters.
+
+
+$  date; bin/dsreplication disable --disableAll --port 7444 --hostname opendj.forgerock.com --adminUID admin --adminPassword admin.password --trustAll --no-prompt
+Tue Sep  5 16:19:07 MDT 2017
+Establishing connections ..... Done.
+Disabling replication on base DN dc=example,dc=com of server
+opendj.forgerock.com:7444 .....Done.
+Disabling replication on base DN cn=schema of server opendj.forgerock.com:7444
+.....Done.
+Disabling replication on base DN cn=admin data of server
+opendj.forgerock.com:7444 .....Done.
+Removing references on base DN cn=admin data of server
+opendj.forgerock.com:6444 .....Done.
+Removing references on base DN cn=schema of server opendj.forgerock.com:6444
+.....Done.
+Removing references on base DN dc=example,dc=com of server
+opendj.forgerock.com:6444 .....Done.
+Removing references on base DN cn=admin data of server
+opendj.forgerock.com:4444 .....Done.
+Removing references on base DN cn=schema of server opendj.forgerock.com:4444
+.....Done.
+Removing references on base DN dc=example,dc=com of server
+opendj.forgerock.com:4444 .....Done.
+Removing references on base DN cn=admin data of server
+opendj.forgerock.com:5444 .....Done.
+Removing references on base DN cn=schema of server opendj.forgerock.com:5444
+.....Done.
+Removing references on base DN dc=example,dc=com of server
+opendj.forgerock.com:5444 .....Done.
+Disabling replication port 11989 of server opendj.forgerock.com:7444 ..... Done.
+Removing registration information ..... Done.
+
+See
+/var/folders/32/hqbp0t2n5k73f9ssp3ssc9740000gn/T/opendj-replication-3699347995169395942.log
+for a detailed log of this operation.
+

@@ -1,0 +1,34 @@
+The newly introduced LatencyMarksEmitter emits latency marker on the Output. This can still happen after the underlying BufferPool has been destroyed. The occurring exception is then logged:
+
+
+2016-10-29 15:00:48,088 INFO  org.apache.flink.runtime.taskmanager.Task                     - Source: Custom File Source (1/1) switched to FINISHED
+2016-10-29 15:00:48,089 INFO  org.apache.flink.runtime.taskmanager.Task                     - Freeing task resources for Source: Custom File Source (1/1)
+2016-10-29 15:00:48,089 INFO  org.apache.flink.yarn.YarnTaskManager                         - Un-registering task and sending final execution state FINISHED to JobManager for task Source: Custom File Source (8fe0f817fa6d960ea33f6e57e0c3891c)
+2016-10-29 15:00:48,101 WARN  org.apache.flink.streaming.api.operators.AbstractStreamOperator  - Error while emitting latency marker
+java.lang.RuntimeException: Buffer pool is destroyed.
+	at org.apache.flink.streaming.runtime.io.RecordWriterOutput.emitLatencyMarker(RecordWriterOutput.java:99)
+	at org.apache.flink.streaming.api.operators.AbstractStreamOperator$CountingOutput.emitLatencyMarker(AbstractStreamOperator.java:734)
+	at org.apache.flink.streaming.api.operators.StreamSource$LatencyMarksEmitter$1.run(StreamSource.java:134)
+	at java.util.concurrent.Executors$RunnableAdapter.call(Executors.java:471)
+	at java.util.concurrent.FutureTask.runAndReset(FutureTask.java:304)
+	at java.util.concurrent.ScheduledThreadPoolExecutor$ScheduledFutureTask.access$301(ScheduledThreadPoolExecutor.java:178)
+	at java.util.concurrent.ScheduledThreadPoolExecutor$ScheduledFutureTask.run(ScheduledThreadPoolExecutor.java:293)
+	at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1145)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:615)
+	at java.lang.Thread.run(Thread.java:745)
+Caused by: java.lang.IllegalStateException: Buffer pool is destroyed.
+	at org.apache.flink.runtime.io.network.buffer.LocalBufferPool.requestBuffer(LocalBufferPool.java:144)
+	at org.apache.flink.runtime.io.network.buffer.LocalBufferPool.requestBufferBlocking(LocalBufferPool.java:133)
+	at org.apache.flink.runtime.io.network.api.writer.RecordWriter.sendToTarget(RecordWriter.java:118)
+	at org.apache.flink.runtime.io.network.api.writer.RecordWriter.randomEmit(RecordWriter.java:103)
+	at org.apache.flink.streaming.runtime.io.StreamRecordWriter.randomEmit(StreamRecordWriter.java:104)
+	at org.apache.flink.streaming.runtime.io.RecordWriterOutput.emitLatencyMarker(RecordWriterOutput.java:96)
+	... 9 more
+
+
+
+This exception is clearly related to the shutdown of a stream operator and does not indicate a wrong behaviour. Since the yarn tests simply scan the log for some keywords (including exception) such a case can make them fail.
+
+Best if we could make sure that the LatencyMarksEmitter would only emit latency marker if the Output would still be active. But we could also simply not log exceptions which occurred after the stream operator has been stopped.
+
+https://s3.amazonaws.com/archive.travis-ci.org/jobs/171578846/log.txt

@@ -1,0 +1,133 @@
+OpenDJ 2.5.0-20130524
+Build ID: 20130524000135Z
+Revision Number: 8903
+
+The purge of the replication changelogDb does not keep up with changes.
+
+Running an ldap client does average 5k modify ops/src randomly deleting/adding unindexed attribute employeeType (size 10 chars).
+
+2 replicas, replicating suffix "dc=europe,dc=com" containing 1m entries of type "uid=user_%d,dc=europe,dc=com"
+
+replication-purge-delay is set to 6h.
+
+the changelogDb eventually can become pretty big, and cause disk full outage.
+
+du -sh changelogDb/
+180G	changelogDb/
+
+The tail of the changelogDb is greater than 6 hours.
+
+ls -lt *.jdb | head -1
+rw-rw-r-. 1 testuser testuser  5643481 May 27 11:21 00008c53.jdb
+ls -lt *.jdb | tail -1
+rw-rw-r-. 1 testuser testuser  9999783 May 26 19:46 00000da0.jdb
+
+The cleanup of the changelogDb is moving, but seems slow, compared to the number of inbound modify ops. Replication is working and keeping in sync.
+
+Here are some stack traces of the changelog checkpointer:
+
+
+
+"Replication server RS(18087) changelog checkpointer for Replica DS(18700) for domain "dc=europe,dc=com"" prio=10 tid=0x00007f855c004800 nid=0x7e0a runnable [0x00007f85252d1000]
+   java.lang.Thread.State: RUNNABLE
+        at com.sleepycat.je.txn.Txn.lockInternal(Txn.java:490)
+        - locked <0x000000070ee73590> (a com.sleepycat.je.txn.Txn)
+        at com.sleepycat.je.txn.Locker.nonBlockingLock(Locker.java:478)
+        at com.sleepycat.je.dbi.CursorImpl.lockLN(CursorImpl.java:2602)
+        at com.sleepycat.je.dbi.CursorImpl.lockLN(CursorImpl.java:2422)
+        at com.sleepycat.je.dbi.CursorImpl.fetchCurrent(CursorImpl.java:2253)
+        at com.sleepycat.je.dbi.CursorImpl.getCurrentAlreadyLatched(CursorImpl.java:1466)
+        at com.sleepycat.je.dbi.CursorImpl.getNext(CursorImpl.java:1593)
+        at com.sleepycat.je.Cursor.positionAllowPhantoms(Cursor.java:2368)
+        at com.sleepycat.je.Cursor.positionNoDups(Cursor.java:2298)
+        at com.sleepycat.je.Cursor.position(Cursor.java:2285)
+        - locked <0x000000070ee73678> (a com.sleepycat.je.Transaction)
+        at com.sleepycat.je.Cursor.getNext(Cursor.java:1126)
+        at org.opends.server.replication.server.ReplicationDB$ReplServerDBCursor.nextChangeNumber(ReplicationDB.java:781)
+        at org.opends.server.replication.server.DbHandler.trim(DbHandler.java:449)
+        - locked <0x0000000722ce97e8> (a java.lang.Object)
+        at org.opends.server.replication.server.DbHandler.run(DbHandler.java:357)
+        at java.lang.Thread.run(Thread.java:722)
+
+"Replication server RS(18087) changelog checkpointer for Replica DS(18700) for domain "dc=europe,dc=com"" prio=10 tid=0x00007f855c004800 nid=0x7e0a runnable [0x00007f85252d1000]
+   java.lang.Thread.State: RUNNABLE
+        at com.sleepycat.je.txn.Locker.releaseLock(Locker.java:493)
+        - locked <0x000000070af32f40> (a com.sleepycat.je.txn.Txn)
+        at com.sleepycat.je.dbi.CursorImpl.revertLock(CursorImpl.java:2816)
+        at com.sleepycat.je.dbi.CursorImpl.revertLock(CursorImpl.java:2801)
+        at com.sleepycat.je.dbi.CursorImpl.fetchCurrent(CursorImpl.java:2255)
+        at com.sleepycat.je.dbi.CursorImpl.getCurrentAlreadyLatched(CursorImpl.java:1466)
+        at com.sleepycat.je.dbi.CursorImpl.getNext(CursorImpl.java:1593)
+        at com.sleepycat.je.Cursor.positionAllowPhantoms(Cursor.java:2368)
+        at com.sleepycat.je.Cursor.positionNoDups(Cursor.java:2298)
+        at com.sleepycat.je.Cursor.position(Cursor.java:2285)
+        - locked <0x000000070af33028> (a com.sleepycat.je.Transaction)
+        at com.sleepycat.je.Cursor.getNext(Cursor.java:1126)
+        at org.opends.server.replication.server.ReplicationDB$ReplServerDBCursor.nextChangeNumber(ReplicationDB.java:781)
+        at org.opends.server.replication.server.DbHandler.trim(DbHandler.java:449)
+        - locked <0x0000000722ce97e8> (a java.lang.Object)
+        at org.opends.server.replication.server.DbHandler.run(DbHandler.java:357)
+        at java.lang.Thread.run(Thread.java:722)
+
+
+"Replication server RS(18087) changelog checkpointer for Replica DS(18700) for domain "dc=europe,dc=com"" prio=10 tid=0x00007f855c004800 nid=0x7e0a runnable [0x00007f85252d1000]
+   java.lang.Thread.State: RUNNABLE
+        at sun.misc.Unsafe.unpark(Native Method)
+        at java.util.concurrent.locks.LockSupport.unpark(LockSupport.java:152)
+        at java.util.concurrent.locks.AbstractQueuedSynchronizer.unparkSuccessor(AbstractQueuedSynchronizer.java:662)
+        at java.util.concurrent.locks.AbstractQueuedSynchronizer.release(AbstractQueuedSynchronizer.java:1263)
+        at java.util.concurrent.locks.ReentrantLock.unlock(ReentrantLock.java:460)
+        at java.util.concurrent.ArrayBlockingQueue.offer(ArrayBlockingQueue.java:307)
+        at java.util.concurrent.ThreadPoolExecutor.execute(ThreadPoolExecutor.java:1364)
+        at com.sleepycat.je.evictor.Evictor.alert(Evictor.java:505)
+        at com.sleepycat.je.evictor.Evictor.doCriticalEviction(Evictor.java:434)
+        at com.sleepycat.je.dbi.EnvironmentImpl.criticalEviction(EnvironmentImpl.java:2558)
+        at com.sleepycat.je.dbi.CursorImpl.criticalEviction(CursorImpl.java:278)
+        at com.sleepycat.je.Cursor.endMoveCursor(Cursor.java:3901)
+        at com.sleepycat.je.Cursor.positionAllowPhantoms(Cursor.java:2380)
+        at com.sleepycat.je.Cursor.positionNoDups(Cursor.java:2298)
+        at com.sleepycat.je.Cursor.position(Cursor.java:2285)
+        - locked <0x000000070cbcb0b0> (a com.sleepycat.je.Transaction)
+        at com.sleepycat.je.Cursor.getNext(Cursor.java:1126)
+        at org.opends.server.replication.server.ReplicationDB$ReplServerDBCursor.nextChangeNumber(ReplicationDB.java:781)
+        at org.opends.server.replication.server.DbHandler.trim(DbHandler.java:449)
+        - locked <0x0000000722ce97e8> (a java.lang.Object)
+        at org.opends.server.replication.server.DbHandler.run(DbHandler.java:357)
+        at java.lang.Thread.run(Thread.java:722)
+
+"Replication server RS(18087) changelog checkpointer for Replica DS(18700) for domain "dc=europe,dc=com"" prio=10 tid=0x00007f855c004800 nid=0x7e0a runnable [0x00007f85252d1000]
+   java.lang.Thread.State: RUNNABLE
+        at sun.misc.Unsafe.unpark(Native Method)
+        at java.util.concurrent.locks.LockSupport.unpark(LockSupport.java:152)
+        at java.util.concurrent.locks.AbstractQueuedSynchronizer.unparkSuccessor(AbstractQueuedSynchronizer.java:662)
+        at java.util.concurrent.locks.AbstractQueuedSynchronizer.release(AbstractQueuedSynchronizer.java:1263)
+        at java.util.concurrent.locks.ReentrantLock.unlock(ReentrantLock.java:460)
+        at java.util.concurrent.ArrayBlockingQueue.offer(ArrayBlockingQueue.java:307)
+        at java.util.concurrent.ThreadPoolExecutor.execute(ThreadPoolExecutor.java:1364)
+        at com.sleepycat.je.evictor.Evictor.alert(Evictor.java:505)
+        at com.sleepycat.je.dbi.EnvironmentImpl.alertEvictor(EnvironmentImpl.java:2536)
+        at com.sleepycat.je.dbi.MemoryBudget.updateLockMemoryUsage(MemoryBudget.java:1118)
+        at com.sleepycat.je.txn.LockManager.releaseAndFindNotifyTargetsInternal(LockManager.java:766)
+        at com.sleepycat.je.txn.SyncedLockManager.releaseAndFindNotifyTargets(SyncedLockManager.java:110)
+        - locked <0x00000007181b9170> (a com.sleepycat.je.latch.Latch)
+        at com.sleepycat.je.txn.LockManager.release(LockManager.java:694)
+        - locked <0x0000000708b41198> (a com.sleepycat.je.txn.Txn)
+        at com.sleepycat.je.txn.Locker.releaseLock(Locker.java:493)
+        - locked <0x0000000708b41198> (a com.sleepycat.je.txn.Txn)
+        at com.sleepycat.je.dbi.CursorImpl.revertLock(CursorImpl.java:2816)
+        at com.sleepycat.je.dbi.CursorImpl.revertLock(CursorImpl.java:2801)
+        at com.sleepycat.je.dbi.CursorImpl.fetchCurrent(CursorImpl.java:2255)
+        at com.sleepycat.je.dbi.CursorImpl.getCurrentAlreadyLatched(CursorImpl.java:1466)
+        at com.sleepycat.je.dbi.CursorImpl.getNext(CursorImpl.java:1593)
+        at com.sleepycat.je.Cursor.positionAllowPhantoms(Cursor.java:2368)
+        at com.sleepycat.je.Cursor.positionNoDups(Cursor.java:2298)
+        at com.sleepycat.je.Cursor.position(Cursor.java:2285)
+        - locked <0x0000000708b41280> (a com.sleepycat.je.Transaction)
+        at com.sleepycat.je.Cursor.getNext(Cursor.java:1126)
+        at org.opends.server.replication.server.ReplicationDB$ReplServerDBCursor.nextChangeNumber(ReplicationDB.java:781)
+        at org.opends.server.replication.server.DbHandler.trim(DbHandler.java:449)
+        - locked <0x0000000722ce97e8> (a java.lang.Object)
+        at org.opends.server.replication.server.DbHandler.run(DbHandler.java:357)
+        at java.lang.Thread.run(Thread.java:722)
+
+

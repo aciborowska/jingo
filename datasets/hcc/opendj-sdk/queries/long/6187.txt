@@ -1,0 +1,178 @@
+When running DJ via EmbeddedDirectoryServer and attempting to update a JSON attribute to remove a null value a modify event is not detected and no change is made. If the exact instance is started via bin/start-ds this modification is properly executed and the field is removed.
+
+If an additional change is part of the update the modification is detected and the null field is removed
+
+Example
+
+Create test user
+
+curl --request PUT \
+  --url http://localhost:8080/openidm/repo/managed/user/patch_test \
+  --header 'content-type: application/json' \
+  --header 'if-none-match: *' \
+  --header 'x-openidm-password: openidm-admin' \
+  --header 'x-openidm-username: openidm-admin' \
+  --data '{
+	"userName": "patch_test",
+ "givenName": "no",
+ "sn": "country",
+ "mail": "user@mail.com",
+	"prop_to_remove" : null
+}'
+
+{
+	"_id": "patch_test",
+	"_rev": "0000000047dd65fc",
+	"userName": "patch_test",
+	"givenName": "no",
+	"sn": "country",
+	"mail": "user@mail.com",
+	"prop_to_remove": null
+}
+
+
+
+Read user
+
+curl --request GET \
+  --url http://localhost:8080/openidm/repo/managed/user/patch_test \
+  --header 'x-openidm-password: openidm-admin' \
+  --header 'x-openidm-username: openidm-admin'
+
+{
+	"_id": "patch_test",
+	"_rev": "0000000047dd65fc",
+	"userName": "patch_test",
+	"givenName": "no",
+	"sn": "country",
+	"mail": "user@mail.com",
+	"prop_to_remove": null
+}
+
+
+
+Attempt to update user removing null field
+
+curl --request PUT \
+  --url http://localhost:8080/openidm/repo/managed/user/patch_test \
+  --header 'content-type: application/json' \
+  --header 'if-match: *' \
+  --header 'x-openidm-password: openidm-admin' \
+  --header 'x-openidm-username: openidm-admin' \
+  --data '{
+	"userName": "patch_test",
+	"givenName": "no",
+	"sn": "country",
+	"mail": "user@mail.com"
+}'
+
+{
+	"_id": "patch_test",
+	"_rev": "0000000047dd65fc",
+	"userName": "patch_test",
+	"givenName": "no",
+	"sn": "country",
+	"mail": "user@mail.com",
+	"prop_to_remove": null
+}
+
+
+
+Note prop_to_remove is still present. In ldap-access we see no modify operation take place.
+
+
+
+{"eventName":"DJ-LDAP","client":{"ip":"internal","port":-1},"server":{"ip":"internal","port":-1},"request":{"protocol":"internal","operation":"SEARCH","connId":-544,"msgId":612,"dn":"uid=patch_test,ou=user,ou=managed,dc=openidm,dc=forgerock,dc=com","scope":"base","filter":"(objectClass=*)","attrs":["objectClass","uid","etag","createTimestamp","modifyTimestamp","fr-idm-managed-user-json"]},"transactionId":"ed8a6e74-adfd-4898-be47-fb4759e1edc8-1964/0","response":{"status":"SUCCESSFUL","statusCode":"0","elapsedTime":0,"elapsedTimeUnits":"MILLISECONDS","nentries":1},"timestamp":"2018-04-18T21:52:31.796Z","_id":"ed8a6e74-adfd-4898-be47-fb4759e1edc8-1969"}
+
+
+
+
+If we add an additional change to the update event we can see the removal go through
+
+
+curl --request PUT \
+  --url http://localhost:8080/openidm/repo/managed/user/patch_test \
+  --header 'content-type: application/json' \
+  --header 'if-match: *' \
+  --header 'x-openidm-password: openidm-admin' \
+  --header 'x-openidm-username: openidm-admin' \
+  --data '{
+	"userName": "patch_test",
+	"givenName": "no",
+	"sn": "countrychanged",
+	"mail": "user@mail.com"
+}'
+
+{
+	"_id": "patch_test",
+	"_rev": "0000000019d976b7",
+	"userName": "patch_test",
+	"givenName": "no",
+	"sn": "countrychanged",
+	"mail": "user@mail.com"
+}
+
+
+
+We now see the modify event in ldap-access
+
+
+{"eventName":"DJ-LDAP","client":{"ip":"internal","port":-1},"server":{"ip":"internal","port":-1},"request":{"protocol":"internal","operation":"SEARCH","connId":-545,"msgId":613,"dn":"uid=patch_test,ou=user,ou=managed,dc=openidm,dc=forgerock,dc=com","scope":"base","filter":"(objectClass=*)","attrs":["objectClass","uid","etag","createTimestamp","modifyTimestamp","fr-idm-managed-user-json"]},"transactionId":"ed8a6e74-adfd-4898-be47-fb4759e1edc8-1972/0","response":{"status":"SUCCESSFUL","statusCode":"0","elapsedTime":0,"elapsedTimeUnits":"MILLISECONDS","nentries":1},"timestamp":"2018-04-18T21:53:57.321Z","_id":"ed8a6e74-adfd-4898-be47-fb4759e1edc8-1977"}
+{"eventName":"DJ-LDAP","client":{"ip":"internal","port":-1},"server":{"ip":"internal","port":-1},"request":{"protocol":"internal","operation":"MODIFY","connId":-545,"msgId":614,"dn":"uid=patch_test,ou=user,ou=managed,dc=openidm,dc=forgerock,dc=com"},"transactionId":"ed8a6e74-adfd-4898-be47-fb4759e1edc8-1972/1","response":{"status":"SUCCESSFUL","statusCode":"0","elapsedTime":2,"elapsedTimeUnits":"MILLISECONDS"},"timestamp":"2018-04-18T21:53:57.323Z","_id":"ed8a6e74-adfd-4898-be47-fb4759e1edc8-1979"}
+
+
+
+All relevant IDM code can be found in https://stash.forgerock.org/projects/OPENIDM/repos/openidm/browse/openidm-repo-opendj/src/main/java/org/forgerock/openidm/repo/opendj/impl/Activator.java. For the purposes of this test I even modified IDM to not use embedded connections and operate over the same LdapConnectionFactory used by the external (non-embedded) test.
+
+Now if we take this very DJ instance that was running embedded and start via bin/start-ds we can see the update is successful
+
+
+curl --request PUT \
+  --url http://localhost:8080/openidm/repo/managed/user/patch_test \
+  --header 'content-type: application/json' \
+  --header 'if-none-match: *' \
+  --header 'x-openidm-password: openidm-admin' \
+  --header 'x-openidm-username: openidm-admin' \
+  --data '{
+	"userName": "patch_test",
+ "givenName": "no",
+ "sn": "country",
+ "mail": "user@mail.com",
+	"prop_to_remove" : null
+}'
+
+{
+	"_id": "patch_test",
+	"_rev": "0000000041ab6584",
+	"userName": "patch_test",
+	"givenName": "no",
+	"sn": "country",
+	"mail": "user@mail.com",
+	"prop_to_remove": null
+}
+
+
+
+
+curl --request PUT \
+  --url http://localhost:8080/openidm/repo/managed/user/patch_test \
+  --header 'content-type: application/json' \
+  --header 'if-match: *' \
+  --header 'x-openidm-password: openidm-admin' \
+  --header 'x-openidm-username: openidm-admin' \
+  --data '{
+	"userName": "patch_test",
+	"givenName": "no",
+	"sn": "country",
+	"mail": "user@mail.com"
+}'
+
+{
+	"_id": "patch_test",
+	"_rev": "00000000702b737b",
+	"userName": "patch_test",
+	"givenName": "no",
+	"sn": "country",
+	"mail": "user@mail.com"
+}
+

@@ -1,0 +1,81 @@
+After paging through many search results the last search request fails with an NPE.
+
+Here is what I did to reproduce the problem:
+
+cd /path/to ; unzip ~/.m2/repository/org/forgerock/opendj/opendj-server/6.5.0-SNAPSHOT/opendj-server-6.5.0-SNAPSHOT.zip
+
+/path/to/opendj/setup \
+ directory-server \
+ --rootUserDN "cn=Directory Manager" \
+ --rootUserPassword password \
+ --monitorUserPassword password \
+ --hostname opendj.example.com \
+ --ldapPort 1389 \
+ --ldapsPort 1636 \
+ --httpPort 8080 \
+ --httpsPort 8443 \
+ --adminConnectorPort 4444 \
+ --baseDN dc=example,dc=com \
+ --ldifFile Example.ldif \
+ --acceptLicense
+
+/path/to/opendj/bin/dsconfig \
+ create-backend-vlv-index \
+ --hostname opendj.example.com \
+ --port 4444 \
+ --bindDn "cn=Directory Manager" \
+ --bindPassword password \
+ --backend-name userRoot \
+ --index-name by-last-name \
+ --set base-dn:ou=People,dc=example,dc=com \
+ --set filter:"(&)" \
+ --set scope:subordinate-subtree \
+ --set sort-order:"+l +roomNumber +sn +cn" \
+ --trustAll \
+ --no-prompt
+
+/path/to/opendj/bin/rebuild-index \
+ --hostname opendj.example.com \
+ --port 4444 \
+ --bindDn "cn=Directory Manager" \
+ --bindPassword password \
+ --baseDn dc=example,dc=com \
+ --index vlv.by-last-name \
+ --trustAll
+
+/path/to/opendj/bin/ldapmodify \
+ --hostname opendj.example.com \
+ --port 1389 \
+ --bindDn "cn=Directory Manager" \
+ --bindPassword password << EOF
+dn: uid=kvaughan,ou=People,dc=example,dc=com
+changetype: modify
+add: ds-privilege-name
+ds-privilege-name: unindexed-search
+
+EOF
+
+/path/to/opendj/bin/ldapmodify \
+ --hostname opendj.example.com \
+ --port 1389 \
+ --bindDn "cn=Directory Manager" \
+ --bindPassword password << EOF
+dn: dc=example,dc=com
+changetype: modify
+add: aci
+aci: (targetcontrol = "2.16.840.1.113730.3.4.3")
+ (version 3.0;acl "Allow Server-Side Sort for Kirsten Vaughan";
+ allow (read)(userdn = "ldap:///uid=kvaughan,ou=People,dc=example,dc=com");)
+
+EOF
+
+yes | /path/to/opendj/bin/ldapsearch \
+ --hostname opendj.example.com \
+ --port 1389 \
+ --bindDn uid=kvaughan,ou=people,dc=example,dc=com \
+ --bindPassword bribery \
+ --baseDn dc=example,dc=com \
+ --sortOrder +l,+roomNumber,+sn,+cn \
+ --simplePageSize 5 \
+ "(&)" \
+ cn l roomNumber

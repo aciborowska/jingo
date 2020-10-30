@@ -1,0 +1,155 @@
+I have 2 nodes with embedded hazelcast.
+Both have identical mapstores. Both mapstores are able to 'load' all requested keys.
+Node 1 starts, calls IMap.get on a few values. All fine.
+Node 2 starts, later, calls IMap.get on a few values. Some of these are correctly returned and some are null. No attempt is made to load the 'null's from either node.
+If I re-test and change Node 1 not to call the first IMap.get until all nodes are present then all works as expected, no nulls are seen.
+The behaviour of mapload is dependent on the cluster state and only appears to work consistently if all nodes are up before the first IMap.get is called. I don't think that is something that can be guaranteed in a production environment. 
+
+How to test:
+Create java app from these 2 classes. I'm using hazelcast 3.11.1.
+
+```java
+public class EmbeddedReadThru implements MapStoreFactory<Object, Object> {
+
+    public EmbeddedReadThru() {
+        //start a hazelcast instance
+        Config cfg = new Config();
+        cfg.setInstanceName("lateral");
+        HazelcastInstance instance = Hazelcast.newHazelcastInstance(cfg);
+
+        //set ourselves us as a map storer
+        MapConfig mapConfig = cfg.getMapConfig("*");
+        MapStoreConfig mapStoreConfig = mapConfig.getMapStoreConfig();
+        mapStoreConfig.setFactoryImplementation(this);
+        mapStoreConfig.setEnabled(true);
+
+        //Problem vanishes if we leave enough time for all nodes to be up
+        //before the first getMap is called:
+//        try { Thread.sleep(60000); } catch(Exception e) {}
+
+        //now start to use it
+        IMap map = instance.getMap("order");
+        System.out.println("I find " + map.size() + " orders" );
+        Object result;
+        result = map.get(20);
+        System.out.println("First result " + result);
+        result = map.get(20);
+        System.out.println("Second result " + result);
+        result = map.get(99);
+        System.out.println("Result " + result);
+        result = map.get(991);
+        System.out.println("Result " + result);
+
+    }
+
+    public static void main(String[] args) {
+        new EmbeddedReadThru();
+    }
+
+    @Override
+    public MapLoader<Object, Object> newMapStore(String s, Properties properties) {
+        if ("order".equals(s)) return new OrderMapLoader();
+        return new DefaultMapLoader(); //always need to return something
+    }
+}
+```
+```java
+public class OrderMapLoader implements MapLoader<Object, Object> {
+    @Override
+    public Object load(Object o) {
+        System.out.println("I am being asked to load order " + o);
+        if (o instanceof Integer) {
+            return new Integer((Integer)o);
+        }
+        return null;
+    }
+
+    @Override
+    public Map<Object, Object> loadAll(Collection<Object> collection) {
+        System.out.println("Load all called " + collection);
+
+        return null;
+    }
+
+    @Override
+    public Iterable<Object> loadAllKeys() {
+
+        System.out.println("Load all keys called");
+        return null;
+    }
+}
+```
+
+Run this app. Output is:
+Load all keys called
+I find 0 orders
+I am being asked to load order 20
+First result 20
+Second result 20
+I am being asked to load order 99
+Result 99
+I am being asked to load order 991
+Result 991
+
+Create a second app with class:
+```java
+public class EmbeddedReadThru2 implements MapStoreFactory<Object, Object> {
+
+    public EmbeddedReadThru2() {
+        //start a hazelcast instance
+        Config cfg = new Config();
+        cfg.setInstanceName("lateral");
+        HazelcastInstance instance = Hazelcast.newHazelcastInstance(cfg);
+
+        //set ourselves us as a map storer
+        MapConfig mapConfig = cfg.getMapConfig("*");
+        MapStoreConfig mapStoreConfig = mapConfig.getMapStoreConfig();
+        mapStoreConfig.setFactoryImplementation(this);
+        mapStoreConfig.setEnabled(true);
+
+        //Problem vanishes if we leave enough time for all nodes to be up
+        //before the first getMap is called:
+//        try { Thread.sleep(60000); } catch(Exception e) {}
+
+        //now start to use it
+        IMap map = instance.getMap("order");
+        System.out.println("I find " + map.size() + " orders" );
+        Object result;
+        result = map.get(2000000);
+        System.out.println("First result " + result);
+        result = map.get(2000000);
+        System.out.println("Second result " + result);
+        result = map.get(99);
+        System.out.println("Result " + result);
+        result = map.get(991);
+        System.out.println("Result " + result);
+
+    }
+
+    public static void main(String[] args) {
+        new EmbeddedReadThru2();
+    }
+
+    @Override
+    public MapLoader<Object, Object> newMapStore(String s, Properties properties) {
+        if ("order".equals(s)) return new OrderMapLoader();
+        return new DefaultMapLoader(); //always need to return something
+    }
+}
+```
+
+and run this, leaving the first app running. Output is:
+I find 3 orders
+First result null
+Second result null
+Result 99
+Result 991
+
+Maploader.load is not called on either instance for get(2000000).
+Expected output from the second node:
+I find 2 orders
+I am being asked to load order 2000000
+First result 2000000
+etc
+
+If I add a delay to the first app such that it waits until the second node is up before calling the first IMap.get() then all works as expected. key 2000000 is loaded using the mapload on the second instance and all is fine. Conclusion -- mapstore behaviour does not work unless all nodes are up before the first IMap.get is called. This seems quite a serious bug to me.

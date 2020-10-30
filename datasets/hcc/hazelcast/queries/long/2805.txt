@@ -1,0 +1,131 @@
+I am using the Hazelcast queues for distributed messaging. My consumer creates a transaction context and begins a transaction, then gets the queue from the context, polls for a message and processes the message. Then commits the transaction. And if exceptions are thrown, the transaction is rolled back (think retry)
+
+Every think is working mostly working. I has a system up and messages are actively being consumed by one consumer. But when I bring up a second Hazelcast instance (second consumer for the same queue) Hazelcast throws the exception below, but then continues normally, and I have two competing consumers on the same queue.
+
+Jun 20, 2014 2:42:55 PM com.hazelcast.queue.tx.TxnPrepareBackupOperation
+SEVERE: [192.168.1.6]:5703 [scan-group] [3.2.3] Backup reserve failed: 2
+com.hazelcast.transaction.TransactionException: Backup reserve failed: 2
+    at com.hazelcast.queue.QueueContainer.txnPollBackupReserve(QueueContainer.java:133)
+    at com.hazelcast.queue.tx.TxnPrepareBackupOperation.run(TxnPrepareBackupOperation.java:48)
+    at com.hazelcast.spi.impl.BasicOperationService.processOperation(BasicOperationService.java:363)
+    at com.hazelcast.spi.impl.BasicOperationService.runOperation(BasicOperationService.java:228)
+    at com.hazelcast.spi.impl.Backup.run(Backup.java:98)
+    at com.hazelcast.spi.impl.BasicOperationService.processOperation(BasicOperationService.java:363)
+    at com.hazelcast.spi.impl.BasicOperationService.processPacket(BasicOperationService.java:309)
+    at com.hazelcast.spi.impl.BasicOperationService.access$400(BasicOperationService.java:102)
+    at com.hazelcast.spi.impl.BasicOperationService$BasicOperationProcessorImpl.process(BasicOperationService.java:756)
+    at com.hazelcast.spi.impl.BasicOperationScheduler$PartitionThread.process(BasicOperationScheduler.java:276)
+    at com.hazelcast.spi.impl.BasicOperationScheduler$PartitionThread.doRun(BasicOperationScheduler.java:270)
+    at com.hazelcast.spi.impl.BasicOperationScheduler$PartitionThread.run(BasicOperationScheduler.java:245)
+
+Any ideas as to what the cause of this exception is?
+
+Example of the Consumer code:
+
+public class HazelcastConsumer<T extends Serializable>
+    implements Runnable
+{
+  private static final Logger log = LoggerFactory.getLogger(HazelcastConsumer.class);
+
+  private static final int POLLING_INTERVAL = 5000; // polling interval in milliSeconds
+
+  private static final String NUM_ATTEMPTS_SUFFIX = "-numAttempts";
+
+  private final String receiveQueueName;
+
+  private final String numAttemptsMapName;
+
+  private final MessageConsumer<T> consumer;
+
+  private final HazelcastInstance hazelcastInstance;
+
+  private final int maxDeliveryAttempts;
+
+  public HazelcastConsumer(final HazelcastInstance hazelcastInstance, final String receiveQueueName,
+      final MessageConsumer<T> consumer, final int maxDeliveryAttempts)
+  {
+    this.hazelcastInstance = hazelcastInstance;
+    this.receiveQueueName = receiveQueueName;
+    this.consumer = consumer;
+    this.maxDeliveryAttempts = maxDeliveryAttempts;
+    this.numAttemptsMapName = receiveQueueName + NUM_ATTEMPTS_SUFFIX;
+  }
+
+  @Override
+  public void run() {
+    log.info("Starting Consumer for queue {}", receiveQueueName);
+
+```
+// Set the timeout very large in an attempt to disable it
+TransactionOptions options = new TransactionOptions().setTransactionType(TransactionType.TWO_PHASE)
+    .setTimeout(365, TimeUnit.DAYS);
+
+while (!Thread.currentThread().isInterrupted()) {
+  Message<T> message;
+  TransactionContext context = hazelcastInstance.newTransactionContext(options);
+  try {
+    context.beginTransaction();
+    message = getMessage(context);
+    if (message != null) {
+      processMessage(message);
+    }
+    context.commitTransaction();
+  }
+  catch (Throwable e) {
+    context.rollbackTransaction();
+    log.error(e.getMessage(), e);
+  }
+}
+```
+
+  }
+
+  private Message<T> getMessage(final TransactionContext context) throws InterruptedException {
+    TransactionalQueue<String> queue = context.getQueue(receiveQueueName);
+    // Wait for a message - Would be nice if Hazelcast supported take on transactional queues :-(
+    String jsonMesssage = queue.poll(POLLING_INTERVAL, TimeUnit.MILLISECONDS);
+    if (jsonMesssage == null) {
+      return null;
+    }
+
+```
+return JsonUtils.fromJson(jsonMesssage, Message.class);
+```
+
+  }
+
+  private void processMessage(final Message<T> message) throws InterruptedException {
+    int numAttempts = incrementMessageAttemptCount(message);
+    if (numAttempts > maxDeliveryAttempts) {
+      log.error("Max attempts exceeded for {} sending to {} queue", message, receiveQueueName);
+    }
+    else {
+      // Handle the message
+      consumer.handleMessage(message);
+    }
+    removeMessageAttemptCount(message);
+  }
+
+  private int incrementMessageAttemptCount(final Message<T> message) {
+    IMap<String, Integer> attemptsMap = hazelcastInstance.getMap(numAttemptsMapName);
+    Integer numberOfAttempts = attemptsMap.get(message.getId());
+    if (numberOfAttempts == null) {
+      numberOfAttempts = 0;
+    }
+    numberOfAttempts++;
+    attemptsMap.put(message.getId(), numberOfAttempts);
+    log.trace("Number of attempts {} for {}", numberOfAttempts, message);
+
+```
+return numberOfAttempts;
+```
+
+  }
+
+  private void removeMessageAttemptCount(final Message<T> message) {
+    if (message != null) {
+      IMap<String, Integer> attemptsMap = hazelcastInstance.getMap(numAttemptsMapName);
+      attemptsMap.remove(message.getId());
+    }
+  }
+}

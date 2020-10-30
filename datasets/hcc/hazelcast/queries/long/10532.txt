@@ -1,0 +1,101 @@
+Testing how near cache works. Wrote this simple test:
+```java
+import com.hazelcast.config.Config;
+import com.hazelcast.config.InMemoryFormat;
+import com.hazelcast.config.NearCacheConfig;
+import com.hazelcast.core.Hazelcast;
+import com.hazelcast.core.HazelcastInstance;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.io.Serializable;
+import java.util.Date;
+import java.util.concurrent.ConcurrentMap;
+
+public class Test {
+
+    private static final Logger log = LoggerFactory.getLogger(Test.class);
+
+    public static class Data implements Serializable {
+        private String x;
+
+        @Override
+        public String toString() {
+            return String.format("%8x >> %s", hashCode(), x);
+        }
+    }
+
+    public static void main(String[] args) throws InterruptedException {
+
+        Config config = new Config();
+        HazelcastInstance h = Hazelcast.newHazelcastInstance(config);
+
+        NearCacheConfig ncc = new NearCacheConfig()
+                .setMaxSize(100)
+                .setCacheLocalEntries(true)
+                .setInMemoryFormat(InMemoryFormat.OBJECT);
+
+        h.getConfig().getMapConfig("default")
+                .setInMemoryFormat(InMemoryFormat.BINARY)
+                .setNearCacheConfig(ncc);
+
+        ConcurrentMap<String, Data> map = h.getMap("mymap");
+
+        int i = 0;
+        while (true) {
+            final Data data = map.get("key");
+            System.out.println(data);
+            if (i % 5 == 0) {
+                Data d = new Data();
+                d.x = "" + new Date();
+                map.put("key", d);
+            }
+            i++;
+            Thread.sleep(1000);
+        }
+    }
+}
+```
+that is every second gets a value from the map for the same key and print it. Every 5 iterations, invoke a put(). The output is like
+```
+null
+4ced35ed >> Tue May 09 14:11:38 BST 2017
+2c22a348 >> Tue May 09 14:11:38 BST 2017
+2c22a348 >> Tue May 09 14:11:38 BST 2017
+2c22a348 >> Tue May 09 14:11:38 BST 2017
+2c22a348 >> Tue May 09 14:11:38 BST 2017
+27dc79f7 >> Tue May 09 14:11:43 BST 2017
+6b85300e >> Tue May 09 14:11:43 BST 2017
+6b85300e >> Tue May 09 14:11:43 BST 2017
+6b85300e >> Tue May 09 14:11:43 BST 2017
+6b85300e >> Tue May 09 14:11:43 BST 2017
+18e8473e >> Tue May 09 14:11:48 BST 2017
+5a2f016d >> Tue May 09 14:11:48 BST 2017
+5a2f016d >> Tue May 09 14:11:48 BST 2017
+```
+so we start with no value at all and then new value appears and it is changed every 5 seconds. Note the hash code printed - the moment we replace value in the map, hashcode changes twice. Which is already a bit strange - why would cache update value twice?
+But then hash stays the same for few iterations indicating the same object being returned from the cache.
+
+I can make up an explanation why hash changes twice - my theory is that .put() forces cache invalidation for that entry so next .get() will have to re-query it and at the same time a notification from "remote" side that entry has been modified may force another invalidation in the near cache. But there is a one second delay between .put() and .get() and no race condition is possible for sure cache should be invalidated only once there.
+
+But then it becomes much more interesting if I start a second copy of the same application, this time with map.put() commented out. So the output from that second copy looks like
+
+```
+62da83ed >> Tue May 09 14:17:15 BST 2017
+37d80fe7 >> Tue May 09 14:17:20 BST 2017
+384fc774 >> Tue May 09 14:17:20 BST 2017
+ e3cee7b >> Tue May 09 14:17:20 BST 2017
+71e9a896 >> Tue May 09 14:17:20 BST 2017
+ 6b9267b >> Tue May 09 14:17:20 BST 2017
+408b35bf >> Tue May 09 14:17:26 BST 2017
+29ad44e3 >> Tue May 09 14:17:26 BST 2017
+15bcf458 >> Tue May 09 14:17:26 BST 2017
+5af9926a >> Tue May 09 14:17:26 BST 2017
+43c67247 >> Tue May 09 14:17:26 BST 2017
+   fac80 >> Tue May 09 14:17:31 BST 2017
+726386ed >> Tue May 09 14:17:31 BST 2017
+649f2009 >> Tue May 09 14:17:31 BST 2017
+14bb2297 >> Tue May 09 14:17:31 BST 2017
+```
+so EVERY value returned has a different hash which probably means it is not the same object. Why is that?
+The content of the object is the same - you can see time string stays the same for 5 consecutive iterations but why would cache configured with OBJECT format keep returning different object instances?

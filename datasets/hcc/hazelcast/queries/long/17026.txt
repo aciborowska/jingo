@@ -1,0 +1,82 @@
+We found this while implementing a Map Store Support for the Hazelcast Cloud. If you build a typical JDBC Map Store with the 3rd party dependencies, you'll get the following error when it comes to the Map Store instance initialization:
+
+```
+{
+  "errorMessage": "access denied (\"java.lang.RuntimePermission\" \"createClassLoader\")",
+  "errorType": "java.security.AccessControlException",
+  "stackTrace": [
+    "java.security.AccessControlContext.checkPermission(AccessControlContext.java:472)",
+    "java.security.AccessController.checkPermission(AccessController.java:886)",
+    "java.lang.SecurityManager.checkPermission(SecurityManager.java:549)",
+    "java.lang.SecurityManager.checkCreateClassLoader(SecurityManager.java:611)",
+    "java.lang.ClassLoader.checkCreateClassLoader(ClassLoader.java:274)",
+    "java.lang.ClassLoader.<init>(ClassLoader.java:316)",
+    "com.hazelcast.internal.usercodedeployment.impl.ClassSource.<init>(ClassSource.java:45)",
+    "com.hazelcast.internal.usercodedeployment.impl.ClassLocator.tryToGetClassFromRemote(ClassLocator.java:153)",
+    "com.hazelcast.internal.usercodedeployment.impl.ClassLocator.handleClassNotFoundException(ClassLocator.java:95)",
+    "com.hazelcast.internal.usercodedeployment.impl.ClassSource.loadClass(ClassSource.java:65)",
+    "java.lang.ClassLoader.loadClass(ClassLoader.java:357)",
+    "whitelisted.com.hazelcast.cloud.mapstore.PersonMapStore.init(PersonMapStore.java:26)",
+    "com.hazelcast.map.impl.MapStoreWrapper.init(MapStoreWrapper.java:81)",
+    "com.hazelcast.map.impl.mapstore.BasicMapStoreContext.callLifecycleSupportInit(BasicMapStoreContext.java:164)",
+    "com.hazelcast.map.impl.mapstore.BasicMapStoreContext.create(BasicMapStoreContext.java:137)",
+    "com.hazelcast.map.impl.mapstore.MapStoreContextFactory.createMapStoreContext(MapStoreContextFactory.java:48)",
+    "com.hazelcast.map.impl.MapContainer.<init>(MapContainer.java:146)",
+    "com.hazelcast.map.impl.EnterpriseMapContainer.<init>(EnterpriseMapContainer.java:43)",
+    "com.hazelcast.map.impl.EnterpriseMapServiceContextImpl$1.createNew(EnterpriseMapServiceContextImpl.java:88)",
+    "com.hazelcast.map.impl.EnterpriseMapServiceContextImpl$1.createNew(EnterpriseMapServiceContextImpl.java:83)",
+    "com.hazelcast.util.ConcurrencyUtil.getOrPutSynchronized(ConcurrencyUtil.java:111)",
+    "com.hazelcast.map.impl.EnterpriseMapServiceContextImpl.getMapContainer(EnterpriseMapServiceContextImpl.java:176)",
+    "com.hazelcast.map.impl.operation.EnterpriseMapOperationProviders.getOperationProvider(EnterpriseMapOperationProviders.java:26)",
+    "com.hazelcast.map.impl.EnterpriseMapServiceContextImpl.getMapOperationProvider(EnterpriseMapServiceContextImpl.java:210)",
+    "com.hazelcast.client.impl.protocol.task.map.AbstractMapAllPartitionsMessageTask.getOperationProvider(AbstractMapAllPartitionsMessageTask.java:38)",
+    "com.hazelcast.client.impl.protocol.task.map.MapSizeMessageTask.createOperationFactory(MapSizeMessageTask.java:43)",
+    "com.hazelcast.client.impl.protocol.task.AbstractAllPartitionsMessageTask.processMessage(AbstractAllPartitionsMessageTask.java:38)",
+    "com.hazelcast.client.impl.protocol.task.AbstractMessageTask.initializeAndProcessMessage(AbstractMessageTask.java:129)",
+    "com.hazelcast.client.impl.protocol.task.AbstractMessageTask.run(AbstractMessageTask.java:109)",
+    "java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1149)",
+    "java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:624)",
+    "java.lang.Thread.run(Thread.java:748)",
+    "com.hazelcast.util.executor.HazelcastManagedThread.executeRun(HazelcastManagedThread.java:64)",
+    "com.hazelcast.util.executor.HazelcastManagedThread.run(HazelcastManagedThread.java:80)",
+    "------ submitted from ------.(Unknown Source)",
+    "com.hazelcast.client.spi.impl.ClientInvocationFuture.resolveAndThrowIfException(ClientInvocationFuture.java:96)",
+    "com.hazelcast.client.spi.impl.ClientInvocationFuture.resolveAndThrowIfException(ClientInvocationFuture.java:33)",
+    "com.hazelcast.spi.impl.AbstractInvocationFuture.get(AbstractInvocationFuture.java:163)",
+    "com.hazelcast.client.spi.ClientProxy.invoke(ClientProxy.java:252)",
+    "com.hazelcast.client.proxy.ClientMapProxy.size(ClientMapProxy.java:1686)",
+    "com.hazelcast.aws.lambda.benchmarking.HazelcastLambdaHandler.execute(HazelcastLambdaHandler.java:251)",
+    "com.hazelcast.aws.lambda.benchmarking.HazelcastLambdaHandler.handleRequest(HazelcastLambdaHandler.java:115)",
+    "sun.reflect.NativeMethodAccessorImpl.invoke0(Native Method)",
+    "sun.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:62)",
+    "sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)",
+    "java.lang.reflect.Method.invoke(Method.java:498)"
+  ]
+}
+```
+
+The reason we get this is that in Hazelcast Cloud we put the Java Security Manager restrictions on the cluster members:
+```
+grant codeBase "file:/opt/hazelcast/-" {
+  permission java.security.AllPermission;
+};
+
+// The one below applies to the uploaded JARs
+grant {
+  permission java.net.SocketPermission "*", "connect,resolve";
+};
+```
+
+**Expected behavior**
+The class loader creation should be isolated and the stack trace must not include a Map Store `init` method invocation. 
+
+**To Reproduce**
+
+See https://github.com/hazelcast/hazelcast-cloud-code-samples/tree/hazelcast.policy-issue
+Please contact us (me or @nosan ) for more info.
+
+**Additional context**
+Hazelcast ver. 3.12.6
+In our case, we share the uploaded JARs through the lite members.
+
+@kwart already provided a branch with a fix, this issue is mainly to track a progress. We're going to test the provided fix.

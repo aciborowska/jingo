@@ -1,0 +1,84 @@
+I want to select some items from map by the condition which contains the comparing of text field.
+
+For example, I have the Item class with (int) 'orderId' and (String) 'body' fields.
+My map contains:
+key=1: value is: {orderId=1, body=test-1}
+key=2: value is: {orderId=2, body=test-2}
+key=3: value is: {orderId=2, body=xxxx}
+key=4: value is: {orderId=2, body=aaaa}
+key=5: value is: {orderId=3, body=aaaa}
+key=6: value is: {orderId=2, body=ffff}
+key=7: value is: {orderId=1, body=blabla}
+key=8: value is: {orderId=8, body=test-8}
+key=9: value is: {orderId=1, body=aaaa}
+key=10: value is: {orderId=10, body=xxxx}
+key=11: value is: {orderId=3, body=0000}
+
+When I select keys by predicate with orderId:
+case#1: "orderId > 5", HZ returns: [10, 8]
+case#2: "orderId < 3", HZ returns: [4, 6, 9, 3, 7, 2, 1](both correct)
+
+but, if predicate contains a text field instead of a numeric, it works strangely:
+case#3: "body > 'xxxxx'", HZ returns: []
+case#4: "body < 'xxxxx'", HZ returns: [10, 3]
+case#5: "body > 'xxxx'", HZ returns: []
+case#6: "body > 'xxx'", HZ returns: [10, 3]
+case#7: "body > 'xx'", HZ returns: []
+case#8: "body > 'abc'", HZ returns: [7]
+
+If map has an ordered index for 'body' field, then also query result changes:
+case#9: "body > 'abc'", HZ returns: [] /unlike case#8/
+case#3-7 have not changes.
+
+I had added the ItemOrderBodySort class which comparable with him and logs the invocation of compareTo(other) method.
+Item class has not such fields directly, but I had added the getter that returns the such object instance.
+Ok, such instance contains the orderId and body fields and when comparing is called, first the orderId will be compared and if they equals, next 'body' will be compared and result will be returned.
+Now, I have the hardcoded predicate:
+    EntryObject e = new PredicateBuilder().getEntryObject();
+    /\* (obs.orderId > 2) or ((obs.orderId = 2) and (obs.body > 'abc'))
+    Predicate<Long, Item> predicate = e.get("orderBodySort").greaterThan(new ItemOrderBodySort(2, "abc"));
+    Set<Long> keys = map.keySet(predicate);
+
+When ItemOrderBodySort.compareTo() returns values in range [-1, 1], then HZ will return actual keys: [5, 6, 10, 8, 11, 3, 2]
+If only orderId comparation will return  -1/0/1 and body comparation will return native String.compareTo() result, the HZ will return not enough key set: [5, 10, 8, 11]
+If map has ordered index for 'orderBodySort' virtual-field and (ItemOrderBodySort) OBS.compareTo() will return only -1/0/1, then HZ will return a random key set, for example:
+
+1) [5, 8]
+2012-03-27 16:57:51.622 TRACE [hz._hzInstance_1_dev.cached.thread-1] ItemOrderBodySort:23 - cmp this(order=3, data='aaaa') with other(order=2, data='abc'): 1
+2012-03-27 16:57:51.624 TRACE [hz._hzInstance_1_dev.cached.thread-1] ItemOrderBodySort:23 - cmp this(order=1, data='blabla') with other(order=2, data='abc'): -1
+2012-03-27 16:57:51.624 TRACE [hz._hzInstance_1_dev.cached.thread-1] ItemOrderBodySort:23 - cmp this(order=8, data='test-8') with other(order=2, data='abc'): 1
+
+2) [5, 10, 11, 2]
+2012-03-27 16:57:56.359 TRACE [hz._hzInstance_1_dev.cached.thread-1] ItemOrderBodySort:23 - cmp this(order=1, data='aaaa') with other(order=2, data='abc'): -1
+2012-03-27 16:57:56.361 TRACE [hz._hzInstance_1_dev.cached.thread-1] ItemOrderBodySort:23 - cmp this(order=3, data='0000') with other(order=2, data='abc'): 1
+2012-03-27 16:57:56.363 TRACE [hz._hzInstance_1_dev.cached.thread-1] ItemOrderBodySort:23 - cmp this(order=1, data='test-1') with other(order=2, data='abc'): -1
+2012-03-27 16:57:56.364 TRACE [hz._hzInstance_1_dev.cached.thread-1] ItemOrderBodySort:23 - cmp this(order=10, data='xxxx') with other(order=2, data='abc'): 1
+2012-03-27 16:57:56.366 TRACE [hz._hzInstance_1_dev.cached.thread-1] ItemOrderBodySort:23 - cmp this(order=3, data='aaaa') with other(order=2, data='abc'): 1
+2012-03-27 16:57:56.367 TRACE [hz._hzInstance_1_dev.cached.thread-1] ItemOrderBodySort:23 - cmp this(order=2, data='test-2') with other(order=2, data='abc'): 1
+2012-03-27 16:57:56.368 TRACE [hz._hzInstance_1_dev.cached.thread-1] ItemOrderBodySort:23 - cmp this(order=1, data='blabla') with other(order=2, data='abc'): -1
+
+3) [5, 10, 2]
+2012-03-27 16:58:02.046 TRACE [hz._hzInstance_1_dev.cached.thread-1] ItemOrderBodySort:23 - cmp this(order=1, data='test-1') with other(order=2, data='abc'): -1
+2012-03-27 16:58:02.047 TRACE [hz._hzInstance_1_dev.cached.thread-1] ItemOrderBodySort:23 - cmp this(order=10, data='xxxx') with other(order=2, data='abc'): 1
+2012-03-27 16:58:02.049 TRACE [hz._hzInstance_1_dev.cached.thread-1] ItemOrderBodySort:23 - cmp this(order=3, data='aaaa') with other(order=2, data='abc'): 1
+2012-03-27 16:58:02.050 TRACE [hz._hzInstance_1_dev.cached.thread-1] ItemOrderBodySort:23 - cmp this(order=2, data='test-2') with other(order=2, data='abc'): 1
+2012-03-27 16:58:02.051 TRACE [hz._hzInstance_1_dev.cached.thread-1] ItemOrderBodySort:23 - cmp this(order=1, data='blabla') with other(order=2, data='abc'): -1
+
+If compareTo() returns native String.compareTo():
+1) [5, 10]
+2012-03-27 17:03:06.327 TRACE [hz._hzInstance_1_dev.cached.thread-1] ItemOrderBodySort:23 - cmp this(order=1, data='test-1') with other(order=2, data='abc'): -1
+2012-03-27 17:03:06.328 TRACE [hz._hzInstance_1_dev.cached.thread-1] ItemOrderBodySort:23 - cmp this(order=10, data='xxxx') with other(order=2, data='abc'): 1
+2012-03-27 17:03:06.329 TRACE [hz._hzInstance_1_dev.cached.thread-1] ItemOrderBodySort:23 - cmp this(order=3, data='aaaa') with other(order=2, data='abc'): 1
+2012-03-27 17:03:06.330 TRACE [hz._hzInstance_1_dev.cached.thread-1] ItemOrderBodySort:23 - cmp this(order=2, data='test-2') with other(order=2, data='abc'): 19
+2012-03-27 17:03:06.331 TRACE [hz._hzInstance_1_dev.cached.thread-1] ItemOrderBodySort:23 - cmp this(order=1, data='blabla') with other(order=2, data='abc'): -1
+
+2) [5, 8]
+2012-03-27 17:03:13.600 TRACE [hz._hzInstance_1_dev.cached.thread-1] ItemOrderBodySort:23 - cmp this(order=3, data='aaaa') with other(order=2, data='abc'): 1
+2012-03-27 17:03:13.601 TRACE [hz._hzInstance_1_dev.cached.thread-1] ItemOrderBodySort:23 - cmp this(order=1, data='blabla') with other(order=2, data='abc'): -1
+2012-03-27 17:03:13.602 TRACE [hz._hzInstance_1_dev.cached.thread-1] ItemOrderBodySort:23 - cmp this(order=8, data='test-8') with other(order=2, data='abc'): 1
+
+3) [8]
+2012-03-27 17:03:22.111 TRACE [hz._hzInstance_1_dev.cached.thread-1] ItemOrderBodySort:23 - cmp this(order=1, data='blabla') with other(order=2, data='abc'): -1
+2012-03-27 17:03:22.112 TRACE [hz._hzInstance_1_dev.cached.thread-1] ItemOrderBodySort:23 - cmp this(order=8, data='test-8') with other(order=2, data='abc'): 1
+
+I am using the Hazelcast v2.0.2 on the (sun-jdk/Oracle) JVM (1.6.0_31)

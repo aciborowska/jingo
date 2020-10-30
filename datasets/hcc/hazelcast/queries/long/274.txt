@@ -1,0 +1,60 @@
+Currently running Hazelcast 2.3.1 on a cluster of 124 nodes.
+
+Hazelcast got into a state where the list of members on some of the nodes do not match up. In the example that I've included node 134 thinks that node 86 is the master but node 86 thinks that node 17 is the master. Node 134 is in both node 86 and node 17's member lists, but node 17 is not in node 86's member list. 
+
+The member list does not appear to heal itself and nodes seem to be able to treat a node as their master even if that node doesn't think itself is the master.
+
+Node 134 says it has 42 members and node 86 is the master and the real master isn't in the list:
+
+```
+Members [42] [
+    "10.10.10.86:4286", # Master
+    ...
+    "10.10.10.134:4286", # This
+    ...
+]
+```
+
+Node 86 says it has a total of 124 members:
+
+```
+Members [124] [
+    "10.10.10.17:4286", # Master
+    ...
+    "10.10.10.134:4286", # Node 134
+    ...
+    "10.10.10.86:4286", # This
+    ...
+]
+```
+
+Node 17 has the same list as 86:
+
+```
+Members [124] [
+    "10.10.10.17:4286", # Master and This
+    ...
+    "10.10.10.134:4286", # Node 134
+    ...
+    "10.10.10.86:4286", # Node 86
+    ...
+]
+```
+
+Node 134 (the one with the broken list) keeps logging messages like this that appear to be from the true master:
+
+```
+[09.17.12 16:18:15.860 WARN    hz._hzInstance_1_gre com.hazelcast.impl.PartitionManager     ] [10.10.10.134]:4286 [hz-2000] Received a ClusterRuntimeState, but its sender doesn't seem master! => Sender: Address[10.10.10.17]:4286, Master: Address[10.10.10.86]:4286! (Ignore if master node has changed recently.)
+```
+
+Looking at the logs of node 134. It got into this state by timing out its connection to the then master and selecting the next in the list. This happend repeatedly until it settled on node 86.
+
+```
+[09.17.12 10:37:38.777 WARN    hz._hzInstance_1_gre com.hazelcast.cluster.ClusterManager    ] [10.10.10.134]:4286 [hz-2000] Master node has timed out its heartbeat and will be removed
+[09.17.12 10:37:38.777 INFO    hz._hzInstance_1_gre com.hazelcast.cluster.ClusterManager    ] [10.10.10.134]:4286 [hz-2000] Removing Address Address[10.10.10.11]:4286
+[09.17.12 10:37:38.778 INFO    hz._hzInstance_1_gre com.hazelcast.impl.Node                 ] [10.10.10.134]:4286 [hz-2000] ** setting master address to Address[10.10.10.13]:4286
+...
+[09.17.12 10:41:21.447 WARN    hz._hzInstance_1_gre com.hazelcast.cluster.ClusterManager    ] [10.10.10.134]:4286 [hz-2000] Master node has timed out its heartbeat and will be removed
+[09.17.12 10:41:21.447 INFO    hz._hzInstance_1_gre com.hazelcast.cluster.ClusterManager    ] [10.10.10.134]:4286 [hz-2000] Removing Address Address[10.10.10.85]:4286
+[09.17.12 10:41:21.447 INFO    hz._hzInstance_1_gre com.hazelcast.impl.Node                 ] [10.10.10.134]:4286 [hz-2000] ** setting master address to Address[10.10.10.86]:4286
+```

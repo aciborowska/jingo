@@ -1,0 +1,70 @@
+Starting with version 3.2 the order of message delivery breaks.
+
+Here's the test code:
+
+```
+public class TopicsTest {
+
+    private static final String TOPIC = "test";
+    private static final String REQUESTS_PROCESSOR = "requestsProcessor";
+
+    private static final int MESSAGES_NUMBER = 30;
+
+    public static void main(String[] args) {
+
+        Hazelcast.newHazelcastInstance();
+        HazelcastInstance client = HazelcastClient.newHazelcastClient();
+
+        ITopic<Integer> topic = client.getTopic(TOPIC);
+        topic.addMessageListener(new IntegerMessageListener());
+
+        IExecutorService executorService = client.getExecutorService(REQUESTS_PROCESSOR);
+        executorService.submit(new SendingCallable());
+    }
+
+    static class IntegerMessageListener implements MessageListener<Integer> {
+
+        boolean broken = false;
+        int expected = 1;
+        List<Integer> received = new ArrayList<>();
+
+        @Override
+        public synchronized void onMessage(Message<Integer> message) {
+            Integer messageObject = message.getMessageObject();
+            received.add(messageObject);
+            if (!broken && expected != messageObject){
+                System.out.println("Order breaks at " + expected);
+                broken = true;
+            }
+            expected++;
+            if (received.size() == MESSAGES_NUMBER){
+                System.out.println("Result: " + received);
+            }
+
+        }
+    }
+
+    static class SendingCallable implements Callable<Void>, HazelcastInstanceAware, Serializable {
+
+        private HazelcastInstance hazelcastInstance;
+
+        @Override
+        public Void call() throws Exception {
+            ITopic<Object> topic = hazelcastInstance.getTopic(TOPIC);
+            for (int i = 1; i <= MESSAGES_NUMBER; i++) {
+                topic.publish(i);
+            }
+            return null;
+        }
+
+        @Override
+        public void setHazelcastInstance(HazelcastInstance hazelcastInstance) {
+            this.hazelcastInstance = hazelcastInstance;
+        }
+    }
+}
+```
+
+Everything's fine with the version 3.1.7, but since 3.2 it doesn't work.
+
+Same with order of notification of map's EntryListener and collection's ItemListener

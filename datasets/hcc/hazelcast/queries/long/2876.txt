@@ -1,0 +1,86 @@
+The following test works with hazelcast 2.6.9 but fails with hazelcast 3.2.3 on the first assertEquals. The counter "lockedEntryCount" is always 0.
+Moreover, the method getLockWaitCount has been removed but nothing indicates if this data is still accessible somewhere. We use in our project this two counters to monitor cluster-wide locks.
+
+``` java
+package test.hazelcast;
+
+import com.hazelcast.core.Hazelcast;
+import com.hazelcast.core.HazelcastInstance;
+import com.hazelcast.core.IMap;
+
+import org.junit.Before;
+import org.junit.BeforeClass;
+import org.junit.Test;
+
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+
+import static org.junit.Assert.assertEquals;
+
+public class LockTest {
+
+    private static HazelcastInstance hazelcast;
+    private IMap<String, String> map;
+
+    @BeforeClass
+    public static void beforeClass() {
+        hazelcast = Hazelcast.newHazelcastInstance();
+    }
+
+    @Before
+    public void before() {
+        map = hazelcast.getMap("test");
+    }
+
+    @Test
+    public void testLock() {
+        AtomicBoolean lock = new AtomicBoolean(true);
+        Runner locker = new Runner(lock);
+        new Thread(locker).start();
+
+        try {
+            TimeUnit.MILLISECONDS.sleep(500);
+        } catch (InterruptedException e) {
+
+        }
+
+        assertEquals(1, map.getLocalMapStats().getLockedEntryCount());
+
+        lock.set(false);
+
+        try {
+            TimeUnit.MILLISECONDS.sleep(600);
+        } catch (InterruptedException e) {
+
+        }
+
+        assertEquals(0, map.getLocalMapStats().getLockedEntryCount());
+    }
+
+    private class Runner implements Runnable {
+
+        private AtomicBoolean lock;
+
+        private Runner(AtomicBoolean lock) {
+            this.lock = lock;
+        }
+
+        @Override
+        public void run() {
+            map.lock("lock");
+            try {
+                // sleep
+                while (lock.get() && !Thread.interrupted()) {
+                    try {
+                        TimeUnit.MILLISECONDS.sleep(500);
+                    } catch (InterruptedException e) {
+
+                    }
+                }
+            } finally {
+                map.unlock("lock");
+            }
+        }
+    }
+}
+```

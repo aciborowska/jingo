@@ -1,0 +1,15 @@
+The fix for OPENDJ-127 (Target throughput option -M does not work for modrate) has caused a major performance regression in the xxxrate tools. In some simple testing I have seen maximum throughput drop from over 50K searches/s before the fix, to around 35K/s after the fix (about 30% reduction).
+
+Before the fix we were using selector threads to asynchronously process incoming responses and immediately send the next request. However it broke the -M (throttling feature) since sleeping in the selector threads will prevent those threads from handling any other IO that is occurring (throttling is usually managed on a per connection basis). To put it another way, it is hard (impossible?) to support throttling using this threading model.
+
+The approach currently taken is the "classic" 1 thread per synchronous client approach. Each client thread performs one operation at a time blocking for the result and, knowing in advance how long each operation is required to take, it can sleep accordingly.
+
+This approach comes at a cost since selector threads need to hand off the incoming result to the client thread via a Future: an extra context switch. Having said that, a 30% throughput reduction seems like a high price to pay for the extra context switch and I wonder if there are some additional CPU cycles wasted somewhere. From profiling it looks like the Future.get() method invoked by the client thread is consuming the most cycles, perhaps due to optimistic spinning before parking.
+
+There are two areas of investigation:
+
+1) Why is Future.get() so expensive? Have I implemented the AQS based AbstractFutureResult poorly? It might be worth comparing/replacing the implementation with a Latch/Semaphore or a Grizzly implementation just to see.
+
+2) Can we make the original fully asynchronous approach work? Perhaps by switching to a LeaderFollower IO strategy we can achieve a good compromise: we'll still have an extra context switch, but no blocking spins.
+
+This issue is low priority for now, although it would be nice to understand what is going on.

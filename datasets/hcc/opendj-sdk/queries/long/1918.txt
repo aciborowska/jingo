@@ -1,0 +1,30 @@
+I was testing an import of 200M entries with a flat DIT.
+I disabled the Subordinates Index at the backend level, and the import was taking longer than the previous runs with subordinates indexes enabled.
+1st phase import ran at ~35K entries / second.
+2nd phase of merging indexes was stuck at 37% after more than 12 hours.
+
+[02/04/2015:10:17:50 +0200] category=JEB seq=23217 severity=INFO msg=Index dn.dn 37% complete: remaining = 5448016 kb, rate = 0 kb/s; batch 1/1
+[02/04/2015:10:18:00 +0200] category=JEB seq=23218 severity=INFO msg=Free memory = 5651 MB, Cache miss rate = 0.0/entry
+[02/04/2015:10:18:00 +0200] category=JEB seq=23219 severity=INFO msg=Eviction in progress. Passes: 1158145 nodes evicted: 5272751 BIN nodes stripped: 5216508
+[02/04/2015:10:18:00 +0200] category=JEB seq=23220 severity=INFO msg=Checkpoints performed: 4403
+[02/04/2015:10:18:00 +0200] category=JEB seq=23221 severity=INFO msg=Index dn.dn 37% complete: remaining = 5448016 kb, rate = 0 kb/s; batch 1/1
+
+A jstack of the running process shows a single thread working :
+
+"pool-6-thread-1" #104 prio=5 os_prio=0 tid=0x00007fea5c0cb800 nid=0x741f runnable [0x00007fea261e2000]
+   java.lang.Thread.State: RUNNABLE
+	at java.util.TreeMap.getEntryUsingComparator(TreeMap.java:376)
+	at java.util.TreeMap.getEntry(TreeMap.java:345)
+	at java.util.TreeMap.containsKey(TreeMap.java:232)
+	at org.opends.server.backends.jeb.Importer$IndexDBWriteTask$DNState.id2SubTree(Importer.java:2343)
+	at org.opends.server.backends.jeb.Importer$IndexDBWriteTask$DNState.writeToDB(Importer.java:2397)
+	at org.opends.server.backends.jeb.Importer$IndexDBWriteTask.addDN2ID(Importer.java:2138)
+	at org.opends.server.backends.jeb.Importer$IndexDBWriteTask.addToDB(Importer.java:2105)
+	at org.opends.server.backends.jeb.Importer$IndexDBWriteTask.call(Importer.java:2038)
+	at org.opends.server.backends.jeb.Importer$IndexDBWriteTask.call(Importer.java:1788)
+	at java.util.concurrent.FutureTask.run(FutureTask.java:266)
+	at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1142)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:617)
+	at java.lang.Thread.run(Thread.java:745)
+
+Looking at the code in Importer.java : IndexDBWriteTask : DNState I can see that there is no consideration whether subordinate indexes should be handled or not. Clearly, when they are not built during the phase one, the merging of the dn2id phase is actually rebuilding them !

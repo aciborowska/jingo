@@ -1,0 +1,250 @@
+Hi,
+
+This is the first time we implement Hazelcast 3.6.1 in our application. 
+We have 8 clusters and this exception only happens when we try to update the cache. 
+It works fine when we start the clusters and the cache is loaded for the first time. 
+When we try to update the cache from the front end screen, heap utilization on Tomcat is crossing 85%.
+We did thread dump analysis for the time when heap utilization was high and found that the threads related to hazelcast cache were hung. 
+This issue does not happen if we do not update the cache. 
+I have looked at several similar issues but there's no solution, especially for Tomcat 7.0.68 with HazelCast 3.6.x version.
+
+Below is the logic we have used to update what is in cache. Please let us know if that is correct.
+```
+public void updateCacheMap(Map<String, Map<String, Map<String, Integer>>> newCacheMap){
+        IMap<String, Object> cachedMap = getCacheInstance().getMap("MY_MAP");
+        cachedMap.clear();
+        cachedMap.putAll(newCacheMap);
+    }
+```
+
+Following is the configuration that we have used:
+
+```
+private static Config getConfig(CacheConfig config){
+        Config cfg = new Config();
+    //setting the cache cluster name
+    GroupConfig grpCfg = new GroupConfig();
+    grpCfg.setName(config.getCacheClusterName());
+    cfg.setGroupConfig(grpCfg);     
+
+    String cacheHostMembers = config.getCacheHostMembers();
+
+    //setting the configuration for Map
+    MapConfig mapConfig = cfg.getMapConfig("*");
+    mapConfig.setMaxIdleSeconds(0);
+    mapConfig.setTimeToLiveSeconds(0);
+    mapConfig.setEvictionPolicy(EvictionPolicy.LFU);
+    mapConfig.getMaxSizeConfig().setMaxSizePolicy(MaxSizePolicy.PER_NODE).setSize(Constants.INT_10000);
+    //setting the percentage for eviction
+    mapConfig.setEvictionPercentage(Constants.INT_10);
+
+
+    //setting the network configuration
+    NetworkConfig netCfg = cfg.getNetworkConfig();
+    netCfg.setPort(5800).setPortAutoIncrement(true);
+    netCfg.setReuseAddress(true);
+    netCfg.setPortCount(4);
+
+    JoinConfig joinCfg = netCfg.getJoin();
+
+    joinCfg.getMulticastConfig().setEnabled(false);
+    joinCfg.getTcpIpConfig().setEnabled(true);
+
+    if(cacheHostMembers!= null && cacheHostMembers.length()>0){
+        StringTokenizer tokens = new StringTokenizer(cacheHostMembers, Constants.STR_COMMA);
+        while(tokens.hasMoreTokens()){
+            joinCfg.getTcpIpConfig().addMember((String) tokens.nextElement());
+        }
+    }
+
+    //setting the logging configuration
+    if(config.getLoggingType()!=null){
+        cfg.setProperty( "hazelcast.logging.type", config.getLoggingType() );
+    }
+
+    return cfg;
+
+}
+```
+
+App log stack trace:
+```
+com.hazelcast.core.OperationTimeoutException: No response for 120000 ms. Aborting invocation! Invocation{serviceName='hz:impl:mapService', op=com.hazelcast.map.impl.operation.ClearOperation{identityHash=1990728310, serviceName='hz:impl:mapService', partitionId=127, replicaIndex=0, callId=57684713, invocationTime=1470059029023 (Mon Aug 01 08:43:49 CDT 2016), waitTimeout=-1, callTimeout=60000, name=ACTIVE_ID_MAP}, partitionId=127, replicaIndex=0, tryCount=250, tryPauseMillis=500, invokeCount=1, callTimeout=60000, target=Address[tp115000.domain.com]:5700, backupsExpected=0, backupsCompleted=1, connection=Connection [/178.15.122.133:22345 -> sd2333.domain.com/178.18.6.135:3812], endpoint=Address[sd2333.domain.com]:5700, alive=true, type=MEMBER} No response has been received!  backups-expected:0 backups-completed: 1
+    at com.hazelcast.spi.impl.operationservice.impl.Invocation.newOperationTimeoutException(Invocation.java:536)
+    at com.hazelcast.spi.impl.operationservice.impl.InvocationFuture.waitForResponse(InvocationFuture.java:275)
+    at com.hazelcast.spi.impl.operationservice.impl.InvocationFuture.get(InvocationFuture.java:222)
+    at com.hazelcast.spi.impl.operationservice.impl.InvocationFuture.get(InvocationFuture.java:202)
+    at com.hazelcast.spi.impl.operationservice.impl.InvokeOnPartitions.retryFailedPartitions(InvokeOnPartitions.java:131)
+    at com.hazelcast.spi.impl.operationservice.impl.InvokeOnPartitions.invoke(InvokeOnPartitions.java:67)
+    at com.hazelcast.spi.impl.operationservice.impl.OperationServiceImpl.invokeOnAllPartitions(OperationServiceImpl.java:368)
+    at com.hazelcast.map.impl.proxy.MapProxySupport.clearInternal(MapProxySupport.java:754)
+    at com.hazelcast.map.impl.proxy.MapProxyImpl.clearInternal(MapProxyImpl.java:80)
+    at com.hazelcast.map.impl.proxy.MapProxyImpl.clear(MapProxyImpl.java:565)
+    at com.domain.app.util.cache.HazelCache.updateActiveIdCacheMap(HazelCache.java:51)
+    at com.domain.app.util.DataUtils.getAllActiveIds(DataUtils.java:707)
+    at com.domain.app.util.DataUtils.getActiveIdMap(DataUtils.java:724)
+    at com.domain.app.util.DataUtils$$FastClassByCGLIB$$e080733b.invoke(<generated>)
+    at org.springframework.cglib.proxy.MethodProxy.invoke(MethodProxy.java:204)
+    at org.springframework.aop.framework.CglibAopProxy$CglibMethodInvocation.invokeJoinpoint(CglibAopProxy.java:698)
+    at org.springframework.aop.framework.ReflectiveMethodInvocation.proceed(ReflectiveMethodInvocation.java:150)
+    at org.springframework.aop.aspectj.AspectJAfterThrowingAdvice.invoke(AspectJAfterThrowingAdvice.java:55)
+    at org.springframework.aop.framework.ReflectiveMethodInvocation.proceed(ReflectiveMethodInvocation.java:172)
+    at org.springframework.aop.interceptor.ExposeInvocationInterceptor.invoke(ExposeInvocationInterceptor.java:91)
+    at org.springframework.aop.framework.ReflectiveMethodInvocation.proceed(ReflectiveMethodInvocation.java:172)
+    at org.springframework.aop.framework.CglibAopProxy$DynamicAdvisedInterceptor.intercept(CglibAopProxy.java:631)
+    at com.domain.app.util.MasterDataUtils$$EnhancerByCGLIB$$ff67d36d.getactiveIdMap(<generated>)
+    at com.domain.app.service.impl.OperationServiceImpl.getCourseDetails(OperationServiceImpl.java:459)
+    at com.domain.app.service.impl.OperationServiceImpl.operationDetails(OperationServiceImpl.java:401)
+    at com.domain.app.service.impl.OperationServiceImpl.getemployeeoperationProgram(OperationServiceImpl.java:287)
+    at sun.reflect.GeneratedMethodAccessor571.invoke(Unknown Source)
+    at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)
+    at java.lang.reflect.Method.invoke(Method.java:606)
+    at org.springframework.aop.support.AopUtils.invokeJoinpointUsingReflection(AopUtils.java:317)
+    at org.springframework.aop.framework.ReflectiveMethodInvocation.invokeJoinpoint(ReflectiveMethodInvocation.java:183)
+    at org.springframework.aop.framework.ReflectiveMethodInvocation.proceed(ReflectiveMethodInvocation.java:150)
+    at org.springframework.aop.aspectj.AspectJAfterThrowingAdvice.invoke(AspectJAfterThrowingAdvice.java:55)
+    at org.springframework.aop.framework.ReflectiveMethodInvocation.proceed(ReflectiveMethodInvocation.java:172)
+    at org.springframework.aop.interceptor.ExposeInvocationInterceptor.invoke(ExposeInvocationInterceptor.java:91)
+    at org.springframework.aop.framework.ReflectiveMethodInvocation.proceed(ReflectiveMethodInvocation.java:172)
+    at org.springframework.aop.framework.JdkDynamicAopProxy.invoke(JdkDynamicAopProxy.java:204)
+    at com.sun.proxy.$Proxy71.getemployeeoperationProgram(Unknown Source)
+    at com.domain.app.manager.impl.operationManagerImpl.getemployeeoperationProgram(operationManagerImpl.java:35)
+    at com.domain.app.controller.employeeController.getemployeeoperationProgram(employeeController.java:119)
+    at sun.reflect.GeneratedMethodAccessor570.invoke(Unknown Source)
+    at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)
+    at java.lang.reflect.Method.invoke(Method.java:606)
+    at org.springframework.web.method.support.InvocableHandlerMethod.invoke(InvocableHandlerMethod.java:219)
+    at org.springframework.web.method.support.InvocableHandlerMethod.invokeForRequest(InvocableHandlerMethod.java:132)
+    at org.springframework.web.servlet.mvc.method.annotation.ServletInvocableHandlerMethod.invokeAndHandle(ServletInvocableHandlerMethod.java:104)
+    at org.springframework.web.servlet.mvc.method.annotation.RequestMappingHandlerAdapter.invokeHandleMethod(RequestMappingHandlerAdapter.java:745)
+    at org.springframework.web.servlet.mvc.method.annotation.RequestMappingHandlerAdapter.handleInternal(RequestMappingHandlerAdapter.java:686)
+    at org.springframework.web.servlet.mvc.method.AbstractHandlerMethodAdapter.handle(AbstractHandlerMethodAdapter.java:80)
+    at org.springframework.web.servlet.DispatcherServlet.doDispatch(DispatcherServlet.java:925)
+    at org.springframework.web.servlet.DispatcherServlet.doService(DispatcherServlet.java:856)
+    at org.springframework.web.servlet.FrameworkServlet.processRequest(FrameworkServlet.java:936)
+    at org.springframework.web.servlet.FrameworkServlet.doGet(FrameworkServlet.java:827)
+    at javax.servlet.http.HttpServlet.service(HttpServlet.java:624)
+    at org.springframework.web.servlet.FrameworkServlet.service(FrameworkServlet.java:812)
+    at javax.servlet.http.HttpServlet.service(HttpServlet.java:731)
+    at org.apache.catalina.core.ApplicationFilterChain.internalDoFilter(ApplicationFilterChain.java:303)
+    at org.apache.catalina.core.ApplicationFilterChain.doFilter(ApplicationFilterChain.java:208)
+    at org.apache.tomcat.websocket.server.WsFilter.doFilter(WsFilter.java:52)
+    at org.apache.catalina.core.ApplicationFilterChain.internalDoFilter(ApplicationFilterChain.java:241)
+    at org.apache.catalina.core.ApplicationFilterChain.doFilter(ApplicationFilterChain.java:208)
+    at org.apache.catalina.filters.ExpiresFilter.doFilter(ExpiresFilter.java:1201)
+    at org.apache.catalina.core.ApplicationFilterChain.internalDoFilter(ApplicationFilterChain.java:241)
+    at org.apache.catalina.core.ApplicationFilterChain.doFilter(ApplicationFilterChain.java:208)
+    at com.domain.app.security.CSRFFilter.doFilterInternal(CSRFFilter.java:63)
+    at org.springframework.web.filter.OncePerRequestFilter.doFilter(OncePerRequestFilter.java:107)
+    at org.apache.catalina.core.ApplicationFilterChain.internalDoFilter(ApplicationFilterChain.java:241)
+    at org.apache.catalina.core.ApplicationFilterChain.doFilter(ApplicationFilterChain.java:208)
+    at org.apache.catalina.core.StandardWrapperValve.invoke(StandardWrapperValve.java:203)
+    at org.apache.catalina.core.StandardContextValve.invoke(StandardContextValve.java:122)
+    at org.apache.catalina.authenticator.AuthenticatorBase.invoke(AuthenticatorBase.java:505)
+    at org.apache.catalina.core.StandardHostValve.invoke(StandardHostValve.java:169)
+    at org.apache.catalina.valves.StuckThreadDetectionValve.invoke(StuckThreadDetectionValve.java:221)
+    at org.apache.catalina.valves.ErrorReportValve.invoke(ErrorReportValve.java:103)
+    at org.apache.catalina.valves.AccessLogValve.invoke(AccessLogValve.java:956)
+    at org.apache.catalina.core.StandardEngineValve.invoke(StandardEngineValve.java:116)
+    at org.apache.catalina.connector.CoyoteAdapter.service(CoyoteAdapter.java:436)
+    at org.apache.coyote.http11.AbstractHttp11Processor.process(AbstractHttp11Processor.java:1078)
+    at org.apache.coyote.AbstractProtocol$AbstractConnectionHandler.process(AbstractProtocol.java:625)
+    at org.apache.tomcat.util.net.NioEndpoint$SocketProcessor.doRun(NioEndpoint.java:1757)
+    at org.apache.tomcat.util.net.NioEndpoint$SocketProcessor.run(NioEndpoint.java:1716)
+    at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1145)
+    at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:615)
+    at org.apache.tomcat.util.threads.TaskThread$WrappingRunnable.run(TaskThread.java:61)
+    at java.lang.Thread.run(Thread.java:745)
+    at ------ End remote and begin local stack-trace ------.(Unknown Source)
+    at com.hazelcast.spi.impl.operationservice.impl.InvocationFuture.resolveApplicationResponse(InvocationFuture.java:385)
+    at com.hazelcast.spi.impl.operationservice.impl.InvocationFuture.resolveApplicationResponseOrThrowException(InvocationFuture.java:335)
+    at com.hazelcast.spi.impl.operationservice.impl.InvocationFuture.get(InvocationFuture.java:223)
+    at com.hazelcast.spi.impl.operationservice.impl.InvocationFuture.get(InvocationFuture.java:202)
+    at com.hazelcast.spi.impl.operationservice.impl.InvokeOnPartitions.retryFailedPartitions(InvokeOnPartitions.java:131)
+    at com.hazelcast.spi.impl.operationservice.impl.InvokeOnPartitions.invoke(InvokeOnPartitions.java:67)
+    at com.hazelcast.spi.impl.operationservice.impl.OperationServiceImpl.invokeOnAllPartitions(OperationServiceImpl.java:368)
+    at com.hazelcast.map.impl.proxy.MapProxySupport.clearInternal(MapProxySupport.java:754)
+    at com.hazelcast.map.impl.proxy.MapProxyImpl.clearInternal(MapProxyImpl.java:80)
+    at com.hazelcast.map.impl.proxy.MapProxyImpl.clear(MapProxyImpl.java:565)
+    at com.domain.app.util.cache.AppCache.updateactiveIdCacheMap(AppCache.java:51)
+    at com.domain.app.util.MasterDataUtils.getAllactiveIds(MasterDataUtils.java:707)
+    at com.domain.app.util.MasterDataUtils.getactiveIdMap(MasterDataUtils.java:724)
+    at com.domain.app.util.MasterDataUtils$$FastClassByCGLIB$$e080733b.invoke(<generated>)
+    at org.springframework.cglib.proxy.MethodProxy.invoke(MethodProxy.java:204)
+    at org.springframework.aop.framework.CglibAopProxy$CglibMethodInvocation.invokeJoinpoint(CglibAopProxy.java:698)
+    at org.springframework.aop.framework.ReflectiveMethodInvocation.proceed(ReflectiveMethodInvocation.java:150)
+    at org.springframework.aop.aspectj.AspectJAfterThrowingAdvice.invoke(AspectJAfterThrowingAdvice.java:55)
+    at org.springframework.aop.framework.ReflectiveMethodInvocation.proceed(ReflectiveMethodInvocation.java:172)
+    at org.springframework.aop.interceptor.ExposeInvocationInterceptor.invoke(ExposeInvocationInterceptor.java:91)
+    at org.springframework.aop.framework.ReflectiveMethodInvocation.proceed(ReflectiveMethodInvocation.java:172)
+    at org.springframework.aop.framework.CglibAopProxy$DynamicAdvisedInterceptor.intercept(CglibAopProxy.java:631)
+    at com.domain.app.util.MasterDataUtils$$EnhancerByCGLIB$$ff67d36d.getactiveIdMap(<generated>)
+    at com.domain.app.service.impl.OperationServiceImpl.getCourseDetails(OperationServiceImpl.java:459)
+    at com.domain.app.service.impl.OperationServiceImpl.operationDetails(OperationServiceImpl.java:401)
+    at com.domain.app.service.impl.OperationServiceImpl.getemployeeoperationProgram(OperationServiceImpl.java:287)
+    at sun.reflect.GeneratedMethodAccessor571.invoke(Unknown Source)
+    at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)
+    at java.lang.reflect.Method.invoke(Method.java:606)
+    at org.springframework.aop.support.AopUtils.invokeJoinpointUsingReflection(AopUtils.java:317)
+    at org.springframework.aop.framework.ReflectiveMethodInvocation.invokeJoinpoint(ReflectiveMethodInvocation.java:183)
+    at org.springframework.aop.framework.ReflectiveMethodInvocation.proceed(ReflectiveMethodInvocation.java:150)
+    at org.springframework.aop.aspectj.AspectJAfterThrowingAdvice.invoke(AspectJAfterThrowingAdvice.java:55)
+    at org.springframework.aop.framework.ReflectiveMethodInvocation.proceed(ReflectiveMethodInvocation.java:172)
+    at org.springframework.aop.interceptor.ExposeInvocationInterceptor.invoke(ExposeInvocationInterceptor.java:91)
+    at org.springframework.aop.framework.ReflectiveMethodInvocation.proceed(ReflectiveMethodInvocation.java:172)
+    at org.springframework.aop.framework.JdkDynamicAopProxy.invoke(JdkDynamicAopProxy.java:204)
+    at com.sun.proxy.$Proxy71.getemployeeoperationProgram(Unknown Source)
+    at com.domain.app.manager.impl.operationManagerImpl.getemployeeoperationProgram(operationManagerImpl.java:35)
+    at com.domain.app.controller.employeeController.getemployeeoperationProgram(employeeController.java:119)
+    at sun.reflect.GeneratedMethodAccessor570.invoke(Unknown Source)
+    at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)
+    at java.lang.reflect.Method.invoke(Method.java:606)
+    at org.springframework.web.method.support.InvocableHandlerMethod.invoke(InvocableHandlerMethod.java:219)
+    at org.springframework.web.method.support.InvocableHandlerMethod.invokeForRequest(InvocableHandlerMethod.java:132)
+    at org.springframework.web.servlet.mvc.method.annotation.ServletInvocableHandlerMethod.invokeAndHandle(ServletInvocableHandlerMethod.java:104)
+    at org.springframework.web.servlet.mvc.method.annotation.RequestMappingHandlerAdapter.invokeHandleMethod(RequestMappingHandlerAdapter.java:745)
+    at org.springframework.web.servlet.mvc.method.annotation.RequestMappingHandlerAdapter.handleInternal(RequestMappingHandlerAdapter.java:686)
+    at org.springframework.web.servlet.mvc.method.AbstractHandlerMethodAdapter.handle(AbstractHandlerMethodAdapter.java:80)
+    at org.springframework.web.servlet.DispatcherServlet.doDispatch(DispatcherServlet.java:925)
+    at org.springframework.web.servlet.DispatcherServlet.doService(DispatcherServlet.java:856)
+    at org.springframework.web.servlet.FrameworkServlet.processRequest(FrameworkServlet.java:936)
+    at org.springframework.web.servlet.FrameworkServlet.doGet(FrameworkServlet.java:827)
+    at javax.servlet.http.HttpServlet.service(HttpServlet.java:624)
+    at org.springframework.web.servlet.FrameworkServlet.service(FrameworkServlet.java:812)
+    at javax.servlet.http.HttpServlet.service(HttpServlet.java:731)
+    at org.apache.catalina.core.ApplicationFilterChain.internalDoFilter(ApplicationFilterChain.java:303)
+    at org.apache.catalina.core.ApplicationFilterChain.doFilter(ApplicationFilterChain.java:208)
+    at org.apache.tomcat.websocket.server.WsFilter.doFilter(WsFilter.java:52)
+    at org.apache.catalina.core.ApplicationFilterChain.internalDoFilter(ApplicationFilterChain.java:241)
+    at org.apache.catalina.core.ApplicationFilterChain.doFilter(ApplicationFilterChain.java:208)
+    at org.apache.catalina.filters.ExpiresFilter.doFilter(ExpiresFilter.java:1201)
+    at org.apache.catalina.core.ApplicationFilterChain.internalDoFilter(ApplicationFilterChain.java:241)
+    at org.apache.catalina.core.ApplicationFilterChain.doFilter(ApplicationFilterChain.java:208)
+    at com.domain.app.security.CSRFFilter.doFilterInternal(CSRFFilter.java:63)
+    at org.springframework.web.filter.OncePerRequestFilter.doFilter(OncePerRequestFilter.java:107)
+    at org.apache.catalina.core.ApplicationFilterChain.internalDoFilter(ApplicationFilterChain.java:241)
+    at org.apache.catalina.core.ApplicationFilterChain.doFilter(ApplicationFilterChain.java:208)
+    at org.apache.catalina.core.StandardWrapperValve.invoke(StandardWrapperValve.java:203)
+    at org.apache.catalina.core.StandardContextValve.invoke(StandardContextValve.java:122)
+    at org.apache.catalina.authenticator.AuthenticatorBase.invoke(AuthenticatorBase.java:505)
+    at org.apache.catalina.core.StandardHostValve.invoke(StandardHostValve.java:169)
+    at org.apache.catalina.valves.StuckThreadDetectionValve.invoke(StuckThreadDetectionValve.java:221)
+    at org.apache.catalina.valves.ErrorReportValve.invoke(ErrorReportValve.java:103)
+    at org.apache.catalina.valves.AccessLogValve.invoke(AccessLogValve.java:956)
+    at org.apache.catalina.core.StandardEngineValve.invoke(StandardEngineValve.java:116)
+    at org.apache.catalina.connector.CoyoteAdapter.service(CoyoteAdapter.java:436)
+    at org.apache.coyote.http11.AbstractHttp11Processor.process(AbstractHttp11Processor.java:1078)
+    at org.apache.coyote.AbstractProtocol$AbstractConnectionHandler.process(AbstractProtocol.java:625)
+    at org.apache.tomcat.util.net.NioEndpoint$SocketProcessor.doRun(NioEndpoint.java:1757)
+    at org.apache.tomcat.util.net.NioEndpoint$SocketProcessor.run(NioEndpoint.java:1716)
+    at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1145)
+    at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:615)
+    at org.apache.tomcat.util.threads.TaskThread$WrappingRunnable.run(TaskThread.java:61)
+    at java.lang.Thread.run(Thread.java:745)
+```
+
+Catalina log:
+```
+org.apache.catalina.valves.StuckThreadDetectionValve notifyStuckThreadDetected
+WARNING: Thread "http-nio-54389-exec-38" (id=628) has been active for 602,259 milliseconds (since 8/1/16 3:47 PM) to serve the same request for https://app.domain.com/app/main/courseStatus/222333444/144619/SHELF124_T4-C13/1/2272?noCache=1470084465625 and may be stuck (configured threshold for this StuckThreadDetectionValve is 600 seconds). There is/are 5 thread(s) in total that are monitored by this Valve and may be stuck.
+```

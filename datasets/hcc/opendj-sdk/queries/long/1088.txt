@@ -1,0 +1,53 @@
+Found using revision 9252.
+
+1. Setup the instance
+
+/var/tmp/opendj/setup -p 1389 --adminConnectorPort 4444 -D cn=myself -w password -b dc=example,dc=com -a --cli -h localhost -n
+
+
+
+2. Import data for the test
+
+	add user "auser":
+ dn: uid=auser, ou=People, o=ACI Tests, dc=example,dc=com
+	add one branch with the following aci:
+ dn: ou=aci branch, o=Delete Tests, o=ACI Tests, dc=example,dc=com
+ aci: (targetcontrol="*")(version 3.0; acl "allow control access"; allow(read) userdn="ldap:///anyone";)
+ aci: (targetattr="*")(version 3.0; acl "add allow delete"; allow(delete) userdn="ldap:///all";)
+	add one branch without aci:
+ dn: ou=non-aci branch, o=Delete Tests, o=ACI Tests, dc=example,dc=com
+
+
+
+
+/var/tmp/opendj/bin/import-ldif -p 4444 -X -D cn=myself -w password -n userRoot -l /var/tmp/aci_data.ldif
+
+
+
+3. User "auser" deletes branch from targeted branch (under ou=aci branch, o=Delete Tests, o=ACI Tests,dc=example,dc=com)
+
+/var/tmp/opendj/bin/ldapdelete -h localhost -p 1389 -D "uid=auser,ou=people,o=ACI Tests,dc=example,dc=com" -w "ACIRules" -x "ou=extra branch 1, ou=aci branch, o=Delete Tests, o=ACI Tests,dc=example,dc=com"
+Processing DELETE request for ou=extra branch 1, ou=aci branch, o=Delete Tests, o=ACI Tests,dc=example,dc=com
+DELETE operation successful for DN ou=extra branch 1, ou=aci branch, o=Delete Tests, o=ACI Tests,dc=example,dc=com
+
+
+
+=> succeeds as expected
+
+4. User deletes branch from non-targeted branch (under ou=non-aci branch, o=Delete Tests, o=ACI Tests, dc=example,dc=com)
+
+/var/tmp/opendj/bin/ldapdelete -h localhost -p 1389 -D "uid=auser,ou=people,o=ACI Tests,dc=example,dc=com" -w "ACIRules" -x "ou=extra branch 1, ou=non-aci branch, o=Delete Tests, o=ACI Tests,dc=example,dc=com"
+Processing DELETE request for ou=extra branch 1, ou=non-aci branch, o=Delete Tests, o=ACI Tests,dc=example,dc=com
+DELETE operation failed
+$ echo $?
+255
+
+
+
+=> fails as expected but we should get 50 (Insufficient Access Rights) as result code and the following error message:
+
+Processing DELETE request for ou=extra branch 1, ou=non-aci branch, o=Delete Tests, o=ACI Tests,dc=example,dc=com
+DELETE operation failed
+Result Code: 50 (Insufficient Access Rights)
+Additional Information: The entry ou=extra branch 1,ou=non-aci branch,o=Delete Tests,o=ACI Tests,dc=example,dc=com cannot be deleted due to insufficient access rights
+

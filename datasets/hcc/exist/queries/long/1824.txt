@@ -1,0 +1,60 @@
+### What is the problem
+
+The `+` character is a reserved character according to RFC3986, and as such should be "protected from normalization." eXist's xmldb module's functions that deal with database URIs incorrectly normalize this character, treating it as if it were a percent-encoded octet, i.e., treating the `+` character in an xmldb URI as a character that should be decoded and turned into a space character.
+
+This causes a problem in XQuery applications like eXide where the application must be able to reliably display the URI-decoded form of a resource (its "name"), while also reliably addressing its URI (as a "key") for resource operations like delete and rename. 
+
+For example, given a resource in the database created via `xmldb:store("/db", "A+B.xml", <foo/>)`, we can successfully address this document via `doc("/db/A+B.xml")`, but `xmldb:decode("A+B.xml")` returns `A B.xml` instead of `A+B.xml`. 
+
+While this issue is about handling of the `+` character, it is also about a larger issue: users have reported unpredictable behavior involving characters in resource names, and would benefit from a clear and straightforward description of eXist's xmldb *URI scheme*, explaining how characters in resource names are treated, and placed in the eXist documentation. This statement should cite any relevant specs/standards for URI encoding that eXist adheres to, and where (if at all) eXist diverges from these standards.
+
+Clarity about eXist's xmldb URI scheme would also let us achieve greater consistency in eXist's various interfaces and built-in apps/tools. For example, while using WebDAV clients (e.g., oXygen and Transmit) to create collections like `tést` or `你好` causes the resulting collection list to display `tést` and `你好`, doing the same in the Java admin client causes the collection list to display `t%C3%A9st` and `%E4%BD%A0%E5%A5%BD`. This suggests that the Java admin client is performing the correct *encoding* of the resource name into a URI when it is stored/created, but it is failing to *decode* the resource URI back into its name when displaying it.
+
+But for now, let's focus on the treatment of `+` in eXist's xmldb URI-related functions.
+
+### What did you expect
+
+According to the function documentation for `xmldb:decode` and `xmldb:decode-uri` (see http://exist-db.org/exist/apps/fundocs/view.html?uri=http://exist-db.org/xquery/xmldb#decode.1), these functions do the following to the supplied input:
+
+> any percent encoded octets will be translated to their decoded UTF-8 representation
+
+Since `A+B` contains no percent-encoded octets, calling these decode functions should return the original value, `A+B`. Instead, eXist returns `A B`.
+
+Let's probe the more restrictive function, xmldb:decode-uri(), which takes an xs:anyURI. XQuery's definition of xs:anyURI can be found at https://www.w3.org/TR/xpath-datamodel-31/#namespace-names, which references https://www.w3.org/TR/xmlschema-2/#anyURI and https://www.w3.org/TR/xmlschema11-2/#anyURI; the former cites https://tools.ietf.org/html/rfc3986#section-2.2, which defines `+` as a reserved character:
+
+> Characters in the reserved set are protected from normalization and are therefore safe to be used by scheme-specific and producer-specific algorithms for delimiting data subcomponents within a URI
+
+I take this to mean that `+` should not be encoded or decoded; it should be protected from normalization. 
+
+### Describe how to reproduce or add a test
+
+#### 1. Simple test:
+
+The following query should return `true()` x2, but instead returns `false()` x2.
+
+```xquery
+let $string := "A+B"
+let $uri := xs:anyURI($string)
+return
+  (
+    xmldb:decode($string) eq "A+B"`,
+    xmldb:decode-uri($uri) eq "A+B"`
+  )
+```
+
+#### 2. Complex test:
+
+1. Download a recent nightly build of eXist, or create a file on disk with the name `eXist-db-4.1.0-SNAPSHOT+201804130403.dmg`
+2. Create a collection `/db/test` and upload the file to eXist via WebDAV
+3. `xmldb:get-child-resources("/db/test")` on the collection containing the file will return the following result: 
+        `"eXist-db-4.1.0-SNAPSHOT+201804130403.dmg"`
+5. `xmldb:get-child-resources("/db/test") ! xmldb:decode-uri(.)` will return:
+        `"eXist-db-4.1.0-SNAPSHOT 201804130403.dmg"`
+
+### Context information
+
+- eXist-db version + Git Revision hash e.g. eXist-db 4.1.0-SNAPSHOT+201804122141 /  59493034b 
+- Java version: Oracle JDK 1.8.0_162
+- Operating system: macOS 10.13.4
+- 32 or 64 bit: 64 bit
+- Any custom changes in e.g. conf.xml: none

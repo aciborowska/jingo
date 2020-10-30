@@ -1,0 +1,93 @@
+Setup
+
+1. Setup the folowing topology with base DN dc=example,dc=com:
+
+	DSRS (generate 100 entries)
+	DS1
+	DS2
+	DS3
+	DS4
+	... (add as many directory servers as you want to speed up the appearance of the problem)
+
+
+
+2. Run initialize-all on DSRS
+ 3. For each server, add an entry. See down below and replace the following:
+
+	the port number should match each directory server's port
+	replace "A1" in the dn to create unique entries for each directory server (for example "A2", "A3", "A4", ...)
+
+
+
+
+$ DS1/bin/ldapmodify -p 1501 -D "cn=Directory Manager" -w password -a <<END_OF_COMMAND_INPUT
+dn: cn=A1,dc=example,dc=com
+objectclass:top
+objectclass:organizationalperson
+objectclass:inetorgperson
+objectclass:person
+sn:User
+cn:Test User
+description:1
+description:2
+mail:bla@example.com
+telephonenumber:+33165990803
+END_OF_COMMAND_INPUT
+
+
+4. Run stop-ds for DS1, DS2, DS3, DS4, ... (Do not stop DSRS)
+
+5. Run modrate on DSRS:
+
+$ opendj-ldap-toolkit/bin/modrate -p 1500 -D "cn=directory manager" -w password -F -c 4 -t 4 -b "uid=user.%d,ou=people,dc=example,dc=com" -g "rand(0,1000)" -g "randstr(16)" 'description:%2$s'
+
+
+and let it run...
+
+6. start-ds DS1
+Wait for the replication server to get blocked
+
+Run the following commands to monitor the evolution:
+
+	On DS1, wait for current-rcv-window attribute to reach 0
+
+$ watch 'DS1/bin/ldapsearch -p 1501 -D "cn=Directory Manager" -w password -b "cn=monitor" "(replayed-updates=*)" max-rcv-window current-rcv-window replayed-updates'
+
+
+Sample output:
+
+dn: cn=Directory server DS(22105) localhost:59784,cn=dc_example_dc_com,cn=Replic
+ ation,cn=monitor
+max-rcv-window: 100000
+current-rcv-window: 0
+replayed-updates: 1699902
+
+
+
+
+
+
+	On DSRS, wait for a thread to be blocked on ServerHandler.acquirePermitInSendWindow()
+
+$ watch 'jstack `cat target/opendj_0_DSRS/logs/server.pid` | grep acquirePermitInSendWindow -B8 -A3'
+
+
+Sample output:
+
+"Replication server RS(31258) writing to Replica DS(22105) for domain "dc=example,dc=com" at localhost/127.0.0.1:5978
+4" #314 prio=5 os_prio=0 tid=0x00007fd66c090800 nid=0x6ae0 waiting on condition [0x00007fd645fa2000]
+   java.lang.Thread.State: TIMED_WAITING (parking)
+        at sun.misc.Unsafe.park(Native Method)
+        - parking to wait for  <0x00000006ceabb5a8> (a java.util.concurrent.Semaphore$NonfairSync)
+        at java.util.concurrent.locks.LockSupport.parkNanos(LockSupport.java:215)
+        at java.util.concurrent.locks.AbstractQueuedSynchronizer.doAcquireSharedNanos(AbstractQueuedSynchronizer.java
+:1037)
+        at java.util.concurrent.locks.AbstractQueuedSynchronizer.tryAcquireSharedNanos(AbstractQueuedSynchronizer.jav
+a:1328)
+        at java.util.concurrent.Semaphore.tryAcquire(Semaphore.java:409)
+        at org.opends.server.replication.server.ServerHandler.acquirePermitInSendWindow(ServerHandler.java:951)
+        at org.opends.server.replication.server.ServerHandler.take(ServerHandler.java:929)
+        at org.opends.server.replication.server.ServerWriter.run(ServerWriter.java:94)
+
+
+

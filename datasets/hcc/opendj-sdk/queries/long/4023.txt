@@ -1,0 +1,91 @@
+When user tries to change his own password using the rest2ldap PUT method it throws an error saying: "Constraint Violation: User passwords may not be provided in pre-encoded form". 
+Steps to reproduce:
+1) Setup OpenDJ instance
+
+
+setup directory-server \
+          --instancePath /home/instances/rest2ldap/opendj \
+          --rootUserDn cn=Directory\ Manager \
+          --rootUserPassword ****** \
+          --hostname localhost.localdomain \
+          --adminConnectorPort 4444 \
+          --ldapPort 389 \
+          --httpPort 8080 \
+          --sampleData 200 \
+          --baseDn dc=example,dc=com \
+          --backendType je-backend
+
+
+2) Enable /api endpoint (use included JSON config)
+
+
+dsconfig \
+ set-http-endpoint-prop \
+ --hostname localhost.localdomain \
+ --port 4444 \
+ --bindDN "cn=Directory Manager" \
+ --bindPassword password \
+ --endpoint-name /api \
+ --set authorization-mechanism:"HTTP Basic" \
+ --set config-directory:config/rest2ldap/endpoints/api \
+ --set enabled:true \
+ --no-prompt \
+ --trustAll
+
+
+3)Add access to selected user
+
+
+ldapmodify -h localhost.localdomain -p 389 -D "cn=Directory Manager" -w password 
+dn: dc=example,dc=com
+changetype: modify
+add: aci
+aci: (target = "ldap:///dc=example,dc=com")(targetattr = "*")(version 3.0;acl 
+ "Allow acces to baseDN for user.16"; allow (all)(userdn = "ldap:///uid=user.16,ou
+ =people,dc=example,dc=com");)
+-
+
+
+4)Restart the server and send a PUT request with changed password
+
+
+PUT /api/users/user.16 HTTP/1.1
+Host: user.16:password@localhost:localdomain:8080
+Content-Type: application/json
+{
+  "_id": "user.16",
+  "_schema": "frapi:opendj:rest2ldap:user:1.0",
+  "userName": "user.16@maildomain.net",
+  "displayName": [
+    "Abdallah Abdul-Nour"
+  ],
+  "name": {
+    "givenName": "Abdallah",
+    "familyName": "Abdul-Nour"
+  },
+  "userPassword": "changeit",
+  "description": "This is the description for Abdallah Abdul-Nour.",
+  "contactInformation": {
+    "telephoneNumber": "+1 843 749 2480",
+    "emailAddress": "user.16@maildomain.net"
+  }
+}
+
+
+
+Current behavior:
+Returns error
+
+
+{
+  "code": 400,
+  "reason": "Bad Request",
+  "message": "Constraint Violation: User passwords may not be provided in pre-encoded form"
+}
+
+
+Expected behavior:
+The password is changed.
+
+I'm not sure if it should be possible to change passwords using the PUT method because there are other ways of doing that, but the error is clearly wrong, as the password is given in plaintext.
+If you add "ds-priviledge: password-reset" to the user, he can change other users' passwords with the PUT method just fine.

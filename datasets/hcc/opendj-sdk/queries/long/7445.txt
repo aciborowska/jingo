@@ -1,0 +1,47 @@
+After upgrade of python's requests lib version 2.24.0 we can see issue when doing a rest request via HTTPS with server's cert validation.
+
+The test use DS 7.1.0-SNAPSHOT rev. 0abef71e4ad, OpenSSL 1.0.2k-fips 26 Jan 2017, OpenJDK 11.0.6 and python 3.8.1.
+
+The error returned from the client is:
+
+SSLError: HTTPSConnectionPool(host='localhost', port=8451): Max retries exceeded with url: /api/users?_prettyPrint=true&_queryFilter=%2Fmanager%2Fgroups%2F_id+eq+%22Directory+Administrators%22 (Caused by SSLError(SSLCertVerificationError(1, '[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: self signed certificate (_ssl.c:1108)')))
+
+
+Test steps:
+ 1. Configure DS with evaluation profile and enable HTTPS
+
+./setup -h localhost -p 1391 -D "uid=admin" -w password --adminConnectorPort 4446 -Z 1638   --profile ds-evaluation --set ds-evaluation/generatedUsers:200 --acceptLicense --monitorUserDn uid=Monitor --monitorUserPassword password --serverId "djeval" --deploymentKey AI1QLGYmsSzDRjKDmQZu7l9sAD10aA5CBVN1bkVDC24LTccCYcFwGw --deploymentKeyPassword keypassword --replicationPort 8991
+
+./bin/dsconfig -h localhost -p 4446 -D "uid=admin" -w password -X create-connection-handler --handler-name "HTTPS Connection Handler" --type http --set enabled:false --set listen-port:8451 -n
+
+./bin/dsconfig -h localhost -p 4446 -D "uid=admin" -w password -X set-connection-handler-prop --handler-name "HTTPS Connection Handler" --set enabled:true --set use-ssl:true --set key-manager-provider:"PKCS12" --set trust-manager-provider:"JVM Trust Manager" -n
+
+
+2. Export ca-cert
+
+./bin/dskeymgr export-ca-cert  --deploymentKeyPassword "keypassword" --outputFile /tmp/ca-cert.pem --deploymentKey AI1QLGYmsSzDRjKDmQZu7l9sAD10aA5CBVN1bkVDC24LTccCYcFwGw
+
+
+3. Do a HTTPS request with ca-cert and validation enabled
+
+http -v --follow --all --verify=/tmp/ca-cert.pem -a bjensen:hifalutin    'https://localhost:8451/api/users?_prettyPrint=true&_queryFilter=/manager/groups/_id eq "Directory Administrators"'  Content-Type:"application/json"
+
+
+After investigation of this issue we noticed that server returns whole chain during ssl handshake and it contains the ca-cert in the chain which is not mandatory and the client consider this to be a problem and returns error.
+
+There is a workaround: you can copy existing config/keystore and deleting all certs except ssl-key-pair and creating a new key manager provider pointing to this keystore. After, change the configuration of HTTPS handler to use the new manager.
+
+./bin/dskeymgr export-ca-cert  --deploymentKeyPassword "keypassword" --outputFile /tmp/ca-cert.pem --deploymentKey AI1QLGYmsSzDRjKDmQZu7l9sAD10aA5CBVN1bkVDC24LTccCYcFwGw
+
+keytool -delete -alias master-key -keystore "./config/sslKeystore" -storepass "CwrhVcqwEILZp1GOtLffp2wnrlvzYGWgDQSoeGJFHZwq6ieJ4XEEUhovMKpC0MucmpQ=" -storetype "PKCS12"
+
+keytool -delete -alias ca-cert -keystore "./config/sslKeystore" -storepass "CwrhVcqwEILZp1GOtLffp2wnrlvzYGWgDQSoeGJFHZwq6ieJ4XEEUhovMKpC0MucmpQ=" -storetype "PKCS12" 
+
+./bin/dsconfig -h localhost -p 4446 -D "uid=admin" -w password -X create-key-manager-provider --provider-name "keystore_copy" --set enabled:true --set key-store-file:config/sslKeystore --type file-based --set key-store-pin:"&{file:config/keystore.pin}" --set key-store-type:PKCS12 -n
+
+./bin/dsconfig -h localhost -p 4446 -D "uid=admin" -w password -X set-connection-handler-prop --handler-name "HTTPS Connection Handler" --set key-manager-provider:keystore_copy -n
+
+
+Note:
+
+The test above works with newer openssl: 1.1.1 released 11-Sep-2018.

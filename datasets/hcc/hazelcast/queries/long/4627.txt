@@ -1,0 +1,63 @@
+I'm currently playing around with IExecutorService.submitToKeyOwner method and encountered a somehow strange behaviour. I have a simple test:
+- create instance1 (instance1 = Hazelcast.newHazelcastInstance())
+- create instance2 (instance2 = Hazelcast.newHazelcastInstance())
+- submitToKeyOwner on both instances
+
+So i have two (default) hazelcast instances within the same JVM and submitToKeyOwner method does:
+- ICompletableFuture<String> = instance.getExecutorService("x").submitToKeyOwner(callable, "pk")
+- future.andThen(executionCallback)
+- the callable just resturns a static string
+- the executionCallback onResponse method just prints out the response
+
+Following tests can be found at: https://github.com/dguggi/executeOnKeyOwner
+##### PassAlways
+- create instance1
+- create instance2
+- submitToKeyOwner(instance1)
+- submitToKeyOwner(instance2)
+
+This test works with any hazelcast version (3.2.6, 3.3, 3,3.1, 3.3.2, 3.3.3, 3.3.4, 3.3.5, 3.4, 3.4.1)
+e.g. _mvn test -Dtest=PassAlways -Dhazelcast.version=3.3.5_
+##### FailSometimes
+- create instance1
+- create instance2
+- submitToKeyOwner(instance**2**)
+- submitToKeyOwner(instance**1**)
+
+_Note the difference to the first test:_ instance1 is created before instance2 but this test invokes submitToKeyOwner with instance2 first.
+
+This test always passes with hazelcast version (3.2.6, 3.3, 3.3.1, 3.3.2 3.3.3)
+e.g. _mvn test -Dtest=FailSometimes -Dhazelcast.version=3.3.3_
+
+However with hazelcast version 3.3.4, 3.3.5, 3.4, 3.4.1 this test rarely passes. Most of the time it fails with two different errors:
+
+**Error1**
+The executionCallback's onResponse method is invoked with _null_ (but the callbale always returns a string)
+
+**Error2**
+A clast cast exception in a hazelcast thread:
+Feb 17, 2015 9:14:56 AM com.hazelcast.spi.impl.BasicInvocation
+SEVERE: [192.168.9.165]:5702 [dev] [3.4.1] Failed asynchronous execution of execution callback: TestBase$1@46c366acfor call BasicInvocation{ serviceName='hz:impl:executorService', op=Operation{serviceName='hz:impl:executorService', callId=0, invocationTime=-1, waitTimeout=-1, callTimeout=60000}, partitionId=195, replicaIndex=0, tryCount=250, tryPauseMillis=500, invokeCount=3, callTimeout=60000, target=null, backupsExpected=0, backupsCompleted=0}
+java.lang.ClassCastException: com.hazelcast.spi.impl.BasicInvocation$InternalResponse cannot be cast to java.lang.String
+    at TestBase$1.onResponse(TestBase.java:42)
+    at com.hazelcast.spi.impl.BasicInvocationFuture$1.run(BasicInvocationFuture.java:96)
+    at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1145)
+    at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:615)
+    at java.lang.Thread.run(Thread.java:745)
+    at com.hazelcast.util.executor.HazelcastManagedThread.executeRun(HazelcastManagedThread.java:76)
+    at com.hazelcast.util.executor.HazelcastManagedThread.run(HazelcastManagedThread.java:92)
+
+Because of this exception the executionCallback's onResponse method is never invoked.
+
+e.g. _mvn test -Dtest=FailSometimes -Dhazelcast.version=3.3.5_
+##### Environment
+- jdk 1.7.0_72
+- Linux dgnb 3.13.0-45-generic 74-Ubuntu SMP Tue Jan 13 19:36:28 UTC 2015 x86_64 x86_64 x86_64 GNU/Linux
+- 8core - Intel(R) Core(TM) i7-4700MQ CPU @ 2.40GHz
+##### Java 8 Note
+
+I did _only_ a few test runs with jdk8 (1.8.0_20):
+- Most of the time the _FailSometimes_ test works with any hazelcast version
+- I just managed to produce **Error1** with hazelcast version 3.4 and 3.4.1 (I couldn't produce the clast cast exception in **Error2**)
+
+Let me know if you need any further information. Thank you!

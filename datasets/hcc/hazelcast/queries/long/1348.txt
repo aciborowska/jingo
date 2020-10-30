@@ -1,0 +1,177 @@
+How to handle locks when one client who has acquired a lock crashed.
+
+see the attache test. ( using   boolean     tryLock(long time, TimeUnit unit) )
+
+one thread acquires the lock and other is waiting
+we simulate crashing the client in first thread.
+the other thread never gets lock and we throw exception that failed to acquire lock.
+
+How do we make sure we handle this. we need something like automatically lock 
+expiration, when doing   tryLock(long time, TimeUnit unit) .
+
+ The currrent lock wtih lease expiration does not help since it blocks the whole thread. what we want is to try to acquire lock and if not available try later rather than blocking the thread.
+
+public void testThreadLockRelease() throws Exception {
+        final HazelcastInstance hazelcastInstance1 =  Hazelcast.newHazelcastInstance();
+        final HazelcastInstance hazelcastClient1 =  HazelcastClient.newHazelcastClient();
+        final List<Exception> expected = new ArrayList<Exception>();
+
+```
+    Runnable run1 = new Runnable() {
+
+        @Override
+        public void run() {
+            Date sDate = new Date();
+            long startTime = sDate.getTime();
+            System.out.println("thread1 started at: "+ sDate);
+
+
+            ILock lock = hazelcastInstance1.getLock("a");
+            TransactionContext tx =  hazelcastClient1.newTransactionContext();
+            try {
+                boolean isLocked = lock.tryLock(2000, TimeUnit.MILLISECONDS);
+
+                try {
+
+                    if(isLocked) {
+                        tx.beginTransaction();
+                        long endTime = System.currentTimeMillis();
+                        long tt = endTime - startTime;
+                        System.out.println("thread 1 acquired lock and now sleeping, time it waited to acquire lock: " + tt + " ms");
+                        Thread.sleep(1000);
+
+                        TransactionalMap<String, String>  test = tx.getMap("test");
+                        test.put("a", "1");
+                        tx.commitTransaction();
+                        Thread.sleep(100);
+
+                        //simulate crash shutdown this instance.
+                        hazelcastClient1.shutdown();
+                    }
+
+
+                } catch(InterruptedException ex) {
+                    System.out.println("thread 1 interrupted ");
+                } catch (Exception ex) {
+                    ex.printStackTrace();
+                    tx.rollbackTransaction();
+                } finally {
+                    try {
+                        //do not release lock
+```
+
+//                          if(isLocked) {
+//                              lock.unlock();
+//                          Date eDate = new Date();
+//                          long endTime = eDate.getTime();
+//                          long tt = endTime - startTime;
+//                          System.out.println("thread1 released lock at : "+ eDate + " total time tokk: "+ tt + " ms");
+//                          }
+
+```
+                    } catch(Exception ex) {
+                        ex.printStackTrace();
+                    }
+
+
+                }
+            } catch(Exception ex) {
+                ex.printStackTrace();
+            }
+
+        }
+    };
+
+
+    final HazelcastInstance hazelcastInstance2 =  Hazelcast.newHazelcastInstance();
+    final HazelcastInstance hazelcastClient2 =  HazelcastClient.newHazelcastClient();
+
+    Runnable run2 = new Runnable() {
+
+        @Override
+        public void run() {
+            Date sDate = new Date();
+            long startTime = sDate.getTime();
+            System.out.println("thread2 started at: "+ sDate);
+            ILock lock = hazelcastInstance2.getLock("a");
+            TransactionContext tx =  hazelcastClient2.newTransactionContext();
+            boolean txStarted = false;
+
+            try {
+                boolean isLocked = lock.tryLock(10000, TimeUnit.MILLISECONDS);
+
+                try {
+
+
+                    if(isLocked) {
+                        tx.beginTransaction();
+                        txStarted = true;
+
+                        long endTime = System.currentTimeMillis();
+                        long tt = endTime - startTime;
+                        System.out.println("thread 2 acquired lock and now sleeping, time it waited to acquire lock: " + tt + " ms");
+
+                        Thread.sleep(1000);
+                        TransactionalMap<String, String>  test = tx.getMap("test");
+                        String val = test.get("a");
+                        System.out.println(" val: "+ val);
+                        tx.commitTransaction();
+                        Thread.sleep(100);
+                    } else {
+                        Exception ex = new Exception("failed to acquire lock the other client screwed us by crashing");
+                        expected.add(ex);
+                        throw ex;
+                    }
+
+
+                } catch(InterruptedException ex) {
+                    System.out.println("thread 2 interrupted ");
+                } catch (Exception ex) {
+                    ex.printStackTrace();
+                    if(txStarted) {
+                        tx.rollbackTransaction();
+                    }
+                } finally {
+                    try {
+                        if(isLocked) {
+                            lock.unlock();
+                            Date eDate = new Date();
+                            long endTime = eDate.getTime();
+                            long tt = endTime - startTime;
+                            System.out.println("thread 2 released lock at : "+ eDate + " total time tokk: "+ tt + " ms");
+                        }
+
+                    } catch(Exception ex) {
+                        ex.printStackTrace();
+                    }
+
+                }
+
+            } catch(Exception ex) {
+                ex.printStackTrace();
+            }
+
+
+        }
+    };
+
+
+    Thread thread1 = new Thread(run1);
+    thread1.start();
+
+    Thread thread2 = new Thread(run2);
+    thread2.start();
+
+    Thread.sleep(20000);
+
+    thread1.interrupt();
+    thread2.interrupt();
+
+    Assert.assertEquals(0, expected.size());
+
+    Thread.sleep(1000);
+    hazelcastClient2.shutdown();
+    hazelcastInstance1.shutdown();
+    hazelcastInstance2.shutdown();
+}
+```

@@ -1,0 +1,184 @@
+### Steps to Reproduce
+
+1. I'm running a Micronaut application as a AWS Lambda function which tries to read properties from AWS SSM Parameter store. 
+2. I have followed the steps in the official [Micronaut guide](https://docs.micronaut.io/latest/guide/index.html#distributedConfigurationAwsParameterStore) and extra configuration to set micronaut active environment as 'ec2' as per instructions [here](https://github.com/micronaut-projects/micronaut-aws/issues/3).
+3. Application config is as below:
+
+**build.gradle**
+```
+compile "io.micronaut:micronaut-discovery-client"
+compile "io.micronaut.configuration:micronaut-aws-common"
+compile group: 'com.amazonaws', name: 'aws-java-sdk-ssm', version: '1.11.308'
+```
+
+ **bootstrap.yml**
+```
+micronaut:
+  application:
+    name: test-service
+  config-client:
+    enabled: true
+aws:
+  client:
+    system-manager:
+      parameterstore:
+        enabled: true
+        useSecureParameters: true
+        proxyProtocol: https    // setting proxy as I'm behind a corporate proxy
+        proxyHost: forwardproxy
+        proxyPort: 3128**
+```
+
+**MyHandler.java** (NPE thrown here at handler.proxyStream)
+```
+public class MyHandler implements RequestStreamHandler {
+    private Logger logger = LoggerFactory.getLogger(MyHandler.class);
+    private MicronautLambdaContainerHandler handler;
+
+    @Property(name="test")
+    private String test;
+    
+    @Override
+    public void handleRequest(InputStream input, OutputStream output, Context context) throws IOException {
+        context.getLogger().log("Inside MyHandler");
+        context.getLogger().log("test prop val: " + test);
+        try {
+            handler = MicronautLambdaContainerHandler.getAwsProxyHandler();
+        } catch (ContainerInitializationException e) {
+            logger.error("Error in initializing Lambda Proxy", e);
+        }
+        handler.proxyStream(input, output, context);
+        context.getLogger().log("Inside MyHandler exit");
+    }
+}
+```
+
+**Controller.java** (Execution never comes here)
+```
+@io.micronaut.http.annotation.Controller("/v1.0/zzz")
+public class PropertyController {
+
+    @Property(name = "test")
+    private String test;
+
+    @Get(uri="/xx/yy/{id}", produces = MediaType.APPLICATION_JSON)
+    public String getPropertyDetails(@PathVariable @NotBlank String id) {
+        System.out.println(" in cntrl: test: " + test);
+
+        ..........
+    }
+}
+```
+
+
+**Lambda function environment variable set:**
+`MICRONAUT_ENVIRONMENTS = ec2`
+
+**AWS Paramtere store:**
+`/config/test-service_ec2/test`
+
+### Expected Behaviour
+
+I'm expecting the test property to be read from AWS SSM Parametre store based on above config.
+
+### Actual Behaviour
+
+IllegalAccessError thrown on io.micronaut.configuration.aws.AWSClientConfiguration.clientConfiguration from class io.micronaut.discovery.aws.parameterstore.$AWSParameterStoreConfigurationDefinition.
+
+### If I am not doing anything wrong, the issue seems to be a class in one package is trying to access a protected property on another package which causes the java illegalAccessError.  ###
+
+**I have noticed similar issue being closed on redis session in [this issue](https://github.com/micronaut-projects/micronaut-core/issues/901). Is it possible to apply the same fix on AWSClientConfiguration.clientConfiguration also?** 
+
+**Or update the awsParameterStoreConfiguration.clientConfiguration.setXXX to be awsParameterStoreConfiguration.getClientConfiguration.setXXX?** 
+
+**Stacktrace:**
+```
+START RequestId: 2234c6d5-0876-4096-b5a0-c51659f64f2b Version: $LATEST
+Inside MyHandler
+test prop val: null
+[36m03:32:34.345[0;39m [1;30m[main][0;39m [1;31mERROR[0;39m [35mc.n.e.h.MyHandler[0;39m - Error in initializing Lambda Proxy
+com.amazonaws.serverless.exceptions.ContainerInitializationException: Error starting Micronaut container: Error instantiating bean of type [io.micronaut.discovery.aws.parameterstore.AWSParameterStoreConfigClient]
+
+Message: tried to access field io.micronaut.configuration.aws.AWSClientConfiguration.clientConfiguration from class io.micronaut.discovery.aws.parameterstore.$AWSParameterStoreConfigurationDefinition
+Path Taken: new DistributedPropertySourceLocator([ConfigurationClient configurationClient],Duration readTimeout) --> new DefaultCompositeConfigurationClient([ConfigurationClient[] configurationClients]) --> new AWSParameterStoreConfigClient(AWSClientConfiguration awsConfiguration,[AWSParameterStoreConfiguration awsParameterStoreConfiguration],ApplicationConfiguration applicationConfiguration,Route53ClientDiscoveryConfiguration route53ClientDiscoveryConfiguration)
+at io.micronaut.function.aws.proxy.MicronautLambdaContainerHandler.initialize(MicronautLambdaContainerHandler.java:198)
+at io.micronaut.function.aws.proxy.MicronautLambdaContainerHandler.<init>(MicronautLambdaContainerHandler.java:104)
+at io.micronaut.function.aws.proxy.MicronautLambdaContainerHandler.<init>(MicronautLambdaContainerHandler.java:113)
+at io.micronaut.function.aws.proxy.MicronautLambdaContainerHandler.getAwsProxyHandler(MicronautLambdaContainerHandler.java:122)
+at com.handler.MyHandler.handleRequest(MyHandler.java:85)
+at sun.reflect.NativeMethodAccessorImpl.invoke0(Native Method)
+at sun.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:62)
+at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)
+at java.lang.reflect.Method.invoke(Method.java:498)
+at lambdainternal.EventHandlerLoader$StreamMethodRequestHandler.handleRequest(EventHandlerLoader.java:350)
+at lambdainternal.EventHandlerLoader$2.call(EventHandlerLoader.java:888)
+at lambdainternal.AWSLambda.startRuntime(AWSLambda.java:293)
+at lambdainternal.AWSLambda.<clinit>(AWSLambda.java:64)
+at java.lang.Class.forName0(Native Method)
+at java.lang.Class.forName(Class.java:348)
+at lambdainternal.LambdaRTEntry.main(LambdaRTEntry.java:114)
+Caused by: io.micronaut.context.exceptions.BeanInstantiationException: Error instantiating bean of type [io.micronaut.discovery.aws.parameterstore.AWSParameterStoreConfigClient]
+
+Message: tried to access field io.micronaut.configuration.aws.AWSClientConfiguration.clientConfiguration from class io.micronaut.discovery.aws.parameterstore.$AWSParameterStoreConfigurationDefinition
+Path Taken: new DistributedPropertySourceLocator([ConfigurationClient configurationClient],Duration readTimeout) --> new DefaultCompositeConfigurationClient([ConfigurationClient[] configurationClients]) --> new AWSParameterStoreConfigClient(AWSClientConfiguration awsConfiguration,[AWSParameterStoreConfiguration awsParameterStoreConfiguration],ApplicationConfiguration applicationConfiguration,Route53ClientDiscoveryConfiguration route53ClientDiscoveryConfiguration)
+at io.micronaut.context.DefaultBeanContext.doCreateBean(DefaultBeanContext.java:1512)
+at io.micronaut.context.DefaultBeanContext.createAndRegisterSingleton(DefaultBeanContext.java:2174)
+at io.micronaut.context.DefaultBeanContext.getBeanForDefinition(DefaultBeanContext.java:1852)
+at io.micronaut.context.DefaultBeanContext.getBeanInternal(DefaultBeanContext.java:1832)
+at io.micronaut.context.DefaultBeanContext.getBean(DefaultBeanContext.java:997)
+at io.micronaut.context.AbstractBeanDefinition.getBeanForConstructorArgument(AbstractBeanDefinition.java:982)
+at io.micronaut.discovery.aws.parameterstore.$AWSParameterStoreConfigClientDefinition.build(Unknown Source)
+at io.micronaut.context.DefaultBeanContext.doCreateBean(DefaultBeanContext.java:1494)
+at io.micronaut.context.DefaultBeanContext.addCandidateToList(DefaultBeanContext.java:2507)
+at io.micronaut.context.DefaultBeanContext.getBeansOfTypeInternal(DefaultBeanContext.java:2429)
+at io.micronaut.context.DefaultBeanContext.getBeansOfType(DefaultBeanContext.java:854)
+at io.micronaut.context.AbstractBeanDefinition.lambda$getBeansOfTypeForConstructorArgument$10(AbstractBeanDefinition.java:1088)
+at io.micronaut.context.AbstractBeanDefinition.resolveBeanWithGenericsFromConstructorArgument(AbstractBeanDefinition.java:1697)
+at io.micronaut.context.AbstractBeanDefinition.getBeansOfTypeForConstructorArgument(AbstractBeanDefinition.java:1083)
+at io.micronaut.context.AbstractBeanDefinition.getBeanForConstructorArgument(AbstractBeanDefinition.java:959)
+at io.micronaut.discovery.config.$DefaultCompositeConfigurationClientDefinition.build(Unknown Source)
+at io.micronaut.context.DefaultBeanContext.doCreateBean(DefaultBeanContext.java:1494)
+at io.micronaut.context.DefaultBeanContext.createAndRegisterSingleton(DefaultBeanContext.java:2174)
+at io.micronaut.context.DefaultBeanContext.getBeanForDefinition(DefaultBeanContext.java:1852)
+at io.micronaut.context.DefaultBeanContext.getBeanInternal(DefaultBeanContext.java:1832)
+at io.micronaut.context.DefaultBeanContext.getBean(DefaultBeanContext.java:997)
+at io.micronaut.context.AbstractBeanDefinition.getBeanForConstructorArgument(AbstractBeanDefinition.java:982)
+at io.micronaut.discovery.client.config.$DistributedPropertySourceLocatorDefinition.build(Unknown Source)
+at io.micronaut.context.DefaultBeanContext.doCreateBean(DefaultBeanContext.java:1494)
+at io.micronaut.context.DefaultBeanContext.createAndRegisterSingleton(DefaultBeanContext.java:2174)
+at io.micronaut.context.DefaultBeanContext.getBeanForDefinition(DefaultBeanContext.java:1852)
+at io.micronaut.context.DefaultBeanContext.getBeanInternal(DefaultBeanContext.java:1832)
+at io.micronaut.context.DefaultBeanContext.getBean(DefaultBeanContext.java:582)
+at io.micronaut.context.DefaultApplicationContext$RuntimeConfiguredEnvironment.resolveBootstrapPropertySourceLocator(DefaultApplicationContext.java:659)
+at io.micronaut.context.DefaultApplicationContext$RuntimeConfiguredEnvironment.readPropertySourceList(DefaultApplicationContext.java:636)
+at io.micronaut.context.env.DefaultEnvironment.readPropertySources(DefaultEnvironment.java:448)
+at io.micronaut.context.env.DefaultEnvironment.start(DefaultEnvironment.java:311)
+at io.micronaut.context.env.DefaultEnvironment.start(DefaultEnvironment.java:63)
+at io.micronaut.context.DefaultApplicationContext.startEnvironment(DefaultApplicationContext.java:228)
+at io.micronaut.context.DefaultApplicationContext.start(DefaultApplicationContext.java:186)
+at io.micronaut.function.aws.proxy.MicronautLambdaContainerHandler.initialize(MicronautLambdaContainerHandler.java:189)
+... 15 common frames omitted
+Caused by: java.lang.IllegalAccessError: tried to access field io.micronaut.configuration.aws.AWSClientConfiguration.clientConfiguration from class io.micronaut.discovery.aws.parameterstore.$AWSParameterStoreConfigurationDefinition
+at io.micronaut.discovery.aws.parameterstore.$AWSParameterStoreConfigurationDefinition.injectBean(Unknown Source)
+at io.micronaut.discovery.aws.parameterstore.$AWSParameterStoreConfigurationDefinition.build(Unknown Source)
+at io.micronaut.context.DefaultBeanContext.doCreateBean(DefaultBeanContext.java:1494)
+... 50 common frames omitted
+java.lang.NullPointerException: java.lang.NullPointerException
+java.lang.NullPointerException
+at com.handler.MyHandler.handleRequest(MyHandler.java:89)
+at sun.reflect.NativeMethodAccessorImpl.invoke0(Native Method)
+at sun.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:62)
+at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)
+at java.lang.reflect.Method.invoke(Method.java:498)
+
+END RequestId: 2234c6d5-0876-4096-b5a0-c51659f64f2b
+REPORT RequestId: 2234c6d5-0876-4096-b5a0-c51659f64f2b	Duration: 4549.07 ms	Billed Duration: 4600 ms Memory Size: 1024 MB	Max Memory Used: 104 MB
+```
+
+### Environment Information
+
+- **Operating System**: Serverless AWS Lambda environment
+- **Micronaut Version:** 1.1.4
+- **JDK Version:** 1.8
+
+

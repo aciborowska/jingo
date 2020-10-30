@@ -1,0 +1,34 @@
+FileUtils.deleteDirectoryQuietly will delete files in symbolic link which point to a directory. Currently the PyFlink uses this method to delete temporary folders generated during the job submission and python UDF execution, which contains the symbolic links which may point to users' libraries and directories in distributed cache. 
+
+To resolve this problem we need to check if the directory is symbolic link in FileUtils.deleteDirectoryInternal:
+
+
+private static void deleteDirectoryInternal(File directory) throws IOException {
+    // **We should check if the directory is symbolic link.**
+    if (directory.isDirectory()) {
+      // directory exists and is a directory
+
+      // empty the directory first
+      try {
+         cleanDirectoryInternal(directory);
+      }
+      catch (FileNotFoundException ignored) {
+         // someone concurrently deleted the directory, nothing to do for us
+         return;
+      }
+
+      // delete the directory. this fails if the directory is not empty, meaning
+      // if new files got concurrently created. we want to fail then.
+      // if someone else deleted the empty directory concurrently, we don't mind
+      // the result is the same for us, after all
+      Files.deleteIfExists(directory.toPath());
+   }
+   else if (directory.exists()) {
+      // exists but is file, not directory
+      // either an error from the caller, or concurrently a file got created
+      throw new IOException(directory + " is not a directory");
+   }
+   // else: does not exist, which is okay (as if deleted)
+}
+
+

@@ -1,0 +1,116 @@
+Since commit f2a87ab4022 , the server has a lockdown mode to prevent any access to the directory while an administrator is repairing something really broken (such as ACIs).
+
+While working on OPENDJ-3453, we noticed that server behaves quite differently depending on how a user tries to reach it when it is in lockdown mode:
+
+Authenticated LDAP search
+
+When a user (which obviously does not hold the bypass-lockdown privilege) tries to perform a search request:
+
+$ bin/ldapsearch -Duid=user.0,ou=people,dc=example,dc=com -wpassword --port 1389 --baseDN "" --searchScope base "(objectclass=*)"
+dn: 
+objectClass: top
+objectClass: ds-root-dse
+
+$ bin/ldapmodify  --port 1389  --bindDN "cn=Directory Manager"  --bindPassword password -f ~/dj/dev_resources/ldap_modify_ldifs/enter_lockdown_mode.ldif 
+# ADD operation successful for DN ds-task-id=Enter Lockdown Mode,cn=Scheduled Tasks,cn=tasks
+
+$ bin/ldapsearch -Duid=user.0,ou=people,dc=example,dc=com -wpassword --port 1389 --baseDN "" --searchScope base "(objectclass=*)"
+The LDAP bind request failed: 49 (Invalid Credentials)
+
+
+HTTP Connection Handler with api endpoint (anonymous auth)
+
+The /api endpoint have to be enabled after setup and its authorization mechanism set as follows:
+
+dsconfig set-http-endpoint-prop \
+          --endpoint-name /api \
+          --set authorization-mechanism:HTTP\ Anonymous \
+          --set enabled:true \
+          --hostname localhost \
+          --port 4444 \
+          --bindDn cn=Directory\ Manager \
+          --trustAll \
+          --bindPassword password \
+          --no-prompt
+
+
+Then tries to access a user resource before and after setting the server into lockdown mode:
+
+$ curl -X GET -I http://localhost:9080/api/users/user.2 
+HTTP/1.1 200 OK
+[...]
+
+$ bin/ldapmodify  --port 1389  --bindDN "cn=Directory Manager"  --bindPassword password -f ~/dj/dev_resources/ldap_modify_ldifs/enter_lockdown_mode.ldif 
+# ADD operation successful for DN ds-task-id=Enter Lockdown Mode,cn=Scheduled Tasks,cn=tasks
+
+$ curl -X GET -I http://localhost:9080/api/users/user.2 
+HTTP/1.1 200 OK
+[...]
+
+
+I guess this behavior is not really expected, note that disabling/enabling the HTTP Connection Handler and/or the HTTP Endpoint does not make the request fail.
+HTTP Connection Handler with api endpoint (anonymous auth)
+
+The /api endpoint have to be enabled after setup and its authorization mechanism set as follows:
+
+dsconfig set-http-endpoint-prop \
+          --endpoint-name /api \
+          --set authorization-mechanism:HTTP\ Anonymous \
+          --set enabled:true \
+          --hostname localhost \
+          --port 4444 \
+          --bindDn cn=Directory\ Manager \
+          --trustAll \
+          --bindPassword password \
+          --no-prompt
+
+
+Then if a user tries to access a user resource before and after setting the server into lockdown mode:
+
+$ curl -X GET -I http://localhost:9080/api/users/user.2 
+HTTP/1.1 200 OK
+[...]
+
+$ bin/ldapmodify  --port 1389  --bindDN "cn=Directory Manager"  --bindPassword password -f ~/dj/dev_resources/ldap_modify_ldifs/enter_lockdown_mode.ldif 
+# ADD operation successful for DN ds-task-id=Enter Lockdown Mode,cn=Scheduled Tasks,cn=tasks
+
+$ curl -X GET -I http://localhost:9080/api/users/user.2 
+HTTP/1.1 200 OK
+[...]
+
+
+I guess this behavior is not really expected, note that disabling/enabling the HTTP Connection Handler and/or the HTTP Endpoint does not make the request fail.
+HTTP Connection Handler with api endpoint (HTTP basic auth)
+
+The /api endpoint have to be enabled after setup, the authorization mechanism must be set HTTP Basic which is the default value at the moment.
+ Then if a user tries to access a user resource before and after setting the server into lockdown mode:
+
+$ curl -u user.0:password -X GET -I http://localhost:9080/api/users/user.2 
+HTTP/1.1 200 OK
+[...]
+
+$ bin/ldapmodify  --port 1389  --bindDN "cn=Directory Manager"  --bindPassword password -f ~/dj/dev_resources/ldap_modify_ldifs/enter_lockdown_mode.ldif 
+# ADD operation successful for DN ds-task-id=Enter Lockdown Mode,cn=Scheduled Tasks,cn=tasks
+
+$ curl -u user.0:password -X GET -i http://localhost:9080/api/users/user.2 
+HTTP/1.1 401 Unauthorized
+WWW-Authenticate: Basic
+Content-Type: application/json; charset=UTF-8
+Date: Tue, 05 Mar 2019 13:53:15 GMT
+Content-Length: 68
+
+{"code":401,"reason":"Unauthorized","message":"Invalid Credentials"}
+
+
+
+JMX Connection handler
+When enabled, connection attempt when server is in lockdown mode results in a 49 result code with an "Invalid Credentials" message.
+
+Acceptance criteria
+
+This bug could be mark as resolved when server will respond consistenlty to client requests when it is in lockdown mode (this includes use cases above but not only them). Consistent behavior means that:
+
+	Returning a 53 (unwilling to perform) result code to LDAP request, regardless whether they are made by an authenticated user or an anonymous one
+	Rejecting HTTP request as well, regardless whether they are made by an authenticated user or an anonymous one, the "invalid credentials" is clearly wrong in such case, we need to reply with a meaningful error message and a more consistent return code (5xx?)
+	Rejecting JMX bind as well with a meaningful error message
+

@@ -1,0 +1,32 @@
+We have a bug when following configuration is applied. 
+```
+SerializationConfig.setEnableCompression(true);
+```
+Since GZipInputStream read more bytes than it needs, the fields coming after a compressed data is not able to read. 
+Following reproduces the issue:
+```
+ @Test
+    public void testCompression_withArrayList() {
+        DefaultSerializationServiceBuilder defaultSerializationServiceBuilder = new DefaultSerializationServiceBuilder();
+        SerializationService ss = defaultSerializationServiceBuilder.setEnableCompression(true).build();
+
+        ArrayList<SampleSerializable> expected = new ArrayList<SampleSerializable>();
+        for (int i = 0; i < 10; i++) {
+            expected.add(new SampleSerializable(i));
+        }
+        Data data = ss.toData(expected);
+        ArrayList<SampleSerializable> result = ss.toObject(data);
+
+        assertEquals(expected, result);
+    }
+```
+
+If any of our internal operations or users use `ObjectDataOutput.writeObject(x)` with a java serializable,  issue appears. 
+
+A fix is available as follows but requires one more copy when writing the object. Also relies on an internal value( Gzip Header Size ). 
+https://github.com/hazelcast/hazelcast/pull/12099
+
+One more suggestion is that we could completely remove `compression` feature. Arguments for that:
+1. We will remove the bug. 
+2. `compression` is often misunderstood. We have seen that users expects that all data is compressed when it is used. But It only applies to Java Serializable's. 
+3. Java Serializable is not used much by our users. They either their own serialization methods or ours (Portable/IdentifiedDataSerializable). 

@@ -1,0 +1,446 @@
+Hi,
+
+we discovered that a failure to deserialize a single map entry causes the whole write-behind queue for that map to stop persisting any data. For example when putting 3 entries a, b, c into a map and b can not be deserialized, neither b _nor_ c are persisted using the configured MapStore. I think that it would be reasonable to persist c even though b can not be persisted.
+
+We are using Hazelcast version 3.5.x (a snapshot of this branch on 2016-01-18).
+
+Attached is a test which reproduces the issue along with two possible workarounds (either using IMap.flush() or IMap.set()).
+
+Best,
+Lukas
+
+``` java
+package com.nm.test.hazelcast.mapstore;
+
+import com.hazelcast.config.*;
+import com.hazelcast.config.MapStoreConfig.InitialLoadMode;
+import com.hazelcast.core.Hazelcast;
+import com.hazelcast.core.HazelcastInstance;
+import com.hazelcast.core.IMap;
+import com.nm.test.hazelcast.TestHazelcast;
+import com.nm.test.hazelcast.utils.CountingMapStore;
+import com.nm.test.hazelcast.utils.Sleep;
+import com.nm.test.hazelcast.utils.values.FailableTestValue;
+import org.apache.log4j.BasicConfigurator;
+import org.apache.log4j.Logger;
+import junit.framework.TestCase;
+
+/**
+ * A test to analyze the behavior of an exception during deserialize when trying to write the entry
+ * to persistent storage.
+ */
+public class TestMapStore27 extends TestCase {
+
+    private static final Logger logger = Logger.getLogger(TestMapStore27.class);
+
+    private static final String mapName = "testMap" + TestMapStore27.class.getSimpleName();
+
+    @Override
+    protected void setUp() throws Exception {
+
+        // configure logging
+        if (!TestHazelcast.loggingInitialized) {
+            TestHazelcast.loggingInitialized = true;
+            BasicConfigurator.configure();
+        }
+    }
+
+    public void testWithFlush() throws Exception {
+        testInternal(true);
+    }
+
+    public void testWithSet() throws Exception {
+        testInternal(false);
+    }
+
+    private void testInternal(boolean flush) throws Exception {
+
+        // create hazelcast config
+        Config config = new XmlConfigBuilder().build();
+        config.setProperty("hazelcast.logging.type", "log4j");
+        config.setProperty("hazelcast.version.check.enabled", "false");
+
+        // disable multicast for faster startup
+        config.getNetworkConfig().getJoin().getMulticastConfig().setEnabled(false);
+
+        // create map store
+        CountingMapStore<FailableTestValue> store = new CountingMapStore<FailableTestValue>();
+
+        // create map store config
+        MapStoreConfig mapStoreConfig = new MapStoreConfig();
+        mapStoreConfig.setEnabled(true);
+        mapStoreConfig.setInitialLoadMode(InitialLoadMode.EAGER);
+        mapStoreConfig.setWriteDelaySeconds(2);
+        mapStoreConfig.setClassName(null);
+        mapStoreConfig.setImplementation(store);
+
+        // configure map store
+        MapConfig mapConfig = config.getMapConfig(mapName + flush);
+        mapConfig.setMapStoreConfig(mapStoreConfig);
+
+        // start hazelcast instance
+        HazelcastInstance hcInstance = Hazelcast.newHazelcastInstance(config);
+
+        // try-finally to ensure hc shutdown
+        try {
+
+            // init map
+            IMap<String, FailableTestValue> map = hcInstance.getMap(mapName + flush);
+            logger.info("Size = " + map.size());
+            Sleep.sleep(3000, false);
+            store.printCounts("3s after init");
+
+            // create test data
+            FailableTestValue value1 = new FailableTestValue("a - this should work");
+            FailableTestValue value2 = new FailableTestValue("b - this should fail");
+            value2.setFailInDeserialize(true);
+            FailableTestValue value3 = new FailableTestValue("c - this should work");
+
+            // test which should work
+            logger.info("Test a:");
+            map.put("a", value1);
+            Sleep.sleep(3000, false);
+            store.printCounts("3s after put a");
+            logger.info("Store size after put a = " + store.size());
+
+            // test which should *not* work
+            logger.info("Test b:");
+            map.put("b", value2);
+            Sleep.sleep(9000, false);
+            store.printCounts("9s after put b");
+            logger.info("Store size after put b = " + store.size());
+
+            // test which should work
+            logger.info("Test c:");
+            map.put("c", value3);
+            Sleep.sleep(3000, false);
+            store.printCounts("3s after put c");
+            logger.info("Store size after put c = " + store.size());
+
+            // fail if (c) could not be written
+            boolean failWithoutFlushOrSet = store.size() != 2;
+            logger.info("Fail without flush or set => " + failWithoutFlushOrSet);
+
+            // switch on flush or set
+            if (flush) {
+
+                // test if flush helps
+                map.flush();
+                Sleep.sleep(3000, false);
+                store.printCounts("3s after flush");
+                logger.info("Store size after flush = " + store.size());
+
+                // fail if flush did not help
+                boolean failWithFlush = store.size() != 2;
+                logger.info("Fail with flush => " + failWithFlush);
+
+                // test outcome
+                if (failWithoutFlushOrSet) {
+                    if (failWithFlush) {
+                        fail("Write-behind queue was blocked due to failure in deserialize of an other entry and flush() did *not* help!");
+                    } else {
+                        fail("Write-behind queue was blocked due to failure in deserialize of an other entry and flush() *did* help!");
+                    }
+                } else {
+                    if (failWithFlush) {
+                        fail("Write-behind queue was not blocked - even though it should have been :-)");
+                    } else {
+                        // all good
+                    }
+                }
+
+            } else {
+
+                // test if set helps
+                FailableTestValue value4 = new FailableTestValue("b - this should work now");
+                map.set("b", value4);
+                Sleep.sleep(3000, false);
+                store.printCounts("3s after set");
+                logger.info("Store size after set = " + store.size());
+
+                // fail if set did not help
+                boolean failWithSet = store.size() != 2;
+                logger.info("Fail with set => " + failWithSet);
+
+                // test outcome
+                if (failWithoutFlushOrSet) {
+                    if (failWithSet) {
+                        fail("Write-behind queue was blocked due to failure in deserialize of an other entry and set() did *not* help!");
+                    } else {
+                        fail("Write-behind queue was blocked due to failure in deserialize of an other entry and set() *did* help!");
+                    }
+                } else {
+                    if (failWithSet) {
+                        fail("Write-behind queue was not blocked - even though it should have been :-)");
+                    } else {
+                        // all good
+                    }
+                }
+            }
+
+        } finally {
+
+            // shutdown hazelcast instance
+            hcInstance.getLifecycleService().terminate();
+        }
+    }
+
+}
+
+package com.nm.test.hazelcast.utils;
+
+import com.hazelcast.core.MapStore;
+import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
+
+/**
+ * A map store which counts the different operations.
+ * <p>
+ * Furthermore it can be configured to throw exceptions in store/storeAll/delete/deleteAll.
+ */
+public class CountingMapStore<V> implements MapStore<String, V> {
+
+    // ---------------------------------------------------------------- counters
+
+    public AtomicInteger countLoadAllKeys = new AtomicInteger();
+
+    public AtomicInteger countLoad = new AtomicInteger();
+
+    public AtomicInteger countLoadAll = new AtomicInteger();
+
+    public AtomicInteger countStore = new AtomicInteger();
+
+    public AtomicInteger countStoreAll = new AtomicInteger();
+
+    public AtomicInteger countDelete = new AtomicInteger();
+
+    public AtomicInteger countDeleteAll = new AtomicInteger();
+
+    public AtomicInteger countNumberStore = new AtomicInteger();
+
+    public AtomicInteger countNumberDelete = new AtomicInteger();
+
+    // ---------------------------------------------------------------- members
+
+    private ConcurrentHashMap<String, V> store = new ConcurrentHashMap<String, V>();
+
+    private int numExceptionsInStore;
+
+    private int numExceptionsInDelete;
+
+    private boolean exceptionInStoreAll;
+
+    private boolean exceptionInDeleteAll;
+
+    // ----------------------------------------------------------- construction
+
+    public CountingMapStore() {
+        this.exceptionInStoreAll = false;
+        this.exceptionInDeleteAll = false;
+    }
+
+    public CountingMapStore(boolean exceptionInStoreAll, boolean exceptionInDeleteAll) {
+        this.exceptionInStoreAll = exceptionInStoreAll;
+        this.exceptionInDeleteAll = exceptionInDeleteAll;
+    }
+
+    public CountingMapStore(int numExceptionsInStore, int numExceptionsInDelete) {
+        this.numExceptionsInStore = numExceptionsInStore;
+        this.numExceptionsInDelete = numExceptionsInDelete;
+        this.exceptionInStoreAll = true;
+        this.exceptionInDeleteAll = true;
+    }
+
+    // ----------------------------------------------------- MapStore interface
+
+    @Override
+    public Set<String> loadAllKeys() {
+        countLoadAllKeys.incrementAndGet();
+        return new HashSet<String>(store.keySet());
+    }
+
+    @Override
+    public V load(String key) {
+        countLoad.incrementAndGet();
+        return store.get(key);
+    }
+
+    @Override
+    public Map<String, V> loadAll(Collection<String> keys) {
+        countLoadAll.incrementAndGet();
+        Map<String, V> result = new HashMap<String, V>();
+        for (String key : keys) {
+            V value = store.get(key);
+            if (value != null) {
+                result.put(key, value);
+            }
+        }
+        return result;
+    }
+
+    @Override
+    public void store(String key, V value) {
+        countStore.incrementAndGet();
+        countNumberStore.incrementAndGet();
+        if (numExceptionsInStore > 0) {
+            numExceptionsInStore--;
+            throw new RuntimeException("Exception in store().");
+        }
+        store.put(key, value);
+    }
+
+    @Override
+    public void storeAll(Map<String, V> map) {
+        countStoreAll.incrementAndGet();
+        countNumberStore.addAndGet(map.size());
+        store.putAll(map);
+        if (exceptionInStoreAll) {
+            throw new RuntimeException("Exception in storeAll().");
+        }
+    }
+
+    @Override
+    public void delete(String key) {
+        countDelete.incrementAndGet();
+        countNumberDelete.incrementAndGet();
+        if (numExceptionsInDelete > 0) {
+            numExceptionsInDelete--;
+            throw new RuntimeException("Exception in delete().");
+        }
+        store.remove(key);
+    }
+
+    @Override
+    public void deleteAll(Collection<String> keys) {
+        countDeleteAll.incrementAndGet();
+        countNumberDelete.addAndGet(keys.size());
+        for (String key : keys) {
+            store.remove(key);
+        }
+        if (exceptionInDeleteAll) {
+            throw new RuntimeException("Exception in deleteAll().");
+        }
+    }
+
+    /**
+     * Get number of entries in store.
+     */
+    public int size() {
+        return store.size();
+    }
+
+    // ---------------------------------------------------------------- helpers
+
+    public void printCounts(String title) {
+        StringBuilder buf = new StringBuilder();
+        buf.append(title + ":\n");
+        buf.append("- num load all keys = " + countLoadAllKeys.get() + "\n");
+        buf.append("- num load          = " + countLoad.get() + "\n");
+        buf.append("- num load all      = " + countLoadAll.get() + "\n");
+        buf.append("- num store         = " + countStore.get() + "\n");
+        buf.append("- num store all     = " + countStoreAll.get() + "\n");
+        buf.append("- num delete        = " + countDelete.get() + "\n");
+        buf.append("- num delete all    = " + countDeleteAll.get() + "\n");
+        buf.append("- count store       = " + countNumberStore.get() + "\n");
+        buf.append("- count delete      = " + countNumberDelete.get() + "\n");
+        System.out.println(buf.toString());
+    }
+
+}
+
+package com.nm.test.hazelcast.utils;
+
+import org.apache.log4j.Logger;
+
+public class Sleep {
+
+    private static final Logger logger = Logger.getLogger(Sleep.class);
+
+    /**
+     * Tries to sleep for the desired number of milliseconds, throwing a
+     * RuntimeException in case the thread is interrupted.
+     * 
+     * @param ms Number of milliseconds to sleep
+     * @param log true to log, false otherwise.
+     */
+    public static void sleep(long ms, boolean log) {
+        if (ms <= 0) {
+            return;
+        }
+        try {
+            Thread.sleep(ms);
+            if (log) {
+                logger.info("Slept " + (ms / 1000) + "s.");
+            }
+        } catch (InterruptedException e) {
+            throw new RuntimeException(e);
+        }
+    }
+}
+
+package com.nm.test.hazelcast.utils.values;
+
+import com.hazelcast.nio.ObjectDataInput;
+import com.hazelcast.nio.ObjectDataOutput;
+import com.hazelcast.nio.serialization.DataSerializable;
+import java.io.IOException;
+
+/**
+ * A test value which can be configured to fail during serialize or deserialize.
+ */
+public class FailableTestValue implements DataSerializable {
+
+    private String value;
+
+    private boolean failInSerialize;
+
+    private boolean failInDeserialize;
+
+    /*
+     * protected constructor for deserialization
+     */
+    FailableTestValue() {
+    }
+
+    public FailableTestValue(String value) {
+        this.value = value;
+    }
+
+    public String getValue() {
+        return value;
+    }
+
+    public void setFailInSerialize(boolean failInSerialize) {
+        this.failInSerialize = failInSerialize;
+    }
+
+    public void setFailInDeserialize(boolean failInDeserialize) {
+        this.failInDeserialize = failInDeserialize;
+    }
+
+    // ---------------------------------------------------------- serialization
+
+    @Override
+    public void writeData(ObjectDataOutput out) throws IOException {
+        if (failInSerialize) {
+            throw new IOException("Intended failure during serialize for '" + value + "'.");
+        }
+        out.writeUTF(value);
+        out.writeBoolean(failInSerialize);
+        out.writeBoolean(failInDeserialize);
+    }
+
+    @Override
+    public void readData(ObjectDataInput in) throws IOException {
+        value = in.readUTF();
+        failInSerialize = in.readBoolean();
+        failInDeserialize = in.readBoolean();
+        if (failInDeserialize) {
+            throw new IOException("Intended failure during deserialize for '" + value + "'.");
+        }
+    }
+
+}
+
+```

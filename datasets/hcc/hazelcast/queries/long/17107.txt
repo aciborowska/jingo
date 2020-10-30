@@ -1,0 +1,55 @@
+
+**Describe the bug**
+A program with a Hazelcast instance continues to grow RSS which indicates a leak in off-heap memory.
+
+This is not a leak in the heap - the program can be run as follows and does not get an OOM error and the heap never runs out of space.
+
+java -Xms30m -Xmx30m -XX:MetaspaceSize=30m -XX:MaxMetaspaceSize=30m -jar <jarfile>
+
+**Expected behavior**
+There should be no noticeable RSS increase once all classes and loaded and a steady state is achieved
+
+**To Reproduce**
+
+Steps to reproduce the behavior:
+Run a simple program like this:
+```
+public class NewMain {
+    private static final org.slf4j.Logger log = LoggerFactory.getLogger(NewMain.class);
+    public static void main(String[] args) {
+        try {
+            Config cfg = new Config();
+            cfg.setInstanceName(UUID.randomUUID().toString());
+            HazelcastInstance hcInstance = Hazelcast.getOrCreateHazelcastInstance(cfg);
+            Thread.sleep(3600000L);
+            log.warn("Shutting down HC");
+            hcInstance.shutdown();
+            hcInstance = null;
+            log.warn("Shut down HC");
+            Thread.sleep(3600000L);
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+}
+```
+
+With a fixed heap and metaspace and use top or similar to track the resident set size. It will start at around 100MB and grow constantly at around 1MB per minute.
+
+When Hazelcast shuts down then the RSS remains static from then on - hence ruling out something else causing this
+
+**Additional context**
+
+
+Linux pcb 5.4.0-37-generic #41-Ubuntu SMP Wed Jun 3 18:57:02 UTC 2020 x86_64 x86_64 x86_64 GNU/Linux
+
+openjdk version "11.0.7" 2020-04-14
+OpenJDK Runtime Environment AdoptOpenJDK (build 11.0.7+10)
+OpenJDK 64-Bit Server VM AdoptOpenJDK (build 11.0.7+10, mixed mode)
+
+Running same code on 3.12.7 does not grow nearly as fast.
+cfg.getMetricsConfig().setEnabled(false) does not resolve this issue.
+
+This is not a theoretical issue as this is causing JVM's to be killed in ECS & K8S clusters after a day or so as the RSS grows and grows and hits the container limit. 
+
+Forcing a GC does not change the RSS size. Native memory monitoring to try and work out what is being leaked has not helped much. Does not seem to be a native buffer leak.

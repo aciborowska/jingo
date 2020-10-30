@@ -1,0 +1,42 @@
+There is a bug in Hazelcast that renders several max-size policies completely useless.  At issue is the ability to force eviction based on the specified capacity (in bytes) of a map.  Hazelcast offers the following policies (http://code.google.com/p/hazelcast/wiki/MapEviction - bottom of page):
+1.  cluster_wide_map_size: Cluster-wide total max map size (default policy) 
+2.  map_size_per_jvm: Max map size per JVM 
+3.  partitions_wide_map_size: Partitions (default 271) wide max map size 
+4.  used_heap_size: Max used heap size in MB (mega-bytes) per JVM 
+5.  used_heap_percentage: Max used heap size percentage per JVM 
+
+Hazelcast tends to blow the heap if you don’t place limits on it.  However, policies 1-3 refer to the number of entries stored in the map, which isn’t very useful to us.  We need to be able to use 4 and 5, as the objects we store in the cache vary wildly in size.  (Coherence provides this functionality by specifying the BINARY unit-calculator.)  It is not practical to be able to calculate limits based solely on the number of objects in the map.
+
+Here is the code snippet that embodies policy 4 (from com.hazelcast.impl.CMap):
+
+``` java
+    class MaxSizeHeapPolicy extends MaxSizePerJVMPolicy {
+        long memoryLimit = 0;
+
+        MaxSizeHeapPolicy(MaxSizeConfig maxSizeConfig) {
+            super(maxSizeConfig);
+            memoryLimit = maxSizeConfig.getSize() * 1000 * 1000; // MB to byte
+        }
+
+        public boolean overCapacity() {
+            boolean over = (Runtime.getRuntime().totalMemory() - Runtime.getRuntime().freeMemory()) > memoryLimit;
+            if (over) {
+                Runtime.getRuntime().gc();
+            }
+            return over;
+        }
+    }
+```
+
+In the constructor, memoryLimit is converted from MB to bytes.  Then, each time an entry is put into the map, it checks the result of the overCapacity() method.  If that method returns true, the node attempts to evict entries from the map according to the eviction policy.  (Note that the overCapacity() method also calls for garbage collection.)   
+
+The issue here is that the overCapacity() method is calculating the total memory usage (basically the amount of heap used for all maps combined), and not that of the single map in question.  Hence, if we have a map for which the limit is set quite small, say 3MB, it will fail very early-on, when items are inserted into other, larger, maps.  The observed behaviour is that Hazelcast will attempt to evict items from the map, and, if unable to do so, will lock the map from future puts.  
+
+We have observed a situation where a map with a max size of 3MB contained zero entries, and we were unable to put a single item into the map (because other maps in the node already contained enough entries to far exceed the 3MB threshold).  At this point, the cluster simply refused to put the item in the map, and did not return a result to the client.  This resulted in our application hanging in a redo cycle (in com.hazelcast.impl.BaseManager$ResponseQueueCall.getRedoAwareResult()), in an endless loop.  **This is not good.**  It requires a full restart of the cluster in order to recover from this state.
+
+The proper solution to fix the policy would be to track all insertions into (and deletions from) the map, incrementing a counter with the number of (serialized) bytes added or removed.  This would need to include data that is moved to/from other nodes.  You would then compare the counter to the max size set in the MaxSizeConfig, which would then be able to return a proper result from the overCapacity() method.  (And it shouldn't have to be mentioned, but the proper factor to convert from MB to KB to bytes is 1024, not 1000.)  The com.hazelcast.impl.Record.getCost() method already returns the necessary size of a record - it just needs to be leveraged in the proper places to maintain the overall map cost.
+
+I would also like to see more graceful handling of the scenario described above.  Locking against puts and not returning an exception to the application is no way to play nicely.  If I could be indulged in another fantasy, it would be that Hazelcast would have better memory management overall, and not cause the heap to be blown when too much data is stored in a map.  Somewhere in between these two behaviours would be preferable.  But for now, I'd be quite pleased just to have a working MaxSizeHeapPolicy (and MaxSizeHeapPercentagePolicy).
+
+Thanks,
+David

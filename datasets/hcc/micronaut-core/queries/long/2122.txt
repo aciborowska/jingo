@@ -1,0 +1,94 @@
+### Task List
+
+- [x] Steps to reproduce provided
+- [x] Stacktrace (if present) provided
+- [ ] Example that reproduces the problem uploaded to Github
+- [x] Full description of the issue provided (see below)
+
+### Steps to Reproduce
+
+1. Have Consul cluster up and running
+2. Start the Micronaut app
+3. Something causes Consul cluster to be not available (Just make the consul cluster unavailable)
+4. Wait a little bit
+5. The Netty server shutdowns
+
+
+The App starts to throw exceptions such as
+`22:53:42.929 [nioEventLoopGroup-3-23] ERROR i.m.m.health.indicator.HealthResult - Health indicator [consul] reported exception: io.micronaut.http.client.exceptions.HttpClientException: Connect Error: Connection refused: localhost/127.0.0.1:8500
+io.micronaut.http.client.exceptions.HttpClientException: Connect Error: Connection refused: localhost/127.0.0.1:8500
+	at io.micronaut.http.client.DefaultHttpClient.lambda$null$26(DefaultHttpClient.java:1038)
+	at io.netty.util.concurrent.DefaultPromise.notifyListener0(DefaultPromise.java:500)
+	at io.netty.util.concurrent.DefaultPromise.notifyListeners0(DefaultPromise.java:493)
+	at io.netty.util.concurrent.DefaultPromise.notifyListenersNow(DefaultPromise.java:472)
+	at io.netty.util.concurrent.DefaultPromise.notifyListeners(DefaultPromise.java:413)
+	at io.netty.util.concurrent.DefaultPromise.setValue0(DefaultPromise.java:538)
+	at io.netty.util.concurrent.DefaultPromise.setFailure0(DefaultPromise.java:531)
+	at io.netty.util.concurrent.DefaultPromise.tryFailure(DefaultPromise.java:111)
+	at io.netty.channel.nio.AbstractNioChannel$AbstractNioUnsafe.fulfillConnectPromise(AbstractNioChannel.java:323)
+	at io.netty.channel.nio.AbstractNioChannel$AbstractNioUnsafe.finishConnect(AbstractNioChannel.java:339)
+	at io.netty.channel.nio.NioEventLoop.processSelectedKey(NioEventLoop.java:685)
+	at io.netty.channel.nio.NioEventLoop.processSelectedKeysOptimized(NioEventLoop.java:632)
+	at io.netty.channel.nio.NioEventLoop.processSelectedKeys(NioEventLoop.java:549)
+	at io.netty.channel.nio.NioEventLoop.run(NioEventLoop.java:511)
+	at io.netty.util.concurrent.SingleThreadEventExecutor$5.run(SingleThreadEventExecutor.java:918)
+	at io.netty.util.internal.ThreadExecutorMap$2.run(ThreadExecutorMap.java:74)
+	at io.micronaut.http.context.ServerRequestContext.with(ServerRequestContext.java:52)
+	at io.micronaut.http.context.ServerRequestContext.lambda$instrument$0(ServerRequestContext.java:68)
+	at io.netty.util.concurrent.FastThreadLocalRunnable.run(FastThreadLocalRunnable.java:30)
+	at java.base/java.lang.Thread.run(Thread.java:834)
+Caused by: io.netty.channel.AbstractChannel$AnnotatedConnectException: Connection refused: localhost/127.0.0.1:8500
+`
+
+After some time the app is no longer registered to consul
+
+`22:54:03.141 [nioEventLoopGroup-3-6] INFO  i.m.d.registration.AutoRegistration - Instance [hello-world2] no longer registered with Consul. Attempting re-registration.
+22:54:03.144 [nioEventLoopGroup-3-6] ERROR i.m.d.registration.AutoRegistration - Error reporting passing state to Consul: Connect Error: Connection refused: localhost/127.0.0.1:8500
+io.micronaut.http.client.exceptions.HttpClientException: Connect Error: Connection refused: localhost/127.0.0.1:8500
+	at io.micronaut.http.client.DefaultHttpClient.lambda$null$26(DefaultHttpClient.java:1038)
+	at io.netty.util.concurrent.DefaultPromise.notifyListener0(DefaultPromise.java:500)
+	at io.netty.util.concurrent.DefaultPromise.notifyListeners0(DefaultPromise.java:493)
+	at io.netty.util.concurrent.DefaultPromise.notifyListenersNow(DefaultPromise.java:472)
+	at io.netty.util.concurrent.DefaultPromise.notifyListeners(DefaultPromise.java:413)
+	at io.netty.util.concurrent.DefaultPromise.setValue0(DefaultPromise.java:538)
+	at io.netty.util.concurrent.DefaultPromise.setFailure0(DefaultPromise.java:531)
+	at io.netty.util.concurrent.DefaultPromise.tryFailure(DefaultPromise.java:111)
+	at io.netty.channel.nio.AbstractNioChannel$AbstractNioUnsafe.fulfillConnectPromise(AbstractNioChannel.java:323)
+	at io.netty.channel.nio.AbstractNioChannel$AbstractNioUnsafe.finishConnect(AbstractNioChannel.java:339)
+	at io.netty.channel.nio.NioEventLoop.processSelectedKey(NioEventLoop.java:685)
+	at io.netty.channel.nio.NioEventLoop.processSelectedKeysOptimized(NioEventLoop.java:632)
+	at io.netty.channel.nio.NioEventLoop.processSelectedKeys(NioEventLoop.java:549)
+	at io.netty.channel.nio.NioEventLoop.run(NioEventLoop.java:511)
+	at io.netty.util.concurrent.SingleThreadEventExecutor$5.run(SingleThreadEventExecutor.java:918)
+	at io.netty.util.internal.ThreadExecutorMap$2.run(ThreadExecutorMap.java:74)
+	at io.micronaut.http.context.ServerRequestContext.with(ServerRequestContext.java:52)
+	at io.micronaut.http.context.ServerRequestContext.lambda$instrument$0(ServerRequestContext.java:68)
+	at io.netty.util.concurrent.FastThreadLocalRunnable.run(FastThreadLocalRunnable.java:30)
+	at java.base/java.lang.Thread.run(Thread.java:834)
+Caused by: io.netty.channel.AbstractChannel$AnnotatedConnectException: Connection refused: localhost/127.0.0.1:8500`
+
+The issue is caused by trying to auto register while the Consul is down which causes 
+this callback to be executed -> https://github.com/micronaut-projects/micronaut-core/blob/afc3fb377fea37f942c1a251be19b58f9f989b22/discovery-client/src/main/java/io/micronaut/discovery/client/registration/DiscoveryServiceAutoRegistration.java#L77
+
+Moreover this shutdowns the netty embedded server because fail fast is enabled by default -> 
+
+https://github.com/micronaut-projects/micronaut-core/blob/afc3fb377fea37f942c1a251be19b58f9f989b22/runtime/src/main/java/io/micronaut/discovery/registration/RegistrationConfiguration.java#L72
+
+I suspect this issue can also be found in the other discovery clients which extends the same base implementation.
+
+### Expected Behaviour
+
+The app should try to reconnect until Consul is up again
+
+### Actual Behaviour
+
+Netty server stopped.
+
+### Environment Information
+
+- **Operating System**: Linux
+- **Micronaut Version:** 1.2.0 (can be also reproduced in 1.1.2)
+- **JDK Version:** 11
+
+### Example Application
+

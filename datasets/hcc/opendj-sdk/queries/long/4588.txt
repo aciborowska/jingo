@@ -1,0 +1,105 @@
+Used FR DS 6.0.0-SNAPSHOT (70a0ee91289).
+
+During writing tests for new json equality matching rule (based on normalization of jsons) I noticed unexpected behavior with rest2ldap and queryfilter. The same behavior I noticed with default HTTP connection handler. Below I am describing the 1st case with Tomcat and gateway.
+
+Steps to reproduce:
+
+Installation part (can be done via test framework to step 5.)
+ 1. Install OpenDJ server using provided ldif
+ 2. Install Tomcat and deploy rest2ldap gateway
+ 3. Create new schema
+
+./dsconfig -h pyforge.example.com -p 4444 -D "cn=Directory Manager" -w password -X create-schema-provider --provider-name "testJsonEqMatchRule" --set enabled:true --set matching-rule-oid:1.3.6.1.4.1.36733.2.1.4.900.1 --set matching-rule-name:testJsonEqMatchRule --type json-equality-matching-rule --set json-keys:"/age" --set case-sensitive-strings:false -n
+
+4. Apply configuration for Gateway, see attachments
+ 5. Restart gateway
+ 6. Add new attribute and objectclass, see attachments
+
+
+./ldapmodify -h pyforge.example.com -p 1389 -D "cn=Directory Manager" -w password  -f /tmp/json-schema.ldif
+dn: cn=schema
+changetype: modify
+add: attributeTypes
+attributeTypes: ( json-custom-attribute-oid NAME 'jsonAttr' SYNTAX 1.3.6.1.4.1.36733.2.1.3.1 EQUALITY testJsonEqMatchRule SINGLE-VALUE X-ORIGIN 'OpenDJ Documentation Examples' )
+-
+add: objectClasses
+objectClasses: ( json-custom-object-class-oid NAME 'jsonCustomObject' SUP top AUXILIARY MAY ( jsonAttr ) X-ORIGIN 'OpenDJ Documentation Examples' )
+
+7. Add users with new schema object and attribute
+
+./ldapmodify -h pyforge.example.com -p 1389 -D "cn=Directory Manager" -w password	
+uid=pepe.roni_Tomcat,ou=people,dc=query,dc=com 
+objectClass: person 
+objectClass: jsonCustomObject 
+objectClass: inetOrgPerson 
+objectClass: organizationalPerson 
+objectClass: top 
+uid: pepe.roni_Embedded 
+userpassword: password 
+givenname: Pepe 
+cn: Pepe Roni 
+sn: Roni 
+mail: pepe.roni@example.com 
+description: Original description 
+jsonAttr: {"name":"Pepe","surname":"Roni","age":"26","language":"Italian"}
+
+
+./ldapmodify -h pyforge.example.com -p 1389 -D "cn=Directory Manager" -w password	
+dn: uid=hugh.morr_Tomcat,ou=people,dc=query,dc=com 
+objectClass: person 
+objectClass: jsonCustomObject 
+objectClass: inetOrgPerson 
+objectClass: organizationalPerson 
+objectClass: top 
+uid: hugh.morr_Embedded 
+userpassword: password 
+givenname: Hugh 
+cn: Hugh Morr 
+sn: Morr 
+mail: hugh.morr@example.com 
+description: Original description 
+jsonAttr:{"name":"Hugh","surname":"Morr","age":"26","language":"English"}
+
+8. Create a new index for new attribute and stop DS and rebuild indexes and after that start the server.
+
+./dsconfig -p 4444 -D "cn=directory manager" -w password -h localhost create-backend-index --backend-name userRoot --type generic --index-name jsonAttr  --set index-type:equality
+./stop-ds
+./rebuild-index --offline -b dc=com -i jsonAttr
+./start-ds
+
+Test case part:
+ 1. First step is checking the configuration for new attribute and objectclass is correct with ldapsearch
+
+./ldapsearch -h localhost -p 1389 -w password -D "cn=directory manager" -b dc=query,dc=com "(jsonAttr={\"age\":\"26\"})" jsonAttr
+
+
+ldap-access.audit.json output:
+"operation":"SEARCH","connId":15,"msgId":2,"dn":"dc=query,dc=com","scope":"sub","filter":"(jsonAttr={\"age\":\"26\"})","attrs":["jsonAttr"]}
+
+2. Do a http request according to the doc: https://backstage.forgerock.com/docs/ds/5.5/dev-guide/#query-rest
+
+equality query should looks like:
+(uid=bjensen) <=>_queryFilter=_id+eq+'bjensen'
+Try to access: 
+http://localhost:8080/api/query/users?_queryFilter=(jsonAttr+eq+'{"age":"26"}')
+
+3. Output of ldap-access.audit:
+
+"SEARCH","connId":16,"msgId":0,"dn":"ou=people,dc=query,dc=com","scope":"one","filter":"(jsonAttr=/ eq \"{\\5C\"age\\5C\":\\5C\"26\\5C\"}\")"
+
+4. Output of http-access.audit.json:
+
+"method":"GET","path":"http://localhost:8080/api/query/users","queryParameters":{"_queryFilter":["(jsonAttr eq '{\\\"age\\\":\\\"26\\\"}')"],
+
+5. I tried to do some different equality query filter like following one:
+
+http://localhost:8080/api/query/users?_queryFilter=(_id eq 'pepe.roni_Tomcat')
+
+6. The output of ldap-access and http-acces.audit.json
+
+LDAP:
+"SEARCH","connId":18,"msgId":0,"dn":"ou=people,dc=query,dc=com","scope":"one","filter":"(uid=pepe.roni_Tomcat)"
+HTTP:
+"GET","path":"http://localhost:8080/api/query/users","queryParameters":{"_queryFilter":["(_id eq 'pepe.roni_Tomcat')"]
+
+Due to difference of filter in logs between point 3. and 6. I think it is not correctly translated from REST request to LDAP request in case of json attribute which use new equality matching rule.

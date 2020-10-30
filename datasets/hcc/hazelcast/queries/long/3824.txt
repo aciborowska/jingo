@@ -1,0 +1,60 @@
+Hello, 
+
+I'm using the new IMap.aggregate method to compute statistics. I need to perform a count of map entries, grouped by a given property. The property value is extracted using a generic "propertyExtractor".
+
+Since this feature is not supported natively, I first get the disctinct property values:
+
+``` java
+List<String> values = Lists.newArrayList(liveStatsMap.aggregate(Supplier.fromPredicate((entry) -> channel.equals(entry.getValue().getChannel()),Supplier.all(propertyExtractor)),
+                    Aggregations.distinctValues()));
+```
+
+Then I launch one thread per value to perform the counts:
+
+``` java
+List<Callable<Long>> callables = Lists.newArrayList();
+for (String value : values) {
+    callables.add(() -> liveStatsMap.aggregate(Supplier.fromPredicate((entry) -> channel.equals(entry.getValue().getChannel()) && value.equals(propertyExtractor.extract(entry.getValue()))),
+                        Aggregations.count()));
+}
+List<Future<Long>> futures = statsComputeThreads.invokeAll(callables);
+```
+
+It works most of the time, but sometimes one of the "aggregate" calls in the "for" loop hangs and never returns.
+
+Here is the stack trace:
+
+```
+at java.util.concurrent.locks.LockSupport.parkNanos(LockSupport.java:215)
+    at java.util.concurrent.locks.AbstractQueuedSynchronizer.doAcquireSharedNanos(AbstractQueuedSynchronizer.java:1037)
+    at java.util.concurrent.locks.AbstractQueuedSynchronizer.tryAcquireSharedNanos(AbstractQueuedSynchronizer.java:1328)
+    at java.util.concurrent.CountDownLatch.await(CountDownLatch.java:277)
+    at com.hazelcast.mapreduce.impl.task.TrackableJobFuture.get(TrackableJobFuture.java:123)
+    at com.hazelcast.spi.impl.AbstractCompletableFuture.get(AbstractCompletableFuture.java:87)
+    at com.hazelcast.map.proxy.MapProxyImpl.aggregate(MapProxyImpl.java:682)
+    at com.hazelcast.map.proxy.MapProxyImpl.aggregate(MapProxyImpl.java:656)
+```
+
+Another trace is:
+
+"hz.ecstreaming.wait-notify" #134 prio=5 os_prio=0 tid=0x00007fc6d48d2800 nid=0x72d5 waiting on     condition [0x00007fc5210cf000]
+   java.lang.Thread.State: TIMED_WAITING (parking)
+        at sun.misc.Unsafe.park(Native Method)
+        - parking to wait for  <0x00000000802361b8> (a java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject)
+        at java.util.concurrent.locks.LockSupport.parkNanos(LockSupport.java:215)
+        at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.awaitNanos(AbstractQueuedSynchronizer.java:2078)
+        at java.util.concurrent.DelayQueue.poll(DelayQueue.java:259)
+        at com.hazelcast.spi.impl.WaitNotifyServiceImpl$ExpirationTask.doRun(WaitNotifyServiceImpl.java:430)
+        at com.hazelcast.spi.impl.WaitNotifyServiceImpl$ExpirationTask.run(WaitNotifyServiceImpl.java:415)
+        at java.util.concurrent.Executors$RunnableAdapter.call(Executors.java:511)
+        at java.util.concurrent.FutureTask.run(FutureTask.java:266)
+        at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1142)
+        at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:617)
+        at java.lang.Thread.run(Thread.java:745)
+        at com.hazelcast.util.executor.HazelcastManagedThread.executeRun(HazelcastManagedThread.java:76)
+        at com.hazelcast.util.executor.HazelcastManagedThread.run(HazelcastManagedThread.java:92)
+Can you confirm that this should never happen and that is is a bug?
+
+Thanks,
+
+Antoine

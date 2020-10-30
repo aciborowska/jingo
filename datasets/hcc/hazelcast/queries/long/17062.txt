@@ -1,0 +1,100 @@
+Context: basic HZ setup in a docker environment : 1 server + 1 client, HZ configuration based on tcp-ip with network aliases (using docker service names that are resolved against docker internal DNS).
+When HZ server restarts, docker reassigns a new IP address to the container but the client forever tries to reconnect to the old IP address without re-resolving the member name to obtain the new IP.
+
+**Version used :** 3.12.7 (also tested on 4.0.1 : same issue)
+**Cluster size :** single member
+**Number of clients :** 1 Java client
+**Java version :** 1.8 on client side / 11 on server side (Note : DNS network ttl cache is set to 0 everywhere)
+**OS :** Host: CentOS with docker engine (Docker version 19.03.6). Client container with debian based image. Server container from public HZ image: Alpine Linux v3.8.
+**Logs :** see below in the steps
+
+**Steps to reproduce :**
+Using Docker (docker-compose) :
+Create a HZ single member cluster using the standard public image, with tcp-ip member configured with the Docker service alias names (https://hub.docker.com/r/hazelcast/hazelcast/)
+Server configuration example :
+```
+            <tcp-ip enabled="true">
+              <member-list>
+                <member>hazelcast:5701</member>
+              </member-list>
+            </tcp-ip>
+```
+("hazelcast" here is the service name in docker-compose for the HZ server, it's just a standard network alias that gets resolved on the docker network)
+
+Connect a Java client configured with cluster-members filled with the same Docker service alias name.
+Client configuration example :
+```
+    <network>
+        <cluster-members>
+            <address>hazelcast:5701</address>
+        </cluster-members>
+    </network>
+```
+On server startup, HZ successfully starts up. Logs shows the member configured as:
+```
+hazelcast     | Members {size:1, ver:1} [
+hazelcast     |      Member [hazelcast]:5701 - ed12db96-27b4-4f05-b99b-840799a6bebf this
+hazelcast     | ]
+```
+On client startup, HZ resolves the IP address of the server and connects to the cluster:
+```
+hz-test-client              | 2020-06-08 12:25:44 INFO [hz.client_1.cluster-] com.hazelcast.client.connection.nio.ClusterConnectorService.null hz.client_1 [hazelcast] [3.12.7] Trying to connect to cluster with name: hazelcast
+hz-test-client              | 2020-06-08 12:25:44 INFO [hz.client_1.cluster-] com.hazelcast.client.connection.nio.ClusterConnectorService.null hz.client_1 [hazelcast] [3.12.7] Trying to connect to [hazelcast]:5701 as owner member
+hz-test-client              | 2020-06-08 12:25:44 INFO [hz.client_1.internal-3] com.hazelcast.client.connection.ClientConnectionManager.null hz.client_1 [hazelcast] [3.12.7] Setting ClientConnection{alive=true, connectionId=1, channel=NioChannel{/172.20.0.40:57827->hazelcast/172.20.0.39:5701}, remoteEndpoint=[hazelcast]:5701, lastReadTime=2020-06-08 12:25:44.343, lastWriteTime=2020-06-08 12:25:44.317, closedTime=never, connected server version=3.12.7} as owner with principal ClientPrincipal{uuid='cd0aefaa-df16-4699-88b5-a16e9f476c5d', ownerUuid='239fa3d4-8e13-4f3f-a11e-f3539db2a6fb'}
+hz-test-client              | 2020-06-08 12:25:44 INFO [hz.client_1.internal-3] com.hazelcast.client.connection.ClientConnectionManager.null hz.client_1 [hazelcast] [3.12.7] Authenticated with server [hazelcast]:5701, server version:3.12.7 Local address: /172.20.0.40:57827
+hz-test-client              | 2020-06-08 12:25:44 INFO [hz.client_1.event-5] com.hazelcast.client.spi.impl.ClientMembershipListener.null hz.client_1 [hazelcast] [3.12.7]
+hz-test-client              |
+hz-test-client              | Members [1] {
+hz-test-client              |      Member [hazelcast]:5701 - 239fa3d4-8e13-4f3f-a11e-f3539db2a6fb
+hz-test-client              | }
+hz-test-client              |
+hz-test-client              | 2020-06-08 12:25:44 INFO [hz.client_1.cluster-] com.hazelcast.core.LifecycleService.null hz.client_1 [hazelcast] [3.12.7] HazelcastClient 3.12.7 (20200430 - bf4b643) is CLIENT_CONNECTED
+```
+Everything works perfectly until you restart the HZ server service.
+Note that on Docker, with the start/stop of a container, the IP address changes.
+The client then looses the connection to the server and tries to reconnect.
+But at this point the client will try to reconnect keeping the old IP address it found at startup time (although the JVM dns cache is set to 0).
+In the logs, while the server is being restarted, I can see :
+```
+hz-test-client              | 2020-06-08 12:25:59 INFO [hz.hz.client_1.IO.thread-in-0] com.hazelcast.client.connection.nio.ClientConnection.null hz.client_1 [hazelcast] [3.12.7] ClientConnection{alive=false, connectionId=1, channel=NioChannel{/172.20.0.40:57827->hazelcast/172.20.0.39:5701}, remoteEndpoint=[hazelcast]:5701, lastReadTime=2020-06-08 12:25:59.755, lastWriteTime=2020-06-08 12:25:54.447, closedTime=2020-06-08 12:25:59.755, connected server version=3.12.7} closed. Reason: Connection closed by the other side
+hz-test-client              | 2020-06-08 12:25:59 INFO [hz.hz.client_1.IO.thread-in-0] com.hazelcast.client.connection.ClientConnectionManager.null hz.client_1 [hazelcast] [3.12.7] Removed connection to endpoint: [hazelcast]:5701, connection: ClientConnection{alive=false, connectionId=1, channel=NioChannel{/172.20.0.40:57827->hazelcast/172.20.0.39:5701}, remoteEndpoint=[hazelcast]:5701, lastReadTime=2020-06-08 12:25:59.755, lastWriteTime=2020-06-08 12:25:54.447, closedTime=2020-06-08 12:25:59.755, connected server version=3.12.7}
+hz-test-client              | 2020-06-08 12:25:59 INFO [hz.client_1.cluster-] com.hazelcast.core.LifecycleService.null hz.client_1 [hazelcast] [3.12.7] HazelcastClient 3.12.7 (20200430 - bf4b643) is CLIENT_DISCONNECTED
+hz-test-client              | 2020-06-08 12:25:59 INFO [hz.client_1.cluster-] com.hazelcast.client.connection.nio.ClusterConnectorService.null hz.client_1 [hazelcast] [3.12.7] Trying to connect to cluster with name: hazelcast
+hz-test-client              | 2020-06-08 12:25:59 INFO [hz.client_1.cluster-] com.hazelcast.client.connection.nio.ClusterConnectorService.null hz.client_1 [hazelcast] [3.12.7] Trying to connect to [hazelcast]:5701 as owner member
+hz-test-client              | 2020-06-08 12:25:59 WARNING [hz.client_1.cluster-] com.hazelcast.client.connection.nio.ClusterConnectorService.null hz.client_1 [hazelcast] [3.12.7] Exception during initial connection to [hazelcast]:5701: com.hazelcast.core.HazelcastException: java.net.SocketException: Connection refused to address hazelcast/172.20.0.39:5701
+hz-test-client              | 2020-06-08 12:25:59 WARNING [hz.client_1.cluster-] com.hazelcast.client.connection.nio.ClusterConnectorService.null hz.client_1 [hazelcast] [3.12.7] Unable to get live cluster connection, retry in 5000 ms, attempt 1 of 2147483647.
+hz-test-client              | 2020-06-08 12:26:05 INFO [hz.client_1.cluster-] com.hazelcast.client.connection.nio.ClusterConnectorService.null hz.client_1 [hazelcast] [3.12.7] Trying to connect to [hazelcast]:5701 as owner member
+hz-test-client              | 2020-06-08 12:26:10 WARNING [hz.client_1.cluster-] com.hazelcast.client.connection.nio.ClusterConnectorService.null hz.client_1 [hazelcast] [3.12.7] Exception during initial connection to [hazelcast]:5701: com.hazelcast.core.HazelcastException: java.net.SocketTimeoutException
+hz-test-client              | 2020-06-08 12:26:10 WARNING [hz.client_1.cluster-] com.hazelcast.client.connection.nio.ClusterConnectorService.null hz.client_1 [hazelcast] [3.12.7] Unable to get live cluster connection, retry in 5000 ms, attempt 2 of 2147483647.
+hz-test-client              | 2020-06-08 12:26:15 INFO [hz.client_1.cluster-] com.hazelcast.client.connection.nio.ClusterConnectorService.null hz.client_1 [hazelcast] [3.12.7] Trying to connect to [hazelcast]:5701 as owner member
+hz-test-client              | 2020-06-08 12:26:20 WARNING [hz.client_1.cluster-] com.hazelcast.client.connection.nio.ClusterConnectorService.null hz.client_1 [hazelcast] [3.12.7] Exception during initial connection to [hazelcast]:5701: com.hazelcast.core.HazelcastException: java.net.SocketTimeoutException
+hz-test-client              | 2020-06-08 12:26:20 WARNING [hz.client_1.cluster-] com.hazelcast.client.connection.nio.ClusterConnectorService.null hz.client_1 [hazelcast] [3.12.7] Unable to get live cluster connection, retry in 5000 ms, attempt 3 of 2147483647.
+hz-test-client              | 2020-06-08 12:26:25 INFO [hz.client_1.cluster-] com.hazelcast.client.connection.nio.ClusterConnectorService.null hz.client_1 [hazelcast] [3.12.7] Trying to connect to [hazelcast]:5701 as owner member
+hz-test-client              | 2020-06-08 12:26:30 WARNING [hz.client_1.cluster-] com.hazelcast.client.connection.nio.ClusterConnectorService.null hz.client_1 [hazelcast] [3.12.7] Exception during initial connection to [hazelcast]:5701: com.hazelcast.core.HazelcastException: java.net.SocketTimeoutException
+hz-test-client              | 2020-06-08 12:26:30 WARNING [hz.client_1.cluster-] com.hazelcast.client.connection.nio.ClusterConnectorService.null hz.client_1 [hazelcast] [3.12.7] Unable to get live cluster connection, retry in 5000 ms, attempt 4 of 2147483647.
+hz-test-client              | 2020-06-08 12:26:35 INFO [hz.client_1.cluster-] com.hazelcast.client.connection.nio.ClusterConnectorService.null hz.client_1 [hazelcast] [3.12.7] Trying to connect to [hazelcast]:5701 as owner member
+hz-test-client              | 2020-06-08 12:26:40 WARNING [hz.client_1.cluster-] com.hazelcast.client.connection.nio.ClusterConnectorService.null hz.client_1 [hazelcast] [3.12.7] Exception during initial connection to [hazelcast]:5701: com.hazelcast.core.HazelcastException: java.net.SocketTimeoutException
+hz-test-client              | 2020-06-08 12:26:40 WARNING [hz.client_1.cluster-] com.hazelcast.client.connection.nio.ClusterConnectorService.null hz.client_1 [hazelcast] [3.12.7] Unable to get live cluster connection, retry in 5000 ms, attempt 5 of 2147483647.
+hz-test-client              | 2020-06-08 12:26:45 INFO [hz.client_1.cluster-] com.hazelcast.client.connection.nio.ClusterConnectorService.null hz.client_1 [hazelcast] [3.12.7] Trying to connect to [hazelcast]:5701 as owner member
+hz-test-client              | 2020-06-08 12:26:49 WARNING [hz.client_1.cluster-] com.hazelcast.client.connection.nio.ClusterConnectorService.null hz.client_1 [hazelcast] [3.12.7] Exception during initial connection to [hazelcast]:5701: com.hazelcast.core.HazelcastException: java.net.SocketException: No route to host to address hazelcast/172.20.0.39:5701
+hz-test-client              | 2020-06-08 12:26:49 WARNING [hz.client_1.cluster-] com.hazelcast.client.connection.nio.ClusterConnectorService.null hz.client_1 [hazelcast] [3.12.7] Unable to get live cluster connection, retry in 5000 ms, attempt 6 of 2147483647.
+hz-test-client              | 2020-06-08 12:26:54 INFO [hz.client_1.cluster-] com.hazelcast.client.connection.nio.ClusterConnectorService.null hz.client_1 [hazelcast] [3.12.7] Trying to connect to [hazelcast]:5701 as owner member
+hz-test-client              | 2020-06-08 12:26:57 WARNING [hz.client_1.cluster-] com.hazelcast.client.connection.nio.ClusterConnectorService.null hz.client_1 [hazelcast] [3.12.7] Exception during initial connection to [hazelcast]:5701: com.hazelcast.core.HazelcastException: java.net.SocketException: No route to host to address hazelcast/172.20.0.39:5701
+hz-test-client              | 2020-06-08 12:26:57 WARNING [hz.client_1.cluster-] com.hazelcast.client.connection.nio.ClusterConnectorService.null hz.client_1 [hazelcast] [3.12.7] Unable to get live cluster connection, retry in 5000 ms, attempt 7 of 2147483647.
+hz-test-client              | 2020-06-08 12:27:03 INFO [hz.client_1.cluster-] com.hazelcast.client.connection.nio.ClusterConnectorService.null hz.client_1 [hazelcast] [3.12.7] Trying to connect to [hazelcast]:5701 as owner member
+hz-test-client              | 2020-06-08 12:27:06 WARNING [hz.client_1.cluster-] com.hazelcast.client.connection.nio.ClusterConnectorService.null hz.client_1 [hazelcast] [3.12.7] Exception during initial connection to [hazelcast]:5701: com.hazelcast.core.HazelcastException: java.net.SocketException: No route to host to address hazelcast/172.20.0.39:5701
+hz-test-client              | 2020-06-08 12:27:06 WARNING [hz.client_1.cluster-] com.hazelcast.client.connection.nio.ClusterConnectorService.null hz.client_1 [hazelcast] [3.12.7] Unable to get live cluster connection, retry in 5000 ms, attempt 8 of 2147483647.
+hz-test-client              | 2020-06-08 12:27:11 INFO [hz.client_1.cluster-] com.hazelcast.client.connection.nio.ClusterConnectorService.null hz.client_1 [hazelcast] [3.12.7] Trying to connect to [hazelcast]:5701 as owner member
+hz-test-client              | 2020-06-08 12:27:14 WARNING [hz.client_1.cluster-] com.hazelcast.client.connection.nio.ClusterConnectorService.null hz.client_1 [hazelcast] [3.12.7] Exception during initial connection to [hazelcast]:5701: com.hazelcast.core.HazelcastException: java.net.SocketException: No route to host to address hazelcast/172.20.0.39:5701
+hz-test-client              | 2020-06-08 12:27:14 WARNING [hz.client_1.cluster-] com.hazelcast.client.connection.nio.ClusterConnectorService.null hz.client_1 [hazelcast] [3.12.7] Unable to get live cluster connection, retry in 5000 ms, attempt 9 of 2147483647.
+```
+but 172.20.0.39 is the old IP address of the hazelcast server, it has changed in docker since the restart and the client never attempts to resolve "hazelcast" again, leading to impossible reconnection.
+It seems that when the client is executing its reconnection mechanism, it reuses the same connection object with the IP address resolved at startup time, but if it has changed since, it will never attempt to resolve the member address defined in the configuration again to reconnect.
+
+I also tried the same thing with a 2 member cluster and it leads to the same errors.
+On the server side whenever a member IP address changes, other members are capable of reconnecting to it automatically and see the address change, the issue is only present on the Java client side.
+Tried with/without smart-routing but doesn't affect client behavior on this.
+Tried with "hazelcast.diagnostics.enabled" on client side but didn't see anything more that would point me to a configuration issue or something onto which I can do anything.
+
+Is this the expected behavior? 
+Thanks for the feedback!

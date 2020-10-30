@@ -1,0 +1,322 @@
+Hi,
+
+in version 3.3.4 the FinalizeJoinOperation times out if the MapStore.loadAllKeys() method takes more than 5s.
+
+the exception is the following:
+
+```
+30977 [hz._hzInstance_1_dev.generic-operation.thread-7] WARN com.hazelcast.cluster.ClusterService  - [10.0.1.104]:5701 [dev] [3.3.4] While waiting finalize join calls...
+java.util.concurrent.TimeoutException: Call BasicInvocation{ serviceName='hz:core:clusterService', op=MemberInfoUpdateOperation {
+MemberInfo{address=Address[10.0.1.104]:5701}
+MemberInfo{address=Address[10.0.1.104]:5702}
+}, partitionId=-1, replicaIndex=0, tryCount=50, tryPauseMillis=500, invokeCount=1, callTimeout=60000, target=Address[10.0.1.104]:5702} encountered a timeout
+    at com.hazelcast.spi.impl.BasicInvocationFuture.resolveApplicationResponse(BasicInvocationFuture.java:331)
+    at com.hazelcast.spi.impl.BasicInvocationFuture.resolveApplicationResponseOrThrowException(BasicInvocationFuture.java:299)
+    at com.hazelcast.spi.impl.BasicInvocationFuture.get(BasicInvocationFuture.java:191)
+    at com.hazelcast.util.FutureUtil.executeWithDeadline(FutureUtil.java:294)
+    at com.hazelcast.util.FutureUtil.waitWithDeadline(FutureUtil.java:278)
+    at com.hazelcast.util.FutureUtil.waitWithDeadline(FutureUtil.java:252)
+    at com.hazelcast.cluster.ClusterServiceImpl.startJoin(ClusterServiceImpl.java:911)
+    at com.hazelcast.cluster.ClusterServiceImpl.handleJoinRequest(ClusterServiceImpl.java:596)
+    at com.hazelcast.cluster.JoinRequestOperation.run(JoinRequestOperation.java:38)
+    at com.hazelcast.spi.impl.BasicOperationService$OperationHandler.handle(BasicOperationService.java:698)
+    at com.hazelcast.spi.impl.BasicOperationService$OperationHandler.access$400(BasicOperationService.java:674)
+    at com.hazelcast.spi.impl.BasicOperationService$OperationPacketHandler.handle(BasicOperationService.java:648)
+    at com.hazelcast.spi.impl.BasicOperationService$OperationPacketHandler.handle(BasicOperationService.java:603)
+    at com.hazelcast.spi.impl.BasicOperationService$OperationPacketHandler.access$1400(BasicOperationService.java:590)
+    at com.hazelcast.spi.impl.BasicOperationService$BasicDispatcherImpl.dispatch(BasicOperationService.java:542)
+    at com.hazelcast.spi.impl.BasicOperationScheduler$OperationThread.process(BasicOperationScheduler.java:439)
+    at com.hazelcast.spi.impl.BasicOperationScheduler$OperationThread.processPriorityMessages(BasicOperationScheduler.java:452)
+    at com.hazelcast.spi.impl.BasicOperationScheduler$OperationThread.doRun(BasicOperationScheduler.java:432)
+    at com.hazelcast.spi.impl.BasicOperationScheduler$OperationThread.run(BasicOperationScheduler.java:408)
+```
+
+the place where the timeout is set to 5 seconds is here:
+ClusterServiceImpl:910
+
+since the MapStore.loadAllKeys method is quite likely to take more than 5s on systems with lots of data, this timeout should probably be quite a bit higher.
+
+below you can find a short testcase which reproduces the problem:
+
+```
+package com.nm.test.hazelcast.mapstore;
+
+import com.hazelcast.config.*;
+import com.hazelcast.config.MapStoreConfig.InitialLoadMode;
+import com.hazelcast.core.Hazelcast;
+import com.hazelcast.core.HazelcastInstance;
+import com.hazelcast.core.IMap;
+import com.nm.test.hazelcast.TestHazelcast;
+import com.nm.test.hazelcast.utils.Sleep;
+import com.nm.test.hazelcast.utils.SlowMapStore;
+import org.apache.log4j.BasicConfigurator;
+import org.apache.log4j.Logger;
+import junit.framework.TestCase;
+
+/**
+ * Test if slowish map store init leads to operation timeout exception in
+ * com.hazelcast.cluster.ClusterServiceImpl.startJoin().
+ */
+public class TestMapStore19 extends TestCase {
+
+    private static final Logger logger = Logger.getLogger(TestMapStore19.class);
+
+    private static final String mapName = "testMap" + TestMapStore19.class.getSimpleName();
+
+    private static final int writeDelaySeconds = 10;
+
+    @Override
+    protected void setUp() throws Exception {
+
+        // configure logging
+        if (!TestHazelcast.loggingInitialized) {
+            TestHazelcast.loggingInitialized = true;
+            BasicConfigurator.configure();
+        }
+    }
+
+    public void testSlowJoin() throws Exception {
+
+        // create shared hazelcast config
+        final Config config = new XmlConfigBuilder().build();
+        config.setProperty("hazelcast.logging.type", "log4j");
+        config.setProperty("hazelcast.jmx", "false");
+
+        // get map config
+        MapConfig mapConfig = config.getMapConfig(mapName);
+
+        // create shared map store implementation
+        final SlowMapStore store = new SlowMapStore();
+
+        // configure map store
+        MapStoreConfig mapStoreConfig = new MapStoreConfig();
+        mapStoreConfig.setEnabled(true);
+        mapStoreConfig.setInitialLoadMode(InitialLoadMode.EAGER);
+        mapStoreConfig.setWriteDelaySeconds(writeDelaySeconds);
+        mapStoreConfig.setClassName(null);
+        mapStoreConfig.setImplementation(store);
+        mapConfig.setMapStoreConfig(mapStoreConfig);
+
+        // thread 1: start a single node
+        Thread thread1 = new Thread(new Runnable() {
+
+            @Override
+            public void run() {
+
+                HazelcastInstance hcInstance = Hazelcast.newHazelcastInstance(config);
+
+                // ------------------------------------------------------- {3s}
+
+                // try-finally to stop hazelcast instance
+                try {
+
+                    // log started
+                    logger.info(Thread.currentThread().getName() + " started.");
+
+                    // get map
+                    // this will init the map (and call loadAllKeys())
+                    IMap<String, String> map = hcInstance.getMap(mapName);
+                    int size = map.size();
+                    logger.info("Map size = " + size);
+
+                    // -------------------------------------------------- {13s}
+
+                    // wait
+                    Sleep.sleep(32000, true);
+
+                    // -------------------------------------------------- {45s}
+
+                } finally {
+                    hcInstance.getLifecycleService().shutdown();
+                }
+                logger.info(Thread.currentThread().getName() + " done.");
+            }
+        }, "Thread 1");
+        thread1.start();
+
+        // wait 20s after starting first thread
+        Sleep.sleep(20000, true);
+
+        // thread 2: start a second node
+        Thread thread2 = new Thread(new Runnable() {
+
+            @Override
+            public void run() {
+
+                HazelcastInstance hcInstance = Hazelcast.newHazelcastInstance(config);
+
+                // ------------------------------------------------------ {28s}
+
+                // log joined
+                logger.info(Thread.currentThread().getName() + " hazelcast instance joined.");
+
+                // try-finally to stop hazelcast instance
+                try {
+
+                    // get map
+                    IMap<String, String> map = hcInstance.getMap(mapName);
+                    int size = map.size();
+                    logger.info("Map size = " + size);
+
+                    // -------------------------------------------------- {34s}
+
+                    // wait before shutdown
+                    Sleep.sleep(21000, true);
+
+                    // -------------------------------------------------- {55s}
+
+                } finally {
+                    hcInstance.getLifecycleService().shutdown();
+                }
+                logger.info(Thread.currentThread().getName() + " done.");
+            }
+        }, "Thread 2");
+        thread2.start();
+
+        // join threads
+        thread1.join();
+        thread2.join();
+    }
+
+}
+
+package com.nm.test.hazelcast.utils;
+
+import org.apache.log4j.Logger;
+
+public class Sleep {
+
+    private static final Logger logger = Logger.getLogger(Sleep.class);
+
+    public static void sleep(long ms, boolean log) {
+        if (ms <= 0) {
+            return;
+        }
+        try {
+            Thread.sleep(ms);
+            if (log) {
+                logger.info("Slept " + (ms / 1000) + "s.");
+            }
+        } catch (InterruptedException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+}
+
+package com.nm.test.hazelcast.utils;
+
+import com.hazelcast.core.MapStore;
+import org.apache.log4j.Logger;
+import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+
+/**
+ * A map store implementation which allows to wait in operations if configured.
+ */
+public class SlowMapStore implements MapStore<String, String> {
+
+    private static final Logger logger = Logger.getLogger(SlowMapStore.class);
+
+    // ----------------------------------------------------------------- config
+
+    private final int sleepMsLoad;
+
+    private final int sleepMsLoadAll;
+
+    private final int sleepMsLoadAllPerKey;
+
+    private final int sleepMsLoadAllKeys;
+
+    // ------------------------------------------------------------------ state
+
+    private final ConcurrentHashMap<String, String> store = new ConcurrentHashMap<String, String>();
+
+    // ----------------------------------------------------------- construction
+
+    public SlowMapStore() {
+        this.sleepMsLoad = 20;
+        this.sleepMsLoadAll = 50;
+        this.sleepMsLoadAllPerKey = 10;
+        this.sleepMsLoadAllKeys = 8000;
+    }
+
+    public void preload(int size) {
+        for (int i = 0; i < size; i++) {
+            store.put("k" + i, "v" + i);
+        }
+    }
+
+    // ---------------------------------------------------------------- getters
+
+    // ----------------------------------------------------- MapStore interface
+
+    @Override
+    public String load(String key) {
+        logger.info("load(" + key + ") called.");
+        Sleep.sleep(sleepMsLoad, false);
+        return store.get(key);
+    }
+
+    @Override
+    public Map<String, String> loadAll(Collection<String> keys) {
+        List<String> keysList = new ArrayList<String>(keys);
+        Collections.sort(keysList);
+        logger.info("loadAll(" + keysList + ") called.");
+        Sleep.sleep(sleepMsLoadAll, false);
+        Map<String, String> result = new HashMap<String, String>();
+        for (String key : keys) {
+            Sleep.sleep(sleepMsLoadAllPerKey, false);
+            String value = store.get(key);
+            if (value != null) {
+                result.put(key, value);
+            }
+        }
+        return result;
+    }
+
+    @Override
+    public Set<String> loadAllKeys() {
+        logger.info("loadAllKeys() called.");
+        Sleep.sleep(sleepMsLoadAllKeys, true);
+        Set<String> result = new HashSet<String>(store.keySet());
+        List<String> resultList = new ArrayList<String>(result);
+        Collections.sort(resultList);
+        logger.info("loadAllKeys result: size = " + result.size() + ", keys = " + resultList + ".");
+        return result;
+    }
+
+    @Override
+    public void store(String key, String value) {
+        logger.info("store(" + key + ") called.");
+        store.put(key, value);
+    }
+
+    @Override
+    public void storeAll(Map<String, String> map) {
+        TreeSet<String> setSorted = new TreeSet<String>(map.keySet());
+        logger.info("storeAll(" + setSorted + ") called.");
+        store.putAll(map);
+    }
+
+    @Override
+    public void delete(String key) {
+        logger.info("delete(" + key + ") called.");
+        store.remove(key);
+    }
+
+    @Override
+    public void deleteAll(Collection<String> keys) {
+        List<String> keysList = new ArrayList<String>(keys);
+        Collections.sort(keysList);
+        logger.info("deleteAll(" + keysList + ") called.");
+        for (String key : keys) {
+            store.remove(key);
+        }
+    }
+
+}
+```
+
+Thanks and best,
+Lukas

@@ -1,0 +1,100 @@
+Found with 7.0.0-SNAPSHOT rev. 9273ecc9f7a. 
+
+After migration of old topology (DSRS-DSRS) by adding two new DSRS-DSRS servers and stopping original servers and running dsrepl cleanup command I can see an issue when adding a new entry to 7.0.0 server:
+
+./DJ3_RT1_DSRS/opendj/bin/ldapmodify -h pyforge.example.com -p 1391 -D "uid=admin" -w password --useStartTls  -X  
+dn: uid=jdoe.1,ou=people,dc=example,dc=com
+objectClass: inetorgperson
+objectClass: top
+sn: Doe
+givenName: John
+cn: John Doe
+
+
+# The LDAP modify request failed: 53 (Unwilling to Perform)
+# Additional Information:  The Replication is configured for suffix dc=com but was not able to connect to any Replication Server
+
+
+
+Command to reproduce:
+
+python3 run-pybot.py -v -s replication_group3.mixedTopologies -t migrate_rt1_topo DJ
+
+
+Steps:
+
+	Setup old DSRS-DSRS topo
+	Setup 7.0.0 DSRS and do not start it
+	Configure 7.0.0 DSRS to be compatible with 6.5.3
+	run dsrepl add-local-server... cmd
+	start the 7.0.0 server
+	run dsrepl initialize on this 7.0.0 server and initialize from 6.5.3 server
+	check ldap operations works (add, mod, del users on 6.5.3 server and check those changes are propagated to 7.0.0 server)
+	stop one of the old DSRS servers
+	repeat steps 3,4,5,6,7 with another 7.0.0 server
+	stop the remaining old DSRS server
+	run dsrepl cleanup on each new server
+	try to add new entry to topology
+
+
+
+The last point fails with above error.
+
+ I have found errors in the last 7.0.0 server logs:
+
+[16/Jul/2020:09:28:05 +0200] category=com.forgerock.opendj.security.keystore severity=WARNING msgID=-1 msg=An unexpected error
+ occurred while accessing the key store exception=EntryNotFoundException: No Such Entry: Entry cn=instance keys,cn=admin data 
+specified as the search base DN does not exist (LdapException.java:248 ConnectionEntryReader.java:220 
+AdminDataTrustManagerProvider.java:175 KeyStore.java:1269 TrustStoreUtil.java:56 TrustManagerFactoryImpl.java:77 
+TrustManagerFactory.java:278 AdminDataTrustManagerProvider.java:320 SslUtils.java:282 SslUtils.java:272 SslUtils.java:142 
+SslUtils.java:172 ReplSessionSecurity.java:160 ReplSessionSecurity.java:99 Session.java:94 ReplicationServer.java:459 
+ReplicationServer.java:415 ReplicationServer.java:375 ReplicationServerConnectThread.java:42)
+
+[16/Jul/2020:09:28:12 +0200] category=com.forgerock.opendj.security.keystore severity=WARNING msgID=-1 msg=An unexpected error 
+occurred while accessing the key store exception=EntryNotFoundException: No Such Entry: The entry cn=instance keys,cn=admin data 
+specified as the search base does not exist in the Directory Server (LdapException.java:248 ConnectionEntryReader.java:220 
+AdminDataTrustManagerProvider.java:175 KeyStore.java:1269 TrustStoreUtil.java:56 TrustManagerFactoryImpl.java:77 
+TrustManagerFactory.java:278 AdminDataTrustManagerProvider.java:320 SslUtils.java:282 SslUtils.java:272 SslUtils.java:142 
+SslUtils.java:172 ReplSessionSecurity.java:160 ReplSessionSecurity.java:99 Session.java:94 ReplicationServer.java:459 
+ReplicationServer.java:415 ReplicationServer.java:375 ReplicationServerConnectThread.java:42)
+
+
+[16/Jul/2020:10:47:47 +0200] category=SYNC severity=ERROR msgID=343 msg=Replication server 4 was attempting to connect to 
+replication server pyforge.example.com/127.0.2.2:4446 but an error occurred in handshake phase. Error: NumberFormatException(For 
+input string: "0��^B^A^@x�")
+
+
+Also during step 7. when there is  a check with dsrepl status I noticed also some Connect Error messages in the output:
+
+dsreplication status -h pyforge.example.com -p 4445 -b dc=com -I admin -w password --script-friendly -X -n09:27:35.964INFOSUCCESS:
+-- rc --
+returned 0, effectively in [0]
+-- stdout --
+dc=com	pyforge.example.com:4445	177	true	2	2	8990	0	false
+
+-- stderr --
+The displayed information might not be complete because the following errors
+were encountered reading the configuration of the existing servers:
+
+An error occurred connecting to the server.  Details: Connect Error:
+Connection refused
+An unexpected error occurred.  Details: java.io.IOException:
+org.forgerock.opendj.config.client.ManagedObjectDecodingException: The
+Replication Domain could not be decoded due to the following reason: The
+"replication-server" property must be specified as it is mandatory
+
+In ldap-access.audit.json I have found following event messages (not sure if alarming but looks odd to me):
+
+{"eventName":"DJ-LDAP","client":{"ip":"internal","port":-1},"server":{"ip":"internal","port":-1},"request":
+{"protocol":"internal","operation":"MODIFY","connId":-3,"msgId":55,"opType":"sync","dn":"dc=com"},"transactionId":"0","response":
+{"status":"SUCCESSFUL","statusCode":"0","elapsedTime":11,"elapsedTimeUnits":"MILLISECONDS"},"timestamp":"2020-07-
+16T08:49:04.295Z","_id":"18126554-9683-464d-867f-5fb64c879105-1350"}
+{"eventName":"DJ-LDAP","client":{"ip":"internal","port":-1},"server":{"ip":"internal","port":-1},"request":
+{"protocol":"internal","operation":"MODIFY","connId":-3,"msgId":56,"opType":"sync","dn":"uid=Monitor"},"transactionId":"0","respons
+e":{"status":"SUCCESSFUL","statusCode":"0","elapsedTime":4,"elapsedTimeUnits":"MILLISECONDS"},"timestamp":"2020-07-
+16T08:49:04.314Z","_id":"18126554-9683-464d-867f-5fb64c879105-1352"}
+{"eventName":"DJ-LDAP","client":{"ip":"internal","port":-1},"server":{"ip":"internal","port":-1},"request":
+{"protocol":"internal","operation":"MODIFY","connId":-3,"msgId":57,"opType":"sync","dn":"cn=schema"},"transactionId":"0","response"
+:{"status":"SUCCESSFUL","statusCode":"0","elapsedTime":34,"elapsedTimeUnits":"MILLISECONDS"},"timestamp":"2020-07-
+16T08:49:04.352Z","_id":"18126554-9683-464d-867f-5fb64c879105-1354"}
+

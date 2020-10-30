@@ -1,0 +1,57 @@
+There are three replicating DS+RS servers. The client read and write traffic is generally pointing at the primary and secondary servers, while the 3rd backup server is almost purely updating its changelogDb.
+
+There is significant write load on the "ou=rprofiles,dc=example,dc=com" domain. Each change is approx 70KB. All three servers have a 24 hour purge-delay.
+
+Under some unknown conditions, the changelogDb on one of the servers (most recently on the backup server) has started growing until the disk has nearly filled.
+
+The changelogDb directories are approximately 150GB on the primary and secondary servers, and over 1TB on the backup server.
+
+We dumped the rprofiles changes from all 3 servers:
+
+
+                    primary         secondary       backup
+                    changes size    changes size    changes size
+22098 ou=rprofiles  1893210 57.7GB  1877264 57.2GB  1572153 46.2GB
+32057 ou=rprofiles  1901216 58.0GB  1891239 57.7GB  1562067 45.8GB
+
+
+
+So it looks as though the checkpointer threads on the backup server are properly trimming old changes. The disparity in sizes is due to the backup server being run for a bit longer than the other servers.
+
+However the cleaner threads seem to be in some serious trouble, and they are not catching up. 
+We observe the following messages frequently in the backup server's changelogDb/je.info.0 file:
+
+
+2016-08-29 03:12:52.257 UTC INFO [/prod/dsd/apps/opendj/changelogDb] Chose lowest utilized file for cleaning. fileChosen: 0xc040a lnSizeCorrectionFactor: 1.1420875 totalUtilization: 49 bestFileUtilization: 4 isProbe: false
+2016-08-29 03:12:52.684 UTC SEVERE [/prod/dsd/apps/opendj/changelogDb] Average cleaner backlog has grown from 110238.8 to 110240.4. If the cleaner continues to be unable to make progress, the JE cache size and/or number of cleaner threads are probably too small. If this is not corrected, eventually all available disk space will be used.
+
+
+
+Note the high `lnSizeCorrectionFactor` value. The "backlog" seems to be roughly the number of files to clean.
+
+We also see this frequently:
+
+
+2016-08-29 03:12:52.752 UTC WARNING [/prod/dsd/apps/opendj/changelogDb] Cleaner has 16274 files not deleted because of read-only processes.
+
+
+
+The cause of that second message is not clear. An online backup does *not* access the environment in this way.
+
+Using DbSpace -r we can see that there are a large number of files with very low occupancy. Top 10:
+
+
+52470 total files with %0 occupancy
+56309 total files with %1 occupancy
+12273 total files with %2 occupancy
+2491 total files with %3 occupancy
+1068 total files with %4 occupancy
+1161 total files with %5 occupancy
+1164 total files with %6 occupancy
+890 total files with %7 occupancy
+751 total files with %8 occupancy
+689 total files with %9 occupancy
+
+
+
+The changelogDb only uses 2 cleaner threads and this is not presently configurable. However note that the other 2 servers are able to keep up with this trim load so I don't believe the number of cleaner threads is the issue.

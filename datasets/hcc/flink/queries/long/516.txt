@@ -1,0 +1,48 @@
+Certain pipelined flows may lead to deadlocks, in which case we need to make sure the pipelines are broken or made elastic enough to prevent that.
+
+This is only relevat to pipelined data flows where one operator has more than one consumers (successors in the flow).
+
+Most cases are caught by the general logic that deals with branching/joining flows. The following cases need additional checks:
+
+```
+                    <build>
+(source1) ------ (join)
+          \    /    <probe>
+           \  /
+            \/
+            /\
+           /  \
+          /    \    <probe>
+(source2) ------(join)
+                    <build>
+```
+
+Since both sources pipeline their data into a build and a probe side, they get stalled by  the back pressure from the probe side (which waits for the build side to complete) and never finish the build side.
+
+We can model dependencies of pipelined / materialized connections and do a reguar cyclic dependencies check to detect such situations. Pipelined connections have a dependency from sender to receiver, non-pipelined (fully dammed) connections have a dependency from receiver to sender.
+
+A PlanNode and a Channel are considered pipelined unless the following holds:
+
+
+	The channel has a LocalStrategy`returns true.
+	The channel has a TempMode` is true.
+	The PlanNode has a [DriverStrategy] (https://github.com/stratosphere/stratosphere/blob/master/stratosphere-runtime/src/main/java/eu/stratosphere/pact/runtime/task/DriverStrategy.java) where the [DamBehavior] (https://github.com/stratosphere/stratosphere/blob/master/stratosphere-runtime/src/main/java/eu/stratosphere/pact/runtime/task/DamBehavior.java)  as returned by `firstDam()` or `secondDam()` for the respective input is a `FULL_DAM`.
+
+
+
+Deadlocks can be resolved by adjusting the `DriverStrategy` such that the `DamBehavior` of the inputs changes to break the cyclic dependency. An example is switching the build- and probe- side of that hash join.
+
+An alternative is introduce an arficial pipeline breaker at a channel, by calling `channel.setTempMode(channel.getTempMode().makePipelineBreaker())`.
+
+
+
+
+
+---------------- Imported from GitHub ----------------
+Url: https://github.com/stratosphere/stratosphere/issues/516
+Created by: StephanEwen
+Labels: optimizer, 
+Milestone: Release 0.5
+Assignee: markus-h
+Created at: Fri Feb 28 19:18:48 CET 2014
+State: closed

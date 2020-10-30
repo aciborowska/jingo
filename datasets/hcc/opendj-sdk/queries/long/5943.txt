@@ -1,0 +1,66 @@
+Found with 7.0.0 rev 789be6094f7
+
+We set up 2 servers, replicated.
+First test is performing the following steps:
+1. Configure index for ttl on DJ1 and rebuild index.
+2. Configure index for ttl on DJ2 and rebuild index.
+3. Enable TTL Reaper on DJ1 with ttl-age X seconds.
+4. Enable TTL Reaper on DJ2 with ttl-age X seconds.
+5. Check number of entries on both servers.
+6. Add 3 entries.
+7. Wait X+Z seconds (Z is constant to avoid timing issues)
+8. Check that all added entries are deleted on both servers.
+
+We end up with 13 entries on both servers.
+
+
+./TtlReaper/DJ1/opendj/bin/ldapsearch -h nameserver.example.com -p 1389 -D "cn=myself" -w password -b "cn=monitor" "(ds-cfg-backend-id=userRoot)" ds-mon-backend-entry-count
+dn: ds-cfg-backend-id=userRoot,cn=backends,cn=monitor
+ds-mon-backend-entry-count: 13
+
+./TtlReaper/DJ1/opendj/bin/ldapsearch -h nameserver.example.com -p 1389 -D "cn=myself" -w password -b "uid=user.0,ou=People,dc=example,dc=com" "(objectclass=*)"
+# The LDAP search request failed: 32 (No Such Entry)
+# Additional Information:  The search base entry 'uid=user.0,ou=People,dc=example,dc=com' does not exist
+# Matched DN:  ou=People,dc=example,dc=com
+
+
+
+Then the second test is disabling the ttl index:
+
+./TtlReaper/DJ1/opendj/bin/dsconfig -h nameserver.example.com -p 4444 -D "cn=myself" -w password -X set-backend-index-prop --backend-name userRoot --index-name expirationAttr --set ttl-enabled:false -n
+
+./TtlReaper/DJ1/opendj/bin/rebuild-index -h nameserver.example.com -p 4444 -D "cn=myself" -w password -X -b dc=com --rebuildAll
+
+
+
+
+And user that has been added then deleted appears again:
+
+./TtlReaper/DJ1/opendj/bin/ldapsearch -h nameserver.example.com -p 1389 -D "cn=myself" -w password -b "uid=user.0,ou=People,dc=example,dc=com" "(objectclass=*)"
+dn: uid=user.0,ou=People,dc=example,dc=com
+objectClass: top
+objectClass: person
+objectClass: organizationalPerson
+objectClass: inetOrgPerson
+objectClass: expirationObj
+cn: user 0
+expirationAttr: 20190116170412Z
+facsimileTelephoneNumber: +1 408 555 1992
+givenName: user
+l: Cupertino
+mail: user.0@example.com
+ou: People
+roomNumber: 3915
+sn: 0
+telephoneNumber: +1 408 555 1476
+uid: user.0
+userPassword: {SSHA512}7XZiCZCOsFjmD18bkkUpgjMYeXl/RO26yq6OsVCa06Viqzl+qAnoyVQvAAUUovkyQ2rKbHxwJginJFP/T7Au2M/lsoJkYwQz
+
+
+
+This is a regression, it was working with commit (29b36b93ace)
+
+To reproduce:
+
+./run-pybot.py -n -v -s replication_group3.TTlReaper -t Basic_Enable -t basic_disable_enable dj
+

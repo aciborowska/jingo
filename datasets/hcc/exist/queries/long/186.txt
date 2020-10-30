@@ -1,0 +1,18 @@
+As we've been ramping up for our first release using eXist we've discovered that the eXist server is completely unreliable failing after a couple days of continuous testing. The JVM would become unresponsive, we discovered that the process reached its file limit. No amount of forced garbage collections, or even shutting down the web app (we had eXist deployed in tomcat) would free the open file resources.
+
+Fortunately, we've tracked the root cause down to a resource leak in RestXQ, specifically any PUT request processed.
+
+Steps to reproduce:
+1. Launch a vanilla eXist server, install the demo package, specifically the "XForms and RestXQ" demo.
+2. Issue a PUT request (ie. an HTTP PUT to http://localhost:8080/exist/restxq/address, or run the demo app changing the address and saving the form)
+3. Observe from a shell that the open file count grows for each PUT request, i.e. on linux run:
+
+```
+sudo lsof -p `pgrep java` | grep 'COMMAND\|tmp'
+```
+
+If you have multiple java processes running replace "`pgrep java`" with the PID of your exist server.
+
+The result of the listing of open files command above will show the eXist tmp directory filling with tmp files. Each PUT processed by RestXQ (even a function that immediately returns) will leave a dangling file in the tmp directory. The content's of the leaked file is the body of the PUT request. Shutting down the JVM removes the file from the filesystem, however while the JVM is running the file resource is never closed from the running process leading to the JVM eventually failing due to reaching its open file limit (i.e., after 4096 PUT requests on my system).
+
+I have reproduced this on Linux and OSX running Oracle's JVM "1.7.0_51", I suspect that you will see different behaviour on MS Windows due to its different handling of files.

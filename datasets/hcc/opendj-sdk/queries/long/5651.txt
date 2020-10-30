@@ -1,0 +1,47 @@
+Customer reported an error condition with replication with the following message:
+
+
+[20/Sep/2018:13:26:32 +0800] category=SYNC severity=ERROR msgID=9 msg=Internal Error : Operation ModifyOperation(connID=-2, opID=10, dn=uid=ABC12345,ou=people,o=example.com) change number 00000165c9ce891900510011467e was not found in pending list
+
+
+
+
+Looking at the code, the same error message is used twice in different context and it's impossible to know which one from the message.
+Please make sure an error message can uniquely identify an error condition.
+
+Incriminated code in LDAPReplicationDomain.java:synchronize()
+
+
+
+        if (op.getResultCode() == SUCCESS) {
+            if (op.isSynchronizationOperation()) { // Replaying a sync operation
+                try {
+                    remoteChanges.commit(curCSN, dn);
+                } catch (NoSuchElementException e) {
+                    logger.error(ERR_OPERATION_NOT_FOUND_IN_PENDING, op, curCSN);
+                    return;
+                }
+            } else {
+                // Generate a replication message for a successful non-replication operation.
+                final LDAPUpdateMsg msg = LDAPUpdateMsg.generateMsg(op);
+                if (msg == null) {
+                    // This is an operation type that we do not know about. It should never happen.
+                    pendingChanges.remove(curCSN);
+                    logger.error(ERR_UNKNOWN_TYPE, op.getOperationType());
+                    return;
+                }
+
+                addEntryAttributesForCL(msg, op);
+
+                try {
+                    pendingChanges.commitAndPushCommittedChanges(curCSN, msg);
+                } catch (NoSuchElementException e) {
+                    logger.error(ERR_OPERATION_NOT_FOUND_IN_PENDING, op, curCSN);
+                    return;
+                }
+            }
+
+
+
+The first use is a replicated change and an error from the replaying pending list from RS.
+The second use is a local change and an error from the pending change list before submitting to the RS.

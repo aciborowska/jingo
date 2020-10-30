@@ -1,0 +1,89 @@
+My setup:
+2 hazelcast clusters with one node each.
+Each cluster configured to wan replicate to the other cluster.
+
+The test: using a map, quickly remove and add a new value for a key.
+
+What i expect: as long as all modifications are done on the first cluster, the wan replication will not impact execution and the data will be replicated to the 2nd cluster
+
+What I am seeing: the deletes operations are looping back through the wan replication and causing some null values in my local cluster 
+
+The issue: On the 2nd cluster MapService.onReplicationEvent() creates a DeleteOperation that, if successful, will wan replicate itself again back to the 1st cluster. Depending on timing, this might wrongfully nullify a value.
+
+The solution: create a new operation WanDeleteOperation that extends DeleteOperation and overrides afterRun() of BaseRemoveOperation stripping out the wan replication portion. (similar to what the MergeOperation does) 
+
+Design discussion: Personally I don't think overriding a method by copy pasting their parent's method and deleting 3 lines is a clean way of controlling functionality.
+I would instead add 
+protected boolean wanReplicate = true
+on KeyBasedMapOperation and set it to false when creating a operation from MapService.onReplicationEvent(). Then on the afterRun() check wanReplicate  to see if replication is needed.
+But since you already "fixed" this issue with the MergeOperation, I opted for a solution that tries to keep your design intact.
+
+I plan on fixing it locally as i need this working ASAP. If i have time i'll submit a patch.
+
+Here is the test:
+
+```
+public static void main(String[] args) throws Exception {
+
+    // given
+    String mapName = "testMap";
+    Config config1 = new Config();
+
+    String localIp;
+    localIp = InetAddress.getLocalHost().getHostAddress();
+
+    config1.getGroupConfig().setName("group-name");
+    config1.getGroupConfig().setPassword("group-password");
+    config1.addWanReplicationConfig(new WanReplicationConfig().setName("mywan")
+                                                               .addTargetClusterConfig(new WanTargetClusterConfig().addEndpoint(localIp + ":5802")
+                                                                                                                   .setGroupName("group-name")
+                                                                                                                   .setGroupPassword("group-password")));
+    config1.getNetworkConfig().setPort(5801).setPortAutoIncrement(false);
+    config1.getNetworkConfig().getJoin().getMulticastConfig().setEnabled(false);
+    config1.getNetworkConfig().getJoin().getTcpIpConfig().setEnabled(true).setConnectionTimeoutSeconds(3);
+    config1.getMapConfig(mapName).setWanReplicationRef(new WanReplicationRef().setName("mywan").setMergePolicy(PassThroughMergePolicy.class.getName()));
+
+    HazelcastInstance hz1 = Hazelcast.newHazelcastInstance(config1);
+
+
+
+    Config config2 = new Config();
+    config2.getGroupConfig().setName("group-name");
+    config2.getGroupConfig().setPassword("group-password");
+    config2.addWanReplicationConfig(new WanReplicationConfig().setName("mywan")
+                                                               .addTargetClusterConfig(new WanTargetClusterConfig().addEndpoint(localIp + ":5801")
+                                                                                                                   .setGroupName("group-name")
+                                                                                                                   .setGroupPassword("group-password")));
+    config2.getNetworkConfig().setPort(5802).setPortAutoIncrement(false);
+    config2.getNetworkConfig().getJoin().getMulticastConfig().setEnabled(false);
+    config2.getNetworkConfig().getJoin().getTcpIpConfig().setEnabled(true).setConnectionTimeoutSeconds(3);
+    config2.getMapConfig(mapName).setWanReplicationRef(new WanReplicationRef().setName("mywan").setMergePolicy(PassThroughMergePolicy.class.getName()));
+
+    HazelcastInstance hz2 = Hazelcast.newHazelcastInstance(config2);
+
+
+    String key = "lastCallbackNumber";
+
+    Map<String, String> s1 = hz1.getMap(mapName);
+    Map<String, String> s2 = hz2.getMap(mapName);
+
+    // just to make sure all is started and connected
+    s1.put(key, "asas");
+    Thread.sleep(5000);
+    assertEquals("asas", s2.get(key));
+
+
+    String callbackNumber = null;
+    // when
+    System.out.println("starting loop");
+    for (int i = 0; i < 1000; i++) {
+      callbackNumber = "abcde" + i;
+      s1.remove(key);
+      assertNull(s1.get(key));
+      s1.put(key, callbackNumber);
+      assertEquals(callbackNumber, s1.get(key));
+    }
+    System.out.println("done");
+    Hazelcast.shutdownAll();
+  }
+```

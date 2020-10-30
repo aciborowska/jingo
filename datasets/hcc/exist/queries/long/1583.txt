@@ -1,0 +1,94 @@
+### What is the problem
+
+In eXist 3.4.1 and earlier, `util:compile-query()` would return the correct context for XPST0081 ("No namespace defined for prefix __") errors. In eXist 3.5.0 and later, the line and column context is lost.
+
+### What did you expect
+
+Given a query that contains a missing module import declaration:
+
+```xquery
+xquery version "3.1";
+
+util:compile-query("console:log('foo')", "xmldb:exist://")
+```
+
+I would expect the result as delivered under eXist 3.4.1 and earlier:
+
+```xml
+<info result="fail">
+    <error code="(http://www.w3.org/2005/xqt-errors#XPST0081):It is a static error if a QName 
+        used in an expression contains a namespace prefix that cannot be expanded into a namespace 
+        URI by using the statically known namespaces." 
+            line="1" 
+            column="1">
+                No namespace defined for prefix console
+    </error>
+</info>
+```
+
+However, eXist 3.5.0 and higher, the `@line` and `@column` values are incorrect:
+
+```xml
+<info result="fail">
+    <error code="(http://www.w3.org/2005/xqt-errors#XPST0081):It is a static error if a QName 
+        used in an expression contains a namespace prefix that cannot be expanded into a namespace 
+        URI by using the statically known namespaces." 
+            line="0" 
+            column="0">
+                Invalid qname console:log
+    </error>
+</info>
+```
+
+Notice the differences:
+
+1. `@line` and `@column` now both return `0` (null?) instead of `1`
+2. The error message has changed from `No namespace defined for prefix console` to `Invalid qname console:log`
+
+### Describe how to reproduce or add a test
+
+Here's an XQSuite test (download at [test-compile-xquery.xq.zip](https://github.com/eXist-db/exist/files/1380101/test-compile-xquery.xq.zip))
+
+```xquery
+xquery version "3.1";
+
+module namespace cq = "http://exist-db.org/test/util/compile-query";
+
+declare namespace test="http://exist-db.org/xquery/xqsuite";
+
+declare 
+    %test:args('xquery version "3.1"; 
+
+console:log("foo")')
+    %test:assertEquals(3, 1)
+    function cq:get-error-line-column($query) {
+        let $context := "xmldb:exist://"
+        let $info := util:compile-query($query, $context)
+        return
+            if ($info/error) then
+                $info/error/(@line, @column) ! (. cast as xs:integer)
+            else
+                ()
+};
+```
+
+Returns:
+
+```xml
+<testsuites>
+    <testsuite package="http://exist-db.org/test/util/compile-query"
+        timestamp="2017-10-12T13:17:08.388-04:00" failures="1" pending="0" tests="1" time="PT0.006S">
+        <testcase name="get-error-line-column" class="cq:get-error-line-column">
+            <failure message="assertEquals failed." type="failure-error-code-1">3 1</failure>
+            <output>0 0</output>
+        </testcase>
+    </testsuite>
+</testsuites>
+```
+
+### Context information
+- eXist-db version + Git Revision hash: eXist 3.4.1+e8996ca748 and eXist 3.6.0-SNAPSHOT+ef437e27c9 (build 201710121258)
+- Java version: jdk1.8.0_144.jdk
+- Operating system: OSX 10.13
+- 32 or 64 bit: x86_64
+- Any custom changes in e.g. conf.xml: none

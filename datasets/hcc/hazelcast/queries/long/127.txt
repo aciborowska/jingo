@@ -1,0 +1,199 @@
+I'm seeing a problem with the split brain merging code when a new node joins a master node.  
+Also see below for a response from Mehmet Dogan and a different problem when I attempt to recreate the problem using version 2.0.2 of Hazelcast.
+
+I had Hazelcast logging turned up to FINEST for all classes.  Here is the scenario I am seeing, although I'm not sure all details are relevant:
+1. single Hazelcast node (called "dg0") has a thread [Thread-194] that gets a distributed lock
+2. Another thread [Thread-208] in dg0 attempts to get the same lock and is correctly blocked.
+3. Around this time, a second node (called "dg1") joins the Hazelcast cluster
+4. A third thread on dg0 [Thread-211] attempts and succeeds in getting the same distributed lock.  This should not happen as Thread-194 still has the distributed lock.
+5. Thread-194 releases its lock
+6. Thread-211 releases its lock
+7. Thread-208 never gets the lock. 
+8. The distributed lock is successfully locked and unlocked by a series of threads following.
+
+Below is the java logs in the relevant area, merged from both dg0 and dg1.  Each log line is tagged with the machine name in the second column.  Note that the times between the two nodes may not have been exactly synchronized.
+
+I have marked the above 8 steps in the logs below for reference.
+
+---
+
+```
+0411+18:48:24.147 dg0 *** Starting dg0
+
+0411+18:48:26.580 dg0 ExecutorManager /169.254.0.3:5701 [dev] creating new named executor service x:hz.query
+0411+18:48:26.581 dg0 ExecutorManager /169.254.0.3:5701 [dev] creating new named executor service x:hz.events
+0411+18:48:26.875 dg0 Node /169.254.0.3:5701 [dev] Starting thread hz.1.InThread
+0411+18:48:26.876 dg0 Node /169.254.0.3:5701 [dev] Starting thread hz.1.OutThread
+0411+18:48:26.877 dg0 Node /169.254.0.3:5701 [dev] Starting thread hz.1.ServiceThread
+0411+18:48:29.147 dg0 ClusterManager /169.254.0.3:5701 [dev] ClusterManager adding Member [169.254.0.3:5701] this [hz.1.ServiceThread]
+0411+18:48:29.166 dg0 ListenerManager /169.254.0.3:5701 [dev] AddListenerOperation from Address[169.254.0.3:5701], local=true key:null op:ADD_LISTENER [hz.1.ServiceThread]
+0411+18:48:37.543 dg0 CMap /169.254.0.3:5701 [dev] c:__hz_Proxies Cleanup , dirty:0, purge:0, evict:0, unknown:0, stillOwned:1, backupPurge:0 [hz.1.threads._hzInstance_1_dev.cached.thread-1]
+
+... series of locks and unlocks
+
+0411+19:15:39.891 dg0 [301e08e9] DistributedLock  Completed calling lock() for net.juniper.datacenter.sfc.cluster.DistributedLock@e28063,locked=true  [Thread-194]
+  ### 1. single Hazelcast node (called "dg0") has a thread [Thread-194] that gets a distributed lock
+
+0411+19:15:40.824 dg0 CMap /169.254.0.3:5701 [dev] c:__hz_Locks Cleanup ,   dirty:0, purge:0, evict:0, unknown:0, stillOwned:1, backupPurge:0 [hz.1.threads._hzInstance_1_dev.cached.thread-3]
+0411+19:15:40.824 dg0 CMap /169.254.0.3:5701 [dev] c:__hz_Proxies Cleanup , dirty:0, purge:0, evict:0, unknown:0, stillOwned:1, backupPurge:0 [hz.1.threads._hzInstance_1_dev.cached.thread-5]
+0411+19:15:50.845 dg0 CMap /169.254.0.3:5701 [dev] c:__hz_Locks Cleanup ,   dirty:0, purge:0, evict:0, unknown:0, stillOwned:1, backupPurge:0 [hz.1.threads._hzInstance_1_dev.cached.thread-3]
+0411+19:15:50.845 dg0 CMap /169.254.0.3:5701 [dev] c:__hz_Proxies Cleanup , dirty:0, purge:0, evict:0, unknown:0, stillOwned:1, backupPurge:0 [hz.1.threads._hzInstance_1_dev.cached.thread-5]
+
+0411+19:15:55.744 dg0 [301e0b97] DistributedLock  Calling lock() for net.juniper.datacenter.sfc.cluster.DistributedLock@e28063  [Thread-208]
+  ### 2. Another thread [Thread-208] in dg0 attempts to get the same lock and is correctly blocked.
+
+0411+19:15:58.851 dg1 *** Starting dg1
+  ### 3. Around this time, a second node (called "dg1") joins the Hazelcast cluster
+
+0411+19:16:00.865 dg0 CMap /169.254.0.3:5701 [dev] c:__hz_Locks Cleanup ,   dirty:0, purge:0, evict:0, unknown:0, stillOwned:1, backupPurge:0 [hz.1.threads._hzInstance_1_dev.cached.thread-5]
+0411+19:16:00.868 dg0 CMap /169.254.0.3:5701 [dev] c:__hz_Proxies Cleanup , dirty:0, purge:0, evict:0, unknown:0, stillOwned:1, backupPurge:0 [hz.1.threads._hzInstance_1_dev.cached.thread-6]
+0411+19:16:02.071 dg1 ExecutorManager /169.254.0.2:5701 [dev] creating new named executor service x:hz.events
+0411+19:16:02.071 dg1 ExecutorManager /169.254.0.2:5701 [dev] creating new named executor service x:hz.query
+0411+19:16:02.347 dg1 Node /169.254.0.2:5701 [dev] Starting thread hz.1.InThread
+0411+19:16:02.347 dg1 Node /169.254.0.2:5701 [dev] Starting thread hz.1.OutThread
+0411+19:16:02.348 dg1 Node /169.254.0.2:5701 [dev] Starting thread hz.1.ServiceThread
+0411+19:16:02.365 dg0 MulticastJoiner /169.254.0.3:5701 [dev] Address[169.254.0.3:5701] is merging [multicast] to Address[169.254.0.2:5701] [hz.1.threads._hzInstance_1_dev.cached.thread-3]
+0411+19:16:02.365 dg0 MulticastJoiner /169.254.0.3:5701 [dev] Address[169.254.0.3:5701]Merging because : node.getThisAddress().hashCode() > joinInfo.address.hashCode()
+0411+19:16:02.365 dg0 WARNING    /169.254.0.3:5701 [dev] Address[169.254.0.3:5701] is merging [multicast] to Address[169.254.0.2:5701]  [hz.1.threads._hzInstance_1_dev.cached.thread-3]
+0411+19:16:02.382 dg1 OutSelector /169.254.0.2:5701 [dev] connecting to Address[169.254.0.3:5701] [hz.1.OutThread]
+0411+19:16:02.385 dg1 OutSelector /169.254.0.2:5701 [dev] connection check. connected: false, Address[169.254.0.3:5701] [hz.1.OutThread]
+0411+19:16:02.386 dg0 LifecycleServiceImpl /169.254.0.3:5701 [dev] Address[169.254.0.3:5701] is RESTARTING [hz.1.threads._hzInstance_1_dev.cached.thread-3]
+0411+19:16:02.386 dg1 OutSelector /169.254.0.2:5701 [dev] connected to Address[169.254.0.3:5701] [hz.1.OutThread]
+0411+19:16:02.390 dg0 InSelector /169.254.0.3:5701 [dev] 5701 is accepting socket connection from /169.254.0.2:44854 [hz.1.InThread]
+0411+19:16:02.394 dg0 MulticastJoiner /169.254.0.3:5701 [dev] joining... null [hz.1.threads._hzInstance_1_dev.cached.thread-3]
+0411+19:16:02.400 dg0 InSelector /169.254.0.3:5701 [dev] 5701 accepted socket connection from /169.254.0.2:44854 [hz.1.InThread]
+0411+19:16:02.908 dg0 ClusterManager /169.254.0.3:5701 [dev] false Handling join from Address[169.254.0.2:5701] timeToStart: 4482 [hz.1.ServiceThread]
+0411+19:16:03.412 dg0 ClusterManager /169.254.0.3:5701 [dev] false Handling join from Address[169.254.0.2:5701] timeToStart: 3977 [hz.1.ServiceThread]
+0411+19:16:03.916 dg0 ClusterManager /169.254.0.3:5701 [dev] false Handling join from Address[169.254.0.2:5701] timeToStart: 3473 [hz.1.ServiceThread]
+0411+19:16:04.420 dg0 ClusterManager /169.254.0.3:5701 [dev] false Handling join from Address[169.254.0.2:5701] timeToStart: 2969 [hz.1.ServiceThread]
+0411+19:16:04.627 dg0 Node /169.254.0.3:5701 [dev] This node is being set as the master [hz.1.threads._hzInstance_1_dev.cached.thread-3]
+0411+19:16:04.628 dg0 ClusterManager /169.254.0.3:5701 [dev] ClusterManager adding Member [169.254.0.3:5701] this [hz.1.ServiceThread]
+0411+19:16:04.628 dg0 Node /169.254.0.3:5701 [dev] adding member myself [hz.1.threads._hzInstance_1_dev.cached.thread-3]
+0411+19:16:04.629 dg0 LifecycleServiceImpl /169.254.0.3:5701 [dev] Address[169.254.0.3:5701] is RESTARTED [hz.1.threads._hzInstance_1_dev.cached.thread-3]
+0411+19:16:04.925 dg0 ClusterManager /169.254.0.3:5701 [dev] false Handling join from Address[169.254.0.2:5701] timeToStart: 2464 [hz.1.ServiceThread]
+0411+19:16:04.931 dg0 ClusterManager /169.254.0.3:5701 [dev] false Handling join from Address[169.254.0.2:5701] timeToStart: 4995 [hz.1.ServiceThread]
+0411+19:16:04.933 dg1 Node /169.254.0.2:5701 [dev] ** setting master address to Address[169.254.0.3:5701] [hz.1.ServiceThread]
+0411+19:16:05.429 dg0 ClusterManager /169.254.0.3:5701 [dev] false Handling join from Address[169.254.0.2:5701] timeToStart: 4497 [hz.1.ServiceThread]
+0411+19:16:05.748 dg0 ConcurrentMapManager /169.254.0.3:5701 [dev] Still no response! Request{name='c:__hz_Locks',CONCURRENT_MAP_LOCK, redoCount='0', callId='60', lockThreadId='40'} [Thread-208]
+0411+19:16:05.934 dg0 ClusterManager /169.254.0.3:5701 [dev] false Handling join from Address[169.254.0.2:5701] timeToStart: 3992 [hz.1.ServiceThread]
+0411+19:16:06.439 dg0 ClusterManager /169.254.0.3:5701 [dev] false Handling join from Address[169.254.0.2:5701] timeToStart: 3487 [hz.1.ServiceThread]
+0411+19:16:06.943 dg0 ClusterManager /169.254.0.3:5701 [dev] false Handling join from Address[169.254.0.2:5701] timeToStart: 2983 [hz.1.ServiceThread]
+0411+19:16:07.447 dg0 ClusterManager /169.254.0.3:5701 [dev] false Handling join from Address[169.254.0.2:5701] timeToStart: 2479 [hz.1.ServiceThread]
+0411+19:16:07.951 dg0 ClusterManager /169.254.0.3:5701 [dev] false Handling join from Address[169.254.0.2:5701] timeToStart: 1975 [hz.1.ServiceThread]
+0411+19:16:08.455 dg0 ClusterManager /169.254.0.3:5701 [dev] false Handling join from Address[169.254.0.2:5701] timeToStart: 1471 [hz.1.ServiceThread]
+0411+19:16:08.959 dg0 ClusterManager /169.254.0.3:5701 [dev] false Handling join from Address[169.254.0.2:5701] timeToStart: 967 [hz.1.ServiceThread]
+0411+19:16:09.463 dg0 ClusterManager /169.254.0.3:5701 [dev] false Handling join from Address[169.254.0.2:5701] timeToStart: 463 [hz.1.ServiceThread]
+0411+19:16:09.968 dg0 ClusterManager /169.254.0.3:5701 [dev] Starting join. [hz.1.ServiceThread]
+0411+19:16:09.968 dg0 ClusterManager /169.254.0.3:5701 [dev] false Handling join from Address[169.254.0.2:5701] timeToStart: -42 [hz.1.ServiceThread]
+0411+19:16:09.970 dg0 ClusterManager /169.254.0.3:5701 [dev] MEMBERS UPDATE!! [hz.1.ServiceThread]
+0411+19:16:09.971 dg0 ClusterManager /169.254.0.3:5701 [dev] ClusterManager adding Member [169.254.0.2:5701] [hz.1.ServiceThread]
+0411+19:16:09.971 dg0 ClusterManager /169.254.0.3:5701 [dev] ClusterManager adding Member [169.254.0.3:5701] this [hz.1.ServiceThread]
+0411+19:16:09.982 dg1 ClusterManager /169.254.0.2:5701 [dev] ClusterManager adding Member [169.254.0.3:5701] [hz.1.ServiceThread]
+0411+19:16:09.982 dg1 ClusterManager /169.254.0.2:5701 [dev] MEMBERS UPDATE!! [hz.1.ServiceThread]
+0411+19:16:09.983 dg1 ClusterManager /169.254.0.2:5701 [dev] ClusterManager adding Member [169.254.0.2:5701] this [hz.1.ServiceThread]
+0411+19:16:10.884 dg0 CMap /169.254.0.3:5701 [dev] c:__hz_Locks Cleanup ,   dirty:0, purge:0, evict:0, unknown:0, stillOwned:0, backupPurge:0 [hz.1.threads._hzInstance_1_dev.cached.thread-6]
+0411+19:16:10.884 dg0 CMap /169.254.0.3:5701 [dev] c:__hz_Proxies Cleanup , dirty:0, purge:0, evict:0, unknown:0, stillOwned:0, backupPurge:0 [hz.1.threads._hzInstance_1_dev.cached.thread-3]
+0411+19:16:11.494 dg1 ListenerManager /169.254.0.2:5701 [dev] AddListenerOperation from Address[169.254.0.2:5701], local=true key:null op:ADD_LISTENER [hz.1.ServiceThread]
+0411+19:16:11.975 dg0 ListenerManager /169.254.0.3:5701 [dev] AddListenerOperation from Address[169.254.0.2:5701], local=false key:null op:ADD_LISTENER [hz.1.ServiceThread]
+0411+19:16:13.043 dg1 CMap /169.254.0.2:5701 [dev] c:__hz_Locks Cleanup ,   dirty:0, purge:0, evict:0, unknown:0, stillOwned:0, backupPurge:0 [hz.1.threads._hzInstance_1_dev.cached.thread-1]
+0411+19:16:13.045 dg1 CMap /169.254.0.2:5701 [dev] c:__hz_Proxies Cleanup , dirty:0, purge:0, evict:0, unknown:0, stillOwned:1, backupPurge:0 [hz.1.threads._hzInstance_1_dev.cached.thread-2]
+0411+19:16:15.750 dg0 ConcurrentMapManager /169.254.0.3:5701 [dev] Still no response! Request{name='c:__hz_Locks',CONCURRENT_MAP_LOCK, redoCount='0', callId='60', lockThreadId='40'} [Thread-208]
+
+0411+19:16:18.951 dg0 [301e0baf] DistributedLock  Calling lock() for net.juniper.datacenter.sfc.cluster.DistributedLock@e28063  [Thread-211]
+0411+19:16:19.213 dg0 [301e0baf] DistributedLock  Completed calling lock() for net.juniper.datacenter.sfc.cluster.DistributedLock@e28063,locked=true  [Thread-211]
+  ### 4. A third thread on dg0 [Thread-211] attempts and succeeds in getting the same distributed lock.  This should not happen as Thread-194 still has the distributed lock.
+
+
+0411+19:16:20.901 dg0 CMap /169.254.0.3:5701 [dev] c:__hz_Locks Cleanup ,   dirty:0, purge:0, evict:0, unknown:0, stillOwned:0, backupPurge:0 [hz.1.threads._hzInstance_1_dev.cached.thread-3]
+0411+19:16:20.901 dg0 CMap /169.254.0.3:5701 [dev] c:__hz_Proxies Cleanup , dirty:0, purge:0, evict:0, unknown:0, stillOwned:0, backupPurge:0 [hz.1.threads._hzInstance_1_dev.cached.thread-6]
+0411+19:16:23.217 dg1 CMap /169.254.0.2:5701 [dev] c:__hz_Locks Cleanup ,   dirty:0, purge:0, evict:0, unknown:0, stillOwned:1, backupPurge:0 [hz.1.threads._hzInstance_1_dev.cached.thread-2]
+0411+19:16:23.217 dg1 CMap /169.254.0.2:5701 [dev] c:__hz_Proxies Cleanup , dirty:0, purge:0, evict:0, unknown:0, stillOwned:1, backupPurge:0 [hz.1.threads._hzInstance_1_dev.cached.thread-1]
+0411+19:16:25.752 dg0 ConcurrentMapManager /169.254.0.3:5701 [dev] Still no response! Request{name='c:__hz_Locks',CONCURRENT_MAP_LOCK, redoCount='0', callId='60', lockThreadId='40'} [Thread-208]
+0411+19:16:30.920 dg0 CMap /169.254.0.3:5701 [dev] c:__hz_Locks Cleanup ,   dirty:0, purge:0, evict:0, unknown:0, stillOwned:0, backupPurge:0 [hz.1.threads._hzInstance_1_dev.cached.thread-6]
+0411+19:16:30.920 dg0 CMap /169.254.0.3:5701 [dev] c:__hz_Proxies Cleanup , dirty:0, purge:0, evict:0, unknown:0, stillOwned:0, backupPurge:0 [hz.1.threads._hzInstance_1_dev.cached.thread-3]
+0411+19:16:33.236 dg1 CMap /169.254.0.2:5701 [dev] c:__hz_Locks Cleanup ,   dirty:0, purge:0, evict:0, unknown:0, stillOwned:1, backupPurge:0 [hz.1.threads._hzInstance_1_dev.cached.thread-2]
+0411+19:16:33.236 dg1 CMap /169.254.0.2:5701 [dev] c:__hz_Proxies Cleanup , dirty:0, purge:0, evict:0, unknown:0, stillOwned:1, backupPurge:0 [hz.1.threads._hzInstance_1_dev.cached.thread-1]
+0411+19:16:35.754 dg0 ConcurrentMapManager /169.254.0.3:5701 [dev] Still no response! Request{name='c:__hz_Locks',CONCURRENT_MAP_LOCK, redoCount='0', callId='60', lockThreadId='40'} [Thread-208]
+0411+19:16:40.934 dg0 CMap /169.254.0.3:5701 [dev] c:__hz_Proxies Cleanup , dirty:0, purge:0, evict:0, unknown:0, stillOwned:0, backupPurge:0 [hz.1.threads._hzInstance_1_dev.cached.thread-6]
+0411+19:16:40.935 dg0 CMap /169.254.0.3:5701 [dev] c:__hz_Locks Cleanup ,   dirty:0, purge:0, evict:0, unknown:0, stillOwned:0, backupPurge:0 [hz.1.threads._hzInstance_1_dev.cached.thread-3]
+0411+19:16:43.257 dg1 CMap /169.254.0.2:5701 [dev] c:__hz_Locks Cleanup ,   dirty:0, purge:0, evict:0, unknown:0, stillOwned:1, backupPurge:0 [hz.1.threads._hzInstance_1_dev.cached.thread-1]
+0411+19:16:43.257 dg1 CMap /169.254.0.2:5701 [dev] c:__hz_Proxies Cleanup , dirty:0, purge:0, evict:0, unknown:0, stillOwned:1, backupPurge:0 [hz.1.threads._hzInstance_1_dev.cached.thread-2]
+0411+19:16:45.756 dg0 ConcurrentMapManager /169.254.0.3:5701 [dev] Still no response! Request{name='c:__hz_Locks',CONCURRENT_MAP_LOCK, redoCount='0', callId='60', lockThreadId='40'} [Thread-208]
+0411+19:16:50.951 dg0 CMap /169.254.0.3:5701 [dev] c:__hz_Locks Cleanup ,   dirty:0, purge:0, evict:0, unknown:0, stillOwned:0, backupPurge:0 [hz.1.threads._hzInstance_1_dev.cached.thread-3]
+0411+19:16:50.951 dg0 CMap /169.254.0.3:5701 [dev] c:__hz_Proxies Cleanup , dirty:0, purge:0, evict:0, unknown:0, stillOwned:0, backupPurge:0 [hz.1.threads._hzInstance_1_dev.cached.thread-6]
+0411+19:16:53.273 dg1 CMap /169.254.0.2:5701 [dev] c:__hz_Locks Cleanup ,   dirty:0, purge:0, evict:0, unknown:0, stillOwned:1, backupPurge:0 [hz.1.threads._hzInstance_1_dev.cached.thread-2]
+0411+19:16:53.273 dg1 CMap /169.254.0.2:5701 [dev] c:__hz_Proxies Cleanup , dirty:0, purge:0, evict:0, unknown:0, stillOwned:1, backupPurge:0 [hz.1.threads._hzInstance_1_dev.cached.thread-1]
+0411+19:16:54.713 dg1 ConcurrentMapManager /169.254.0.2:5701 [dev] Still no response! Request{name='c:__hz_Locks',CONCURRENT_MAP_LOCK, redoCount='0', callId='8', lockThreadId='6'}
+
+0411+19:16:48.814 dg0 [301e08e9] DistributedLock  Calling unlock() for net.juniper.datacenter.sfc.cluster.DistributedLock@e28063  [Thread-194]
+  #77 second lock by Thread-194
+0411+19:16:48.834 dg0 [301e08e9] DistributedLock  Completed calling unlock() for net.juniper.datacenter.sfc.cluster.DistributedLock@e28063  [Thread-194]
+  ### 5. Thread-194 releases its lock
+
+0411+19:16:55.758 dg0 ConcurrentMapManager /169.254.0.3:5701 [dev] Still no response! Request{name='c:__hz_Locks',CONCURRENT_MAP_LOCK, redoCount='0', callId='60', lockThreadId='40'} [Thread-208]
+0411+19:17:00.523 dg0 ConcurrentMapManager /169.254.0.3:5701 [dev] Still no response! Request{name='c:__hz_Locks',CONCURRENT_MAP_LOCK, redoCount='0', callId='68', lockThreadId='45'} [Thread-231]
+
+0411+19:17:00.789 dg0 DistributedLock  Calling unlock() for net.juniper.datacenter.sfc.cluster.DistributedLock@e28063  [Thread-211]
+0411+19:17:00.808 dg0 DistributedLock  Completed calling unlock() for net.juniper.datacenter.sfc.cluster.DistributedLock@e28063  [Thread-211]
+  ### 6. Thread-211 releases its lock
+  ### 7. Thread-208 never gets the lock.
+  ### 8. The distributed lock is successfully locked and unlocked by a series of threads following. 
+
+0411+19:17:00.969 dg0 CMap /169.254.0.3:5701 [dev] c:__hz_Locks Cleanup ,   dirty:0, purge:0, evict:0, unknown:0, stillOwned:0, backupPurge:0 [hz.1.threads._hzInstance_1_dev.cached.thread-6]
+0411+19:17:00.969 dg0 CMap /169.254.0.3:5701 [dev] c:__hz_Proxies Cleanup , dirty:0, purge:0, evict:0, unknown:0, stillOwned:0, backupPurge:0 [hz.1.threads._hzInstance_1_dev.cached.thread-3]
+0411+19:17:03.289 dg1 CMap /169.254.0.2:5701 [dev] c:__hz_Locks Cleanup ,   dirty:0, purge:0, evict:0, unknown:0, stillOwned:1, backupPurge:0 [hz.1.threads._hzInstance_1_dev.cached.thread-1]
+0411+19:17:03.289 dg1 CMap /169.254.0.2:5701 [dev] c:__hz_Proxies Cleanup , dirty:0, purge:0, evict:0, unknown:0, stillOwned:1, backupPurge:0 [hz.1.threads._hzInstance_1_dev.cached.thread-2]
+0411+19:17:05.761 dg0 ConcurrentMapManager /169.254.0.3:5701 [dev] Still no response! Request{name='c:__hz_Locks',CONCURRENT_MAP_LOCK, redoCount='0', callId='60', lockThreadId='40'} [Thread-208]
+0411+19:17:10.819 dg1 ConcurrentMapManager /169.254.0.2:5701 [dev] Still no response! Request{name='c:__hz_Locks',CONCURRENT_MAP_LOCK, redoCount='0', callId='12', lockThreadId='9'} [Thread-108]
+... repeats
+Thread-108 is from dg1 and gets released later
+```
+## 
+
+Email in Hazelcast google group:
+
+Mehmet Dogan 7:48 AM 
+The problem here is not exactly related to locks. Problem is about split brain handling. To recover from network segmentation, master node of the cluster searches for split nodes/clusters periodically. (http://www.hazelcast.com/docs/2.0/manual/single_html/#NetworkPartitioning)
+
+In this case, at the start up time of the second node[169.254.0.2], first node[169.254.0.3]'s split brain handler runs and discovers the second one. Problem starts here, first node assumes that the second node is a split node and restarts itself to merge to the second node. (In a real case, the smaller sized cluster joins the bigger one. If sizes are identical then cluster of master node whose address's hashCode is smaller merges to other.) That restart messes up the locks.
+
+Look at these logs;
+
+```
+0411+19:16:02.365 dg0 MulticastJoiner /169.254.0.3:5701 [dev] Address[169.254.0.3:5701] is merging [multicast] to Address[169.254.0.2:5701] [hz.1.threads._hzInstance_1_dev.cached.thread-3]
+0411+19:16:02.365 dg0 MulticastJoiner /169.254.0.3:5701 [dev] Address[169.254.0.3:5701]Merging because : node.getThisAddress().hashCode() > joinInfo.address.hashCode()
+0411+19:16:02.365 dg0 WARNING    /169.254.0.3:5701 [dev] Address[169.254.0.3:5701] is merging [multicast] to Address[169.254.0.2:5701]  [hz.1.threads._hzInstance_1_dev.cached.thread-3]
+0411+19:16:02.382 dg1 OutSelector /169.254.0.2:5701 [dev] connecting to Address[169.254.0.3:5701] [hz.1.OutThread]
+0411+19:16:02.385 dg1 OutSelector /169.254.0.2:5701 [dev] connection check. connected: false, Address[169.254.0.3:5701] [hz.1.OutThread]
+0411+19:16:02.386 dg0 LifecycleServiceImpl /169.254.0.3:5701 [dev] Address[169.254.0.3:5701] is RESTARTING [hz.1.threads._hzInstance_1_dev.cached.thread-3]
+```
+
+I am able reproduce this and trying to fix. 
+## 
+
+I see different behavior in the 2.0.2 release:
+
+Given a small a program that creates a lock and then sleeps for a configurable time:
+1. Run the program on the 169.254.0.3 machine, having it sleep for hours
+2. Repeatedly Run the program on the 169.254.0.2 machine, having it sleep for a few seconds before exiting
+
+With the 2.0.1 and 2.0.2 releases and got different behavior. Now the program on 169.254.0.3 does not give the merging WARNING, but the program on 169.254.0.2 is throwing an exception after about 5 runs:
+
+```
+FINEST  07:43:03.586 [main    ] MulticastJoiner  /169.254.0.2:5701 [dev] Joining master Address[169.254.0.3:5701]
+FINE    07:43:03.586 [main    ] Node             /169.254.0.2:5701 [dev] ** setting master address to Address[169.254.0.3:5701]
+FINEST  07:43:03.586 [main    ] MulticastJoiner  /169.254.0.2:5701 [dev] Master connection Connection [/169.254.0.3:5701 -> Address[169.254.0.3:5701]] live=true, client=false, type=MEMBER
+WARNING 07:43:04.088 [main    ] Node             /169.254.0.2:5701 [dev] Failed to join in 300 seconds!
+WARNING 07:43:04.088 [main    ] TestHazelcast    Unexpected exception
+java.lang.RuntimeException - Failed to join in 300 seconds!
+    at com.hazelcast.impl.AbstractJoiner.postJoin(AbstractJoiner.java:99)
+    at com.hazelcast.impl.AbstractJoiner.join(AbstractJoiner.java:54)
+    at com.hazelcast.impl.Node.join(Node.java:570)
+    at com.hazelcast.impl.Node.start(Node.java:435)
+    at com.hazelcast.impl.FactoryImpl.<init>(FactoryImpl.java:377)
+    at com.hazelcast.impl.FactoryImpl.newHazelcastInstanceProxy(FactoryImpl.java:120)
+    at com.hazelcast.impl.FactoryImpl.newHazelcastInstanceProxy(FactoryImpl.java:106)
+    at com.hazelcast.core.Hazelcast.getDefaultInstance(Hazelcast.java:81)
+    at com.hazelcast.core.Hazelcast.getLock(Hazelcast.java:179)
+    at TestHazelcast.main(TestHazelcast.java:13)
+```

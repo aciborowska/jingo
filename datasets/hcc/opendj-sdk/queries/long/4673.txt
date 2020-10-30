@@ -1,0 +1,106 @@
+When a rest2ldap request is made using the "update" API (via HTTP PUT), the request will incorrectly fail when the request includes an updated password value if the user making the request is the same user being updated.
+
+Consider this basic setup:
+
+User entry:
+
+
+dn: uid=jdoe,ou=People,dc=example,dc=com
+objectClass: person
+objectClass: organizationalPerson
+objectClass: inetOrgPerson
+objectClass: top
+givenName: John
+uid: jdoe
+cn: John Doe
+telephoneNumber: 1-415-599-1100
+sn: Doe
+mail: jdoe@example.com
+userPassword: Passw0rd
+
+
+
+rest2ldap conifg:
+
+
+    "resourceTypes": {
+        "example-v1": {
+            "subResources": {
+                "users": {
+                    "type": "collection",
+                    "dnTemplate": "ou=People,dc=example,dc=com",
+                    "resource": "frapi:opendj:rest2ldap:user:1.0",
+                    "namingStrategy": {
+                        "type": "clientDnNaming",
+                        "dnAttribute": "uid"
+                    }
+                }
+            }
+        },
+...
+            "properties": {
+                "_id": {
+                    "type": "simple",
+                    "ldapAttribute": "uid",
+                    "writability": "createOnly"
+                },
+                "cn": {
+                    "type": "simple",
+                    "ldapAttribute": "cn"
+                },
+                "givenName": {
+                    "type": "simple",
+                    "ldapAttribute": "givenName"
+                },
+                "sn": {
+                    "type": "simple",
+                    "ldapAttribute": "sn"
+                },
+                "userPassword": {
+                    "type": "simple",
+                    "ldapAttribute": "userPassword"
+                }
+            }
+
+
+
+Requests:
+
+
+
+# read the user:
+export JDOE=`curl -u jdoe:Passw0rd http://localhost:8080/rest2ldap/api/users/jdoe`
+
+# get the current rev:
+export JDOE_REV=`echo $JDOE | jq -r ._rev`
+
+# perform a no-op update call; expected to return successfully with no change:
+curl -u jdoe:Passw0rd http://localhost:8080/rest2ldap/api/users/jdoe -X PUT -H 'Content-type:application/json' --data "$JDOE" -H "If-Match: $JDOE_REV"
+
+# change the password:
+export JDOE_MODIFIED=`echo $JDOE | sed 's/"userPassword":".*"/"userPassword":"Passw0rd"/'`
+
+# attempt to update with the changed password:
+curl -u jdoe:Passw0rd http://localhost:8080/rest2ldap/api/users/jdoe -X PUT -H 'Content-type:application/json' --data "$JDOE_MODIFIED" -H "If-Match: $JDOE_REV"
+
+
+
+Expected result: 200 response. User password changed.
+Actual result: 
+
+
+{"code":400,"reason":"Bad Request","message":"Constraint Violation: User passwords may not be provided in pre-encoded form"}
+
+
+
+Note that if a similar change is made using PATCH, the request succeeds:
+
+
+
+curl -u jdoe:Passw0rd http://localhost:8080/rest2ldap/api/users/jdoe -X PATCH -H 'Content-type:application/json' --data '[{"operation": "replace", "field": "/userPassword", "value": "Passw0rd2"}]' -H "If-Match: $JDOE_REV"
+
+# successful response with updated user
+
+
+
+

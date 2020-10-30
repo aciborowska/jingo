@@ -1,0 +1,103 @@
+I'm trying to wire the following configuration:
+```
+package com.example.foo
+
+import com.example.foo.FooConfig.Companion.PREFIX
+import io.micronaut.context.annotation.ConfigurationBuilder
+import io.micronaut.context.annotation.ConfigurationProperties
+import java.net.URL
+import java.time.Duration
+
+@ConfigurationProperties(PREFIX)
+class FooConfig {
+
+    companion object {
+        const val PREFIX = "foo"
+        const val AUTH_PREFIX = "auth"
+        const val API_PREFIX = "api"
+    }
+
+    var enabled: Boolean? = true
+
+    var timeout: Duration? = null
+
+    var auth: FooAuthConfig? = null
+
+    var api: FooApiConfig? = null
+
+    @ConfigurationProperties(AUTH_PREFIX)
+    data class FooAuthConfig(var url: URL? = null, var clientId: String? = null, var clientSecret: String? = null)
+
+    @ConfigurationProperties(API_PREFIX)
+    class FooApiConfig {
+
+        @set:ConfigurationBuilder("merchants")
+        var merchants: FooRestConfig.Builder? = FooRestConfig.Builder()
+
+        class FooRestConfig(val timeout: Int?, val create: URL?, val read: URL?, val update: URL?, val delete: URL?) {
+            data class Builder(var timeout: Int? = null, var create: URL? = null, var read: URL? = null, var update: URL? = null, var delete: URL? = null) {
+                fun build() = FooRestConfig(timeout, create, read, update, delete)
+            }
+        }
+    }
+}
+```
+And here is the test
+```
+package com.example.foo
+
+import io.micronaut.context.ApplicationContext
+import org.assertj.core.api.Assertions.assertThat
+import org.junit.jupiter.api.Test
+
+internal class FooConfigTest {
+
+    @Test
+    fun shouldLoadProperties() {
+        // when
+        val applicationContext = ApplicationContext.run(
+                mapOf<String, Any>(
+                        Pair("foo.enabled", true),
+                        Pair("foo.timeout", "10s"),
+                        // AUTH
+                        Pair("foo.auth.url", "http://auth.foo.com"),
+                        Pair("foo.auth.clientId", "test-id"),
+                        Pair("foo.auth.clientSecret", "test-secret"),
+                        // API
+                        Pair("foo.api.merchants.create", "http://api.foo.com/create")
+                ),
+                "test"
+        )
+
+        // then
+        assertThat(applicationContext.getBean(FooConfig::class.java)).isNotNull
+        assertThat(applicationContext.getBean(FooConfig::class.java).enabled).isTrue()
+        assertThat(applicationContext.getBean(FooConfig::class.java).timeout?.toString()).isEqualTo("PT10S")
+
+        assertThat(applicationContext.getBean(FooConfig::class.java).auth).isNotNull
+        assertThat(applicationContext.getBean(FooConfig::class.java).auth?.url?.toString()).isEqualTo("http://auth.foo.com")
+        assertThat(applicationContext.getBean(FooConfig::class.java).auth?.clientId).isEqualTo("test-id")
+        assertThat(applicationContext.getBean(FooConfig::class.java).auth?.clientSecret).isEqualTo("test-secret")
+
+        assertThat(applicationContext.getBean(FooConfig::class.java).api).isNotNull
+        assertThat(applicationContext.getBean(FooConfig::class.java).api?.merchants).isNotNull
+        assertThat(applicationContext.getBean(FooConfig::class.java).api?.merchants?.create).isEqualTo("http://auth.foo.com/create")
+    }
+}
+```
+
+### Expected Behaviour
+
+Properties to be defined, including the nested `foo.api.merchants.create`
+
+### Actual Behaviour
+
+The builder instance is not replaced, neither has its properties populated, so the  `foo.api.merchants.create` is `null`
+
+### Environment Information
+
+- **Operating System**: macOS Mojave (10.14.4)
+- **Micronaut Version:** 1.0.5
+- **JDK Version:** 1.8
+
+

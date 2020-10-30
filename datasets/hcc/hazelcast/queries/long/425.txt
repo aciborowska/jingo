@@ -1,0 +1,78 @@
+Effectively this means that transactions are not supported in HazelCast as the whole reason for transaction is to deal with error scenarios.
+
+I have a scenario in HazelCast 2.5 that seems to suggest a significant bug. Assume standard transaction code:
+
+Transaction txn = Hazelcast.getTransaction();
+txn.begin();
+try {  
+    //process obj
+    map.put ("1", "value1");
+    set.add ("value");
+    //do other things..
+    txn.commit();
+}catch (Throwable t)  {
+    txn.rollback();
+}
+
+In my HazelCast cluster MapStore I am storing the key values pairs to a database. This store is causing a constraint failure in the DB due to a duplicate key which I am throwing to be dealt with by HazelCast. I am using a write through map.
+
+Observations:
+
+1) The client receives a RuntimeException in the commit() method - as documented. 
+2) There is no way of determining the root cause of the commit exception from the client - which means I cannot deal with a duplicate differently (a pain but not a blocker).
+3) If you then run exactly the same code again in the same thread the commit succeeds. This is even though a duplicate key exception will again be thrown in the MapStore save. This is a significant issue.
+4) If in the second iteration  you use a different thread then the commit() fails with a RuntimeException as expected.
+
+I thought that this was because the commit() method had failed to clean out the ThreadLocal transaction context, however, even with this fixed locally the issue persists (I copied the last to lines of the commit method to a finally block). The returned value in the second call seems to be null rather than exception thrown by the server. 
+
+Is there anyway I can get the desired behaviour that ensures that after a failed commit the next transaction is dealt with in the same way as the last? Are there any work arounds?
+
+I have spent quite a number of hours looking into this so hopefully I have not missed anything obvious. I will investigate further tomorrow and add information if I can diagnose the issue.
+
+---
+
+There seems to be further issue. I tried the following scenario:
+
+1) Transaction.begin().
+2) Add key value pair to a map (k1,v1)
+3) Commit - leading to an exception in the MapStore store method
+4) I assume there is nothing else to do to get the transaction to cleanup
+
+In another thread:
+
+1) Transaction.begin().
+2) Add key value pair to to a the map (k1,v1) - a this point the entry locks with the exceptions shown below.
+
+It seems that during a commit failure the HazelCast server is not releasing locks/rolling back state correctly.
+
+If anyone is able to point me in the direction of the necessary debug points I am happy to investigate further, however, this seems a significant issue.
+
+INFO: There is no response for Call [7] operation=CONCURRENT_MAP_PUT in 5 seconds.
+21-Feb-2013 11:58:30 com.hazelcast.client.ProxyHelper
+INFO: There is no response for Call [7] operation=CONCURRENT_MAP_PUT in 10 seconds.
+21-Feb-2013 11:58:35 com.hazelcast.client.ProxyHelper
+INFO: There is no response for Call [7] operation=CONCURRENT_MAP_PUT in 15 seconds.
+21-Feb-2013 11:58:40 com.hazelcast.client.ProxyHelper
+INFO: There is no response for Call [7] operation=CONCURRENT_MAP_PUT in 20 seconds.
+
+com.hazelcast.core.OperationTimeoutException: [NONE] Could not acquire resource under transaction! Another thread holds a lock for the key : Data{partitionHash=1528823736} size= 20
+    at com.hazelcast.impl.BaseManager$TargetAwareOp.throwTxTimeoutException(BaseManager.java:948)
+    at com.hazelcast.impl.ConcurrentMapManager$MPut.txnalPut(ConcurrentMapManager.java:1842)
+    at com.hazelcast.impl.ConcurrentMapManager$MPut.txnalPut(ConcurrentMapManager.java:1826)
+    at com.hazelcast.impl.ConcurrentMapManager$MPut.put(ConcurrentMapManager.java:1690)
+    at com.hazelcast.impl.MProxyImpl$MProxyReal.put(MProxyImpl.java:632)
+    at com.hazelcast.impl.MProxyImpl$MProxyReal.put(MProxyImpl.java:606)
+    at com.hazelcast.impl.MProxyImpl.put(MProxyImpl.java:173)
+    at com.hazelcast.impl.MProxyImpl.put(MProxyImpl.java:124)
+
+---
+
+I have created a simple test case to prove the issue in my first post. 
+
+The case is simply to use a transaction to put a value that is backed by a mapstore that fails.
+
+Unless I have missed something I consider this a critical issue in the HazelCast transaction implementation. If correct this would mean that any failure on a MapStore results in the HazelCast server entering an unknown state.
+
+The attachement can be found here:
+
+https://groups.google.com/forum/?fromgroups=#!topic/hazelcast/aaQTgLZPGBU

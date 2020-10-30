@@ -1,0 +1,82 @@
+There are several issues with the `ReplicatedMap` and lite members.
+
+## Error Logs in Mixed Cluster
+
+Even if a lite members doesn't try to use the `ReplicatedMap`, there are error logs once a data member uses a `ReplicatedMap`:
+```java
+10:34:38,047 ERROR [PostJoinProxyOperation] hz._hzInstance_2_dev.cached.thread-3 - [127.0.0.1]:5002 [dev] [3.10-SNAPSHOT] Cannot create proxy [hz:impl:replicatedMapService:0c886b17-e186-4f54-96ee-2188e2dec87c]!
+com.hazelcast.replicatedmap.ReplicatedMapCantBeCreatedOnLiteMemberException: Can't create replicated map instance on [127.0.0.1]:5002
+    at com.hazelcast.replicatedmap.impl.ReplicatedMapService.createDistributedObject(ReplicatedMapService.java:246) ~[classes/:?]
+    at com.hazelcast.spi.impl.proxyservice.impl.ProxyRegistry.doCreateProxy(ProxyRegistry.java:191) ~[classes/:?]
+    at com.hazelcast.spi.impl.proxyservice.impl.ProxyRegistry.createProxy(ProxyRegistry.java:184) ~[classes/:?]
+    at com.hazelcast.spi.impl.proxyservice.impl.operations.PostJoinProxyOperation$CreateProxyTask.run(PostJoinProxyOperation.java:129)
+```
+or
+```java
+12:08:25,288  WARN [EventService] hz._hzInstance_8_dev.event-8 - [127.0.0.1]:5006 [dev] [3.10-SNAPSHOT] Error while logging processing event
+com.hazelcast.replicatedmap.ReplicatedMapCantBeCreatedOnLiteMemberException: Can't create replicated map instance on [127.0.0.1]:5006
+	at com.hazelcast.replicatedmap.impl.ReplicatedMapService.createDistributedObject(ReplicatedMapService.java:246) ~[classes/:?]
+	at com.hazelcast.spi.impl.proxyservice.impl.ProxyRegistry.doCreateProxy(ProxyRegistry.java:191) ~[classes/:?]
+	at com.hazelcast.spi.impl.proxyservice.impl.ProxyRegistry.createProxy(ProxyRegistry.java:184) ~[classes/:?]
+	at com.hazelcast.spi.impl.proxyservice.impl.ProxyServiceImpl.dispatchEvent(ProxyServiceImpl.java:240) ~[classes/:?]
+	at com.hazelcast.spi.impl.proxyservice.impl.ProxyServiceImpl.dispatchEvent(ProxyServiceImpl.java:64) ~[classes/:?]
+	at com.hazelcast.spi.impl.eventservice.impl.EventProcessor.process(EventProcessor.java:61) ~[classes/:?]
+	at com.hazelcast.spi.impl.eventservice.impl.RemoteEventProcessor.run(RemoteEventProcessor.java:43)
+```
+
+## `ReplicatedMap` can't be used after lite member promotion
+
+After a lite member has been promoted to a data member, the `ReplicatedMap` cannot be used on it:
+```java
+@Test
+public void testPromoteLiteMember() {
+    String mapName = randomName();
+    TestHazelcastInstanceFactory nodeFactory = createHazelcastInstanceFactory(2);
+    HazelcastInstance instance1 = nodeFactory.newHazelcastInstance(dataMemberConfig);
+
+    ReplicatedMap<String, String> map = instance1.getReplicatedMap(mapName);
+    map.put("key", "value");
+
+    HazelcastInstance instance2 = nodeFactory.newHazelcastInstance(liteMemberConfig);
+    instance2.getCluster().promoteLocalLiteMember();
+
+    final ReplicatedMap<String, String> promotedMap = instance2.getReplicatedMap(mapName);
+    assertTrueEventually(new AssertTask() {
+        @Override
+        public void run() {
+            assertEquals("Expected the promoted lite member to retrieve a value from a ReplicatedMap",
+                    "value", promotedMap.get("key"));
+        }
+    });
+}
+```
+results in
+```java
+com.hazelcast.replicatedmap.ReplicatedMapCantBeCreatedOnLiteMemberException: Can't create replicated map instance on [127.0.0.1]:5008
+
+	at com.hazelcast.replicatedmap.impl.ReplicatedMapService.createDistributedObject(ReplicatedMapService.java:246)
+	at com.hazelcast.spi.impl.proxyservice.impl.ProxyRegistry.doCreateProxy(ProxyRegistry.java:191)
+	at com.hazelcast.spi.impl.proxyservice.impl.ProxyRegistry.createProxy(ProxyRegistry.java:184)
+	at com.hazelcast.spi.impl.proxyservice.impl.ProxyRegistry.getOrCreateProxyFuture(ProxyRegistry.java:154)
+	at com.hazelcast.spi.impl.proxyservice.impl.ProxyRegistry.getOrCreateProxy(ProxyRegistry.java:135)
+	at com.hazelcast.spi.impl.proxyservice.impl.ProxyServiceImpl.getDistributedObject(ProxyServiceImpl.java:147)
+	at com.hazelcast.instance.HazelcastInstanceImpl.getDistributedObject(HazelcastInstanceImpl.java:387)
+	at com.hazelcast.instance.HazelcastInstanceImpl.getReplicatedMap(HazelcastInstanceImpl.java:319)
+	at com.hazelcast.instance.HazelcastInstanceProxy.getReplicatedMap(HazelcastInstanceProxy.java:193)
+	at com.hazelcast.replicatedmap.ReplicatedMapLiteMemberTest.testPromoteLiteMember(ReplicatedMapLiteMemberTest
+```
+
+## `ReplicatedMap` runs into NPE after split-brain healing
+
+When using the unified split-brain code from `IMap` and `ICache` for `ReplicatedMap`, we run into NPEs after the split-brain healing:
+```java
+java.lang.NullPointerException
+	at com.hazelcast.replicatedmap.impl.ReplicatedMapProxy.get(ReplicatedMapProxy.java:224)
+	at com.hazelcast.replicatedmap.merge.ReplicatedMapSplitBrainTest.afterMergeHigherHitsMergePolicy(ReplicatedMapSplitBrainTest.java:236)
+	at com.hazelcast.replicatedmap.merge.ReplicatedMapSplitBrainTest.access$100(ReplicatedMapSplitBrainTest.java:67)
+	at com.hazelcast.replicatedmap.merge.ReplicatedMapSplitBrainTest$1.run(ReplicatedMapSplitBrainTest.java:171)
+	at com.hazelcast.test.HazelcastTestSupport.assertTrueEventually(HazelcastTestSupport.java:1193)
+	at com.hazelcast.test.HazelcastTestSupport.assertTrueEventually(HazelcastTestSupport.java:1210)
+	at com.hazelcast.replicatedmap.merge.ReplicatedMapSplitBrainTest.onAfterSplitBrainHealed(ReplicatedMapSplitBrainTest.java:189)
+```
+The reason is that the unified code removes the record stores from partition containers. After that all methods which use `service.getReplicatedRecordStore(name, false, partitionId)` will get a NPE, since the store isn't there anymore.

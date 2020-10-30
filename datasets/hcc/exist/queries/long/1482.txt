@@ -1,0 +1,78 @@
+### What is the problem
+
+eXist's XQuery Update facility overlooks namespace binding conflicts when inserting attributes. For example, given a query whose prolog binds the namespace prefix `myns` to the URI `http://www.foo.com`, an update expression in that query to insert an attribute `myns:baz="qux"` into a document where `myns` is bound to a different namespace URI, like `http://www.bar.com`, succeeds, despite the conflicting namespace bindings on the prefix `myns`.
+
+### What did you expect
+
+I expected an error to be raised — along the lines of what Saxon raises:
+
+> XUDY0023: An update action creates a namespace binding that conflicts with an existing namespace binding on the same target element
+
+For more on this error, see https://www.w3.org/TR/xquery-update-30/#ERRXUDY0023. (While eXist's XQuery Update spec isn't aligned with the W3C spec, it seems reasonable that a namespace binding conflict should raise an error.)
+
+### Describe how to reproduce or add a test
+
+```xquery
+xquery version "3.1";
+
+module namespace ut="http://exist-db.org/xquery/update/test";
+
+declare namespace test="http://exist-db.org/xquery/xqsuite";
+
+declare namespace myns="http://www.foo.com";
+
+declare variable $ut:test {
+    <x xmlns:myns="http://www.bar.com">
+        <z/>
+    </x>
+};
+
+declare %test:setup function ut:setup() {
+    xmldb:store("/db", "test.xml", $ut:test)
+};
+
+declare %test:teardown function ut:teardown() {
+    xmldb:remove("/db/test.xml")
+};
+
+declare %test:assertError("XUDY0023") function ut:insert-namespaced-attribute() {
+    update insert attribute myns:baz { "qux" } into doc("/db/test.xml")/x/z
+};
+```
+
+The equivalent test in Saxon:
+
+**test.xml**
+```xml
+<x xmlns:myns="http://www.bar.com">
+    <z/>
+</x>
+```
+
+**test.xq**
+```xquery
+xquery version "3.1";
+
+declare namespace myns="http://www.foo.com";
+
+let $doc := doc("test.xml")
+return 
+    insert node attribute myns:baz { "qux" } into $doc/x/z
+```
+
+Running this test in oXygen 19.0 (build 2017062918), the result is:
+
+```
+System ID: /Users/joe/Downloads/update-test/test.xq
+Severity: error
+Description: XUDY0023: An update action creates a namespace binding that conflicts with an existing namespace binding on the same target element
+Start location: 7:39
+```
+
+### Context information
+
+- eXist-db version + Git Revision hash: 3.4.0-SNAPSHOT+201707142259 (af161fd52) 
+- Java version: 1.8.0_131
+- Operating system: macOS 10.12.5
+- 32 or 64 bit: 64 bit
+- Any custom changes in e.g. conf.xml: No

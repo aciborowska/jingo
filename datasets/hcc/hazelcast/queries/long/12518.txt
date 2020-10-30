@@ -1,0 +1,94 @@
+Lets say HC Maploader failed in first attempt and it succeeded in second attempt.Accessing map after 2nd successful attempt throws exception that is supposed to throw on first attempt 
+
+Here is the code to reproduce
+
+```
+public class CustomerMapLoader implements MapLoader<String, Customer> {
+
+	AtomicBoolean done = new AtomicBoolean();
+
+	@Override
+	public Customer load(String key) {
+		System.out.println("keyyyy" + key);
+		return null;
+	}
+
+	@Override
+	public Map<String, Customer> loadAll(Collection<String> keys) {
+		System.out.println("execueting loadAll " + keys);
+		Map<String, Customer> map = new HashMap<String, Customer>();
+		for (String key : keys) {
+			map.put(key, new Customer(key, "customer" + key));
+		}
+		return map;
+	}
+
+	@Override
+	public Iterable<String> loadAllKeys() {
+		System.out.println("executing allkey");
+		//This is simulate database connection issue on first invocation of maploader
+		if (done.compareAndSet(false, true)) {
+			throw new RuntimeException();
+		}
+		return getList();
+	}
+
+	private Iterable<String> getList() {
+		List<String> list = new ArrayList<String>();
+		IntStream.range(1, 10).forEach(t -> {
+			list.add(String.valueOf(t));
+		});
+		return list;
+	}
+
+}
+```
+**Server**
+```
+public class HCServer {
+public static void main(String[] args) {
+		Config config = new Config();
+		MapConfig mapConfig = config.getMapConfig("customer");
+		MapStoreConfig mapStoreConfig = mapConfig.getMapStoreConfig();
+		mapStoreConfig.setEnabled(true);
+		config.addMapConfig(mapConfig);
+		CustomerMapLoader customerMapLoader = new CustomerMapLoader();
+		mapStoreConfig.setImplementation(customerMapLoader);
+		Hazelcast.newHazelcastInstance(config);
+	}
+}
+```
+
+**Client to invoke Maploader**
+```
+public class HCClient {
+	public static void main(String[] args) {
+		HazelcastInstance client = HazelcastClient.newHazelcastClient();
+		IMap<String, Customer> iMap = client.getMap("customer");
+		iMap.loadAll(true);
+		//iMap.size();
+		client.shutdown();
+	}	
+}
+```
+**Client to invoke map after loading**
+```
+public class Main {
+	public static void main(String[] args) {
+		HazelcastInstance client = HazelcastClient.newHazelcastClient();
+		IMap<String, Customer> iMap = client.getMap("customer");
+		System.out.println(iMap.get("1"));
+		client.shutdown();
+	}
+
+}
+```
+
+You can reproduce by below steps
+1)Run HCServer.java
+2)Run HCClient.java --> This will fail and that is expected.Here one more problem exception is not returned to client.So client will never know what happened on server
+3)Run HCClient.java again -->this time it will work and maploader will load
+4)Run Main.java -->This will throw exception which is not expected behavior as maploader in previous step has executed normally  .This exception is the same exception which i am expecting on step 2.
+
+if i execute above steps by uncommenting  iMap.size(); in HCClient then it works fine.
+

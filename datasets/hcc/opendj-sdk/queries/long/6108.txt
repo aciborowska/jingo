@@ -1,0 +1,154 @@
+Found with 7.0.0-SNAPSHOT rev. 8eaab1ca493 and daily test:
+
+python3 run-pybot.py -v -s logging_group.caud_external_handlers.jdbc DJ
+
+
+The test above only works in docker pyforge-ready image or on local machine with mysql server (test need to be updated to work with local mysql).
+
+EDIT: I checked with older revisions and the first failure is with revision 397fee22e2.
+
+Steps to reproduce :
+ 1. Configure an instance with some sample users
+ 2. Create new HTTP JDBC audit handler
+
+dsconfig -h localhost -p 4444 -D "cn=myself" -w password -X create-log-publisher --publisher-name "JDBC HTTP Access Log Publisher" --type external-http-access --set enabled:true --set config-file:tmp/jdbc-handler-config-http.json -n
+
+
+jdbc-handler-config-http.json
+
+{
+    "class": "org.forgerock.audit.handlers.jdbc.JdbcAuditEventHandler",
+    "config": {
+        "buffering": {
+            "enabled": false,
+            "autoFlush": true,
+            "maxSize": 5000,
+            "writeInterval": "disabled",
+            "writerThreads": 1,
+            "maxBatchedEvents": 100
+        },
+        "connectionPool": {
+            "jdbcUrl": "jdbc:mysql://localhost:3306/audit?allowMultiQueries=true&characterEncoding=utf8",
+            "password": "password",
+            "username": "root",
+            "autoCommit": true,
+            "connectionTimeout": 30000,
+            "idleTimeout": 600000,
+            "maxLifetime": 1800000,
+            "minIdle": 10,
+            "maxPoolSize": 10,
+            "poolName": "audit",
+            "driverClassName": null
+        },
+        "databaseType": "mysql",
+        "enabled": true,
+        "name": "jdbc",
+        "tableMappings": [
+            {
+                "event": "ldap-access",
+                "fieldToColumn": {
+                    "_id": "id",
+                    "eventName": "eventname",
+                    "runAs": "runAs",
+                    "timestamp": "timestamp_",
+                    "transactionId": "transactionid",
+                    "userId": "userid",
+                    "client/host": "client_host",
+                    "client/ip": "client_ip",
+                    "client/port": "client_port",
+                    "server/ip": "server_ip",
+                    "server/port": "server_port",
+                    "request/attr": "request_attr",
+                    "request/attrs": "request_attrs",
+                    "request/authType": "request_authType",
+                    "request/connId": "request_connId",
+                    "request/controls": "request_controls",
+                    "request/deleteOldRDN": "request_deleteOldRDN",
+                    "request/dn": "request_dn",
+                    "request/filter": "request_filter",
+                    "request/idToAbandon": "request_idToAbandon",
+                    "request/message": "request_message",
+                    "request/msgId": "request_msgId",
+                    "request/name": "request_name",
+                    "request/newRDN": "request_newRDN",
+                    "request/newSup": "request_newSup",
+                    "request/oid": "request_oid",
+                    "request/opType": "request_opType",
+                    "request/operation": "request_operation",
+                    "request/protocol": "request_protocol",
+                    "request/scope": "request_scope",
+                    "request/version": "request_version",
+                    "response/additionalItems": "response_additionalItems",
+                    "response/controls": "response_controls",
+                    "response/failureReason": "response_failureReason",
+                    "response/maskedMessage": "response_maskedMessage",
+                    "response/maskedResult": "response_maskedResult",
+                    "response/nentries": "response_nentries",
+                    "response/reason": "response_reason"
+                },
+                "table": "ldapaccess"
+            },
+            {
+                "event": "http-access",
+                "fieldToColumn": {
+                    "_id": "id",
+                    "eventName": "eventname",
+                    "timestamp": "timestamp_",
+                    "transactionId": "transactionid",
+                    "userId": "userid",
+                    "client/host": "client_host",
+                    "client/ip": "client_ip",
+                    "client/port": "client_port",
+                    "server/ip": "server_ip",
+                    "server/port": "server_port",
+                    "http/request/cookies": "request_cookies",
+                    "http/request/headers": "request_headers",
+                    "http/request/method": "request_method",
+                    "http/request/path": "request_path",
+                    "http/request/queryParameters": "request_queryparameters",
+                    "http/request/secure": "request_secure",
+                    "http/response/headers": "response_headers",
+                    "request/operation": "request_operation",
+                    "request/protocol": "request_protocol",
+                    "response/elapsedTime": "response_elapsedtime",
+                    "response/elapsedTimeUnits": "response_elapsedtimeunits",
+                    "response/status": "response_status",
+                    "response/statusCode": "response_statuscode"
+                },
+                "table": "httpaccess"
+            }
+        ],
+        "topics": [
+            "http-access"
+        ]
+    }
+}
+
+
+3. Enable HTTP /api endpoint
+
+dsconfig -h localhost -p 4444 -D "cn=myself" -w password -X set-http-endpoint-prop --endpoint-name "/api" --set enabled:true -n
+
+
+4. Send a single http request
+
+http -v --follow --all -a user.12:password "http://localhost:8080/api/users/user.12" Content-Type:"application/json"
+
+
+5. Check the event is logged to mysql server
+
+Current behavior:
+ At the moment the http event is not stored to mysql server. Same situation is with postgresql database. Test with LDAP operation works correctly with mysql and postgresql.
+
+I checked mysql log file and there is no INSTER of any HTTP event. There is only LDAP event as a result of HTTP request:
+
+INSERT INTO ldapaccess ( id, eventname, runAs, timestamp_, transactionid, userid, client_host, client_ip, client_port, server_ip, server_port, request_attr, request_attrs, request_authType, request_connId, request_controls, request_deleteOldRDN, request_dn, request_filter, request_idToAbandon, request_message, request_msgId, request_name, request_newRDN, request_newSup, request_oid, request_opType, request_operation, request_protocol, request_scope, request_version, response_additionalItems, response_controls, response_failureReason, response_maskedMessage, response_maskedResult, response_nentries, response_reason ) VALUES ( '9b8aadb5-f807-4bcf-8d24-bea12e3550b7-470', 'DJ-LDAP', null, '2019-03-18T15:13:37.306Z', '9b8aadb5-f807-4bcf-8d24-bea12e3550b7-464', null, null, '127.0.0.1', 33066, 'localhost', 8081, null, '["objectClass","uid","etag","createTimestamp","modifyTimestamp","mail","cn","givenName","sn","description","manager","isMemberOf","telephoneNumber","uidNumber","gidNumber","homeDirectory","loginShell","gecos"]', null, 7, '["1.3.6.1.4.1.36733.2.1.5.1"]', null, 'uid=user.12,ou=people,dc=com', '(objectClass=*)', null, null, 0, null, null, null, null, null, 'SEARCH', 'HTTP/1.1', 'base', null, null, null, null, null, null, 1, null )
+
+
+but this is not the HTTP event (see the INSTERT: INSTERT INTO ldapaccess, should be httpaccess). The instance's http access log file contains following entry:
+
+{"_id":"9b8aadb5-f807-4bcf-8d24-bea12e3550b7-472","timestamp":"2019-03-18T15:13:37.249Z","eventName":"DJ-HTTP","transactionId":"9b8aadb5-f807-4bcf-8d24-bea12e3550b7-464","client":{"ip":"127.0.0.1","port":33066},"server":{"ip":"127.0.0.1","port":8081},"http":{"request":{"secure":false,"method":"GET","path":"http://localhost:8081/api/users/user.12","headers":{"accept":["*/*"],"host":["localhost:8081"],"user-agent":["python-requests/2.21.0"]}}},"response":{"status":"SUCCESSFUL","statusCode":"200","elapsedTime":88,"elapsedTimeUnits":"MILLISECONDS"}}
+
+
+Expected behavior:
+ I expect the behavior we had before revision 397fee22e2 . An http event in httpaccess table in mysql database.

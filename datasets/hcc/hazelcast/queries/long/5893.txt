@@ -1,0 +1,57 @@
+Below is a minimal working example which demonstrates the issue.
+
+``` java
+import com.hazelcast.config.Config;
+import com.hazelcast.core.Hazelcast;
+
+public class ListenerMember
+{
+    public static void main(String[] args) {
+        new ListenerMember().run();
+    }
+
+    public void run() {
+        Config cfg = new Config();
+        Hazelcast.newHazelcastInstance(cfg);
+    }
+}
+```
+
+``` java
+import com.hazelcast.client.HazelcastClient;
+import com.hazelcast.client.config.ClientConfig;
+import com.hazelcast.client.config.ClientNetworkConfig;
+import com.hazelcast.core.HazelcastInstance;
+import com.hazelcast.core.IMap;
+import com.hazelcast.map.listener.MapListener;
+
+
+public class ListenerClient implements MapListener
+{
+    public static void main(String[] args) {
+        new ListenerClient().run();
+    }
+
+    public void run() {
+        ClientNetworkConfig networkConfig = new ClientNetworkConfig();
+        networkConfig.addAddress("127.0.0.1:5701");
+        ClientConfig clientConfig = new ClientConfig();
+        clientConfig.setNetworkConfig(networkConfig);
+        HazelcastInstance client = HazelcastClient.newHazelcastClient(clientConfig);
+
+        IMap<Integer, String> map = client.getMap("testmap");
+
+        while (true) {
+            final String listenerId = map.addEntryListener(this, false);
+            map.removeEntryListener(listenerId);
+        }
+    }
+}
+```
+
+ `ListenerMember` was run for 1 minute before starting `ListenerClient`. The image below shows the heap usage of `ListenerMember` over the course of approximately 30 minutes, as reported by Java VisualVM.
+![cluster_member_heap](https://cloud.githubusercontent.com/assets/1213865/9145967/8631981a-3cf4-11e5-9392-09178dba66f4.png)
+
+The test was run using versions 3.4.2, 3.5.1, and 3.6 snapshot (20150807.171323-259), and all version exhibited the same behavior. When using version 3.4, `ListenerClient` implemented `EntryListener` instead of `MapListener` (which was not available in 3.4)
+
+The above image was produced using 3.6 snapshot, using Java 7 on a Windows 7 machine using the following JVM arguments: -server -Xms1G -Xmx1G. Similar behavior is exhibited when running a similar test using Hazelcast Simulator 0.5 across multiple CentOS 6.6 virtual machines.

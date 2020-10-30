@@ -1,0 +1,108 @@
+The following program shows the issue:
+
+```
+package com.hazelcast;
+
+import com.hazelcast.config.Config;
+import com.hazelcast.config.InMemoryFormat;
+import com.hazelcast.config.MapConfig;
+import com.hazelcast.config.NearCacheConfig;
+import com.hazelcast.core.EntryEvent;
+import com.hazelcast.core.Hazelcast;
+import com.hazelcast.core.HazelcastInstance;
+import com.hazelcast.core.IMap;
+import com.hazelcast.map.listener.EntryAddedListener;
+import com.hazelcast.query.Predicate;
+import com.hazelcast.spi.AbstractOperation;
+import com.hazelcast.spi.Operation;
+import com.hazelcast.spi.impl.operationexecutor.OperationExecutor;
+import com.hazelcast.test.HazelcastTestSupport;
+import org.apache.log4j.Level;
+import org.junit.Test;
+
+import java.util.HashMap;
+import java.util.Map;
+
+import static org.junit.Assert.assertTrue;
+
+public class PartitionDeadlockTest extends HazelcastTestSupport {
+
+    private IMap<Integer, String> idxCache;
+    private boolean applied = false;
+    private HazelcastInstance hz;
+
+    @Test
+    public void testPartitionOperation() throws Exception {
+        setLoggingLog4j();
+        setLogLevel(Level.DEBUG);
+
+        Config config = new Config();
+        config.setProperty("hazelcast.logging.type", "slf4j");
+
+        hz = Hazelcast.newHazelcastInstance(config);
+
+        IMap<String, String> dataCache = hz.getMap("data-cache");
+        MyEntryListener l = new MyEntryListener();
+        MyPredicate predicate = new MyPredicate();
+        String uuid = dataCache.addEntryListener(l, predicate, false);
+
+        idxCache = hz.getMap("idx-cache");
+        idxCache.put(5, "value5");
+
+        HashMap<String, String> data = new HashMap<String, String>();
+        for (int i = 0; i < 10; i++) {
+            data.put(String.valueOf(i), "value" + i);
+        }
+        dataCache.putAll(data);
+
+        Thread.sleep(1000); //000);
+        hz.shutdown();
+        assertTrue(applied);
+    }
+
+    private class MyPredicate implements Predicate<String, String> {
+
+        @Override
+        public boolean apply(Map.Entry<String, String> mapEntry) {
+            try {
+                System.out.println(Thread.currentThread().getName() + " started");
+                int key = Integer.parseInt(mapEntry.getKey());
+                final int partitionId = getPartitionService(hz).getPartitionId(key);
+                System.out.println("partitionid of key:" + partitionId);
+                OperationExecutor executor = getOperationService(hz).getOperationExecutor();
+
+                Operation op = new AbstractOperation() {
+                    {
+                        setPartitionId(partitionId);
+                    }
+
+                    @Override
+                    public void run() throws Exception {
+
+                    }
+                };
+
+                System.out.println("isInvocationAllowedFromCurrentThread:" + executor.isInvocationAllowedFromCurrentThread(op, false));
+
+
+                boolean result = idxCache.containsKey(key);
+                System.out.println(Thread.currentThread() + " completes");
+                return result;
+            }catch (RuntimeException t){
+                t.printStackTrace();
+                throw t;
+            }
+        }
+    }
+
+    private class MyEntryListener implements EntryAddedListener<String, String> {
+
+        @Override
+        public void entryAdded(EntryEvent<String, String> event) {
+            applied = true;
+        }
+    }
+}
+```
+
+If I would remove the try/catch in the MyPredicate, the IllegalThreadStateException is thrown away

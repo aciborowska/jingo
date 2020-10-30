@@ -1,0 +1,19 @@
+The heartbeat connection factory sends keepalive heartbeats to the remote server but does not actively fail connections for which a heartbeat response has not been received within an acceptable time frame. Instead it marks a connection as failed and expects the client application to detect the failure by checking Connection#isValid(). Unfortunately, a client is unlikely to do this and there is always scope for a race condition where a client determines that the connection is valid and then issues a request at which point the connection is invalid leaving the client hanging forever (or until a timeout expires).
+
+Step to reproduce:
+
+
+	configure two way replication
+	configure the REST servlet for 2-way fail-over between the two servers
+	perform HTTP request and verify that the LDAP request(s) went to the first server
+	kill -STOP the first server
+	perform HTTP request and note that it waits forever
+	observe that the servlet does not fail-over to the second server
+	kill -CONT the first server
+	observe the HTTP request completes and the servlet remains connected to the first server
+
+
+
+I think that it would be better if the HBCF actively closes the underlying connection once no heartbeat has been detected (i.e. when isValid() == false). This will cause all pending requests to fail. We should also prevent new requests from being sent, although we need to take care to intercept the requests before delegating to them underlying closed connection since doing so would result in an IllegalStateException.
+
+

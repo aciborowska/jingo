@@ -1,0 +1,152 @@
+# Steps to reprodue
+
+```
+% mn create-app example.micronaut.bug --features=redis-lettuce,cache-caffeine
+```
+
+```
+% touch src/main/java/example/micronaut/MyJob.java
+```
+
+```java
+package com.example;
+
+import io.micronaut.scheduling.annotation.Scheduled;
+
+import javax.inject.Singleton;
+
+@Singleton
+public class MyJob {
+    private final com.example.FooService fooService;
+    
+    public MyJob(com.example.FooService fooService) {
+        this.fooService = fooService;
+    }
+    @Scheduled(fixedDelay = "60s", initialDelay = "1s")
+    public void autoFail() {
+        System.out.println("Executing job");
+        System.out.println("rand: " + fooService.foo());
+    }
+}
+
+```
+
+```
+% touch src/main/java/example/micronaut/FooService.java
+```
+
+```java
+package com.example;
+
+import io.micronaut.cache.annotation.Cacheable;
+
+import javax.inject.Singleton;
+import java.util.concurrent.ThreadLocalRandom;
+
+@Singleton
+public class FooService {
+
+    @Cacheable("my-cache")
+    public int foo() {
+        return ThreadLocalRandom.current().nextInt(0, 100 + 1);
+    }
+}
+```
+
+If I start the app: 
+
+```
+% ./gradlew run
+```
+
+```
+13:04:37.267 [main] INFO  io.micronaut.runtime.Micronaut - Startup completed in 733ms. Server Running: http://localhost:8080
+Executing job
+rand: 33
+Executing job
+rand: 33
+Executing job
+rand: 33
+```
+
+It works ok. 
+
+However, if I delete `MyJob.java` 
+
+```
+rm src/main/java/example/micronaut/MyJob.java
+```
+
+and I put all the logic in `FooService.java`
+
+```java
+package com.example;
+
+import io.micronaut.cache.annotation.Cacheable;
+import io.micronaut.scheduling.annotation.Scheduled;
+import javax.inject.Singleton;
+import java.util.concurrent.ThreadLocalRandom;
+
+@Singleton
+public class FooService {
+
+    @Cacheable("my-cache")
+    public int foo() {
+        return ThreadLocalRandom.current().nextInt(0, 100 + 1);
+    }
+
+    @Scheduled(fixedDelay = "60s", initialDelay = "1s")
+    public void autoFail() {
+        System.out.println("Executing job");
+        System.out.println("rand: " + foo());
+    }
+}
+```
+
+If I start the app: 
+
+```
+% ./gradlew run
+```
+
+```bash
+13:08:46.329 [main] ERROR io.micronaut.runtime.Micronaut - Error starting Micronaut server: BeanDefinition.requiresMethodProcessing() returned true but method has no @Executable definition. This should never happen. Please report an issue.
+java.lang.IllegalStateException: BeanDefinition.requiresMethodProcessing() returned true but method has no @Executable definition. This should never happen. Please report an issue.
+        at io.micronaut.context.DefaultBeanContext.lambda$initializeContext$28(DefaultBeanContext.java:1569)
+        at java.util.stream.ForEachOps$ForEachOp$OfRef.accept(ForEachOps.java:183)
+        at java.util.stream.ForEachOps$ForEachOp$OfRef.accept(ForEachOps.java:183)
+        at java.util.stream.ReferencePipeline$3$1.accept(ReferencePipeline.java:193)
+        at java.util.Iterator.forEachRemaining(Iterator.java:116)
+        at java.util.Spliterators$IteratorSpliterator.forEachRemaining(Spliterators.java:1801)
+        at java.util.stream.AbstractPipeline.copyInto(AbstractPipeline.java:482)
+        at java.util.stream.AbstractPipeline.wrapAndCopyInto(AbstractPipeline.java:472)
+        at java.util.stream.ForEachOps$ForEachOp.evaluateSequential(ForEachOps.java:150)
+        at java.util.stream.ForEachOps$ForEachOp$OfRef.evaluateSequential(ForEachOps.java:173)
+        at java.util.stream.AbstractPipeline.evaluate(AbstractPipeline.java:234)
+        at java.util.stream.ReferencePipeline.forEach(ReferencePipeline.java:485)
+        at java.util.stream.ReferencePipeline$7$1.accept(ReferencePipeline.java:272)
+        at java.util.stream.ReferencePipeline$2$1.accept(ReferencePipeline.java:175)
+        at java.util.stream.ReferencePipeline$3$1.accept(ReferencePipeline.java:193)
+        at java.util.stream.ReferencePipeline$2$1.accept(ReferencePipeline.java:175)
+        at java.util.ArrayList$ArrayListSpliterator.forEachRemaining(ArrayList.java:1382)
+        at java.util.stream.AbstractPipeline.copyInto(AbstractPipeline.java:482)
+        at java.util.stream.AbstractPipeline.wrapAndCopyInto(AbstractPipeline.java:472)
+        at java.util.stream.ForEachOps$ForEachOp.evaluateSequential(ForEachOps.java:150)
+        at java.util.stream.ForEachOps$ForEachOp$OfRef.evaluateSequential(ForEachOps.java:173)
+        at java.util.stream.AbstractPipeline.evaluate(AbstractPipeline.java:234)
+        at java.util.stream.ReferencePipeline.forEach(ReferencePipeline.java:485)
+        at io.micronaut.context.DefaultBeanContext.initializeContext(DefaultBeanContext.java:1566)
+        at io.micronaut.context.DefaultApplicationContext.initializeContext(DefaultApplicationContext.java:220)
+        at io.micronaut.context.DefaultBeanContext.readAllBeanDefinitionClasses(DefaultBeanContext.java:2763)
+        at io.micronaut.context.DefaultBeanContext.start(DefaultBeanContext.java:227)
+        at io.micronaut.context.DefaultApplicationContext.start(DefaultApplicationContext.java:166)
+        at io.micronaut.runtime.Micronaut.start(Micronaut.java:64)
+        at io.micronaut.runtime.Micronaut.run(Micronaut.java:294)
+        at io.micronaut.runtime.Micronaut.run(Micronaut.java:280)
+        at example.micronaut.Application.main(Application.java:8)
+```
+
+
+
+
+

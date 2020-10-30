@@ -1,0 +1,45 @@
+The latency is calculated based on operation execution time, not on invocation time. In most cases the operation invocation time will be tiny compared to the total execution time; especially if there are some slow operations executing concurrently.
+
+So the current numbers paint a too positive image.
+
+For more information see the AbstractCacheRecordStore
+
+```
+public Object getAndRemove(Data key, String source, int completionId, String origin) {
+        long now = Clock.currentTimeMillis();
+        long start = isStatisticsEnabled() ? System.nanoTime() : 0;
+
+        deleteCacheEntry(key);
+
+        R record = records.get(key);
+        Object obj;
+        boolean removed = false;
+        try {
+            if (recordNotExistOrExpired(record, now)) {
+                obj = null;
+                if (isEventsEnabled()) {
+                    publishEvent(createCacheCompleteEvent(toEventData(key), CacheRecord.TIME_NOT_AVAILABLE,
+                            origin, completionId));
+                }
+            } else {
+                obj = toValue(record);
+                removed = deleteRecord(key, completionId, source, origin);
+            }
+            onRemove(key, null, source, false, record, removed);
+            if (isStatisticsEnabled()) {
+                statistics.addGetTimeNanos(System.nanoTime() - start);
+                if (obj != null) {
+                    statistics.increaseCacheHits(1);
+                    statistics.increaseCacheRemovals(1);
+                    statistics.addRemoveTimeNanos(System.nanoTime() - start);
+                } else {
+                    statistics.increaseCacheMisses(1);
+                }
+            }
+            return obj;
+        } catch (Throwable error) {
+            onRemoveError(key, null, source, false, record, removed, error);
+            throw ExceptionUtil.rethrow(error);
+        }
+    }
+```

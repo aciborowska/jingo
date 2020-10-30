@@ -1,0 +1,52 @@
+Hi all, our team is using IMap as Memory Level Distributed Cache. We found out that there are some underlying risks in the asychronous interface offered by the IMap. 
+The Interface such as `setAsync` or `getAsync` return a ComplationStage and we could turn the stage into CompletableFuture by calling `toComplatableFuture` method. However, this won't return a normal CompletableFuture implemented in the java concurrent package, instead, it would return us a DelegatingCompletableFuture delegates a InvocationFuture. When we compose a normal CompletableFuture(or InternalCompletableFuture in the hazelcast, which  behaves similarly to CompletableFuture) followed by a DelegatingCompletableFuture, progrom would get buggy.
+
+Below is the test demo we use:
+```java
+
+    public static void main(String[] args) throws ExecutionException, InterruptedException {
+        HazelcastInstance hazelcastInstance = Hazelcast.newHazelcastInstance();
+        IMap<Integer, String> map = hazelcastInstance.getMap("test");
+
+        CompletableFuture<String> future1 = map.getAsync(1).thenApply(v -> v).toCompletableFuture();
+
+        CompletableFuture<Void> future2 = future1.thenCompose(oldValue -> {
+                CompletableFuture<Void> future3 =
+                    map.setAsync(1, "value").toCompletableFuture();
+            try {
+                // sleep for 10 milliseconds to ensure the completion of the future3
+                Thread.sleep(10);
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            }
+            System.out.println(future3.isDone());
+            return future3;
+        });
+        future2.get();
+    }
+```
+future1 is a InternalCompletableFuture which should complete without any problem.
+future3 is a DelegatingCompletableFuture and `future3.isDone()` prints true.
+However, future2.get() would stuck forever.
+To illustrate this problem, we could create a fake demo
+```java
+        CompletableFuture.completedFuture(null).thenCompose(v -> {
+                    CompletableFuture<Void> future =
+                            new DelegatingCompletableFuture<>(null, CompletableFuture.completedFuture(null));
+                    System.out.println(future.isDone());
+                    return future;
+        }).get();
+
+        System.out.println("stage completed");
+
+```
+The CompletableFuture before `thenCompose` is a completed future while the Completable Future after the `thenCompose` is a delegating future who should complete immediately. However, this demo would stuck at `get()` function and "stage completed" would never get printed.
+
+
+The reason lies in the different implementations of the future. 
+In a `DelegatingCompletableFuture`, its completion is marked by the delegated future which is a `InvocationFuture` in our case. `InvocationFuture` uses a variable called `state` to flag the completion of the future. However, the normal `CompletableFuture` uses a variable called `result` to flag the completion. In the implmentation of `thenCompose` the CompletableFuture would use `result` to decide if the second future has completed. However, if the second CompletableFuture is a DelegatingCompletableFuture/InvocationFuture, it wouold never change the value of `result` of the super class so even though second future has completed already, `thenCompose` method still treat it as a uncompletable future. So it hangs forever.
+
+To sum up, we construct a statement such as **A** `thenCompose` **B**. If both A and B are DelegatingCompletableFutures or CompletableFutures then things go right. However, if A is a normal CompletableFuture while B is a DelegatingCompletableFuture then program would under the risk of never ending.
+
+
+

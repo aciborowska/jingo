@@ -1,0 +1,89 @@
+Older reflection-based bean introspection appears to fail on Eclipse OpenJ9 JVM. This seems to be due to an assumption about the order that methods are declared during reflection:
+
+https://github.com/micronaut-projects/micronaut-core/blob/fbbe8ea8e5d8ee32f8352832893da8413d70bd17/core/src/main/java/io/micronaut/core/beans/SimpleBeanInfo.java#L265-L267
+
+Notice that in the method above if a method is associated with the Object class then it is assumed that no more class methods will follow (break; versus continue;). When running OpenJ this assumption does not hold true, the first method is always Object::getClass()
+
+OpenJ has a substantially smaller memory footprint, ~60%, when compared to Hotspot and comparable performance. This is the only case where I've noticed a runtime difference between Hotspot and OpenJ. (The actual scenario was when serializing an x-www-form-data body via a `@Client` for an OAuth call, the form data uses BeanMap.of and falls back on this version of introspection.)
+
+## Task List
+
+- [X] Steps to reproduce provided
+- [X] Stacktrace (if present) provided
+- [X] Example that reproduces the problem uploaded to Github
+- [X] Full description of the issue provided (see below)
+
+### Steps to Reproduce
+
+1. Create a class that will be introspected
+
+```java
+@Getter
+@Setter
+@NoArgsConstructor
+@AllArgsConstructor
+public class TokenFormData {
+    private String grant_type;
+    private String client_id;
+    private String client_secret;
+}
+```
+
+2. Use the introspector to get the properties from the bean (BeanMap.of is used when serializing x-www-form-data via the http-client). Return these values from a Controller:
+
+```java
+@Controller("/")
+public class ExampleController {
+    @Get("/token")
+    public Set<String> getToken() {
+        var beanMap = BeanMap.of(new TokenFormData(
+                "client_credentials",
+                "client id",
+                "some secret"
+        ));
+        return beanMap.keySet();
+    }
+}
+```
+
+3. Run via ./gradlew run and call GET http://localhost:8080/token, you'll see the properties as expected:
+
+```json
+[
+    "grant_type",
+    "client_secret",
+    "client_id"
+]
+```
+
+4. Now run via Docker using the OpenJ JVM:
+
+```bash
+./gradlew build && docker build -t foo . && docker run -it -p 8080:8080 foo
+```
+
+5. GET http://localhost:8080/token, you'll see the properties are now not found:
+
+```json
+[]
+```
+
+### Expected Behaviour
+
+Introspected bean should reveal properties
+
+### Actual Behaviour
+
+Introspected bean does not reveal any properties.
+A workaround is to add @Introspected and the properties will be picked up correctly on both Hotspot and OpenJ.
+
+### Environment Information
+
+- **Operating System**: alpine linux
+- **Micronaut Version:** 1.2.1
+- **JDK Version:** adoptopenjdk/openjdk11-openj9:alpine-jre
+
+### Example Application
+
+https://github.com/zdegner/micronaut-introspection-openj
+

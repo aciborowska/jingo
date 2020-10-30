@@ -1,0 +1,130 @@
+Playing a MODRDN with an empty newrdn, renders the backend unusable.
+
+An application such as IDM can inadvertently complete a MODRDN with a blank newrdn.  Only an export/import can clear out this bad entry.
+
+ 
+
+./ldapmodify --port 1389 -D "cn=Directory Manager" -w password <<"EOF";
+dn: uid=user.0,ou=People,dc=example,dc=com
+changetype: modrdn
+newrdn: uid=
+deleteoldrdn: 1
+
+ 
+
+ 
+
+[10/Jan/2018:13:56:41 -0700] BIND REQ conn=4 op=0 msgID=1 version=3 type=SIMPLE dn="cn=Directory Manager"
+[10/Jan/2018:13:56:41 -0700] BIND RES conn=4 op=0 msgID=1 result=0 authDN="cn=Directory Manager,cn=Root DNs,cn=config" etime=1
+[10/Jan/2018:13:56:41 -0700] MODIFYDN REQ conn=4 op=1 msgID=2 dn="uid=user.0,ou=People,dc=example,dc=com" newRDN="uid=" deleteOldRDN="true"
+[10/Jan/2018:13:56:41 -0700] MODIFYDN RES conn=4 op=1 msgID=2 result=0 etime=19
+
+A delete of the entry fails
+
+ 
+
+DELETE operation failed
+Result Code:  32 (No Such Entry)
+Additional Information:  Entry uid= does not exist in the Directory Server
+
+ 
+
+You cannot even return a search for the entry, even using attributes we know exist.
+
+ 
+
+ 
+
+[10/Jan/2018:14:12:22 -0700] SEARCH REQ conn=10 op=1 msgID=2 base="dc=example,dc=com" scope=sub filter="(employeeNumber=0)" attrs="1.1"
+[10/Jan/2018:14:12:22 -0700] SEARCH RES conn=10 op=1 msgID=2 result=80 message="The entry database does not contain a valid record for ID 3" nentries=0 unindexed etime=55
+
+ 
+
+ 
+
+No matter where the entryID is in the tree, searches begin to fail once entry is hit as a candidate.
+
+Example with EntryID 3.
+
+ 
+
+opendj; bin/$ ./status
+...
+...
+          --- Data Sources ---
+Base DN:     dc=example,dc=com
+Backend ID:  userRoot
+Entries:     10002
+
+opendj; bin/$ ./ldapsearch --port 1389 -D "cn=Directory Manager" -w password --countEntries --baseDN dc=example,dc=com objectClass=* \*
+
+dn: dc=example,dc=com
+objectClass: top
+objectClass: domain
+dc: example
+
+dn: ou=People,dc=example,dc=com
+objectClass: top
+objectClass: organizationalUnit
+ou: People
+
+SEARCH operation failed
+Result Code:  80 (Other)
+Additional Information:  The entry database does not contain a valid record for ID 3
+
+Example with EntryID 10002
+
+Processing MODIFY DN request for uid=user.9999,ou=People,dc=example,dc=com
+MODIFY DN operation successful for DN uid=user.9999,ou=People,dc=example,dc=com
+
+opendj; bin/$ ./ldapsearch --port 1389 -D "cn=Directory Manager" -w password --countEntries --baseDN dc=example,dc=com objectClass=* \*
+
+dn: dc=example,dc=com
+objectClass: top
+objectClass: domain
+dc: example
+
+dn: ou=People,dc=example,dc=com
+objectClass: top
+objectClass: organizationalUnit
+ou: People
+
+SEARCH operation failed
+Result Code:  80 (Other)
+Additional Information:  The entry database does not contain a valid record for ID 10002
+
+Likewise, if the backend indexes need to be rebuilt for say an upgrade, the rebuild fails with an error and the backend is left offline.
+
+ 
+
+[10/Jan/2018:15:29:55 -0700] category=BACKEND severity=NOTICE msgID=413 msg=Rebuild Index task 20180110152955913 started execution
+[10/Jan/2018:15:29:55 -0700] category=BACKEND severity=NOTICE msgID=370 msg=The backend userRoot is now taken offline
+[10/Jan/2018:15:29:56 -0700] category=BACKEND severity=NOTICE msgID=537 msg=Rebuild of all indexes started with 10002 total entries to process
+[10/Jan/2018:15:29:56 -0700] category=BACKEND severity=NOTICE msgID=528 msg=The amount of free memory available to the import task is 2577294950 bytes. The number of phase one buffers required is 168 buffers
+[10/Jan/2018:15:29:56 -0700] category=BACKEND severity=NOTICE msgID=520 msg=Setting DB cache size to 33554432 bytes and phase one buffer size to 4194304 bytes
+[10/Jan/2018:15:29:58 -0700] category=TOOLS severity=ERROR msgID=852 msg=An error occurred while attempting to perform index rebuild:  Unable to decode an entry because an unexpected exception was caught during processing: The provided value "uid=,ou=People,dc=example,dc=com" could not be parsed as a valid distinguished name because an attribute value started with a character at position 4 that needs to be escaped (id=org.opends.messages.core-601)
+[10/Jan/2018:15:29:58 -0700] category=BACKEND severity=NOTICE msgID=414 msg=Rebuild Index task 20180110152955913 finished execution in the state Stopped by error
+
+ 
+
+3.0.0 has the correct behavior
+
+ 
+
+Error at or near line 5 in LDIF file Console:
+org.opends.server.util.LDIFException: Unable to parse LDIF entry starting at
+line 5 because an error occurred while trying to parse the value of line
+"newrdn: uid=" as a distinguished name: Unable to decode the provided string
+"uid=" as a relative distinguished name because it does not contain a value
+for attribute type uid
+
+ 
+
+DS 6.0 also has the correct behavior
+
+ 
+
+# The LDAP modify request failed: 21 (Invalid Attribute Syntax)
+# Additional Information:  When attempting to modify entry uid=user.0,ou=People,dc=example,dc=com to add one or more values for attribute uid, value "" was found to be invalid according to the associated syntax: The operation attempted to assign a zero-length value to an attribute with the directory string syntax
+
+ 

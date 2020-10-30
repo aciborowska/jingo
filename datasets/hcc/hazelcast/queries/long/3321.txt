@@ -1,0 +1,416 @@
+I am testing Map eviction policies for my application with 3.2.5 and see that it works with policy "PER_NODE", but not "USED_HEAP_PERCENTAGE" or "USED_HEAP_SIZE". Unfortunately, I really need it to work with USED_HEAP_PERCENTAGE to make my application easier to configure across environments. 
+
+I also tried the following but get the same result:
+- 3.2.4, 3.1.5, 3.1.3
+- XML vs Programmatic configuration
+- Local EntryListener vs distributed
+- Map statistics enabled/disabled
+- Max Idle Time enabled/disabled (max idle time does trigger eviction properly)
+
+The following sample code reproduces the issue:
+
+```
+public class EvictionTest {
+    public class PersonsMapEntryListener implements EntryListener<Integer, String> {
+        @Override
+        public void entryAdded(EntryEvent<Integer, String> event) {
+            System.out.println(event.getEventType().toString() + ": " + event.getKey());
+        }
+
+        @Override
+        public void entryEvicted(EntryEvent<Integer, String> event) {
+            System.out.println(event.getEventType().toString() + ": " + event.getKey());
+        }
+
+        @Override
+        public void entryRemoved(EntryEvent<Integer, String> event) {
+            System.out.println(event.getEventType().toString() + ": " + event.getKey());
+        }
+
+        @Override
+        public void entryUpdated(EntryEvent<Integer, String> event) {
+            System.out.println(event.getEventType().toString() + ": " + event.getKey());
+        }
+    }   
+    public void test() {
+
+        Config config = new Config();
+
+        MapConfig personsMapConfig = new MapConfig();
+        personsMapConfig.setName("persons");
+        personsMapConfig.setStatisticsEnabled(false);   // also tested with true
+        personsMapConfig.addEntryListenerConfig(new EntryListenerConfig(new PersonsMapEntryListener(), true, true));    
+
+        personsMapConfig.setEvictionPercentage(25);
+        personsMapConfig.setEvictionPolicy(MapConfig.EvictionPolicy.LRU);
+//      personsMapConfig.getMaxSizeConfig()                 // WORKS
+//              .setSize(50)
+//              .setMaxSizePolicy(MaxSizeConfig.MaxSizePolicy.PER_NODE);
+//      personsMapConfig.getMaxSizeConfig()                 // DOES NOT WORK
+//              .setSize(50)
+//              .setMaxSizePolicy(MaxSizeConfig.MaxSizePolicy.PER_PARTITION);
+//      personsMapConfig.getMaxSizeConfig()                 // DOES NOT WORK
+//              .setSize(50)
+//              .setMaxSizePolicy(MaxSizeConfig.MaxSizePolicy.USED_HEAP_SIZE);
+        personsMapConfig.getMaxSizeConfig()                 // DOES NOT WORK
+                .setSize(50)
+                .setMaxSizePolicy(MaxSizeConfig.MaxSizePolicy.USED_HEAP_PERCENTAGE);
+
+        config.addMapConfig(personsMapConfig);
+
+        HazelcastInstance instance = Hazelcast.newHazelcastInstance(config);
+
+        // From https://github.com/hazelcast/hazelcast-code-samples/blob/master/distributed-map/eviction/src/main/java/Main.java
+        Map<Integer, String> personsMap = instance.getMap("persons");
+
+        String person = new String(new char[1000000]); // 2 MB
+        Runtime runtime = Runtime.getRuntime();
+
+        int keyCount=0;
+        int mb = 1024*1024;
+
+        while(true){
+            personsMap.put(keyCount,person);
+            keyCount ++;
+            try {
+                Thread.sleep(1000); // added delay to test if Eviction needs time to catch up
+            } catch (InterruptedException e) {
+            }
+            System.out.printf("Unique Puts = %s keyCount : Free Memory (MB) = %s\n",keyCount,runtime.freeMemory()/mb);
+        }
+    }
+
+
+    public static void main(String[] args) {
+        new EvictionTest().test();
+    }
+}
+```
+
+When running this test, my Entry Listener gets called for the Puts but never for evictions. Here is the program output:
+
+```
+Aug 19, 2014 11:26:48 AM com.hazelcast.instance.DefaultAddressPicker
+INFO: null [dev] [3.2.5] Prefer IPv4 stack is true.
+Aug 19, 2014 11:26:48 AM com.hazelcast.instance.DefaultAddressPicker
+INFO: null [dev] [3.2.5] Picked Address[10.37.129.2]:5701, using socket ServerSocket[addr=/0:0:0:0:0:0:0:0%0,localport=5701], bind any local is true
+Aug 19, 2014 11:26:48 AM com.hazelcast.system
+INFO: [10.37.129.2]:5701 [dev] [3.2.5] Hazelcast 3.2.5 (20140814) starting at Address[10.37.129.2]:5701
+Aug 19, 2014 11:26:48 AM com.hazelcast.system
+INFO: [10.37.129.2]:5701 [dev] [3.2.5] Copyright (C) 2008-2014 Hazelcast.com
+Aug 19, 2014 11:26:48 AM com.hazelcast.instance.Node
+INFO: [10.37.129.2]:5701 [dev] [3.2.5] Creating MulticastJoiner
+Aug 19, 2014 11:26:48 AM com.hazelcast.core.LifecycleService
+INFO: [10.37.129.2]:5701 [dev] [3.2.5] Address[10.37.129.2]:5701 is STARTING
+Aug 19, 2014 11:26:51 AM com.hazelcast.cluster.MulticastJoiner
+INFO: [10.37.129.2]:5701 [dev] [3.2.5] 
+
+
+Members [1] {
+    Member [10.37.129.2]:5701 this
+}
+
+Aug 19, 2014 11:26:51 AM com.hazelcast.core.LifecycleService
+INFO: [10.37.129.2]:5701 [dev] [3.2.5] Address[10.37.129.2]:5701 is STARTED
+Aug 19, 2014 11:26:51 AM com.hazelcast.partition.InternalPartitionService
+INFO: [10.37.129.2]:5701 [dev] [3.2.5] Initializing cluster partition table first arrangement...
+ADDED: 0
+Unique Puts = 1 keyCount : Free Memory (MB) = 60
+ADDED: 1
+Unique Puts = 2 keyCount : Free Memory (MB) = 64
+ADDED: 2
+Unique Puts = 3 keyCount : Free Memory (MB) = 57
+ADDED: 3
+Unique Puts = 4 keyCount : Free Memory (MB) = 60
+ADDED: 4
+Unique Puts = 5 keyCount : Free Memory (MB) = 54
+ADDED: 5
+Unique Puts = 6 keyCount : Free Memory (MB) = 48
+ADDED: 6
+Unique Puts = 7 keyCount : Free Memory (MB) = 51
+ADDED: 7
+Unique Puts = 8 keyCount : Free Memory (MB) = 45
+ADDED: 8
+Unique Puts = 9 keyCount : Free Memory (MB) = 39
+ADDED: 9
+Unique Puts = 10 keyCount : Free Memory (MB) = 45
+ADDED: 10
+Unique Puts = 11 keyCount : Free Memory (MB) = 39
+ADDED: 11
+Unique Puts = 12 keyCount : Free Memory (MB) = 44
+ADDED: 12
+Unique Puts = 13 keyCount : Free Memory (MB) = 38
+ADDED: 13
+Unique Puts = 14 keyCount : Free Memory (MB) = 32
+ADDED: 14
+Unique Puts = 15 keyCount : Free Memory (MB) = 36
+ADDED: 15
+Unique Puts = 16 keyCount : Free Memory (MB) = 33
+ADDED: 16
+Unique Puts = 17 keyCount : Free Memory (MB) = 27
+ADDED: 17
+Unique Puts = 18 keyCount : Free Memory (MB) = 33
+ADDED: 18
+Unique Puts = 19 keyCount : Free Memory (MB) = 28
+ADDED: 19
+Unique Puts = 20 keyCount : Free Memory (MB) = 44
+ADDED: 20
+Unique Puts = 21 keyCount : Free Memory (MB) = 38
+ADDED: 21
+Unique Puts = 22 keyCount : Free Memory (MB) = 32
+ADDED: 22
+Unique Puts = 23 keyCount : Free Memory (MB) = 36
+ADDED: 23
+Unique Puts = 24 keyCount : Free Memory (MB) = 30
+ADDED: 24
+Unique Puts = 25 keyCount : Free Memory (MB) = 24
+ADDED: 25
+Unique Puts = 26 keyCount : Free Memory (MB) = 30
+ADDED: 26
+Unique Puts = 27 keyCount : Free Memory (MB) = 25
+ADDED: 27
+Unique Puts = 28 keyCount : Free Memory (MB) = 54
+ADDED: 28
+Unique Puts = 29 keyCount : Free Memory (MB) = 48
+ADDED: 29
+Unique Puts = 30 keyCount : Free Memory (MB) = 42
+ADDED: 30
+Unique Puts = 31 keyCount : Free Memory (MB) = 46
+ADDED: 31
+Unique Puts = 32 keyCount : Free Memory (MB) = 40
+ADDED: 32
+Unique Puts = 33 keyCount : Free Memory (MB) = 34
+ADDED: 33
+Unique Puts = 34 keyCount : Free Memory (MB) = 41
+ADDED: 34
+Unique Puts = 35 keyCount : Free Memory (MB) = 35
+ADDED: 35
+Unique Puts = 36 keyCount : Free Memory (MB) = 39
+ADDED: 36
+Unique Puts = 37 keyCount : Free Memory (MB) = 33
+ADDED: 37
+Unique Puts = 38 keyCount : Free Memory (MB) = 27
+ADDED: 38
+Unique Puts = 39 keyCount : Free Memory (MB) = 31
+ADDED: 39
+Unique Puts = 40 keyCount : Free Memory (MB) = 25
+ADDED: 40
+Unique Puts = 41 keyCount : Free Memory (MB) = 19
+ADDED: 41
+Unique Puts = 42 keyCount : Free Memory (MB) = 26
+ADDED: 42
+Unique Puts = 43 keyCount : Free Memory (MB) = 20
+ADDED: 43
+Unique Puts = 44 keyCount : Free Memory (MB) = 24
+ADDED: 44
+Unique Puts = 45 keyCount : Free Memory (MB) = 18
+ADDED: 45
+Unique Puts = 46 keyCount : Free Memory (MB) = 17
+ADDED: 46
+Unique Puts = 47 keyCount : Free Memory (MB) = 21
+ADDED: 47
+Unique Puts = 48 keyCount : Free Memory (MB) = 15
+ADDED: 48
+Unique Puts = 49 keyCount : Free Memory (MB) = 9
+ADDED: 49
+Unique Puts = 50 keyCount : Free Memory (MB) = 16
+ADDED: 50
+Unique Puts = 51 keyCount : Free Memory (MB) = 10
+ADDED: 51
+Unique Puts = 52 keyCount : Free Memory (MB) = 14
+ADDED: 52
+Unique Puts = 53 keyCount : Free Memory (MB) = 8
+ADDED: 53
+Unique Puts = 54 keyCount : Free Memory (MB) = 2
+ADDED: 54
+Unique Puts = 55 keyCount : Free Memory (MB) = 6
+ADDED: 55
+Unique Puts = 56 keyCount : Free Memory (MB) = 6
+ADDED: 56
+Unique Puts = 57 keyCount : Free Memory (MB) = 4
+java.lang.OutOfMemoryError: Java heap space
+Aug 19, 2014 11:27:49 AM com.hazelcast.initializer
+INFO: [10.37.129.2]:5701 [dev] [3.2.5] Destroying node initializer.
+Aug 19, 2014 11:27:49 AM com.hazelcast.instance.Node
+INFO: [10.37.129.2]:5701 [dev] [3.2.5] Hazelcast Shutdown is completed in 57 ms.
+java.lang.OutOfMemoryError: Java heap space
+Exception in thread "main" com.hazelcast.core.HazelcastInstanceNotActiveException: Hazelcast instance is not active!
+    at com.hazelcast.spi.AbstractDistributedObject.throwNotActiveException(AbstractDistributedObject.java:72)
+    at com.hazelcast.spi.AbstractDistributedObject.lifecycleCheck(AbstractDistributedObject.java:67)
+    at com.hazelcast.spi.AbstractDistributedObject.getNodeEngine(AbstractDistributedObject.java:61)
+    at com.hazelcast.map.proxy.MapProxySupport.invokeOperation(MapProxySupport.java:243)
+    at com.hazelcast.map.proxy.MapProxySupport.putInternal(MapProxySupport.java:217)
+    at com.hazelcast.map.proxy.MapProxyImpl.put(MapProxyImpl.java:72)
+    at com.hazelcast.map.proxy.MapProxyImpl.put(MapProxyImpl.java:58)
+    at test.EvictionTest.test(EvictionTest.java:83)
+    at test.EvictionTest.main(EvictionTest.java:95)
+```
+
+Here is the program output when I change the policy to PER_NODE:
+
+```
+Aug 19, 2014 11:29:54 AM com.hazelcast.instance.DefaultAddressPicker
+INFO: null [dev] [3.2.5] Prefer IPv4 stack is true.
+Aug 19, 2014 11:29:54 AM com.hazelcast.instance.DefaultAddressPicker
+INFO: null [dev] [3.2.5] Picked Address[10.37.129.2]:5701, using socket ServerSocket[addr=/0:0:0:0:0:0:0:0%0,localport=5701], bind any local is true
+Aug 19, 2014 11:29:54 AM com.hazelcast.system
+INFO: [10.37.129.2]:5701 [dev] [3.2.5] Hazelcast 3.2.5 (20140814) starting at Address[10.37.129.2]:5701
+Aug 19, 2014 11:29:54 AM com.hazelcast.system
+INFO: [10.37.129.2]:5701 [dev] [3.2.5] Copyright (C) 2008-2014 Hazelcast.com
+Aug 19, 2014 11:29:54 AM com.hazelcast.instance.Node
+INFO: [10.37.129.2]:5701 [dev] [3.2.5] Creating MulticastJoiner
+Aug 19, 2014 11:29:54 AM com.hazelcast.core.LifecycleService
+INFO: [10.37.129.2]:5701 [dev] [3.2.5] Address[10.37.129.2]:5701 is STARTING
+Aug 19, 2014 11:29:56 AM com.hazelcast.cluster.MulticastJoiner
+INFO: [10.37.129.2]:5701 [dev] [3.2.5] 
+
+
+Members [1] {
+    Member [10.37.129.2]:5701 this
+}
+
+Aug 19, 2014 11:29:56 AM com.hazelcast.core.LifecycleService
+INFO: [10.37.129.2]:5701 [dev] [3.2.5] Address[10.37.129.2]:5701 is STARTED
+Aug 19, 2014 11:29:56 AM com.hazelcast.partition.InternalPartitionService
+INFO: [10.37.129.2]:5701 [dev] [3.2.5] Initializing cluster partition table first arrangement...
+ADDED: 0
+Unique Puts = 1 keyCount : Free Memory (MB) = 60
+ADDED: 1
+Unique Puts = 2 keyCount : Free Memory (MB) = 64
+ADDED: 2
+Unique Puts = 3 keyCount : Free Memory (MB) = 57
+ADDED: 3
+Unique Puts = 4 keyCount : Free Memory (MB) = 60
+ADDED: 4
+Unique Puts = 5 keyCount : Free Memory (MB) = 54
+ADDED: 5
+Unique Puts = 6 keyCount : Free Memory (MB) = 48
+ADDED: 6
+Unique Puts = 7 keyCount : Free Memory (MB) = 51
+ADDED: 7
+Unique Puts = 8 keyCount : Free Memory (MB) = 45
+ADDED: 8
+Unique Puts = 9 keyCount : Free Memory (MB) = 39
+ADDED: 9
+Unique Puts = 10 keyCount : Free Memory (MB) = 45
+ADDED: 10
+Unique Puts = 11 keyCount : Free Memory (MB) = 39
+ADDED: 11
+Unique Puts = 12 keyCount : Free Memory (MB) = 43
+ADDED: 12
+Unique Puts = 13 keyCount : Free Memory (MB) = 37
+ADDED: 13
+Unique Puts = 14 keyCount : Free Memory (MB) = 31
+ADDED: 14
+Unique Puts = 15 keyCount : Free Memory (MB) = 37
+ADDED: 15
+Unique Puts = 16 keyCount : Free Memory (MB) = 34
+ADDED: 16
+Unique Puts = 17 keyCount : Free Memory (MB) = 28
+ADDED: 17
+Unique Puts = 18 keyCount : Free Memory (MB) = 33
+ADDED: 18
+Unique Puts = 19 keyCount : Free Memory (MB) = 27
+ADDED: 19
+Unique Puts = 20 keyCount : Free Memory (MB) = 31
+ADDED: 20
+Unique Puts = 21 keyCount : Free Memory (MB) = 25
+ADDED: 21
+Unique Puts = 22 keyCount : Free Memory (MB) = 32
+ADDED: 22
+Unique Puts = 23 keyCount : Free Memory (MB) = 37
+ADDED: 23
+Unique Puts = 24 keyCount : Free Memory (MB) = 31
+ADDED: 24
+Unique Puts = 25 keyCount : Free Memory (MB) = 25
+ADDED: 25
+Unique Puts = 26 keyCount : Free Memory (MB) = 31
+ADDED: 26
+Unique Puts = 27 keyCount : Free Memory (MB) = 25
+ADDED: 27
+Unique Puts = 28 keyCount : Free Memory (MB) = 29
+ADDED: 28
+Unique Puts = 29 keyCount : Free Memory (MB) = 23
+ADDED: 29
+Unique Puts = 30 keyCount : Free Memory (MB) = 42
+ADDED: 30
+Unique Puts = 31 keyCount : Free Memory (MB) = 47
+ADDED: 31
+Unique Puts = 32 keyCount : Free Memory (MB) = 41
+ADDED: 32
+Unique Puts = 33 keyCount : Free Memory (MB) = 35
+ADDED: 33
+Unique Puts = 34 keyCount : Free Memory (MB) = 41
+ADDED: 34
+Unique Puts = 35 keyCount : Free Memory (MB) = 35
+ADDED: 35
+Unique Puts = 36 keyCount : Free Memory (MB) = 39
+ADDED: 36
+Unique Puts = 37 keyCount : Free Memory (MB) = 33
+ADDED: 37
+Unique Puts = 38 keyCount : Free Memory (MB) = 27
+ADDED: 38
+Unique Puts = 39 keyCount : Free Memory (MB) = 32
+ADDED: 39
+Unique Puts = 40 keyCount : Free Memory (MB) = 26
+ADDED: 40
+Unique Puts = 41 keyCount : Free Memory (MB) = 20
+ADDED: 41
+Unique Puts = 42 keyCount : Free Memory (MB) = 26
+ADDED: 42
+Unique Puts = 43 keyCount : Free Memory (MB) = 25
+ADDED: 43
+Unique Puts = 44 keyCount : Free Memory (MB) = 29
+ADDED: 44
+Unique Puts = 45 keyCount : Free Memory (MB) = 23
+ADDED: 45
+Unique Puts = 46 keyCount : Free Memory (MB) = 17
+ADDED: 46
+EVICTED: 42
+EVICTED: 21
+EVICTED: 0
+EVICTED: 30
+EVICTED: 9
+EVICTED: 26
+EVICTED: 13
+EVICTED: 12
+EVICTED: 37
+EVICTED: 8
+EVICTED: 36
+EVICTED: 2
+EVICTED: 23
+EVICTED: 43
+EVICTED: 32
+EVICTED: 11
+EVICTED: 39
+EVICTED: 41
+EVICTED: 28
+EVICTED: 3
+EVICTED: 24
+EVICTED: 7
+EVICTED: 45
+EVICTED: 44
+EVICTED: 15
+EVICTED: 10
+EVICTED: 14
+EVICTED: 27
+EVICTED: 35
+EVICTED: 20
+EVICTED: 19
+EVICTED: 22
+EVICTED: 5
+EVICTED: 34
+EVICTED: 29
+EVICTED: 46
+EVICTED: 4
+EVICTED: 6
+EVICTED: 40
+EVICTED: 25
+EVICTED: 18
+EVICTED: 38
+EVICTED: 31
+EVICTED: 17
+EVICTED: 1
+EVICTED: 16
+EVICTED: 33
+```

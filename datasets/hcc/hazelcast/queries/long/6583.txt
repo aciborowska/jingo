@@ -1,0 +1,71 @@
+Hello,
+Because of no handling of RuntimeExceptions (which was thrown by a buggy code in Tomcat) Hazelcast went into a loop which in few seconds created 160k log entries like the one below and most likely send around a lot of requests which in turn killed cluster.
+
+As I do understand it might have been partially caused by bug in Tomcat class loader I do strongly believe this should not have caused Hazelcast to go down so some handling of runtime exceptions should be put in place.
+
+Link to bug in tomcat(fixed for new version): https://bz.apache.org/bugzilla/show_bug.cgi?id=58519
+
+Hazelcast version: 3.4.4
+Number of nodes: 6
+Number of clients: 0
+Java 7, tomcat 7.0.56
+
+How this happened: 
+As described in bug report for Tomcat - we have undeployed application, which did not undeploy fully and started deployment of our app. This caused Tomcat classloaders to throw illegalstatexception instead of classnotfoundexception.
+
+```
+Oct 21, 2015 3:10:02 PM org.apache.catalina.loader.WebappClassLoaderBase checkStateForResourceLoading
+INFO: Illegal access: this web application instance has been stopped already. Could not load [java.lang.Throwable]. The following stack trace is thrown for debugging purposes as well as to attempt to terminate the thread which caused the illegal access.
+java.lang.IllegalStateException: Illegal access: this web application instance has been stopped already. Could not load [java.lang.Throwable]. The following stack trace is thrown for debugging purposes as well as to attempt to terminate the thread which caused the illegal access.t org.apache.catalina.loader.WebappClassLoaderBase.checkStateForResourceLoading(WebappClassLoaderBase.java:1327)
+        at org.apache.catalina.loader.WebappClassLoaderBase.checkStateForClassLoading(WebappClassLoaderBase.java:1313)
+        at org.apache.catalina.loader.WebappClassLoaderBase.loadClass(WebappClassLoaderBase.java:1196)
+        at org.apache.catalina.loader.WebappClassLoaderBase.loadClass(WebappClassLoaderBase.java:1157)
+        at ch.qos.logback.classic.spi.PackagingDataCalculator.loadClass(PackagingDataCalculator.java:207)
+        at ch.qos.logback.classic.spi.PackagingDataCalculator.bestEffortLoadClass(PackagingDataCalculator.java:226)
+        at ch.qos.logback.classic.spi.PackagingDataCalculator.computeBySTEP(PackagingDataCalculator.java:138)
+        at ch.qos.logback.classic.spi.PackagingDataCalculator.populateUncommonFrames(PackagingDataCalculator.java:113)
+        at ch.qos.logback.classic.spi.PackagingDataCalculator.populateFrames(PackagingDataCalculator.java:105)
+        at ch.qos.logback.classic.spi.PackagingDataCalculator.calculate(PackagingDataCalculator.java:57)
+        at ch.qos.logback.classic.spi.ThrowableProxy.calculatePackagingData(ThrowableProxy.java:147)
+        at ch.qos.logback.classic.spi.LoggingEvent.<init>(LoggingEvent.java:124)
+        at ch.qos.logback.classic.Logger.buildLoggingEventAndAppend(Logger.java:440)
+        at ch.qos.logback.classic.Logger.error(Logger.java:559)
+        at com.hazelcast.logging.Slf4jFactory$Slf4jLogger.log(Slf4jFactory.java:92)
+        at com.hazelcast.logging.LoggingServiceImpl$DefaultLogger.log(LoggingServiceImpl.java:224)
+        at com.hazelcast.logging.LoggingServiceImpl$DefaultLogger.severe(LoggingServiceImpl.java:186)
+        at com.hazelcast.spi.impl.BasicOperationService$OperationPacketHandler.handle(BasicOperationService.java:646)
+        at com.hazelcast.spi.impl.BasicOperationService$OperationPacketHandler.access$1500(BasicOperationService.java:631)
+        at com.hazelcast.spi.impl.BasicOperationService$BasicDispatcherImpl.dispatch(BasicOperationService.java:583)
+        at com.hazelcast.spi.impl.BasicOperationScheduler$OperationThread.process(BasicOperationScheduler.java:466)
+        at com.hazelcast.spi.impl.BasicOperationScheduler$OperationThread.processPriorityMessages(BasicOperationScheduler.java:480)
+        at com.hazelcast.spi.impl.BasicOperationScheduler$OperationThread.doRun(BasicOperationScheduler.java:457)
+        at com.hazelcast.spi.impl.BasicOperationScheduler$OperationThread.run(BasicOperationScheduler.java:432)
+
+java.lang.IllegalStateException: Can't overwrite cause
+        at java.lang.Throwable.initCause(Throwable.java:456)
+        at org.apache.catalina.loader.WebappClassLoaderBase.checkStateForClassLoading(WebappClassLoaderBase.java:1316)
+        at org.apache.catalina.loader.WebappClassLoaderBase.loadClass(WebappClassLoaderBase.java:1196)
+        at org.apache.catalina.loader.WebappClassLoaderBase.loadClass(WebappClassLoaderBase.java:1157)
+        at ch.qos.logback.classic.spi.PackagingDataCalculator.loadClass(PackagingDataCalculator.java:207)
+        at ch.qos.logback.classic.spi.PackagingDataCalculator.bestEffortLoadClass(PackagingDataCalculator.java:226)
+        at ch.qos.logback.classic.spi.PackagingDataCalculator.computeBySTEP(PackagingDataCalculator.java:138)
+        at ch.qos.logback.classic.spi.PackagingDataCalculator.populateUncommonFrames(PackagingDataCalculator.java:113)
+        at ch.qos.logback.classic.spi.PackagingDataCalculator.populateFrames(PackagingDataCalculator.java:105)
+        at ch.qos.logback.classic.spi.PackagingDataCalculator.calculate(PackagingDataCalculator.java:57)
+        at ch.qos.logback.classic.spi.ThrowableProxy.calculatePackagingData(ThrowableProxy.java:147)
+        at ch.qos.logback.classic.spi.LoggingEvent.<init>(LoggingEvent.java:124)
+        at ch.qos.logback.classic.Logger.buildLoggingEventAndAppend(Logger.java:440)
+        at ch.qos.logback.classic.Logger.filterAndLog_0_Or3Plus(Logger.java:396)
+        at ch.qos.logback.classic.Logger.error(Logger.java:559)
+        at com.hazelcast.logging.Slf4jFactory$Slf4jLogger.log(Slf4jFactory.java:92)
+        at com.hazelcast.logging.LoggingServiceImpl$DefaultLogger.log(LoggingServiceImpl.java:224)
+        at com.hazelcast.logging.LoggingServiceImpl$DefaultLogger.severe(LoggingServiceImpl.java:186)
+        at com.hazelcast.spi.impl.BasicOperationService$OperationPacketHandler.handle(BasicOperationService.java:646)
+        at com.hazelcast.spi.impl.BasicOperationService$OperationPacketHandler.access$1500(BasicOperationService.java:631)
+        at com.hazelcast.spi.impl.BasicOperationService$BasicDispatcherImpl.dispatch(BasicOperationService.java:583)
+        at com.hazelcast.spi.impl.BasicOperationScheduler$OperationThread.process(BasicOperationScheduler.java:466)
+        at com.hazelcast.spi.impl.BasicOperationScheduler$OperationThread.processPriorityMessages(BasicOperationScheduler.java:480)
+        at com.hazelcast.spi.impl.BasicOperationScheduler$OperationThread.doRun(BasicOperationScheduler.java:457)
+        at com.hazelcast.spi.impl.BasicOperationScheduler$OperationThread.run(BasicOperationScheduler.java:432)
+Oct 21, 2015 3:10:02 PM org.apache.catalina.loader.WebappClassLoaderBase checkStateForResourceLoading
+```

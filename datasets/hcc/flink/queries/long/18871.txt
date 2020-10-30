@@ -1,0 +1,43 @@
+For example, we have a following SQL:
+
+
+create view view1 as
+select 
+  max(a) as m1,
+  max(b) as m2 -- b is a timestmap
+from T
+group by c, d;
+
+create view view2 as
+select * from view1
+where m2 > CURRENT_TIMESTAMP;
+
+insert into MySink
+select sum(m1) as m1 
+from view2
+group by c;
+
+
+view1 will produce retract messages, and the same message in view2 maybe produce different results. and the second agg will produce wrong result.
+ For example,
+
+view1:
++ (1, 2020-8-10 16:13:00)
+- (1, 2020-8-10 16:13:00)
++ (2, 2020-8-10 16:13:10)
+
+view2:
++ (1, 2020-8-10 16:13:00)
+- (1, 2020-8-10 16:13:00) // this record may be filtered out
++ (2, 2020-8-10 16:13:10)
+
+MySink:
++ (1, 2020-8-10 16:13:00)
++ (2, 2020-8-10 16:13:10) // will produce wrong result.
+
+
+In general, the non-deterministic function may break the retract mechanism. All operators downstream which will rely on the retraction mechanism will produce wrong results, or throw exception, such as Agg / some Sink which need retract message / TopN / Window.
+
+(The example above is a simplified version of some production jobs in our scenario, just to explain the core problem)
+
+CC Kurt Young Jark Wu
