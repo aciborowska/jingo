@@ -34,7 +34,7 @@ logger = logging.getLogger('main')
               default='joined')
 @click.option('--datasets',
               help='Path to datasets',
-              type=click.Choice(['datasets/corley', 'datasets/bench4bl']),
+              type=click.Choice(['datasets/corley', 'datasets/bench4bl','datasets/hcc']),
               default='datasets/corley')
 @click.option('--topics',
               help='Number of topics for bugs model and changesets model. Format: bugs_k, changes_k.',

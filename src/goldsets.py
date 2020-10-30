@@ -82,9 +82,9 @@ def commit_parser(f):
     changes = list()
 
     while True:
-        line = next(f).strip().split(None, 1)
+        line = next(f).strip().split()
         if commit is None and line and line[0] == 'commit':
-            commit = line
+            commit = line[0:2]
             text = list()
             text.append(' '.join(commit) + '\n')
 
@@ -97,12 +97,14 @@ def commit_parser(f):
                     break
                 else:
                     line_data = line.strip().split(None, 1)
-                    if len(line_data) == 2 and line_data[0] == 'commit' and dulwich.objects.valid_hexsha(line_data[1]):
-                        commit = line_data
-                        text = list()
-                        text.append(' '.join(commit) + '\n')
-                        line = next(f)
-                        continue
+                    if len(line_data) == 2 and line_data[0] == 'commit':
+                        line_data = line.strip().split()[0:2]
+                        if dulwich.objects.valid_hexsha(line_data[1]):
+                            commit = line_data
+                            text = list()
+                            text.append(' '.join(commit) + '\n')
+                            line = next(f)
+                            continue
 
                 text.append(line)
                 line = next(f)

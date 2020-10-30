@@ -185,7 +185,7 @@ class MethodCorpus(GitCorpus):
 
         for entry in self.repo.object_store.iter_tree_contents(self.ref_tree):
             fname = entry.path.decode('utf-8')
-            if not fname.endswith(".java"):
+            if not fname.endswith(".java") and not fname.endswith('.kt'):
                 continue
 
             document = self.repo.object_store.get_raw(entry.sha)[1]
@@ -308,7 +308,7 @@ class SnapshotSegmentCorpus(GitCorpus):
 
         for entry in self.repo.object_store.iter_tree_contents(self.ref_tree):
             fname = entry.path.decode('utf-8')
-            if not fname.endswith(".java"):
+            if not fname.endswith(".java") and not fname.endswith('.kt'):
                 continue
 
             document = self.repo.object_store.get_raw(entry.sha)[1]
@@ -350,7 +350,7 @@ class SnapshotCorpus(GitCorpus):
 
         for entry in self.repo.object_store.iter_tree_contents(self.ref_tree):
             fname = entry.path.decode('utf-8')
-            if not fname.endswith(".java"):
+            if not fname.endswith(".java") and not fname.endswith('.kt'):
                 continue
 
             document = self.repo.object_store.get_raw(entry.sha)[1]
@@ -497,7 +497,7 @@ class ChangesetCorpus(GitCorpus):
             #    continue
 
             # discard non *.java files
-            if re.compile(r'.*\.java').match(diff_lines[1]) is None:
+            if re.compile(r'.*\.java').match(diff_lines[1]) is None and re.compile(r'.*\.kt').match(diff_lines[1]) is None:
                 continue
 
             # sanity?
