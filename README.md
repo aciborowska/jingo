@@ -1,9 +1,8 @@
-# Just-in-time Adaptable Bug Localization - JINGO
+# Online Adaptable Bug Localization for Rapidly Evolving Software
 
 This repository contains the code and data associated with the following research paper:
 ```
-A. Ciborowska, M.J. Decker, K. Damevski, "Just-in-Time Adaptable Bug Localization Based on 
-Changesets"
+A. Ciborowska, M.J. Decker, K. Damevski, "Online Adaptable Bug Localization for Rapidly Evolving Software"
 ```
 
 # Requirements
