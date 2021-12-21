@@ -3,7 +3,7 @@
 This repository contains the code and data associated with the following research paper:
 ```
 A. Ciborowska, M.J. Decker, K. Damevski, "Just-in-Time Adaptable Bug Localization Based on 
-Changesets" IEEE Transactions on Software Engineering, 2020. submitted
+Changesets" Journal of Systems and Software, 2020. submitted
 ```
 
 # Requirements
@@ -17,7 +17,7 @@ To run the project with default options simply use the following command:
 `python3.6 main.py [options]`
 
 ### Options:
-* `--datasets` - path to datasets: _datasets/corley_ or _datasets/bench4bl_. Default: _datasets/bench4bl_.
+* `--datasets` - path to datasets: _datasets/corley_, _datasets/bench4bl_ or _datasets/hcc_. Default: _datasets/bench4bl_.
 * `--name` - name of project to run the experiment on. If not provided, run experiments for all projects in the dataset.
 * `--model-type` - type of BL model to use. Use _joined_ to run JINGO, _changesets_ to run Corley et al.[1]. Default: _joined_.
 * `--topics` - number of topics for the bug report model and the changeset model. Format: [bug_topics, changeset_topics]. Default: [50, 100].
