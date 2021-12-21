@@ -3,7 +3,7 @@
 This repository contains the code and data associated with the following research paper:
 ```
 A. Ciborowska, M.J. Decker, K. Damevski, "Just-in-Time Adaptable Bug Localization Based on 
-Changesets" Journal of Systems and Software, 2020. submitted
+Changesets"
 ```
 
 # Requirements
